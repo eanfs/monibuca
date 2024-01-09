@@ -6,7 +6,6 @@ resource
 /monibuca
 node_modules
 shutdown.bat
-*.sh
 .m7s
 debug.go
 dist/
