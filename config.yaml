@@ -10,3 +10,35 @@ hls:
   enable: false
 monitor:
   enable: false
+
+record:
+  subscribe: # 参考全局配置格式
+  flv:
+      ext: .flv
+      path: record/flv
+      autorecord: false
+      filter: ""
+      fragment: 0
+  mp4:
+      ext: .mp4
+      path: record/mp4
+      autorecord: false
+      filter: ""
+      fragment: 0
+      minio: 
+          endpoint: storage-test.xiding.tech
+          accesskey: xidinguser
+          secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
+          bucket: vidu-media-bucket
+  hls:
+      ext: .m3u8
+      path: record/hls
+      autorecord: false
+      filter: ""
+      fragment: 0
+  raw:
+      ext: .
+      path: record/raw
+      autorecord: false
+      filter: ""
+      fragment: 0  

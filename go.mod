@@ -3,6 +3,7 @@ module monibuca
 go 1.20
 
 require (
+	github.com/eanfs/plugin-record/v4 v4.4.7
 	go.uber.org/zap v1.26.0
 	m7s.live/engine/v4 v4.14.6
 	m7s.live/plugin/debug/v4 v4.0.2
@@ -15,7 +16,6 @@ require (
 	m7s.live/plugin/logrotate/v4 v4.0.5
 	m7s.live/plugin/monitor/v4 v4.0.5
 	m7s.live/plugin/preview/v4 v4.1.4
-	m7s.live/plugin/record/v4 v4.4.6
 	m7s.live/plugin/room/v4 v4.0.12
 	m7s.live/plugin/rtmp/v4 v4.2.10
 	m7s.live/plugin/rtsp/v4 v4.3.4
@@ -25,7 +25,7 @@ require (
 )
 
 require (
-	github.com/Eyevinn/mp4ff v0.40.1 // indirect
+	github.com/Eyevinn/mp4ff v0.42.0 // indirect
 	github.com/abema/go-mp4 v1.1.1 // indirect
 	github.com/aler9/writerseeker v1.1.0 // indirect
 	github.com/asticode/go-astikit v0.30.0 // indirect
@@ -37,6 +37,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/denisbrodbeck/machineid v1.0.1 // indirect
 	github.com/discoviking/fsm v0.0.0-20150126104936-f4a273feecca // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ghettovoice/gosip v0.0.0-20230903092020-b059959586db // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
@@ -46,9 +47,12 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/pprof v0.0.0-20230912144702-c363fe2c2ed8 // indirect
-	github.com/google/uuid v1.4.0 // indirect
+	github.com/google/uuid v1.5.0 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/husanpao/ip v0.0.0-20220711082147-73160bb611a8 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/logrusorgru/aurora/v4 v4.0.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20230326075908-cb1d2100619a // indirect
 	github.com/marten-seemann/qpack v0.3.0 // indirect
@@ -56,6 +60,11 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/mcuadros/go-defaults v1.2.0 // indirect
 	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d // indirect
+	github.com/minio/md5-simd v1.1.2 // indirect
+	github.com/minio/minio-go/v7 v7.0.66 // indirect
+	github.com/minio/sha256-simd v1.0.1 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/onsi/ginkgo/v2 v2.12.1 // indirect
 	github.com/pion/datachannel v1.5.5 // indirect
 	github.com/pion/dtls/v2 v2.2.7 // indirect
@@ -83,6 +92,7 @@ require (
 	github.com/quic-go/qpack v0.4.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.3.4 // indirect
 	github.com/quic-go/quic-go v0.38.1 // indirect
+	github.com/rs/xid v1.5.0 // indirect
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/shirou/gopsutil/v3 v3.23.8 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
@@ -92,7 +102,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2 // indirect
-	github.com/yapingcat/gomedia v0.0.0-20230905155010-55b9713fcec1 // indirect
+	github.com/yapingcat/gomedia v0.0.0-20240106100545-1b855b02fa0d // indirect
 	github.com/yusufpapurcu/wmi v1.2.3 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.16.0 // indirect
@@ -104,6 +114,8 @@ require (
 	golang.org/x/term v0.15.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/tools v0.13.0 // indirect
+	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	m7s.live/plugin/ps/v4 v4.1.5-0.20231213072312-25570d9571b3 // indirect
+
 )
