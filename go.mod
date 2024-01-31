@@ -3,7 +3,7 @@ module monibuca
 go 1.20
 
 require (
-	github.com/eanfs/plugin-record/v4 v4.4.7
+	github.com/eanfs/plugin-record/v4 v4.4.8
 	go.uber.org/zap v1.26.0
 	m7s.live/engine/v4 v4.14.6
 	m7s.live/plugin/debug/v4 v4.0.2
@@ -119,3 +119,5 @@ require (
 	m7s.live/plugin/ps/v4 v4.1.5-0.20231213072312-25570d9571b3 // indirect
 
 )
+
+// replace github.com/eanfs/plugin-record/v4 => ../monibuca-plugin/plugin-record

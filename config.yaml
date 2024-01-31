@@ -13,6 +13,11 @@ monitor:
 
 record:
   subscribe: # 参考全局配置格式
+  storage: 
+      endpoint: storage-test.xiding.tech
+      accesskey: user
+      secretkey: secret
+      bucket: vidu-media-bucket
   flv:
       ext: .flv
       path: record/flv
@@ -25,11 +30,6 @@ record:
       autorecord: false
       filter: ""
       fragment: 0
-      minio: 
-          endpoint: storage-test.xiding.tech
-          accesskey: xidinguser
-          secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
-          bucket: vidu-media-bucket
   hls:
       ext: .m3u8
       path: record/hls
