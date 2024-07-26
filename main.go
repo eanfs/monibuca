@@ -36,6 +36,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 
 	"m7s.live/engine/v4"
 	"m7s.live/engine/v4/util"
@@ -65,7 +66,11 @@ var (
 
 func main() {
 	fmt.Println("start github.com/langhuihui/monibuca version:", version)
-	conf := flag.String("c", "config.yaml", "config file")
+	confPathFromEnv := os.Getenv("M7S_CONFIG_FILE")
+	if confPathFromEnv == "" {
+		confPathFromEnv = "config.yaml" // 如果环境变量未设置，默认使用此路径
+	}
+	conf := flag.String("c", confPathFromEnv, "config file")
 	flag.Parse()
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), "version", version))
 	go util.WaitTerm(cancel)
