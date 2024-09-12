@@ -23,7 +23,7 @@ var writeTrailerQueueTask WriteTrailerQueueTask
 
 type writeTrailerTask struct {
 	task.Task
-	muxer *Muxer
+	muxer *FileMuxer
 	file  *os.File
 }
 
@@ -63,7 +63,7 @@ func NewRecorder() m7s.IRecorder {
 type Recorder struct {
 	m7s.DefaultRecorder
 	file   *os.File
-	muxer  *Muxer
+	muxer  *FileMuxer
 	stream m7s.RecordStream
 }
 
@@ -99,7 +99,7 @@ func (r *Recorder) createStream() (err error) {
 			return
 		}
 	}
-	r.muxer, err = NewMuxer(r.file, 0)
+	r.muxer, err = NewFileMuxer(r.file)
 	return
 }
 
@@ -120,7 +120,7 @@ func (r *Recorder) Dispose() {
 func (r *Recorder) Run() (err error) {
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
-	var audioId, videoId uint32
+	var audioTrack, videoTrack *Track
 	err = r.createStream()
 	if err != nil {
 		return
@@ -159,24 +159,24 @@ func (r *Recorder) Run() (err error) {
 			switch ctx := at.ICodecCtx.GetBase().(type) {
 			case *codec.AACCtx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
-				audioId = track.TrackId
+				audioTrack = track
 				track.ExtraData = ctx.ConfigBytes
 			case *codec.PCMACtx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
-				audioId = track.TrackId
+				audioTrack = track
 				track.SampleSize = uint16(ctx.SampleSize)
 				track.SampleRate = uint32(ctx.SampleRate)
 				track.ChannelCount = uint8(ctx.Channels)
 			case *codec.PCMUCtx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
-				audioId = track.TrackId
+				audioTrack = track
 				track.SampleSize = uint16(ctx.SampleSize)
 				track.SampleRate = uint32(ctx.SampleRate)
 				track.ChannelCount = uint8(ctx.Channels)
 			}
 		}
 		dts := sub.AudioReader.AbsTime
-		return r.muxer.WriteSample(audioId, box.Sample{
+		return r.muxer.WriteSample(r.file, audioTrack, box.Sample{
 			Data: audio.ToBytes(),
 			PTS:  uint64(dts),
 			DTS:  uint64(dts),
@@ -195,13 +195,13 @@ func (r *Recorder) Run() (err error) {
 			switch ctx := vt.ICodecCtx.GetBase().(type) {
 			case *codec.H264Ctx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
-				videoId = track.TrackId
+				videoTrack = track
 				track.ExtraData = ctx.Record
 				track.Width = uint32(ctx.Width())
 				track.Height = uint32(ctx.Height())
 			case *codec.H265Ctx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
-				videoId = track.TrackId
+				videoTrack = track
 				track.ExtraData = ctx.Record
 				track.Width = uint32(ctx.Width())
 				track.Height = uint32(ctx.Height())
@@ -225,7 +225,7 @@ func (r *Recorder) Run() (err error) {
 			}
 		}
 
-		return r.muxer.WriteSample(videoId, box.Sample{
+		return r.muxer.WriteSample(r.file, videoTrack, box.Sample{
 			KeyFrame: sub.VideoReader.Value.IDR,
 			Data:     bytes[offset:],
 			PTS:      uint64(sub.VideoReader.AbsTime) + uint64(video.CTS),

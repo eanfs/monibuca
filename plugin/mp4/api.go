@@ -33,16 +33,14 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	p.Info("download", "filePath", filePath, "start", startTime, "end", endTime)
 	var streams []m7s.RecordStream
 	p.DB.Find(&streams, "end_time>? AND start_time<? AND file_path=?", startTime, endTime, filePath)
-	// muxer, err := mp4.NewMuxer(w, 0)
+	// muxer := mp4.NewMuxer(0)
 	// for i, stream := range streams {
 	// 	file, err := os.Open(filepath.Join(filePath, fmt.Sprintf("%d.mp4", stream.ID)))
 	// 	if err != nil {
 	// 		return
 	// 	}
 	// 	demuxer := mp4.NewDemuxer(file)
-	// 	var tracks []box.TrackInfo
-	// 	if tracks, err = demuxer.ReadHead(); err != nil {
-	// 		return
-	// 	}
+	// 	err = demuxer.Demux()
+
 	// }
 }
