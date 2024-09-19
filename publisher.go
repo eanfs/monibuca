@@ -2,7 +2,6 @@ package m7s
 
 import (
 	"context"
-	"m7s.live/m7s/v5/pkg/task"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,6 +9,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"m7s.live/m7s/v5/pkg/task"
 
 	. "m7s.live/m7s/v5/pkg"
 	"m7s.live/m7s/v5/pkg/config"
@@ -30,6 +31,7 @@ const threshold = 10 * time.Millisecond
 
 type SpeedControl struct {
 	speed          float64
+	pausedTime     time.Duration
 	beginTime      time.Time
 	beginTimestamp time.Duration
 	Delta          time.Duration
@@ -41,7 +43,7 @@ func (s *SpeedControl) speedControl(speed float64, ts time.Duration) {
 		s.beginTime = time.Now()
 		s.beginTimestamp = ts
 	} else {
-		elapsed := time.Since(s.beginTime)
+		elapsed := time.Since(s.beginTime) - s.pausedTime
 		if speed == 0 {
 			s.Delta = ts - elapsed
 			return
@@ -120,11 +122,14 @@ type Publisher struct {
 	PubSubBase
 	config.Publish
 	State                  PublisherState
+	Paused                 *util.Promise
+	pauseTime              time.Time
 	AudioTrack, VideoTrack AVTracks
 	audioReady, videoReady *util.Promise
 	DataTrack              *DataTrack
 	Subscribers            SubscriberCollection
 	GOP                    int
+	OnSeek                 func(time.Duration)
 	dumpFile               *os.File
 }
 
@@ -202,19 +207,22 @@ func (p *PublishTimeout) Dispose() {
 }
 
 func (p *PublishTimeout) Tick(any) {
+	if p.Publisher.Paused != nil {
+		return
+	}
 	switch p.Publisher.State {
 	case PublisherStateInit:
 		if p.Publisher.PublishTimeout > 0 {
-			p.Stop(ErrPublishTimeout)
+			p.Publisher.Stop(ErrPublishTimeout)
 		}
 	case PublisherStateTrackAdded:
 		if p.Publisher.Publish.IdleTimeout > 0 {
-			p.Stop(ErrPublishIdleTimeout)
+			p.Publisher.Stop(ErrPublishIdleTimeout)
 		}
 	case PublisherStateSubscribed:
 	case PublisherStateWaitSubscriber:
 		if p.Publisher.Publish.DelayCloseTimeout > 0 {
-			p.Stop(ErrPublishDelayCloseTimeout)
+			p.Publisher.Stop(ErrPublishDelayCloseTimeout)
 		}
 	}
 }
@@ -229,13 +237,16 @@ func (p *PublishNoDataTimeout) GetTickInterval() time.Duration {
 }
 
 func (p *PublishNoDataTimeout) Tick(any) {
+	if p.Publisher.Paused != nil {
+		return
+	}
 	if p.Publisher.VideoTrack.CheckTimeout(p.Publisher.PublishTimeout) {
 		p.Error("video timeout", "writeTime", p.Publisher.VideoTrack.LastValue.WriteTime)
-		p.Stop(ErrPublishTimeout)
+		p.Publisher.Stop(ErrPublishTimeout)
 	}
 	if p.Publisher.AudioTrack.CheckTimeout(p.Publisher.PublishTimeout) {
 		p.Error("audio timeout", "writeTime", p.Publisher.AudioTrack.LastValue.WriteTime)
-		p.Stop(ErrPublishTimeout)
+		p.Publisher.Stop(ErrPublishTimeout)
 	}
 }
 
@@ -563,26 +574,33 @@ func (p *Publisher) takeOver(old *Publisher) {
 }
 
 func (p *Publisher) WaitTrack() (err error) {
+	var v, a error
 	if p.PubVideo {
-		err = p.videoReady.Await()
+		v = p.videoReady.Await()
 	}
 	if p.PubAudio {
-		err = p.audioReady.Await()
+		a = p.audioReady.Await()
+	}
+	if v != nil && a != nil {
+		return ErrNoTrack
 	}
 	return
 }
 
 func (p *Publisher) Pause() {
-	//p.AudioTrack.Pause()
-	//p.VideoTrack.Pause()
+	p.Paused = util.NewPromise(p)
+	p.pauseTime = time.Now()
 }
 
 func (p *Publisher) Resume() {
-	//p.AudioTrack.Resume()
-	//p.VideoTrack.Resume()
+	p.Paused.Resolve()
+	p.Paused = nil
+	p.VideoTrack.pausedTime += time.Since(p.pauseTime)
+	p.AudioTrack.pausedTime += time.Since(p.pauseTime)
 }
 
-func (p *Publisher) FastForward() {
-	//p.AudioTrack.FastForward()
-	//p.VideoTrack.FastForward()
+func (p *Publisher) Seek(ts time.Duration) {
+	if p.OnSeek != nil {
+		p.OnSeek(ts)
+	}
 }

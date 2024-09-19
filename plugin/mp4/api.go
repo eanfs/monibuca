@@ -1,8 +1,11 @@
 package plugin_mp4
 
 import (
+	"context"
 	"fmt"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"io"
+	"m7s.live/m7s/v5/plugin/mp4/pb"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +22,43 @@ type ContentPart struct {
 	*os.File
 	Start int64
 	Size  int
+}
+
+func (p *MP4Plugin) List(ctx context.Context, req *pb.ReqRecordList) (resp *pb.ResponseList, err error) {
+	var streams []m7s.RecordStream
+	if p.DB == nil {
+		err = fmt.Errorf("db not init")
+		return
+	}
+	r := strings.Split(req.Range, "~")
+	if len(r) != 2 {
+		err = fmt.Errorf("invalid range")
+		return
+	}
+	var startTime, endTime time.Time
+	startTime, err = util.TimeQueryParse(r[0])
+	if err != nil {
+		return
+	}
+	endTime, err = util.TimeQueryParseRefer(r[1], startTime)
+	if err != nil {
+		return
+	}
+	if req.FilePath == "" {
+		p.DB.Find(&streams, "end_time>? AND start_time<?", startTime, endTime)
+	} else {
+		p.DB.Find(&streams, "end_time>? AND start_time<? AND file_path=?", startTime, endTime, req.FilePath)
+	}
+	resp = &pb.ResponseList{}
+	for _, stream := range streams {
+		resp.Data = append(resp.Data, &pb.RecordFile{
+			Id:        uint32(stream.ID),
+			StartTime: timestamppb.New(stream.StartTime),
+			EndTime:   timestamppb.New(stream.EndTime),
+			FilePath:  stream.FilePath,
+		})
+	}
+	return
 }
 
 func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +94,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	muxer.CurrentOffset = int64(n)
 	var lastTs, tsOffset int64
 	var parts []*ContentPart
-	var sampleOffset = muxer.CurrentOffset + box.BasicBoxLen*2 // a freebox and mdatbox or a large mdatbox
+	sampleOffset := muxer.CurrentOffset + box.BasicBoxLen*2
 	mdatOffset := sampleOffset
 	var audioTrack, videoTrack *mp4.Track
 	for i, stream := range streams {
@@ -87,7 +127,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			startTimestamp := startTime.Sub(stream.StartTime).Milliseconds()
 			var startSample *box.Sample
 			if startSample, err = demuxer.SeekTime(uint64(startTimestamp)); err != nil {
-				return
+				continue
 			}
 			tsOffset = -int64(startSample.DTS)
 		}
@@ -119,6 +159,16 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			parts = append(parts, part)
 		}
 	}
+	moovSize := muxer.GetMoovSize()
+	for _, track := range muxer.Tracks {
+		for i := range track.Samplelist {
+			track.Samplelist[i].Offset += int64(moovSize)
+		}
+	}
+	err = muxer.WriteMoov(w)
+	if err != nil {
+		return
+	}
 	var mdatBox = box.MediaDataBox(sampleOffset - mdatOffset)
 	boxLen, buf := mdatBox.Encode()
 	if boxLen == box.BasicBoxLen*2 {
@@ -140,5 +190,4 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		totalWritten += written
 		part.Close()
 	}
-	muxer.WriteMoov(w)
 }
