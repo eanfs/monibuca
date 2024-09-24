@@ -7,6 +7,12 @@ ADD monibuca-linux-amd64 /opt
 ADD favicon.ico /opt
 ADD config.yaml /opt
 # RUN apk --no-cache add ffmpeg 
+## 时区配置
+RUN apk add --no-cache tzdata \
+    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && apk del tzdata
+
 #暴露端口
 EXPOSE 8080 8443 1935 554 58200-59200 5060 8000-9000
 EXPOSE 5060/udp 58200-59200/udp 8000-9000/udp
