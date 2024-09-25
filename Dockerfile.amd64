@@ -1,5 +1,5 @@
 #源镜像
-FROM alpine:latest
+FROM swr.cn-east-3.myhuaweicloud.com/intetech/alpine:3.20
 
 WORKDIR /opt
 
