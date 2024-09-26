@@ -3,7 +3,10 @@
 # 全局配置参考 https://m7s.live/guide/config.html
 # 插件配置参考各个插件的文档
 # 插件都有一个enable配置，如果为false则不启用该插件，默认为true即不需要配置。
-
+global:
+  disableall: false # 是否禁用所有插件
+  loglang: zh # 日志语言，可选值：zh,en
+  loglevel: info # 日志级别，可选值：debug,info,warn,error,panic,fatal
 hls:
   enable: false
 monitor:
@@ -22,21 +25,25 @@ record:
       autorecord: false
       filter: ""
       fragment: 0
+      duration: 30m
   mp4:
       ext: .mp4
       path: record/mp4
       autorecord: false
       filter: ""
       fragment: 0
+      duration: 5m
   hls:
       ext: .m3u8
       path: record/hls
       autorecord: false
       filter: ""
       fragment: 0
+      duration: 5m
   raw:
       ext: .
       path: record/raw
       autorecord: false
       filter: ""
-      fragment: 0  
+      fragment: 0 
+      duration: 5m 
