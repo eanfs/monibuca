@@ -21,6 +21,8 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	myip "github.com/husanpao/ip"
 	"github.com/phsym/console-slog"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
@@ -61,7 +63,7 @@ type (
 		baseTsAudio, baseTsVideo time.Duration
 	}
 	Server struct {
-		pb.UnimplementedGlobalServer
+		pb.UnimplementedApiServer
 		Plugin
 		ServerConfig
 		Plugins         util.Collection[string, *Plugin]
@@ -80,6 +82,7 @@ type (
 		lastSummaryTime time.Time
 		lastSummary     *pb.SummaryResponse
 		conf            any
+		prometheusDesc  prometheusDesc
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -92,6 +95,7 @@ type (
 	}
 	RawConfig = map[string]map[string]any
 )
+
 
 func (w *WaitStream) GetKey() string {
 	return w.StreamPath
@@ -110,6 +114,7 @@ func NewServer(conf any) (s *Server) {
 		"arch":      sysruntime.GOARCH,
 		"cpus":      int32(sysruntime.NumCPU()),
 	}
+	s.prometheusDesc.init()
 	return
 }
 
@@ -147,10 +152,17 @@ func (s *Server) GetKey() uint32 {
 	return s.ID
 }
 
+type errLogger struct {
+	*slog.Logger
+}
+
+func (l errLogger) Println(v ...interface{}) {
+	l.Error("Exporter promhttp err: ", v...)
+}
+
 func (s *Server) Start() (err error) {
 	s.Server = s
 	s.handler = s
-	//s.config.HTTP.ListenAddrTLS = ":8443"
 	httpConf, tcpConf := &s.config.HTTP, &s.config.TCP
 	httpConf.ListenAddr = ":8080"
 	tcpConf.ListenAddr = ":50051"
@@ -192,6 +204,7 @@ func (s *Server) Start() (err error) {
 		s.Error("SetCrashOutput", "error", err)
 		return
 	}
+
 	s.registerHandler(map[string]http.HandlerFunc{
 		"/api/config/json/{name}":             s.api_Config_JSON_,
 		"/api/stream/annexb/{streamPath...}":  s.api_Stream_AnnexB_,
@@ -216,14 +229,14 @@ func (s *Server) Start() (err error) {
 	if tcpConf.ListenAddr != "" {
 		var opts []grpc.ServerOption
 		s.grpcServer = grpc.NewServer(opts...)
-		pb.RegisterGlobalServer(s.grpcServer, s)
+		pb.RegisterApiServer(s.grpcServer, s)
 
 		s.grpcClientConn, err = grpc.DialContext(s.Context, tcpConf.ListenAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			s.Error("failed to dial", "error", err)
 			return
 		}
-		if err = pb.RegisterGlobalHandler(s.Context, mux, s.grpcClientConn); err != nil {
+		if err = pb.RegisterApiHandler(s.Context, mux, s.grpcClientConn); err != nil {
 			s.Error("register handler faild", "error", err)
 			return
 		}
@@ -233,14 +246,31 @@ func (s *Server) Start() (err error) {
 			return
 		}
 	}
-	s.AddTaskLazy(&s.Records)
-	s.AddTaskLazy(&s.Streams)
-	s.AddTaskLazy(&s.Pulls)
-	s.AddTaskLazy(&s.Pushs)
-	s.AddTaskLazy(&s.Transforms)
+	s.AddTask(&s.Records)
+	s.AddTask(&s.Streams)
+	s.AddTask(&s.Pulls)
+	s.AddTask(&s.Pushs)
+	s.AddTask(&s.Transforms)
+	s.AddTask(&s.Devices)
+	promReg := prometheus.NewPedanticRegistry()
+	promReg.MustRegister(s)
 	for _, plugin := range plugins {
-		plugin.Init(s, cg[strings.ToLower(plugin.Name)])
+		p := plugin.Init(s, cg[strings.ToLower(plugin.Name)])
+		if !p.Disabled {
+			if collector, ok := p.handler.(prometheus.Collector); ok {
+				promReg.MustRegister(collector)
+			}
+		}
 	}
+	promhttpHandler := promhttp.HandlerFor(prometheus.Gatherers{
+		prometheus.DefaultGatherer,
+		promReg,
+	},
+		promhttp.HandlerOpts{
+			ErrorLog:      errLogger{s.Logger},
+			ErrorHandling: promhttp.ContinueOnError,
+		})
+	s.handle("/api/metrics", promhttpHandler)
 	if grpcServer != nil {
 		s.AddTask(grpcServer, s.Logger)
 	}
@@ -254,6 +284,15 @@ func (s *Server) Start() (err error) {
 				for streamPath, conf := range plugin.config.Pull {
 					plugin.handler.Pull(streamPath, conf)
 				}
+			}
+		}
+		if s.DB != nil {
+			s.DB.AutoMigrate(&Device{})
+			var devices []*Device
+			s.DB.Find(&devices)
+			for _, device := range devices {
+				device.server = s
+				s.Devices.Add(device)
 			}
 		}
 		return nil

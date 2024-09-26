@@ -460,6 +460,8 @@ func (s *Server) Summary(context.Context, *emptypb.Empty) (res *pb.SummaryRespon
 	res.PullCount = int32(s.Pulls.Length)
 	res.PushCount = int32(s.Pushs.Length)
 	res.SubscribeCount = int32(s.Subscribers.Length)
+	res.RecordCount = int32(s.Records.Length)
+	res.TransformCount = int32(s.Transforms.Length)
 	res.NetWork = netWorks
 	s.lastSummary = res
 	s.lastSummaryTime = time.Now()
@@ -542,4 +544,66 @@ func (s *Server) ModifyConfig(_ context.Context, req *pb.ModifyConfigRequest) (r
 	}
 	conf.ParseModifyFile(modified)
 	return
+}
+
+func (s *Server) GetDeviceList(ctx context.Context, req *emptypb.Empty) (res *pb.DeviceListResponse, err error) {
+	res = &pb.DeviceListResponse{}
+	for device := range s.Devices.Range {
+		res.Data = append(res.Data, &pb.DeviceInfo{
+			Name:       device.Name,
+			CreateTime: timestamppb.New(device.CreatedAt),
+			UpdateTime: timestamppb.New(device.UpdatedAt),
+			Type:       uint32(device.Type),
+			PullURL:    device.PullURL,
+			ParentID:   uint32(device.ParentID),
+			ID:         uint32(device.ID),
+		})
+	}
+	return
+}
+
+func (s *Server) AddDevice(ctx context.Context, req *pb.DeviceInfo) (res *pb.SuccessResponse, err error) {
+	device := &Device{
+		server:   s,
+		Name:     req.Name,
+		Type:     byte(req.Type),
+		PullURL:  req.PullURL,
+		ParentID: uint(req.ParentID),
+	}
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	s.DB.Create(device)
+	s.Devices.Add(device)
+	res = &pb.SuccessResponse{}
+	return
+}
+
+func (s *Server) UpdateDevice(ctx context.Context, req *pb.DeviceInfo) (res *pb.SuccessResponse, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	target := &Device{}
+	target.ID = uint(req.ID)
+	target.Name = req.Name
+	target.PullURL = req.PullURL
+	target.ParentID = uint(req.ParentID)
+	target.Type = byte(req.Type)
+	s.DB.Save(target)
+	res = &pb.SuccessResponse{}
+	return
+}
+
+func (s *Server) RemoveDevice(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	s.DB.Delete(&Device{}, req.Id)
+	s.Devices.RemoveByKey(uint32(req.Id))
+	res = &pb.SuccessResponse{}
+	return
+
 }
