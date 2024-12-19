@@ -3,12 +3,13 @@ package rtmp
 import (
 	"crypto/tls"
 	"errors"
-	"m7s.live/m7s/v5/pkg/config"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 	"net"
 	"net/url"
 	"strings"
 
-	"m7s.live/m7s/v5"
+	"m7s.live/v5"
 )
 
 func (c *Client) Start() (err error) {
@@ -85,6 +86,7 @@ func NewPuller(_ config.Pull) m7s.IPuller {
 		chunkSize: 4096,
 	}
 	ret.NetConnection = &NetConnection{}
+	ret.SetDescription(task.OwnerTypeKey, "RTMPPuller")
 	return ret
 }
 
@@ -94,6 +96,7 @@ func NewPusher() m7s.IPusher {
 		chunkSize: 4096,
 	}
 	ret.NetConnection = &NetConnection{}
+	ret.SetDescription(task.OwnerTypeKey, "RTMPPusher")
 	return ret
 }
 
@@ -131,7 +134,7 @@ func (c *Client) Run() (err error) {
 			case Response_Result, Response_OnStatus:
 				switch response := msg.MsgData.(type) {
 				case *ResponseMessage:
-					c.Description = response.Properties
+					c.SetDescriptions(response.Properties)
 					if response.Infomation["code"] == NetConnection_Connect_Success {
 						err = c.SendMessage(RTMP_MSG_AMF0_COMMAND, &CommandMessage{"createStream", 2})
 						if err == nil {

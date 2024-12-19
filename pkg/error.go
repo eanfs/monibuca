@@ -4,8 +4,8 @@ import "errors"
 
 var (
 	ErrNotFound                 = errors.New("not found")
-	ErrStopFromAPI              = errors.New("stop from api")
 	ErrStreamExist              = errors.New("stream exist")
+	ErrRecordExists             = errors.New("record exists")
 	ErrKick                     = errors.New("kick")
 	ErrDiscard                  = errors.New("discard")
 	ErrPublishTimeout           = errors.New("publish timeout")
@@ -20,7 +20,8 @@ var (
 	ErrNoTrack                  = errors.New("no track")
 	ErrNoDB                     = errors.New("no db")
 	ErrLost                     = errors.New("lost")
-
-	ErrRecordSamePath = errors.New("record same path")
-	ErrTransformSame  = errors.New("transform same")
+	ErrSeek                     = errors.New("seek")
+	ErrRecordSamePath           = errors.New("record same path")
+	ErrTransformSame            = errors.New("transform same")
+	ErrNotListen                = errors.New("not listen")
 )

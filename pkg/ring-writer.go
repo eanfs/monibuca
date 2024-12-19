@@ -1,12 +1,12 @@
 package pkg
 
 import (
-	"fmt"
 	"log/slog"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/pkg/util"
 	"sync"
 	"time"
+
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
 )
 
 type RingWriter struct {
@@ -37,14 +37,14 @@ func NewRingWriter(sizeRange util.Range[int]) (rb *RingWriter) {
 
 func (rb *RingWriter) Resize(size int) {
 	if size > 0 {
-		rb.glow(size)
+		rb.glow(size, "test")
 	} else {
 		rb.reduce(-size)
 	}
 }
 
-func (rb *RingWriter) glow(size int) (newItem *util.Ring[AVFrame]) {
-	before, poolBefore := rb.Size, rb.poolSize
+func (rb *RingWriter) glow(size int, reason string) (newItem *util.Ring[AVFrame]) {
+	//before, poolBefore := rb.Size, rb.poolSize
 	if newCount := size - rb.poolSize; newCount > 0 {
 		newItem = util.NewRing[AVFrame](newCount).Link(rb.pool)
 		rb.poolSize = 0
@@ -57,16 +57,16 @@ func (rb *RingWriter) glow(size int) (newItem *util.Ring[AVFrame]) {
 	}
 	rb.Link(newItem)
 	rb.Size += size
-	rb.SLogger.Debug("glow", "size", fmt.Sprintf("%d -> %d", before, rb.Size), "pool", fmt.Sprintf("%d -> %d", poolBefore, rb.poolSize))
+	//rb.SLogger.Debug("glow", "reason", reason, "size", fmt.Sprintf("%d -> %d", before, rb.Size), "pool", fmt.Sprintf("%d -> %d", poolBefore, rb.poolSize))
 	return
 }
 
 func (rb *RingWriter) reduce(size int) {
-	before, poolBefore := rb.Size, rb.poolSize
+	_, poolBefore := rb.Size, rb.poolSize
 	r := rb.Unlink(size)
 	rb.Size -= size
 	for range size {
-		if r.Value.TryLock() {
+		if r.Value.StartWrite() {
 			rb.poolSize++
 			r.Value.Reset()
 			r.Value.Unlock()
@@ -85,7 +85,7 @@ func (rb *RingWriter) reduce(size int) {
 			rb.pool.Link(r)
 		}
 	}
-	rb.SLogger.Debug("reduce", "size", fmt.Sprintf("%d -> %d", before, rb.Size), "pool", fmt.Sprintf("%d -> %d", poolBefore, rb.poolSize))
+	//rb.SLogger.Debug("reduce", "size", fmt.Sprintf("%d -> %d", before, rb.Size), "pool", fmt.Sprintf("%d -> %d", poolBefore, rb.poolSize))
 }
 
 func (rb *RingWriter) Dispose() {
@@ -115,7 +115,7 @@ func (rb *RingWriter) GetHistoryIDR(bufTime time.Duration) *util.Ring[AVFrame] {
 	rb.RLock()
 	defer rb.RUnlock()
 	for item := rb.IDRingList.Back(); item != nil; item = item.Prev() {
-		if item.Value.Value.Timestamp-rb.LastValue.Timestamp > bufTime {
+		if rb.LastValue.Timestamp-item.Value.Value.Timestamp >= bufTime {
 			return item.Value
 		}
 	}
@@ -149,7 +149,7 @@ func (rb *RingWriter) Step() (normal bool) {
 		// do not remove only idr
 		if next == rb.IDRingList.Back().Value {
 			if rb.Size < rb.SizeRange[1] {
-				rb.glow(5)
+				rb.glow(5, "only idr")
 				next = rb.Next()
 			}
 		} else if next == oldIDR.Value {
@@ -159,8 +159,7 @@ func (rb *RingWriter) Step() (normal bool) {
 				rb.IDRingList.Remove(oldIDR)
 				rb.Unlock()
 			} else {
-				rb.SLogger.Log(nil, task.TraceLevel, "not enough buffer")
-				rb.glow(5)
+				rb.glow(5, "not enough buffer")
 				next = rb.Next()
 			}
 		} else if rb.BufferRange[1] > rb.BufferRange[0] {
@@ -190,8 +189,8 @@ func (rb *RingWriter) Step() (normal bool) {
 		next.Value.Reset()
 		rb.Ring = next
 	} else {
-		rb.reduce(1)         //抛弃还有订阅者的节点
-		rb.Ring = rb.glow(1) //补充一个新节点
+		rb.reduce(1)                   //抛弃还有订阅者的节点
+		rb.Ring = rb.glow(1, "refill") //补充一个新节点
 		normal = rb.Value.StartWrite()
 		if !normal {
 			panic("RingWriter.Step")

@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg/task"
-	flv "m7s.live/m7s/v5/plugin/flv/pkg"
 	"net"
 	"net/http"
 	"strings"
 
+	flv "m7s.live/v5/plugin/flv/pkg"
+
 	"github.com/quic-go/quic-go"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg/task"
 )
 
 type RelayAPIConfig struct {
@@ -46,14 +47,14 @@ type ReceiveRequestTask struct {
 	quic.Stream
 	http.Handler
 	*RelayAPIConfig
-	req *http.Request
 }
 
-func (task *ReceiveRequestTask) Start() (err error) {
+func (task *ReceiveRequestTask) Go() (err error) {
 	reader := bufio.NewReader(task.Stream)
-	var req *http.Request
 	line0, _, err := reader.ReadLine()
 	reqLine := strings.Split(string(line0), " ")
+	var req *http.Request
+	task.SetDescription("request", line0)
 	if err == nil {
 		ctx, cancel := context.WithCancel(task.Stream.Context())
 		defer cancel()
@@ -80,11 +81,9 @@ func (task *ReceiveRequestTask) Start() (err error) {
 			}
 		}
 	}
-	return
-}
-
-func (task *ReceiveRequestTask) Run() (err error) {
-	req := task.req
+	if err != nil {
+		return
+	}
 	//h, pattern := task.handler.Handler(req)
 	//if !task.Check(pattern) {
 	//	http.Error(task, "403 Forbidden", http.StatusForbidden)
@@ -108,9 +107,8 @@ func (task *ReceiveRequestTask) Run() (err error) {
 		}
 		task.ServeHTTP(task, req)
 	}
-	io.ReadAll(task)
-
-	return err
+	_, err = io.ReadAll(task)
+	return
 }
 
 func (task *ReceiveRequestTask) Dispose() {

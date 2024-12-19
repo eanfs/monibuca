@@ -3,16 +3,17 @@ package plugin_stress
 import (
 	"context"
 	"fmt"
-	"m7s.live/m7s/v5/pkg/config"
+
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 
 	"google.golang.org/protobuf/types/known/emptypb"
-	"m7s.live/m7s/v5"
-	gpb "m7s.live/m7s/v5/pb"
-	"m7s.live/m7s/v5/pkg"
-	hdl "m7s.live/m7s/v5/plugin/flv/pkg"
-	rtmp "m7s.live/m7s/v5/plugin/rtmp/pkg"
-	rtsp "m7s.live/m7s/v5/plugin/rtsp/pkg"
-	"m7s.live/m7s/v5/plugin/stress/pb"
+	"m7s.live/v5"
+	gpb "m7s.live/v5/pb"
+	hdl "m7s.live/v5/plugin/flv/pkg"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
+	rtsp "m7s.live/v5/plugin/rtsp/pkg"
+	"m7s.live/v5/plugin/stress/pb"
 )
 
 func (r *StressPlugin) pull(count int, format, url string, puller m7s.Puller) (err error) {
@@ -20,7 +21,7 @@ func (r *StressPlugin) pull(count int, format, url string, puller m7s.Puller) (e
 		for j := i; j < count; j++ {
 			conf := config.Pull{URL: fmt.Sprintf(format, url, j)}
 			p := puller(conf)
-			ctx := p.GetPullJob().Init(p, &r.Plugin, fmt.Sprintf("stress/%d", j), conf)
+			ctx := p.GetPullJob().Init(p, &r.Plugin, fmt.Sprintf("stress/%d", j), conf, nil)
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
@@ -31,7 +32,7 @@ func (r *StressPlugin) pull(count int, format, url string, puller m7s.Puller) (e
 		}
 	} else if count < i {
 		for j := i; j > count; j-- {
-			r.pullers.Items[j-1].Stop(pkg.ErrStopFromAPI)
+			r.pullers.Items[j-1].Stop(task.ErrStopByUser)
 			r.pullers.Remove(r.pullers.Items[j-1])
 		}
 	}
@@ -42,7 +43,7 @@ func (r *StressPlugin) push(count int, streamPath, format, remoteHost string, pu
 	if i := r.pushers.Length; count > i {
 		for j := i; j < count; j++ {
 			p := pusher()
-			ctx := p.GetPushJob().Init(p, &r.Plugin, streamPath, config.Push{URL: fmt.Sprintf(format, remoteHost, j)})
+			ctx := p.GetPushJob().Init(p, &r.Plugin, streamPath, config.Push{URL: fmt.Sprintf(format, remoteHost, j)}, nil)
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
@@ -53,7 +54,7 @@ func (r *StressPlugin) push(count int, streamPath, format, remoteHost string, pu
 		}
 	} else if count < i {
 		for j := i; j > count; j-- {
-			r.pushers.Items[j-1].Stop(pkg.ErrStopFromAPI)
+			r.pushers.Items[j-1].Stop(task.ErrStopByUser)
 			r.pushers.Remove(r.pushers.Items[j-1])
 		}
 	}
@@ -82,7 +83,7 @@ func (r *StressPlugin) PullHDL(ctx context.Context, req *pb.PullRequest) (res *g
 
 func (r *StressPlugin) StopPush(ctx context.Context, req *emptypb.Empty) (res *gpb.SuccessResponse, err error) {
 	for pusher := range r.pushers.Range {
-		pusher.Stop(pkg.ErrStopFromAPI)
+		pusher.Stop(task.ErrStopByUser)
 	}
 	r.pushers.Clear()
 	return &gpb.SuccessResponse{}, nil
@@ -90,7 +91,7 @@ func (r *StressPlugin) StopPush(ctx context.Context, req *emptypb.Empty) (res *g
 
 func (r *StressPlugin) StopPull(ctx context.Context, req *emptypb.Empty) (res *gpb.SuccessResponse, err error) {
 	for puller := range r.pullers.Range {
-		puller.Stop(pkg.ErrStopFromAPI)
+		puller.Stop(task.ErrStopByUser)
 	}
 	r.pullers.Clear()
 	return &gpb.SuccessResponse{}, nil

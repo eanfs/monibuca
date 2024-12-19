@@ -2,12 +2,15 @@ package plugin_rtmp
 
 import (
 	"errors"
+	"fmt"
 	"io"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/plugin/rtmp/pb"
-	. "m7s.live/m7s/v5/plugin/rtmp/pkg"
 	"net"
+	"strings"
+
+	"m7s.live/v5"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/plugin/rtmp/pb"
+	. "m7s.live/v5/plugin/rtmp/pkg"
 )
 
 type RTMPPlugin struct {
@@ -55,7 +58,7 @@ func (task *RTMPServer) Go() (err error) {
 				task.Debug("recv cmd", "commandName", cmd.CommandName, "streamID", msg.MessageStreamID)
 				switch cmd := msg.MsgData.(type) {
 				case *CallMessage: //connect
-					task.Description = cmd.Object
+					task.SetDescriptions(cmd.Object)
 					app := cmd.Object["app"]                       // 客户端要连接到的服务应用名
 					objectEncoding := cmd.Object["objectEncoding"] // AMF编码方法
 					switch v := objectEncoding.(type) {
@@ -142,14 +145,13 @@ func (task *RTMPServer) Go() (err error) {
 						err = ns.Response(cmd.TransactionId, NetStream_Publish_BadName, Level_Error)
 					} else {
 						ns.Receivers[cmd.StreamId] = publisher
+						publisher.RemoteAddr = ns.RemoteAddr().String()
 						err = ns.BeginPublish(cmd.TransactionId)
 					}
 					if err != nil {
 						task.Error("sendMessage publish", "error", err)
 					} else {
-						publisher.OnDispose(func() {
-							task.Stop(publisher.StopReason())
-						})
+						task.Depend(publisher)
 					}
 				case *PlayMessage:
 					streamPath := task.AppName + "/" + cmd.StreamName
@@ -158,11 +160,11 @@ func (task *RTMPServer) Go() (err error) {
 						StreamID:      cmd.StreamId,
 					}
 					var suber *m7s.Subscriber
-					// sender.ID = fmt.Sprintf("%s|%d", conn.RemoteAddr().String(), sender.StreamID)
 					suber, err = task.conf.Subscribe(task.Context, streamPath)
 					if err != nil {
 						err = ns.Response(cmd.TransactionId, NetStream_Play_Failed, Level_Error)
 					} else {
+						suber.RemoteAddr = ns.RemoteAddr().String()
 						err = ns.BeginPlay(cmd.TransactionId)
 						ns.Subscribe(suber)
 					}
@@ -175,6 +177,46 @@ func (task *RTMPServer) Go() (err error) {
 			task.Info("rtmp client closed")
 		} else {
 			task.Warn("ReadMessage", "error", err)
+		}
+	}
+	return
+}
+
+func (p *RTMPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxy) any {
+	ret := &RTMPPullProxy{}
+	ret.PullProxy = pullProxy
+	ret.Plugin = &p.Plugin
+	ret.Logger = p.With("pullProxy", pullProxy.Name)
+	return ret
+}
+
+func (p *RTMPPlugin) OnPushProxyAdd(pushProxy *m7s.PushProxy) any {
+	ret := &RTMPPushProxy{}
+	ret.PushProxy = pushProxy
+	ret.Plugin = &p.Plugin
+	ret.Logger = p.With("pushProxy", pushProxy.Name)
+	return ret
+}
+
+func (p *RTMPPlugin) OnInit() (err error) {
+	if tcpAddr := p.GetCommonConf().TCP.ListenAddr; tcpAddr != "" {
+		_, port, _ := strings.Cut(tcpAddr, ":")
+		if port == "1935" {
+			p.PushAddr = append(p.PushAddr, "rtmp://{hostName}/{streamPath}")
+			p.PlayAddr = append(p.PlayAddr, "rtmp://{hostName}/{streamPath}")
+		} else {
+			p.PushAddr = append(p.PushAddr, fmt.Sprintf("rtmp://{hostName}:%s/{streamPath}", port))
+			p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("rtmp://{hostName}:%s/{streamPath}", port))
+		}
+	}
+	if tcpAddrTLS := p.GetCommonConf().TCP.ListenAddrTLS; tcpAddrTLS != "" {
+		_, port, _ := strings.Cut(tcpAddrTLS, ":")
+		if port == "443" {
+			p.PushAddr = append(p.PushAddr, "rtmps://{hostName}/{streamPath}")
+			p.PlayAddr = append(p.PlayAddr, "rtmps://{hostName}/{streamPath}")
+		} else {
+			p.PushAddr = append(p.PushAddr, fmt.Sprintf("rtmps://{hostName}:%s/{streamPath}", port))
+			p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("rtmps://{hostName}:%s/{streamPath}", port))
 		}
 	}
 	return

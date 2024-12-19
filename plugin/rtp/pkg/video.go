@@ -2,25 +2,27 @@ package rtp
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"github.com/deepch/vdk/codec/h264parser"
-	"github.com/deepch/vdk/codec/h265parser"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/deepch/vdk/codec/h264parser"
+	"github.com/deepch/vdk/codec/h265parser"
+
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/util"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
 )
 
 type (
 	H26xCtx struct {
 		RTPCtx
-		dtsEst *util.DTSEstimator
+		seq    uint16
+		dtsEst util.DTSEstimator
 	}
 	H264Ctx struct {
 		H26xCtx
@@ -68,7 +70,6 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 			ctx = t.ICodecCtx.(*H264Ctx)
 		} else {
 			ctx = &H264Ctx{}
-			ctx.dtsEst = util.NewDTSEstimator()
 			ctx.parseFmtpLine(r.RTPCodecParameters)
 			var sps, pps []byte
 			//packetization-mode=1; sprop-parameter-sets=J2QAKaxWgHgCJ+WagICAgQ==,KO48sA==; profile-level-id=640029
@@ -91,6 +92,7 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 			return
 		}
 		pts := r.Packets[0].Timestamp
+		var hasSPSPPS bool
 		dts := ctx.dtsEst.Feed(pts)
 		r.DTS = time.Duration(dts) * time.Millisecond / 90
 		r.CTS = time.Duration(pts-dts) * time.Millisecond / 90
@@ -102,19 +104,48 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 					return
 				}
 			case h264parser.NALU_PPS:
+				hasSPSPPS = true
 				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
+				if ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.RecordInfo.SPS[0], ctx.RecordInfo.PPS[0]); err != nil {
+					return
+				}
 			case codec.NALU_IDR_Picture:
 				t.Value.IDR = true
 			}
 		}
-
+		if t.Value.IDR && !hasSPSPPS {
+			spsRTP := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					SequenceNumber: ctx.SequenceNumber,
+					Timestamp:      pts,
+					SSRC:           ctx.SSRC,
+					PayloadType:    uint8(ctx.PayloadType),
+				},
+				Payload: ctx.SPS(),
+			}
+			ppsRTP := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					SequenceNumber: ctx.SequenceNumber,
+					Timestamp:      pts,
+					SSRC:           ctx.SSRC,
+					PayloadType:    uint8(ctx.PayloadType),
+				},
+				Payload: ctx.PPS(),
+			}
+			r.Packets = slices.Insert(r.Packets, 0, spsRTP, ppsRTP)
+		}
+		for _, p := range r.Packets {
+			p.SequenceNumber = ctx.seq
+			ctx.seq++
+		}
 	case webrtc.MimeTypeH265:
 		var ctx *H265Ctx
 		if t.ICodecCtx != nil {
 			ctx = t.ICodecCtx.(*H265Ctx)
 		} else {
 			ctx = &H265Ctx{}
-			ctx.dtsEst = util.NewDTSEstimator()
 			ctx.parseFmtpLine(r.RTPCodecParameters)
 			var vps, sps, pps []byte
 			if sprop_sps, ok := ctx.Fmtp["sprop-sps"]; ok {
@@ -132,8 +163,10 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 					return
 				}
 			}
-			if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
-				return
+			if len(vps) > 0 && len(sps) > 0 && len(pps) > 0 {
+				if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
+					return
+				}
 			}
 			if sprop_donl, ok := ctx.Fmtp["sprop-max-don-diff"]; ok {
 				if sprop_donl != "0" {
@@ -149,6 +182,7 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 		dts := ctx.dtsEst.Feed(pts)
 		r.DTS = time.Duration(dts) * time.Millisecond / 90
 		r.CTS = time.Duration(pts-dts) * time.Millisecond / 90
+		var hasVPSSPSPPS bool
 		for _, nalu := range t.Value.Raw.(Nalus) {
 			switch codec.ParseH265NALUType(nalu.Buffers[0][0]) {
 			case h265parser.NAL_UNIT_VPS:
@@ -162,7 +196,11 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 					return
 				}
 			case h265parser.NAL_UNIT_PPS:
+				hasVPSSPSPPS = true
 				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
+				if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(ctx.RecordInfo.VPS[0], ctx.RecordInfo.SPS[0], ctx.RecordInfo.PPS[0]); err != nil {
+					return
+				}
 			case h265parser.NAL_UNIT_CODED_SLICE_BLA_W_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_W_RADL,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_N_LP,
@@ -171,6 +209,43 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 				h265parser.NAL_UNIT_CODED_SLICE_CRA:
 				t.Value.IDR = true
 			}
+		}
+		if t.Value.IDR && !hasVPSSPSPPS {
+			vpsRTP := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					SequenceNumber: ctx.SequenceNumber,
+					Timestamp:      pts,
+					SSRC:           ctx.SSRC,
+					PayloadType:    uint8(ctx.PayloadType),
+				},
+				Payload: ctx.VPS(),
+			}
+			spsRTP := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					SequenceNumber: ctx.SequenceNumber,
+					Timestamp:      pts,
+					SSRC:           ctx.SSRC,
+					PayloadType:    uint8(ctx.PayloadType),
+				},
+				Payload: ctx.SPS(),
+			}
+			ppsRTP := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					SequenceNumber: ctx.SequenceNumber,
+					Timestamp:      pts,
+					SSRC:           ctx.SSRC,
+					PayloadType:    uint8(ctx.PayloadType),
+				},
+				Payload: ctx.PPS(),
+			}
+			r.Packets = slices.Insert(r.Packets, 0, vpsRTP, spsRTP, ppsRTP)
+		}
+		for _, p := range r.Packets {
+			p.SequenceNumber = ctx.seq
+			ctx.seq++
 		}
 	case webrtc.MimeTypeVP9:
 		// var ctx RTPVP9Ctx
@@ -303,6 +378,9 @@ func (r *Video) Demux(ictx codec.ICodecCtx) (any, error) {
 			}
 		}
 		for _, packet := range r.Packets {
+			if packet.Padding {
+				packet.Padding = false
+			}
 			b0 := packet.Payload[0]
 			if t := codec.ParseH264NALUType(b0); t < 24 {
 				nalu.AppendOne(packet.Payload)
@@ -331,7 +409,7 @@ func (r *Video) Demux(ictx codec.ICodecCtx) (any, error) {
 					if nalu.Size > 0 {
 						nalu.AppendOne(packet.Payload[offset:])
 					} else {
-						return nil, errors.New("fu have no start")
+						continue
 					}
 					if util.Bit1(b1, 1) {
 						gotNalu()
@@ -352,6 +430,9 @@ func (r *Video) Demux(ictx codec.ICodecCtx) (any, error) {
 			}
 		}
 		for _, packet := range r.Packets {
+			if len(packet.Payload) == 0 {
+				continue
+			}
 			b0 := packet.Payload[0]
 			if t := codec.ParseH265NALUType(b0); t < H265_NALU_AP {
 				nalu.AppendOne(packet.Payload)

@@ -1,0 +1,10 @@
+global:
+  # loglevel: trace
+  disableall: true
+rtsp:
+  enable: true
+  listenaddr: :554
+mp4:
+  enable: true
+  pull:
+    live/test: /Users/dexter/Movies/test.mp4

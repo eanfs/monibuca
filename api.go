@@ -4,27 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"maps"
-	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
+	"unsafe"
 
-	"m7s.live/m7s/v5/pkg/task"
+	"m7s.live/v5/pkg/task"
 
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/mem"
-	. "github.com/shirou/gopsutil/v3/net"
+	myip "github.com/husanpao/ip"
+	"github.com/mcuadros/go-defaults"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
+	. "github.com/shirou/gopsutil/v4/net"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
-	"m7s.live/m7s/v5/pb"
-	"m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/util"
+	"m7s.live/v5/pb"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/util"
 )
 
 var localIP string
@@ -32,25 +37,45 @@ var empty = &emptypb.Empty{}
 
 func (s *Server) SysInfo(context.Context, *emptypb.Empty) (res *pb.SysInfoResponse, err error) {
 	if localIP == "" {
-		if conn, err := net.Dial("udp", "114.114.114.114:80"); err == nil {
-			localIP, _, _ = strings.Cut(conn.LocalAddr().String(), ":")
-		}
+		localIP = myip.LocalIP()
+		// if conn, err := net.Dial("udp", "114.114.114.114:80"); err == nil {
+		// 	localIP, _, _ = strings.Cut(conn.LocalAddr().String(), ":")
+		// }
 	}
 	res = &pb.SysInfoResponse{
-		Version:   Version,
-		LocalIP:   localIP,
-		StartTime: timestamppb.New(s.StartTime),
-		GoVersion: runtime.Version(),
-		Os:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-		Cpus:      int32(runtime.NumCPU()),
+		Code:    0,
+		Message: "success",
+		Data: &pb.SysInfoData{
+			Version:   Version,
+			LocalIP:   localIP,
+			PublicIP:  util.GetPublicIP(""),
+			StartTime: timestamppb.New(s.StartTime),
+			GoVersion: runtime.Version(),
+			Os:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+			Cpus:      int32(runtime.NumCPU()),
+		},
 	}
 	for p := range s.Plugins.Range {
-		res.Plugins = append(res.Plugins, &pb.PluginInfo{
-			Name:     p.Meta.Name,
-			Version:  p.Meta.Version,
-			Disabled: p.Disabled,
+		res.Data.Plugins = append(res.Data.Plugins, &pb.PluginInfo{
+			Name:        p.Meta.Name,
+			PushAddr:    p.PushAddr,
+			PlayAddr:    p.PlayAddr,
+			Description: p.GetDescriptions(),
 		})
+	}
+	return
+}
+
+func (s *Server) DisabledPlugins(ctx context.Context, _ *emptypb.Empty) (res *pb.DisabledPluginsResponse, err error) {
+	res = &pb.DisabledPluginsResponse{
+		Data: make([]*pb.PluginInfo, len(s.disabledPlugins)),
+	}
+	for i, p := range s.disabledPlugins {
+		res.Data[i] = &pb.PluginInfo{
+			Name:        p.Meta.Name,
+			Description: p.GetDescriptions(),
+		}
 	}
 	return
 }
@@ -68,7 +93,7 @@ func (s *Server) api_Stream_AnnexB_(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rw.Header().Set("Content-Type", "application/octet-stream")
-	reader := pkg.NewAVRingReader(publisher.VideoTrack.AVTrack)
+	reader := pkg.NewAVRingReader(publisher.VideoTrack.AVTrack, "Origin")
 	err = reader.StartRead(publisher.VideoTrack.GetIDR())
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -94,32 +119,40 @@ func (s *Server) api_Stream_AnnexB_(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getStreamInfo(pub *Publisher) (res *pb.StreamInfoResponse, err error) {
-	tmp, _ := json.Marshal(pub.Description)
+	tmp, _ := json.Marshal(pub.GetDescriptions())
 	res = &pb.StreamInfoResponse{
-		Meta:        string(tmp),
-		Path:        pub.StreamPath,
-		State:       int32(pub.State),
-		StartTime:   timestamppb.New(pub.StartTime),
-		Subscribers: int32(pub.Subscribers.Length),
-		Type:        pub.Plugin.Meta.Name,
+		Data: &pb.StreamInfo{
+			Meta:        string(tmp),
+			Path:        pub.StreamPath,
+			State:       int32(pub.State),
+			StartTime:   timestamppb.New(pub.StartTime),
+			Subscribers: int32(pub.Subscribers.Length),
+			PluginName:  pub.Plugin.Meta.Name,
+			Type:        pub.Type,
+			Speed:       float32(pub.Speed),
+			StopOnIdle:  pub.DelayCloseTimeout > 0,
+			IsPaused:    pub.Paused != nil,
+			Gop:         int32(pub.GOP),
+			BufferTime:  durationpb.New(pub.BufferTime),
+		},
 	}
 
 	if t := pub.AudioTrack.AVTrack; t != nil {
 		if t.ICodecCtx != nil {
-			res.AudioTrack = &pb.AudioTrackInfo{
+			res.Data.AudioTrack = &pb.AudioTrackInfo{
 				Codec: t.FourCC().String(),
 				Meta:  t.GetInfo(),
 				Bps:   uint32(t.BPS),
 				Fps:   uint32(t.FPS),
 				Delta: pub.AudioTrack.Delta.String(),
 			}
-			res.AudioTrack.SampleRate = uint32(t.ICodecCtx.(pkg.IAudioCodecCtx).GetSampleRate())
-			res.AudioTrack.Channels = uint32(t.ICodecCtx.(pkg.IAudioCodecCtx).GetChannels())
+			res.Data.AudioTrack.SampleRate = uint32(t.ICodecCtx.(pkg.IAudioCodecCtx).GetSampleRate())
+			res.Data.AudioTrack.Channels = uint32(t.ICodecCtx.(pkg.IAudioCodecCtx).GetChannels())
 		}
 	}
 	if t := pub.VideoTrack.AVTrack; t != nil {
 		if t.ICodecCtx != nil {
-			res.VideoTrack = &pb.VideoTrackInfo{
+			res.Data.VideoTrack = &pb.VideoTrackInfo{
 				Codec: t.FourCC().String(),
 				Meta:  t.GetInfo(),
 				Bps:   uint32(t.BPS),
@@ -127,17 +160,31 @@ func (s *Server) getStreamInfo(pub *Publisher) (res *pb.StreamInfoResponse, err 
 				Delta: pub.VideoTrack.Delta.String(),
 				Gop:   uint32(pub.GOP),
 			}
-			res.VideoTrack.Width = uint32(t.ICodecCtx.(pkg.IVideoCodecCtx).Width())
-			res.VideoTrack.Height = uint32(t.ICodecCtx.(pkg.IVideoCodecCtx).Height())
+			res.Data.VideoTrack.Width = uint32(t.ICodecCtx.(pkg.IVideoCodecCtx).Width())
+			res.Data.VideoTrack.Height = uint32(t.ICodecCtx.(pkg.IVideoCodecCtx).Height())
 		}
 	}
 	return
 }
 
 func (s *Server) StreamInfo(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.StreamInfoResponse, err error) {
+	recording := false
+	s.Records.Call(func() error {
+		for record := range s.Records.Range {
+			if record.StreamPath == req.StreamPath {
+				recording = true
+				break
+			}
+		}
+		return nil
+	})
 	s.Streams.Call(func() error {
 		if pub, ok := s.Streams.Get(req.StreamPath); ok {
 			res, err = s.getStreamInfo(pub)
+			if err != nil {
+				return err
+			}
+			res.Data.Recording = recording
 		} else {
 			err = pkg.ErrNotFound
 		}
@@ -147,22 +194,71 @@ func (s *Server) StreamInfo(ctx context.Context, req *pb.StreamSnapRequest) (res
 }
 
 func (s *Server) TaskTree(context.Context, *emptypb.Empty) (res *pb.TaskTreeResponse, err error) {
-	var fillData func(m task.ITask) *pb.TaskTreeResponse
-	fillData = func(m task.ITask) (res *pb.TaskTreeResponse) {
-		res = &pb.TaskTreeResponse{Id: m.GetTaskID(), State: uint32(m.GetState()), Type: uint32(m.GetTaskType()), Owner: m.GetOwnerType(), StartTime: timestamppb.New(m.GetTask().StartTime), Description: maps.Collect(func(yield func(key, value string) bool) {
-			for k, v := range m.GetTask().Description {
-				yield(k, fmt.Sprintf("%+v", v))
-			}
-		})}
+	var fillData func(m task.ITask) *pb.TaskTreeData
+	fillData = func(m task.ITask) (res *pb.TaskTreeData) {
+		if m == nil {
+			return
+		}
+		t := m.GetTask()
+		res = &pb.TaskTreeData{
+			Id:          m.GetTaskID(),
+			Pointer:     uint64(uintptr(unsafe.Pointer(t))),
+			State:       uint32(m.GetState()),
+			Type:        uint32(m.GetTaskType()),
+			Owner:       m.GetOwnerType(),
+			StartTime:   timestamppb.New(t.StartTime),
+			Description: m.GetDescriptions(),
+			StartReason: t.StartReason,
+		}
 		if job, ok := m.(task.IJob); ok {
-			res.Blocked = job.Blocked()
+			if blockedTask := job.Blocked(); blockedTask != nil {
+				res.Blocked = fillData(blockedTask)
+			}
 			for t := range job.RangeSubTask {
-				res.Children = append(res.Children, fillData(t))
+				child := fillData(t)
+				if child == nil {
+					continue
+				}
+				res.Children = append(res.Children, child)
 			}
 		}
 		return
 	}
-	res = fillData(&Servers)
+	res = &pb.TaskTreeResponse{Data: fillData(&Servers)}
+	return
+}
+
+func (s *Server) StopTask(ctx context.Context, req *pb.RequestWithId64) (resp *pb.SuccessResponse, err error) {
+	t := (*task.Task)(unsafe.Pointer(uintptr(req.Id)))
+	if t == nil {
+		return nil, pkg.ErrNotFound
+	}
+	t.Stop(task.ErrStopByUser)
+	return &pb.SuccessResponse{}, nil
+}
+
+func (s *Server) RestartTask(ctx context.Context, req *pb.RequestWithId64) (resp *pb.SuccessResponse, err error) {
+	t := (*task.Task)(unsafe.Pointer(uintptr(req.Id)))
+	if t == nil {
+		return nil, pkg.ErrNotFound
+	}
+	t.Stop(task.ErrRestart)
+	return &pb.SuccessResponse{}, nil
+}
+
+func (s *Server) GetRecording(ctx context.Context, req *emptypb.Empty) (resp *pb.RecordingListResponse, err error) {
+	s.Records.Call(func() error {
+		resp = &pb.RecordingListResponse{}
+		for record := range s.Records.Range {
+			resp.Data = append(resp.Data, &pb.Recording{
+				StreamPath: record.StreamPath,
+				StartTime:  timestamppb.New(record.StartTime),
+				Type:       reflect.TypeOf(record.recorder).String(),
+				Pointer:    uint64(uintptr(unsafe.Pointer(record.GetTask()))),
+			})
+		}
+		return nil
+	})
 	return
 }
 
@@ -170,11 +266,17 @@ func (s *Server) GetSubscribers(context.Context, *pb.SubscribersRequest) (res *p
 	s.Streams.Call(func() error {
 		var subscribers []*pb.SubscriberSnapShot
 		for subscriber := range s.Subscribers.Range {
-			meta, _ := json.Marshal(subscriber.Description)
+			meta, _ := json.Marshal(subscriber.GetDescriptions())
 			snap := &pb.SubscriberSnapShot{
-				Id:        subscriber.ID,
-				StartTime: timestamppb.New(subscriber.StartTime),
-				Meta:      string(meta),
+				Id:         subscriber.ID,
+				StartTime:  timestamppb.New(subscriber.StartTime),
+				Meta:       string(meta),
+				Type:       subscriber.Type,
+				PluginName: subscriber.Plugin.Meta.Name,
+				SubMode:    int32(subscriber.SubMode),
+				SyncMode:   int32(subscriber.SyncMode),
+				BufferTime: durationpb.New(subscriber.BufferTime),
+				RemoteAddr: subscriber.RemoteAddr,
 			}
 			if ar := subscriber.AudioReader; ar != nil {
 				snap.AudioReader = &pb.RingReaderSnapShot{
@@ -195,7 +297,7 @@ func (s *Server) GetSubscribers(context.Context, *pb.SubscribersRequest) (res *p
 			subscribers = append(subscribers, snap)
 		}
 		res = &pb.SubscribersResponse{
-			List:  subscribers,
+			Data:  subscribers,
 			Total: int32(s.Subscribers.Length),
 		}
 		return nil
@@ -205,7 +307,7 @@ func (s *Server) GetSubscribers(context.Context, *pb.SubscribersRequest) (res *p
 func (s *Server) AudioTrackSnap(_ context.Context, req *pb.StreamSnapRequest) (res *pb.TrackSnapShotResponse, err error) {
 	s.Streams.Call(func() error {
 		if pub, ok := s.Streams.Get(req.StreamPath); ok && pub.HasAudioTrack() {
-			res = &pb.TrackSnapShotResponse{}
+			data := &pb.TrackSnapShotData{}
 			if pub.AudioTrack.Allocator != nil {
 				for _, memlist := range pub.AudioTrack.Allocator.GetChildren() {
 					var list []*pb.MemoryBlock
@@ -215,38 +317,33 @@ func (s *Server) AudioTrackSnap(_ context.Context, req *pb.StreamSnapRequest) (r
 							E: uint32(block.End),
 						})
 					}
-					res.Memory = append(res.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
+					data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
 				}
-			}
-			res.Reader = make(map[uint32]uint32)
-			for sub := range pub.SubscriberRange {
-				if sub.AudioReader == nil {
-					continue
-				}
-				res.Reader[uint32(sub.ID)] = sub.AudioReader.Value.Sequence
 			}
 			pub.AudioTrack.Ring.Do(func(v *pkg.AVFrame) {
-				if v.TryRLock() {
-					if len(v.Wraps) > 0 {
-						var snap pb.TrackSnapShot
-						snap.Sequence = v.Sequence
-						snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
-						snap.WriteTime = timestamppb.New(v.WriteTime)
-						snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
-						snap.KeyFrame = v.IDR
-						res.RingDataSize += uint32(v.Wraps[0].GetSize())
-						for i, wrap := range v.Wraps {
-							snap.Wrap[i] = &pb.Wrap{
-								Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-								Size:      uint32(wrap.GetSize()),
-								Data:      wrap.String(),
-							}
+				if len(v.Wraps) > 0 {
+					var snap pb.TrackSnapShot
+					snap.Sequence = v.Sequence
+					snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
+					snap.WriteTime = timestamppb.New(v.WriteTime)
+					snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
+					snap.KeyFrame = v.IDR
+					data.RingDataSize += uint32(v.Wraps[0].GetSize())
+					for i, wrap := range v.Wraps {
+						snap.Wrap[i] = &pb.Wrap{
+							Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+							Size:      uint32(wrap.GetSize()),
+							Data:      wrap.String(),
 						}
-						res.Ring = append(res.Ring, &snap)
 					}
-					v.RUnlock()
+					data.Ring = append(data.Ring, &snap)
 				}
 			})
+			res = &pb.TrackSnapShotResponse{
+				Code:    0,
+				Message: "success",
+				Data:    data,
+			}
 		} else {
 			err = pkg.ErrNotFound
 		}
@@ -259,7 +356,14 @@ func (s *Server) api_VideoTrack_SSE(rw http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		streamPath += "?" + r.URL.RawQuery
 	}
-	suber, err := s.Subscribe(r.Context(), streamPath)
+	suber, err := s.SubscribeWithConfig(r.Context(), streamPath, config.Subscribe{
+		SubVideo: true,
+	})
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	suber.Type = SubscribeTypeAPI
 	sse := util.NewSSE(rw, r.Context())
 	PlayBlock(suber, (func(frame *pkg.AVFrame) (err error))(nil), func(frame *pkg.AVFrame) (err error) {
 		var snap pb.TrackSnapShot
@@ -283,10 +387,46 @@ func (s *Server) api_VideoTrack_SSE(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) api_AudioTrack_SSE(rw http.ResponseWriter, r *http.Request) {
+	streamPath := r.PathValue("streamPath")
+	if r.URL.RawQuery != "" {
+		streamPath += "?" + r.URL.RawQuery
+	}
+	suber, err := s.SubscribeWithConfig(r.Context(), streamPath, config.Subscribe{
+		SubAudio: true,
+	})
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	suber.Type = SubscribeTypeAPI
+	sse := util.NewSSE(rw, r.Context())
+	PlayBlock(suber, func(frame *pkg.AVFrame) (err error) {
+		var snap pb.TrackSnapShot
+		snap.Sequence = frame.Sequence
+		snap.Timestamp = uint32(frame.Timestamp / time.Millisecond)
+		snap.WriteTime = timestamppb.New(frame.WriteTime)
+		snap.Wrap = make([]*pb.Wrap, len(frame.Wraps))
+		snap.KeyFrame = frame.IDR
+		for i, wrap := range frame.Wraps {
+			snap.Wrap[i] = &pb.Wrap{
+				Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+				Size:      uint32(wrap.GetSize()),
+				Data:      wrap.String(),
+			}
+		}
+		return sse.WriteJSON(&snap)
+	}, (func(frame *pkg.AVFrame) (err error))(nil))
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+}
+
 func (s *Server) VideoTrackSnap(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.TrackSnapShotResponse, err error) {
 	s.Streams.Call(func() error {
 		if pub, ok := s.Streams.Get(req.StreamPath); ok && pub.HasVideoTrack() {
-			res = &pb.TrackSnapShotResponse{}
+			data := &pb.TrackSnapShotData{}
 			if pub.VideoTrack.Allocator != nil {
 				for _, memlist := range pub.VideoTrack.Allocator.GetChildren() {
 					var list []*pb.MemoryBlock
@@ -296,38 +436,33 @@ func (s *Server) VideoTrackSnap(ctx context.Context, req *pb.StreamSnapRequest) 
 							E: uint32(block.End),
 						})
 					}
-					res.Memory = append(res.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
+					data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
 				}
-			}
-			res.Reader = make(map[uint32]uint32)
-			for sub := range pub.SubscriberRange {
-				if sub.VideoReader == nil {
-					continue
-				}
-				res.Reader[sub.ID] = sub.VideoReader.Value.Sequence
 			}
 			pub.VideoTrack.Ring.Do(func(v *pkg.AVFrame) {
-				if v.TryRLock() {
-					if len(v.Wraps) > 0 {
-						var snap pb.TrackSnapShot
-						snap.Sequence = v.Sequence
-						snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
-						snap.WriteTime = timestamppb.New(v.WriteTime)
-						snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
-						snap.KeyFrame = v.IDR
-						res.RingDataSize += uint32(v.Wraps[0].GetSize())
-						for i, wrap := range v.Wraps {
-							snap.Wrap[i] = &pb.Wrap{
-								Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-								Size:      uint32(wrap.GetSize()),
-								Data:      wrap.String(),
-							}
+				if len(v.Wraps) > 0 {
+					var snap pb.TrackSnapShot
+					snap.Sequence = v.Sequence
+					snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
+					snap.WriteTime = timestamppb.New(v.WriteTime)
+					snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
+					snap.KeyFrame = v.IDR
+					data.RingDataSize += uint32(v.Wraps[0].GetSize())
+					for i, wrap := range v.Wraps {
+						snap.Wrap[i] = &pb.Wrap{
+							Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+							Size:      uint32(wrap.GetSize()),
+							Data:      wrap.String(),
 						}
-						res.Ring = append(res.Ring, &snap)
 					}
-					v.RUnlock()
+					data.Ring = append(data.Ring, &snap)
 				}
 			})
+			res = &pb.TrackSnapShotResponse{
+				Code:    0,
+				Message: "success",
+				Data:    data,
+			}
 		} else {
 			err = pkg.ErrNotFound
 		}
@@ -336,20 +471,17 @@ func (s *Server) VideoTrackSnap(ctx context.Context, req *pb.StreamSnapRequest) 
 	return
 }
 
-func (s *Server) Restart(ctx context.Context, req *pb.RequestWithId) (res *emptypb.Empty, err error) {
-	if s, ok := Servers.Get(req.Id); ok {
-		s.Stop(pkg.ErrRestart)
-	}
-	return empty, err
+// Restart stops the server with a restart error and returns
+// a success response. This method is used to restart the server
+// gracefully.
+func (s *Server) Restart(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
+	s.Stop(pkg.ErrRestart)
+	return &pb.SuccessResponse{}, err
 }
 
-func (s *Server) Shutdown(ctx context.Context, req *pb.RequestWithId) (res *emptypb.Empty, err error) {
-	if s, ok := Servers.Get(req.Id); ok {
-		s.Stop(pkg.ErrStopFromAPI)
-	} else {
-		return nil, pkg.ErrNotFound
-	}
-	return empty, err
+func (s *Server) Shutdown(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
+	s.Stop(task.ErrStopByUser)
+	return &pb.SuccessResponse{}, err
 }
 
 func (s *Server) ChangeSubscribe(ctx context.Context, req *pb.ChangeSubscribeRequest) (res *pb.SuccessResponse, err error) {
@@ -380,18 +512,76 @@ func (s *Server) StopSubscribe(ctx context.Context, req *pb.RequestWithId) (res 
 	return &pb.SuccessResponse{}, err
 }
 
+func (s *Server) PauseStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
+	s.Streams.Call(func() error {
+		if s, ok := s.Streams.Get(req.StreamPath); ok {
+			s.Pause()
+		}
+		return nil
+	})
+	return &pb.SuccessResponse{}, err
+}
+
+func (s *Server) ResumeStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
+	s.Streams.Call(func() error {
+		if s, ok := s.Streams.Get(req.StreamPath); ok {
+			s.Resume()
+		}
+		return nil
+	})
+	return &pb.SuccessResponse{}, err
+}
+
+func (s *Server) SetStreamSpeed(ctx context.Context, req *pb.SetStreamSpeedRequest) (res *pb.SuccessResponse, err error) {
+	s.Streams.Call(func() error {
+		if s, ok := s.Streams.Get(req.StreamPath); ok {
+			s.Speed = float64(req.Speed)
+		}
+		return nil
+	})
+	return &pb.SuccessResponse{}, err
+}
+
+func (s *Server) SeekStream(ctx context.Context, req *pb.SeekStreamRequest) (res *pb.SuccessResponse, err error) {
+	s.Streams.Call(func() error {
+		if s, ok := s.Streams.Get(req.StreamPath); ok {
+			s.Seek(time.Unix(int64(req.TimeStamp), 0))
+		}
+		return nil
+	})
+	return &pb.SuccessResponse{}, err
+}
+
+func (s *Server) StopPublish(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
+	s.Streams.Call(func() error {
+		if s, ok := s.Streams.Get(req.StreamPath); ok {
+			s.Stop(task.ErrStopByUser)
+		}
+		return nil
+	})
+	return &pb.SuccessResponse{}, err
+}
+
 // /api/stream/list
 func (s *Server) StreamList(_ context.Context, req *pb.StreamListRequest) (res *pb.StreamListResponse, err error) {
+	recordingSet := make(map[string]struct{})
+	s.Records.Call(func() error {
+		for record := range s.Records.Range {
+			recordingSet[record.StreamPath] = struct{}{}
+		}
+		return nil
+	})
 	s.Streams.Call(func() error {
-		var streams []*pb.StreamInfoResponse
+		var streams []*pb.StreamInfo
 		for publisher := range s.Streams.Range {
 			info, err := s.getStreamInfo(publisher)
 			if err != nil {
 				continue
 			}
-			streams = append(streams, info)
+			_, info.Data.Recording = recordingSet[info.Data.Path]
+			streams = append(streams, info.Data)
 		}
-		res = &pb.StreamListResponse{List: streams, Total: int32(s.Streams.Length), PageNum: req.PageNum, PageSize: req.PageSize}
+		res = &pb.StreamListResponse{Data: streams, Total: int32(s.Streams.Length), PageNum: req.PageNum, PageSize: req.PageSize}
 		return nil
 	})
 	return
@@ -414,6 +604,19 @@ func (s *Server) Api_Summary_SSE(rw http.ResponseWriter, r *http.Request) {
 	util.ReturnFetchValue(func() *pb.SummaryResponse {
 		ret, _ := s.Summary(r.Context(), nil)
 		return ret
+	}, rw, r)
+}
+
+func (s *Server) Api_Stream_Position_SSE(rw http.ResponseWriter, r *http.Request) {
+	streamPath := r.URL.Query().Get("streamPath")
+	util.ReturnFetchValue(func() (t time.Time) {
+		s.Streams.Call(func() error {
+			if pub, ok := s.Streams.Get(streamPath); ok {
+				t = pub.GetPosition()
+			}
+			return nil
+		})
+		return
 	}, rw, r)
 }
 
@@ -440,7 +643,7 @@ func (s *Server) Summary(context.Context, *emptypb.Empty) (res *pb.SummaryRespon
 			Usage: float32(d.UsedPercent),
 		},
 	}
-	if cc, _ := cpu.Percent(time.Second, false); len(cc) > 0 {
+	if cc, _ := cpu.Percent(0, false); len(cc) > 0 {
 		res.CpuUsage = float32(cc[0])
 	}
 	netWorks := []*pb.NetWorkInfo{}
@@ -489,8 +692,27 @@ func (s *Server) api_Config_JSON_(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) GetConfigFile(_ context.Context, req *emptypb.Empty) (res *pb.GetConfigFileResponse, err error) {
+	res = &pb.GetConfigFileResponse{}
+	res.Data = string(s.configFileContent)
+	return
+}
+
+func (s *Server) UpdateConfigFile(_ context.Context, req *pb.UpdateConfigFileRequest) (res *pb.SuccessResponse, err error) {
+	if s.configFileContent != nil {
+		s.configFileContent = []byte(req.Content)
+		os.WriteFile(filepath.Join(ExecDir, s.conf.(string)), s.configFileContent, 0644)
+		res = &pb.SuccessResponse{}
+	} else {
+		err = pkg.ErrNotFound
+	}
+	return
+}
+
 func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb.GetConfigResponse, err error) {
-	res = &pb.GetConfigResponse{}
+	res = &pb.GetConfigResponse{
+		Data: &pb.ConfigData{},
+	}
 	var conf *config.Config
 	if req.Name == "global" {
 		conf = &s.Config
@@ -507,19 +729,19 @@ func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb
 	if err != nil {
 		return
 	}
-	res.File = string(mm)
+	res.Data.File = string(mm)
 
 	mm, err = yaml.Marshal(conf.Modify)
 	if err != nil {
 		return
 	}
-	res.Modified = string(mm)
+	res.Data.Modified = string(mm)
 
 	mm, err = yaml.Marshal(conf.GetMap())
 	if err != nil {
 		return
 	}
-	res.Merged = string(mm)
+	res.Data.Merged = string(mm)
 	return
 }
 
@@ -546,64 +768,458 @@ func (s *Server) ModifyConfig(_ context.Context, req *pb.ModifyConfigRequest) (r
 	return
 }
 
-func (s *Server) GetDeviceList(ctx context.Context, req *emptypb.Empty) (res *pb.DeviceListResponse, err error) {
-	res = &pb.DeviceListResponse{}
-	for device := range s.Devices.Range {
-		res.Data = append(res.Data, &pb.DeviceInfo{
-			Name:       device.Name,
-			CreateTime: timestamppb.New(device.CreatedAt),
-			UpdateTime: timestamppb.New(device.UpdatedAt),
-			Type:       uint32(device.Type),
-			PullURL:    device.PullURL,
-			ParentID:   uint32(device.ParentID),
-			ID:         uint32(device.ID),
+func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res *pb.PullProxyListResponse, err error) {
+	res = &pb.PullProxyListResponse{}
+	for device := range s.PullProxies.Range {
+		res.Data = append(res.Data, &pb.PullProxyInfo{
+			Name:           device.Name,
+			CreateTime:     timestamppb.New(device.CreatedAt),
+			UpdateTime:     timestamppb.New(device.UpdatedAt),
+			Type:           device.Type,
+			PullURL:        device.URL,
+			ParentID:       uint32(device.ParentID),
+			Status:         uint32(device.Status),
+			ID:             uint32(device.ID),
+			PullOnStart:    device.PullOnStart,
+			StopOnIdle:     device.StopOnIdle,
+			Audio:          device.Audio,
+			RecordPath:     device.Record.FilePath,
+			RecordFragment: durationpb.New(device.Record.Fragment),
+			Description:    device.Description,
+			Rtt:            uint32(device.RTT.Milliseconds()),
+			StreamPath:     device.GetStreamPath(),
 		})
 	}
 	return
 }
 
-func (s *Server) AddDevice(ctx context.Context, req *pb.DeviceInfo) (res *pb.SuccessResponse, err error) {
-	device := &Device{
-		server:   s,
-		Name:     req.Name,
-		Type:     byte(req.Type),
-		PullURL:  req.PullURL,
-		ParentID: uint(req.ParentID),
+func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
+	device := &PullProxy{
+		server:      s,
+		Name:        req.Name,
+		Type:        req.Type,
+		ParentID:    uint(req.ParentID),
+		PullOnStart: req.PullOnStart,
+		Description: req.Description,
+		StreamPath:  req.StreamPath,
 	}
+	if device.Type == "" {
+		var u *url.URL
+		u, err = url.Parse(req.PullURL)
+		if err != nil {
+			s.Error("parse pull url failed", "error", err)
+			return
+		}
+		switch u.Scheme {
+		case "srt", "rtsp", "rtmp":
+			device.Type = u.Scheme
+		default:
+			ext := filepath.Ext(u.Path)
+			switch ext {
+			case ".m3u8":
+				device.Type = "hls"
+			case ".flv":
+				device.Type = "flv"
+			case ".mp4":
+				device.Type = "mp4"
+			}
+		}
+	}
+	defaults.SetDefaults(&device.Pull)
+	defaults.SetDefaults(&device.Record)
+	device.URL = req.PullURL
+	device.Audio = req.Audio
+	device.StopOnIdle = req.StopOnIdle
+	device.Record.FilePath = req.RecordPath
+	device.Record.Fragment = req.RecordFragment.AsDuration()
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
 	}
 	s.DB.Create(device)
-	s.Devices.Add(device)
+	s.PullProxies.Add(device)
 	res = &pb.SuccessResponse{}
 	return
 }
 
-func (s *Server) UpdateDevice(ctx context.Context, req *pb.DeviceInfo) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
 	}
-	target := &Device{}
-	target.ID = uint(req.ID)
+	target := &PullProxy{}
+	err = s.DB.First(target, req.ID).Error
+	if err != nil {
+		return
+	}
 	target.Name = req.Name
-	target.PullURL = req.PullURL
+	target.URL = req.PullURL
 	target.ParentID = uint(req.ParentID)
-	target.Type = byte(req.Type)
+	target.Type = req.Type
+	if target.Type == "" {
+		var u *url.URL
+		u, err = url.Parse(req.PullURL)
+		if err != nil {
+			s.Error("parse pull url failed", "error", err)
+			return
+		}
+		switch u.Scheme {
+		case "srt", "rtsp", "rtmp":
+			target.Type = u.Scheme
+		default:
+			ext := filepath.Ext(u.Path)
+			switch ext {
+			case ".m3u8":
+				target.Type = "hls"
+			case ".flv":
+				target.Type = "flv"
+			case ".mp4":
+				target.Type = "mp4"
+			}
+		}
+	}
+	target.PullOnStart = req.PullOnStart
+	target.StopOnIdle = req.StopOnIdle
+	target.Audio = req.Audio
+	target.Description = req.Description
+	target.Record.FilePath = req.RecordPath
+	target.Record.Fragment = req.RecordFragment.AsDuration()
+	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
+	target.StreamPath = req.StreamPath
+	s.DB.Save(target)
+	s.PullProxies.Call(func() error {
+		if device, ok := s.PullProxies.Get(uint(req.ID)); ok {
+			if target.URL != device.URL || device.Audio != target.Audio || device.StreamPath != target.StreamPath || device.Record.FilePath != target.Record.FilePath || device.Record.Fragment != target.Record.Fragment {
+				device.Stop(task.ErrStopByUser)
+				device.WaitStopped()
+				s.PullProxies.Add(target)
+				return nil
+			}
+			if device.PullOnStart != target.PullOnStart && target.PullOnStart && device.Handler != nil && device.Status == PullProxyStatusOnline {
+				device.Handler.Pull()
+			}
+			device.Name = target.Name
+			device.PullOnStart = target.PullOnStart
+			device.StopOnIdle = target.StopOnIdle
+			device.Description = target.Description
+		}
+		return nil
+	})
+	res = &pb.SuccessResponse{}
+	return
+}
+
+func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	res = &pb.SuccessResponse{}
+	if req.Id > 0 {
+		tx := s.DB.Delete(&PullProxy{
+			ID: uint(req.Id),
+		})
+		err = tx.Error
+		s.PullProxies.Call(func() error {
+			if device, ok := s.PullProxies.Get(uint(req.Id)); ok {
+				device.Stop(task.ErrStopByUser)
+			}
+			return nil
+		})
+		return
+	} else if req.StreamPath != "" {
+		var deviceList []PullProxy
+		s.DB.Find(&deviceList, "stream_path=?", req.StreamPath)
+		if len(deviceList) > 0 {
+			for _, device := range deviceList {
+				tx := s.DB.Delete(&PullProxy{}, device.ID)
+				err = tx.Error
+				s.PullProxies.Call(func() error {
+					if device, ok := s.PullProxies.Get(uint(device.ID)); ok {
+						device.Stop(task.ErrStopByUser)
+					}
+					return nil
+				})
+			}
+		}
+		return
+	} else {
+		res.Message = "parameter wrong"
+		return
+	}
+}
+
+func (s *Server) GetStreamAlias(ctx context.Context, req *emptypb.Empty) (res *pb.StreamAliasListResponse, err error) {
+	res = &pb.StreamAliasListResponse{}
+	s.Streams.Call(func() error {
+		for alias := range s.AliasStreams.Range {
+			info := &pb.StreamAlias{
+				StreamPath: alias.StreamPath,
+				Alias:      alias.Alias,
+				AutoRemove: alias.AutoRemove,
+			}
+			if s.Streams.Has(alias.Alias) {
+				info.Status = 2
+			} else if alias.Publisher != nil {
+				info.Status = 1
+			}
+			res.Data = append(res.Data, info)
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Server) SetStreamAlias(ctx context.Context, req *pb.SetStreamAliasRequest) (res *pb.SuccessResponse, err error) {
+	res = &pb.SuccessResponse{}
+	s.Streams.Call(func() error {
+		if req.StreamPath != "" {
+			u, err := url.Parse(req.StreamPath)
+			if err != nil {
+				return err
+			}
+			req.StreamPath = strings.TrimPrefix(u.Path, "/")
+			publisher, canReplace := s.Streams.Get(req.StreamPath)
+			if !canReplace {
+				defer s.OnSubscribe(req.StreamPath, u.Query())
+			}
+			if aliasInfo, ok := s.AliasStreams.Get(req.Alias); ok { //modify alias
+				aliasInfo.AutoRemove = req.AutoRemove
+				if aliasInfo.StreamPath != req.StreamPath {
+					aliasInfo.StreamPath = req.StreamPath
+					if canReplace {
+						if aliasInfo.Publisher != nil {
+							aliasInfo.TransferSubscribers(publisher) // replace stream
+						} else {
+							s.Waiting.WakeUp(req.Alias, publisher)
+						}
+					}
+				}
+			} else { // create alias
+				aliasInfo := &AliasStream{
+					AutoRemove: req.AutoRemove,
+					StreamPath: req.StreamPath,
+					Alias:      req.Alias,
+				}
+				var pubId uint32
+				s.AliasStreams.Add(aliasInfo)
+				aliasStream, ok := s.Streams.Get(aliasInfo.Alias)
+				if canReplace {
+					aliasInfo.Publisher = publisher
+					if ok {
+						aliasStream.TransferSubscribers(publisher) // replace stream
+					} else {
+						s.Waiting.WakeUp(req.Alias, publisher)
+					}
+				} else {
+					aliasInfo.Publisher = aliasStream
+				}
+				if aliasInfo.Publisher != nil {
+					pubId = aliasInfo.Publisher.ID
+				}
+				s.Info("add alias", "alias", req.Alias, "streamPath", req.StreamPath, "replace", ok && canReplace, "pub", pubId)
+			}
+		} else {
+			s.Info("remove alias", "alias", req.Alias)
+			if aliasStream, ok := s.AliasStreams.Get(req.Alias); ok {
+				s.AliasStreams.Remove(aliasStream)
+				if aliasStream.Publisher != nil {
+					if publisher, hasTarget := s.Streams.Get(req.Alias); hasTarget { // restore stream
+						aliasStream.TransferSubscribers(publisher)
+					}
+				} else {
+					var args url.Values
+					for sub := range aliasStream.Publisher.SubscriberRange {
+						if sub.StreamPath == req.Alias {
+							aliasStream.Publisher.RemoveSubscriber(sub)
+							s.Waiting.Wait(sub)
+							args = sub.Args
+						}
+					}
+					if args != nil {
+						s.OnSubscribe(req.Alias, args)
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Server) GetPushProxyList(ctx context.Context, req *emptypb.Empty) (res *pb.PushProxyListResponse, err error) {
+	res = &pb.PushProxyListResponse{}
+	for device := range s.PushProxies.Range {
+		res.Data = append(res.Data, &pb.PushProxyInfo{
+			Name:        device.Name,
+			CreateTime:  timestamppb.New(device.CreatedAt),
+			UpdateTime:  timestamppb.New(device.UpdatedAt),
+			Type:        device.Type,
+			PushURL:     device.URL,
+			ParentID:    uint32(device.ParentID),
+			Status:      uint32(device.Status),
+			ID:          uint32(device.ID),
+			PushOnStart: device.PushOnStart,
+			Audio:       device.Audio,
+			Description: device.Description,
+			Rtt:         uint32(device.RTT.Milliseconds()),
+			StreamPath:  device.GetStreamPath(),
+		})
+	}
+	return
+}
+
+func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
+	device := &PushProxy{
+		server:      s,
+		Name:        req.Name,
+		Type:        req.Type,
+		ParentID:    uint(req.ParentID),
+		PushOnStart: req.PushOnStart,
+		Description: req.Description,
+		StreamPath:  req.StreamPath,
+	}
+
+	if device.Type == "" {
+		var u *url.URL
+		u, err = url.Parse(req.PushURL)
+		if err != nil {
+			s.Error("parse pull url failed", "error", err)
+			return
+		}
+		switch u.Scheme {
+		case "srt", "rtsp", "rtmp":
+			device.Type = u.Scheme
+		default:
+			ext := filepath.Ext(u.Path)
+			switch ext {
+			case ".m3u8":
+				device.Type = "hls"
+			case ".flv":
+				device.Type = "flv"
+			case ".mp4":
+				device.Type = "mp4"
+			}
+		}
+	}
+
+	defaults.SetDefaults(&device.Push)
+	device.URL = req.PushURL
+	device.Audio = req.Audio
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	s.DB.Create(device)
+	s.PushProxies.Add(device)
+	res = &pb.SuccessResponse{}
+	return
+}
+
+func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	target := &PushProxy{}
+	s.DB.First(target, req.ID)
+	target.Name = req.Name
+	target.URL = req.PushURL
+	target.ParentID = uint(req.ParentID)
+	target.Type = req.Type
+	if target.Type == "" {
+		var u *url.URL
+		u, err = url.Parse(req.PushURL)
+		if err != nil {
+			s.Error("parse pull url failed", "error", err)
+			return
+		}
+		switch u.Scheme {
+		case "srt", "rtsp", "rtmp":
+			target.Type = u.Scheme
+		default:
+			ext := filepath.Ext(u.Path)
+			switch ext {
+			case ".m3u8":
+				target.Type = "hls"
+			case ".flv":
+				target.Type = "flv"
+			case ".mp4":
+				target.Type = "mp4"
+			}
+		}
+	}
+	target.PushOnStart = req.PushOnStart
+	target.Audio = req.Audio
+	target.Description = req.Description
+	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
+	target.StreamPath = req.StreamPath
 	s.DB.Save(target)
 	res = &pb.SuccessResponse{}
 	return
 }
 
-func (s *Server) RemoveDevice(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
+func (s *Server) RemovePushProxy(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
 	}
-	s.DB.Delete(&Device{}, req.Id)
-	s.Devices.RemoveByKey(uint32(req.Id))
 	res = &pb.SuccessResponse{}
-	return
+	if req.Id > 0 {
+		tx := s.DB.Delete(&PushProxy{
+			ID: uint(req.Id),
+		})
+		err = tx.Error
+		s.PushProxies.Call(func() error {
+			if device, ok := s.PushProxies.Get(uint(req.Id)); ok {
+				device.Stop(task.ErrStopByUser)
+			}
+			return nil
+		})
+		return
+	} else if req.StreamPath != "" {
+		var deviceList []PushProxy
+		s.DB.Find(&deviceList, "stream_path=?", req.StreamPath)
+		if len(deviceList) > 0 {
+			for _, device := range deviceList {
+				tx := s.DB.Delete(&PushProxy{}, device.ID)
+				err = tx.Error
+				s.PushProxies.Call(func() error {
+					if device, ok := s.PushProxies.Get(uint(device.ID)); ok {
+						device.Stop(task.ErrStopByUser)
+					}
+					return nil
+				})
+			}
+		}
+		return
+	} else {
+		res.Message = "parameter wrong"
+		return
+	}
+}
 
+func (s *Server) GetTransformList(ctx context.Context, req *emptypb.Empty) (res *pb.TransformListResponse, err error) {
+	res = &pb.TransformListResponse{}
+	s.Transforms.Call(func() error {
+		for transform := range s.Transforms.Range {
+			info := &pb.Transform{
+				StreamPath: transform.StreamPath,
+				Target:     transform.Target,
+			}
+			if transform.TransformJob != nil {
+				info.PluginName = transform.TransformJob.Plugin.Meta.Name
+				var result []byte
+				result, err = yaml.Marshal(transform.TransformJob.Config)
+				if err != nil {
+					s.Error("marshal transform config failed", "error", err)
+					return err
+				}
+				info.Config = string(result)
+			}
+			res.Data = append(res.Data, info)
+		}
+		return nil
+	})
+	return
 }

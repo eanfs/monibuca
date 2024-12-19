@@ -3,13 +3,12 @@ import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 package monitor;
-option go_package="m7s.live/m7s/v5/plugin/monitor/pb";
+option go_package="m7s.live/v5/plugin/monitor/pb";
 
 service api {
   rpc SearchTask (SearchTaskRequest) returns (SearchTaskResponse) {
     option (google.api.http) = {
-      post: "/monitor/api/search/task"
-      body: "*"
+      get: "/monitor/api/search/task/{sessionId}"
     };
   }
   rpc SessionList (google.protobuf.Empty) returns (SessionListResponse) {

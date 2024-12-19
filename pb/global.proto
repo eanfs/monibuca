@@ -2,9 +2,10 @@ syntax = "proto3";
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/any.proto";
 package global;
-option go_package="m7s.live/m7s/v5/pb";
+option go_package="m7s.live/v5/pb";
 
 service api {
   rpc SysInfo (google.protobuf.Empty) returns (SysInfoResponse) {
@@ -12,24 +13,39 @@ service api {
       get: "/api/sysinfo"
     };
   }
+  rpc DisabledPlugins (google.protobuf.Empty) returns (DisabledPluginsResponse) {
+    option (google.api.http) = {
+      get: "/api/plugins/disabled"
+    };
+  }
   rpc Summary (google.protobuf.Empty) returns (SummaryResponse) {
     option (google.api.http) = {
       get: "/api/summary"
     };
   }
-  rpc Shutdown (RequestWithId) returns (google.protobuf.Empty) {
+  rpc Shutdown (RequestWithId) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/shutdown/{id}"
+      post: "/api/shutdown"
     };
   }
-  rpc Restart (RequestWithId) returns (google.protobuf.Empty) {
+  rpc Restart (RequestWithId) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/restart/{id}"
+      post: "/api/restart"
     };
   }
   rpc TaskTree (google.protobuf.Empty) returns (TaskTreeResponse) {
     option (google.api.http) = {
       get: "/api/task/tree"
+    };
+  }
+  rpc StopTask (RequestWithId64) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/task/stop/{id}"
+    };
+  }
+  rpc RestartTask (RequestWithId64) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/task/restart/{id}"
     };
   }
   rpc StreamList (StreamListRequest) returns (StreamListResponse) {
@@ -45,6 +61,30 @@ service api {
   rpc StreamInfo (StreamSnapRequest) returns (StreamInfoResponse) {
     option (google.api.http) = {
       get: "/api/stream/info/{streamPath=**}"
+    };
+  }
+  rpc PauseStream(StreamSnapRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/pause/{streamPath=**}"
+      body: "*"
+    };
+  }
+  rpc ResumeStream(StreamSnapRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/resume/{streamPath=**}"
+      body: "*"
+    };
+  }
+  rpc SetStreamSpeed(SetStreamSpeedRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/speed/{streamPath=**}"
+      body: "*"
+    };
+  }
+  rpc SeekStream(SeekStreamRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/seek/{streamPath=**}"
+      body: "*"
     };
   }
   rpc GetSubscribers(SubscribersRequest) returns (SubscribersResponse) {
@@ -68,11 +108,38 @@ service api {
       body: "*"
     };
   }
-
+  rpc GetStreamAlias (google.protobuf.Empty) returns (StreamAliasListResponse) {
+    option (google.api.http) = {
+      get: "/api/stream/alias/list"
+    };
+  }
+  rpc SetStreamAlias (SetStreamAliasRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/alias"
+      body: "*"
+    };
+  }
+  rpc StopPublish(StreamSnapRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/stop/{streamPath=**}"
+      body: "*"
+    };
+  }
   rpc StopSubscribe (RequestWithId) returns (SuccessResponse) {
     option (google.api.http) = {
       post: "/api/subscribe/stop/{id}"
       body: "*"
+    };
+  }
+  rpc GetConfigFile (google.protobuf.Empty) returns (GetConfigFileResponse) {
+    option (google.api.http) = {
+      get: "/api/config/file"
+    };
+  }
+  rpc UpdateConfigFile (UpdateConfigFileRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/config/file/update"
+      body: "content"
     };
   }
   rpc GetConfig (GetConfigRequest) returns (GetConfigResponse) {
@@ -91,29 +158,83 @@ service api {
       body: "yaml"
     };
   }
-  rpc GetDeviceList (google.protobuf.Empty) returns (DeviceListResponse) {
+  rpc GetPullProxyList (google.protobuf.Empty) returns (PullProxyListResponse) {
     option (google.api.http) = {
-      get: "/api/device/list"
+      get: "/api/proxy/pull/list"
+      additional_bindings {
+        get: "/api/device/list"
+      }
     };
   }
-  rpc AddDevice (DeviceInfo) returns (SuccessResponse) {
+  rpc AddPullProxy (PullProxyInfo) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/device/add"
+      post: "/api/proxy/pull/add"
+      body: "*"
+      additional_bindings {
+        post: "/api/device/add"
+        body: "*"
+      }
+    };
+  }
+  rpc RemovePullProxy (RequestWithId) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/proxy/pull/remove/{id}"
+      body: "*"
+      additional_bindings {
+        post: "/api/device/add/{id}"
+        body: "*"
+      }
+    };
+  }
+  rpc UpdatePullProxy (PullProxyInfo) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/proxy/pull/update"
+      body: "*"
+      additional_bindings {
+        post: "/api/device/update"
+        body: "*"
+      }
+    };
+  }
+  rpc GetPushProxyList (google.protobuf.Empty) returns (PushProxyListResponse) {
+    option (google.api.http) = {
+      get: "/api/proxy/push/list"
+    };
+  }
+  rpc AddPushProxy (PushProxyInfo) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/proxy/push/add"
       body: "*"
     };
   }
-  rpc RemoveDevice (RequestWithId) returns (SuccessResponse) {
+  rpc RemovePushProxy (RequestWithId) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/device/remove/{id}"
+      post: "/api/proxy/push/remove/{id}"
       body: "*"
     };
   }
-  rpc UpdateDevice (DeviceInfo) returns (SuccessResponse) {
+  rpc UpdatePushProxy (PushProxyInfo) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/device/update"
+      post: "/api/proxy/push/update"
       body: "*"
     };
   }
+  rpc GetRecording (google.protobuf.Empty) returns (RecordingListResponse) {
+    option (google.api.http) = {
+      get: "/api/record/list"
+    };
+  }
+  rpc GetTransformList (google.protobuf.Empty) returns (TransformListResponse) {
+    option (google.api.http) = {
+      get: "/api/transform/list"
+    };
+  }
+}
+
+message DisabledPluginsResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated PluginInfo data = 3;
 }
 
 message GetConfigRequest {
@@ -132,10 +253,26 @@ message FormilyResponse {
   map<string, Formily> properties = 2;
 }
 
-message GetConfigResponse {
+message ConfigData {
   string file = 1;
   string modified = 2;
   string merged = 3;
+}
+
+message GetConfigFileResponse {
+  uint32 code = 1;
+  string message = 2;
+  string data = 3;
+}
+
+message GetConfigResponse {
+  uint32 code = 1;
+  string message = 2;
+  ConfigData data = 3;
+}
+
+message UpdateConfigFileRequest {
+  string content = 1;
 }
 
 message ModifyConfigRequest {
@@ -174,30 +311,46 @@ message SummaryResponse {
 
 message PluginInfo {
   string name = 1;
-  string version = 2;
-  bool disabled = 3;
+  repeated string pushAddr = 2;
+  repeated string playAddr = 3;
+  map<string, string> description = 4;
+}
+
+message SysInfoData  {
+  google.protobuf.Timestamp startTime = 1;
+  string localIP = 2;
+  string publicIP = 3;
+  string version = 4;
+  string goVersion = 5;
+  string os = 6;
+  string arch = 7;
+  int32 cpus = 8;
+  repeated PluginInfo plugins = 9;
 }
 
 message SysInfoResponse {
-  google.protobuf.Timestamp startTime = 1;
-  string localIP = 2;
-  string version = 3;
-  string goVersion = 4;
-  string os = 5;
-  string arch = 6;
-  int32 cpus = 7;
-  repeated PluginInfo plugins = 8;
+  int32 code = 1;
+  string message = 2;
+  SysInfoData data = 3;
 }
 
-message TaskTreeResponse {
+message TaskTreeData {
   uint32 id = 1;
   uint32 type = 2;
   string owner = 3;
   google.protobuf.Timestamp startTime = 4;
   map<string, string> description = 5;
-  repeated TaskTreeResponse children = 6;
+  repeated TaskTreeData children = 6;
   uint32 state = 7;
-  bool blocked = 8;
+  TaskTreeData blocked = 8;
+  uint64 pointer = 9;
+  string startReason = 10;
+}
+
+message TaskTreeResponse {
+  int32 code = 1;
+  string message = 2;
+  TaskTreeData data = 3;
 }
 
 message StreamListRequest {
@@ -206,10 +359,12 @@ message StreamListRequest {
 }
 
 message StreamListResponse {
-  int32 total = 1;
-  int32 pageNum = 2;
-  int32 pageSize = 3;
-  repeated StreamInfoResponse list = 4;
+  int32 code = 1;
+  string message = 2;
+  int32 total = 3;
+  int32 pageNum = 4;
+  int32 pageSize = 5;
+  repeated StreamInfo data = 6;
 }
 
 message StreamWaitListResponse {
@@ -221,14 +376,27 @@ message StreamSnapRequest {
 }
 
 message StreamInfoResponse {
+  int32 code = 1;
+  string message = 2;
+  StreamInfo data = 3;
+}
+
+message StreamInfo {
   string path = 1;
   int32 state = 2;
   int32 subscribers = 3;
   AudioTrackInfo audioTrack = 4;
   VideoTrackInfo videoTrack = 5;
   google.protobuf.Timestamp startTime = 6;
-  string type = 7;
-  string meta = 8;
+  string pluginName = 7;
+  string type = 8;
+  string meta = 9;
+  bool isPaused = 10;
+  int32 gop = 11;
+  float speed = 12;
+  google.protobuf.Duration bufferTime = 13;
+  bool stopOnIdle = 14;
+  bool recording = 15;
 }
 
 message Wrap {
@@ -265,11 +433,17 @@ message AudioTrackInfo {
   uint32 channels =7;
 }
 
-message TrackSnapShotResponse {
+message TrackSnapShotData {
   repeated TrackSnapShot ring = 1;
   uint32 ringDataSize = 2;
   map<uint32, uint32> reader = 3;
   repeated MemoryBlockGroup memory = 4;
+}
+
+message TrackSnapShotResponse {
+  int32 code = 1;
+  string message = 2;
+  TrackSnapShotData data = 3;
 }
 
 message VideoTrackInfo {
@@ -290,6 +464,11 @@ message SuccessResponse {
 
 message RequestWithId {
   uint32 id = 1;
+  string streamPath = 2;
+}
+
+message RequestWithId64 {
+  uint64 id = 1;
 }
 
 message ChangeSubscribeRequest {
@@ -316,28 +495,141 @@ message SubscriberSnapShot {
   RingReaderSnapShot audioReader = 3;
   RingReaderSnapShot videoReader = 4;
   string meta = 5;
+  google.protobuf.Duration bufferTime = 6;
+  int32 subMode = 7;
+  int32 syncMode = 8;
+  string pluginName = 9;
+  string type = 10;
+  string remoteAddr = 11;
 }
 
 message SubscribersResponse {
-  int32 total = 1;
-  int32 pageNum = 2;
-  int32 pageSize = 3;
-  repeated SubscriberSnapShot list = 4;
-}
-
-message DeviceListResponse {
   int32 code = 1;
   string message = 2;
-  repeated DeviceInfo data = 3;
+  int32 total = 3;
+  int32 pageNum = 4;
+  int32 pageSize = 5;
+  repeated SubscriberSnapShot data = 6;
 }
 
-message DeviceInfo {
+message PullProxyListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated PullProxyInfo data = 3;
+}
+
+message PullProxyInfo {
   uint32 ID = 1;
   google.protobuf.Timestamp createTime = 2;
   google.protobuf.Timestamp updateTime = 3; // 更新时间
   uint32 parentID = 4; // 父设备ID
   string name = 5; // 设备名称
-  uint32 type = 6; // 设备类型
+  string type = 6; // 设备类型
   uint32 status = 7; // 设备状态
   string pullURL = 8; // 拉流地址
+  bool pullOnStart = 9; // 启动时拉流
+  
+  bool stopOnIdle = 10; // 空闲时停止拉流
+  bool audio = 11; // 是否拉取音频
+  string description = 12; // 设备描述
+  string recordPath = 13; // 录制路径
+  google.protobuf.Duration recordFragment = 14; // 录制片段长度
+  uint32 rtt = 15; // 平均RTT
+  string streamPath = 16; // 流路径
+}
+
+message PushProxyInfo {
+  uint32 ID = 1;
+  google.protobuf.Timestamp createTime = 2;
+  google.protobuf.Timestamp updateTime = 3;
+  uint32 parentID = 4; // 父设备ID
+  string name = 5; // 设备名称
+  string type = 6; // 设备类型
+  uint32 status = 7; // 设备状态
+  string pushURL = 8; // 推流地址
+  bool pushOnStart = 9; // 启动时推流
+  bool audio = 10; // 是否推音频
+  string description = 11; // 设备描述
+  uint32 rtt = 12; // 平均RTT
+  string streamPath = 13; // 流路径
+}
+
+message PushProxyListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated PushProxyInfo data = 3;
+}
+
+
+message SetStreamAliasRequest {
+  string streamPath = 1;
+  string alias = 2;
+  bool autoRemove = 3;
+}
+
+message StreamAlias {
+  string streamPath = 1;
+  string alias = 2;
+  bool autoRemove = 3;
+  uint32 status = 4;
+}
+
+message StreamAliasListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated StreamAlias data = 3;
+}
+
+message SetStreamSpeedRequest {
+  string streamPath = 1;
+  float speed = 2;
+}
+
+message SeekStreamRequest {
+  string streamPath = 1;
+  uint32 timeStamp = 2;
+}
+
+message Recording {
+  string streamPath = 1;
+  google.protobuf.Timestamp startTime = 2;
+  string type = 3;
+  uint64 pointer = 4;
+}
+
+message RecordingListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated Recording data = 3;
+}
+
+message PushInfo {
+  string streamPath = 1;
+  string targetURL = 2;
+  google.protobuf.Timestamp startTime = 3;
+  string status = 4;
+}
+
+message PushListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated PushInfo data = 3;
+}
+
+message AddPushRequest {
+  string streamPath = 1;
+  string targetURL = 2;
+}
+
+message Transform {
+  string streamPath = 1;
+  string target = 2;
+  string pluginName = 3;
+  string config = 4;
+}
+
+message TransformListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated Transform data = 3;
 }

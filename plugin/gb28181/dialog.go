@@ -7,10 +7,10 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/pkg/util"
-	gb28181 "m7s.live/m7s/v5/plugin/gb28181/pkg"
+	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
+	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 
 type Dialog struct {
@@ -34,6 +34,9 @@ func (d *Dialog) Start() (err error) {
 	err = d.pullCtx.Publish()
 	if err != nil {
 		return
+	}
+	if !d.IsLive() {
+		d.pullCtx.Publisher.Type = m7s.PublishTypeVod
 	}
 	sss := strings.Split(d.pullCtx.RemoteURL, "/")
 	deviceId, channelId := sss[0], sss[1]
@@ -83,7 +86,7 @@ func (d *Dialog) Start() (err error) {
 	contentTypeHeader := sip.ContentTypeHeader("application/sdp")
 	fromHeader := d.Channel.Device.fromHDR
 	subjectHeader := sip.NewHeader("Subject", fmt.Sprintf("%s:%s,%s:0", d.Channel.DeviceID, ssrc, d.gb.Serial))
-	d.session, err = d.Channel.Device.dialogClient.Invite(d.gb, d.Channel.Device.Recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &contentTypeHeader, subjectHeader, &fromHeader)
+	d.session, err = d.Channel.Device.dialogClient.Invite(d.gb, d.Channel.Device.Recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &contentTypeHeader, subjectHeader, &fromHeader, sip.NewHeader("Allow", "INVITE, ACK, CANCEL, REGISTER, MESSAGE, NOTIFY, BYE"))
 	return
 }
 

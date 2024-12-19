@@ -3,20 +3,22 @@ package plugin_webrtc
 import (
 	"embed"
 	_ "embed"
-	"github.com/pion/logging"
+	"fmt"
 	"io"
-	"m7s.live/m7s/v5/pkg/config"
 	"net"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/pion/logging"
+	"m7s.live/v5/pkg/config"
+
 	"github.com/pion/interceptor"
 	. "github.com/pion/webrtc/v3"
-	"m7s.live/m7s/v5"
-	. "m7s.live/m7s/v5/pkg"
-	. "m7s.live/m7s/v5/plugin/webrtc/pkg"
+	"m7s.live/v5"
+	. "m7s.live/v5/pkg"
+	. "m7s.live/v5/plugin/webrtc/pkg"
 )
 
 var (
@@ -30,11 +32,11 @@ type WebRTCPlugin struct {
 	m7s.Plugin
 	ICEServers []ICEServer   `desc:"ice服务器配置"`
 	Port       string        `default:"tcp:9000" desc:"监听端口"`
-	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"`          // 视频流丢包后，发送PLI请求
-	EnableOpus bool          `default:"true" desc:"是否启用opus编码"`       // 是否启用opus编码
-	EnableVP9  bool          `default:"false" desc:"是否启用vp9编码"`       // 是否启用vp9编码
-	EnableAv1  bool          `default:"false" desc:"是否启用av1编码"`       // 是否启用av1编码
-	EnableDC   bool          `default:"false" desc:"是否启用DataChannel"` // 在不支持编码格式的情况下是否启用DataChannel传输
+	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"`         // 视频流丢包后，发送PLI请求
+	EnableOpus bool          `default:"true" desc:"是否启用opus编码"`      // 是否启用opus编码
+	EnableVP9  bool          `default:"false" desc:"是否启用vp9编码"`      // 是否启用vp9编码
+	EnableAv1  bool          `default:"false" desc:"是否启用av1编码"`      // 是否启用av1编码
+	EnableDC   bool          `default:"true" desc:"是否启用DataChannel"` // 在不支持编码格式的情况下是否启用DataChannel传输
 	m          MediaEngine
 	s          SettingEngine
 	api        *API
@@ -98,24 +100,33 @@ func (p *WebRTCPlugin) OnInit() (err error) {
 			IP:   net.IP{0, 0, 0, 0},
 			Port: tcpport,
 		})
+		p.OnDispose(func() {
+			_ = tcpl.Close()
+		})
 		if err != nil {
 			p.Error("webrtc listener tcp", "error", err)
 		}
+		p.SetDescription("tcp", fmt.Sprintf("%d", tcpport))
 		p.Info("webrtc start listen", "port", tcpport)
 		p.s.SetICETCPMux(NewICETCPMux(nil, tcpl, 4096))
 		p.s.SetNetworkTypes([]NetworkType{NetworkTypeTCP4, NetworkTypeTCP6})
 	case UDPRangePort:
 		p.s.SetEphemeralUDPPortRange(uint16(v[0]), uint16(v[1]))
+		p.SetDescription("udp", fmt.Sprintf("%d-%d", v[0], v[1]))
 	case UDPPort:
 		// 创建共享WEBRTC端口 默认9000
 		udpListener, err := net.ListenUDP("udp", &net.UDPAddr{
 			IP:   net.IP{0, 0, 0, 0},
 			Port: int(v),
 		})
+		p.OnDispose(func() {
+			_ = udpListener.Close()
+		})
 		if err != nil {
 			p.Error("webrtc listener udp", "error", err)
 			return err
 		}
+		p.SetDescription("udp", fmt.Sprintf("%d", v))
 		p.Info("webrtc start listen", "port", v)
 		p.s.SetICEUDPMux(NewICEUDPMux(nil, udpListener))
 		p.s.SetNetworkTypes([]NetworkType{NetworkTypeUDP4, NetworkTypeUDP6})
@@ -125,6 +136,23 @@ func (p *WebRTCPlugin) OnInit() (err error) {
 	}
 	p.api = NewAPI(WithMediaEngine(&p.m),
 		WithInterceptorRegistry(i), WithSettingEngine(p.s))
+	_, port, _ := strings.Cut(p.GetCommonConf().HTTP.ListenAddr, ":")
+	if port == "80" {
+		p.PushAddr = append(p.PushAddr, "http://{hostName}/webrtc/push")
+		p.PlayAddr = append(p.PlayAddr, "http://{hostName}/webrtc/play")
+	} else if port != "" {
+		p.PushAddr = append(p.PushAddr, fmt.Sprintf("http://{hostName}:%s/webrtc/push", port))
+		p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("http://{hostName}:%s/webrtc/play", port))
+	}
+	_, port, _ = strings.Cut(p.GetCommonConf().HTTP.ListenAddrTLS, ":")
+	if port == "443" {
+		p.PushAddr = append(p.PushAddr, "https://{hostName}/webrtc/push")
+		p.PlayAddr = append(p.PlayAddr, "https://{hostName}/webrtc/play")
+	} else if port != "" {
+		p.PushAddr = append(p.PushAddr, fmt.Sprintf("https://{hostName}:%s/webrtc/push", port))
+		p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("https://{hostName}:%s/webrtc/play", port))
+	}
+
 	return
 }
 
@@ -148,7 +176,7 @@ func (p *WebRTCPlugin) testPage(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, f)
 }
 
-func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull) {
+func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
 	if strings.HasPrefix(conf.URL, "https://rtc.live.cloudflare.com") {
 		cfClient := NewCFClient(DIRECTION_PULL)
 		var err error
@@ -160,6 +188,6 @@ func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull) {
 			p.Error("pull", "error", err)
 			return
 		}
-		cfClient.GetPullJob().Init(cfClient, &p.Plugin, streamPath, conf)
+		cfClient.GetPullJob().Init(cfClient, &p.Plugin, streamPath, conf, pubConf)
 	}
 }

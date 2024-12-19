@@ -3,6 +3,8 @@ package util
 import (
 	"slices"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestAllocator(t *testing.T) {
@@ -89,4 +91,84 @@ func FuzzAllocator(f *testing.F) {
 		totalMalloc += size
 		t.Logf("totalMalloc:%d, free:%v", totalMalloc, size)
 	})
+}
+
+const testData = `
+- malloc: true
+  offset: 0
+  size: 16384
+- malloc: false
+  offset: 139
+  size: 16245
+- malloc: false
+  offset: 0
+  size: 50
+- malloc: false
+  offset: 50
+  size: 31
+- malloc: false
+  offset: 81
+  size: 9
+- malloc: false
+  offset: 90
+  size: 26
+- malloc: false
+  offset: 116
+  size: 21
+- malloc: false
+  offset: 137
+  size: 2
+- malloc: true
+  offset: 0
+  size: 16384
+- malloc: false
+  offset: 277
+  size: 16107
+- malloc: true
+  offset: 0
+  size: 16384
+- malloc: false
+  offset: 432
+  size: 16229
+- malloc: false
+  offset: 0
+  size: 277
+- malloc: false
+  offset: 277
+  size: 58
+- malloc: false
+  offset: 335
+  size: 60
+- malloc: false
+  offset: 395
+  size: 9
+- malloc: false
+  offset: 404
+  size: 26
+- malloc: true
+  offset: 0
+  size: 16384
+- malloc: false
+  offset: 557
+  size: 16259
+- malloc: false
+  offset: 430
+  size: 2
+`
+
+var history []History
+
+func init() {
+	yaml.Unmarshal([]byte(testData), &history)
+}
+
+func TestAllocatorUseData(t *testing.T) {
+	allocator := NewAllocator(65535)
+	for _, h := range history {
+		if h.Malloc {
+			allocator.Allocate(h.Size)
+		} else {
+			allocator.Free(h.Offset, h.Size)
+		}
+	}
 }

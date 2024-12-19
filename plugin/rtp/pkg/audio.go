@@ -5,18 +5,19 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/bluenviron/mediacommon/pkg/bits"
-	"github.com/deepch/vdk/codec/aacparser"
 	"io"
 	"strings"
 	"time"
 	"unsafe"
 
+	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/deepch/vdk/codec/aacparser"
+
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/util"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
 )
 
 type RTPData struct {
@@ -198,11 +199,11 @@ func (r *RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVF
 	return
 }
 
-type RTPAudio struct {
+type Audio struct {
 	RTPData
 }
 
-func (r *RTPAudio) Parse(t *AVTrack) (err error) {
+func (r *Audio) Parse(t *AVTrack) (err error) {
 	switch r.MimeType {
 	case webrtc.MimeTypeOpus:
 		var ctx OPUSCtx
@@ -211,15 +212,35 @@ func (r *RTPAudio) Parse(t *AVTrack) (err error) {
 	case webrtc.MimeTypePCMA:
 		var ctx PCMACtx
 		ctx.parseFmtpLine(r.RTPCodecParameters)
+		ctx.AudioCtx.SampleRate = int(r.ClockRate)
+		ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
 		t.ICodecCtx = &ctx
 	case webrtc.MimeTypePCMU:
 		var ctx PCMUCtx
 		ctx.parseFmtpLine(r.RTPCodecParameters)
+		ctx.AudioCtx.SampleRate = int(r.ClockRate)
+		ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
 		t.ICodecCtx = &ctx
+	case "audio/MP4A-LATM":
+		var ctx *AACCtx
+		if t.ICodecCtx != nil {
+			// ctx = t.ICodecCtx.(*AACCtx)
+		} else {
+			ctx = &AACCtx{}
+			ctx.parseFmtpLine(r.RTPCodecParameters)
+			if conf, ok := ctx.Fmtp["config"]; ok {
+				if ctx.AACCtx.ConfigBytes, err = hex.DecodeString(conf); err == nil {
+					if ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(ctx.AACCtx.ConfigBytes); err != nil {
+						return
+					}
+				}
+			}
+			t.ICodecCtx = ctx
+		}
 	case "audio/MPEG4-GENERIC":
 		var ctx *AACCtx
 		if t.ICodecCtx != nil {
-			ctx = t.ICodecCtx.(*AACCtx)
+			// ctx = t.ICodecCtx.(*AACCtx)
 		} else {
 			ctx = &AACCtx{}
 			ctx.parseFmtpLine(r.RTPCodecParameters)
@@ -239,10 +260,83 @@ func (r *RTPAudio) Parse(t *AVTrack) (err error) {
 	return
 }
 
-func (r *RTPAudio) Demux(codexCtx codec.ICodecCtx) (any, error) {
+func payloadLengthInfoDecode(buf []byte) (int, int, error) {
+	lb := len(buf)
+	l := 0
+	n := 0
+
+	for {
+		if (lb - n) == 0 {
+			return 0, 0, fmt.Errorf("not enough bytes")
+		}
+
+		b := buf[n]
+		n++
+		l += int(b)
+
+		if b != 255 {
+			break
+		}
+	}
+
+	return l, n, nil
+}
+
+func (r *Audio) Demux(codexCtx codec.ICodecCtx) (any, error) {
 	var data AudioData
-	switch codexCtx.(type) {
-	case *AACCtx:
+	switch r.MimeType {
+	case "audio/MP4A-LATM":
+		var fragments util.Memory
+		var fragmentsExpected int
+		var fragmentsSize int
+		for _, packet := range r.Packets {
+			if packet.Padding {
+				packet.Padding = false
+			}
+			buf := packet.Payload
+			if fragments.Size == 0 {
+				pl, n, err := payloadLengthInfoDecode(buf)
+				if err != nil {
+					return nil, err
+				}
+
+				buf = buf[n:]
+				bl := len(buf)
+
+				if pl <= bl {
+					data.AppendOne(buf[:pl])
+					// there could be other data, due to otherDataPresent. Ignore it.
+				} else {
+					if pl > 5*1024 {
+						fragments = util.Memory{} // discard pending fragments
+						return nil, fmt.Errorf("access unit size (%d) is too big, maximum is %d",
+							pl, 5*1024)
+					}
+
+					fragments.AppendOne(buf)
+					fragmentsSize = pl
+					fragmentsExpected = pl - bl
+					continue
+				}
+			} else {
+				bl := len(buf)
+
+				if fragmentsExpected > bl {
+					fragments.AppendOne(buf)
+					fragmentsExpected -= bl
+					continue
+				}
+
+				fragments.AppendOne(buf[:fragmentsExpected])
+				// there could be other data, due to otherDataPresent. Ignore it.
+				data.Append(fragments.Buffers...)
+				if fragments.Size != fragmentsSize {
+					return nil, fmt.Errorf("fragmented AU size is not correct %d != %d", data.Size, fragmentsSize)
+				}
+				fragments = util.Memory{}
+			}
+		}
+	case "audio/MPEG4-GENERIC":
 		var fragments util.Memory
 		for _, packet := range r.Packets {
 			if len(packet.Payload) < 2 {
@@ -302,7 +396,7 @@ func (r *RTPAudio) Demux(codexCtx codec.ICodecCtx) (any, error) {
 	return data, nil
 }
 
-func (r *RTPAudio) Mux(codexCtx codec.ICodecCtx, from *AVFrame) {
+func (r *Audio) Mux(codexCtx codec.ICodecCtx, from *AVFrame) {
 	data := from.Raw.(AudioData)
 	var ctx *RTPCtx
 	var lastPacket *rtp.Packet
@@ -311,7 +405,7 @@ func (r *RTPAudio) Mux(codexCtx codec.ICodecCtx, from *AVFrame) {
 		ctx = &c.RTPCtx
 		pts := uint32(from.Timestamp * time.Duration(ctx.ClockRate) / time.Second)
 		//AU_HEADER_LENGTH,因为单位是bit, 除以8就是auHeader的字节长度；又因为单个auheader字节长度2字节，所以再除以2就是auheader的个数。
-		auHeaderLen := []byte{0x00, 0x10, (byte)((r.Size & 0x1fe0) >> 5), (byte)((r.Size & 0x1f) << 3)} // 3 = 16-13, 5 = 8-3
+		auHeaderLen := []byte{0x00, 0x10, (byte)((data.Size & 0x1fe0) >> 5), (byte)((data.Size & 0x1f) << 3)} // 3 = 16-13, 5 = 8-3
 		for reader := data.NewReader(); reader.Length > 0; {
 			payloadLen := MTUSize
 			if reader.Length+4 < MTUSize {
@@ -348,7 +442,7 @@ func (r *RTPAudio) Mux(codexCtx codec.ICodecCtx, from *AVFrame) {
 	lastPacket.Header.Marker = true
 }
 
-func (r *RTPAudio) readAUHeaders(ctx *AACCtx, buf []byte, headersLen int) ([]uint64, error) {
+func (r *Audio) readAUHeaders(ctx *AACCtx, buf []byte, headersLen int) ([]uint64, error) {
 	firstRead := false
 
 	count := 0

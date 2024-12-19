@@ -2,16 +2,12 @@ package plugin_webrtc
 
 import (
 	"fmt"
-	"github.com/pion/rtcp"
-	. "github.com/pion/webrtc/v3"
 	"io"
-	"m7s.live/m7s/v5"
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	mrtp "m7s.live/m7s/v5/plugin/rtp/pkg"
-	. "m7s.live/m7s/v5/plugin/webrtc/pkg"
 	"net/http"
 	"strings"
+
+	. "github.com/pion/webrtc/v3"
+	. "m7s.live/v5/plugin/webrtc/pkg"
 )
 
 // https://datatracker.ietf.org/doc/html/draft-ietf-wish-whip
@@ -54,8 +50,12 @@ func (conf *WebRTCPlugin) Push_(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	conn.Publisher.RemoteAddr = r.RemoteAddr
 	conf.AddTask(&conn)
-	conn.Receive()
+	if err = conn.WaitStarted(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -74,6 +74,7 @@ func (conf *WebRTCPlugin) Play_(w http.ResponseWriter, r *http.Request) {
 	streamPath := r.URL.Path[len("/play/"):]
 	rawQuery := r.URL.RawQuery
 	var conn Connection
+	conn.EnableDC = conf.EnableDC
 	bytes, err := io.ReadAll(r.Body)
 	defer func() {
 		if err != nil {
@@ -89,124 +90,18 @@ func (conf *WebRTCPlugin) Play_(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		return
 	}
-	conf.AddTask(&conn)
-	var suber *m7s.Subscriber
 	if rawQuery != "" {
 		streamPath += "?" + rawQuery
 	}
-	if suber, err = conf.Subscribe(conf.Context, streamPath); err != nil {
+	if conn.Subscriber, err = conf.Subscribe(conn.Context, streamPath); err != nil {
 		return
 	}
-	conn.AddTask(suber)
-	var useDC bool
-	var audioTLSRTP, videoTLSRTP *TrackLocalStaticRTP
-	var audioSender, videoSender *RTPSender
-	if vt := suber.Publisher.VideoTrack.AVTrack; vt != nil {
-		if vt.FourCC() == codec.FourCC_H265 {
-			useDC = true
-		} else {
-			var rcc RTPCodecParameters
-			if ctx, ok := vt.ICodecCtx.(mrtp.IRTPCtx); ok {
-				rcc = ctx.GetRTPCodecParameter()
-			} else {
-				var rtpCtx mrtp.RTPData
-				var tmpAVTrack AVTrack
-				tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(vt.ICodecCtx)
-				if err == nil {
-					rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
-				} else {
-					return
-				}
-			}
-			videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, vt.FourCC().String(), suber.StreamPath)
-			if err != nil {
-				return
-			}
-			videoSender, err = conn.PeerConnection.AddTrack(videoTLSRTP)
-			if err != nil {
-				return
-			}
-			go func() {
-				rtcpBuf := make([]byte, 1500)
-				for {
-					if n, _, rtcpErr := videoSender.Read(rtcpBuf); rtcpErr != nil {
-						suber.Warn("rtcp read error", "error", rtcpErr)
-						return
-					} else {
-						if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
-							for _, pp := range p {
-								switch pp.(type) {
-								case *rtcp.PictureLossIndication:
-									// fmt.Println("PictureLossIndication")
-								}
-							}
-						}
-					}
-				}
-			}()
-		}
+	conn.Subscriber.RemoteAddr = r.RemoteAddr
+	conf.AddTask(&conn)
+	if err = conn.WaitStarted(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if at := suber.Publisher.AudioTrack.AVTrack; at != nil {
-		if at.FourCC() == codec.FourCC_MP4A {
-			useDC = true
-		} else {
-			ctx := at.ICodecCtx.(interface {
-				GetRTPCodecCapability() RTPCodecCapability
-			})
-			audioTLSRTP, err = NewTrackLocalStaticRTP(ctx.GetRTPCodecCapability(), at.FourCC().String(), suber.StreamPath)
-			if err != nil {
-				return
-			}
-			audioSender, err = conn.PeerConnection.AddTrack(audioTLSRTP)
-			if err != nil {
-				return
-			}
-		}
-	}
-
-	if conf.EnableDC && useDC {
-		dc, err := conn.CreateDataChannel(suber.StreamPath, nil)
-		if err != nil {
-			return
-		}
-		// TODO: DataChannel
-		go func() {
-			// suber.Handle(m7s.SubscriberHandler{
-			// 	OnAudio: func(audio *rtmp.RTMPAudio) error {
-			// 	},
-			// 	OnVideo: func(video *rtmp.RTMPVideo) error {
-			// 	},
-			// })
-			dc.Close()
-		}()
-	} else {
-		if audioSender == nil {
-			suber.SubAudio = false
-		}
-		if videoSender == nil {
-			suber.SubVideo = false
-		}
-		conn.AddTask(m7s.CreatePlayTask(suber, func(frame *mrtp.RTPAudio) (err error) {
-			for _, p := range frame.Packets {
-				if err = audioTLSRTP.WriteRTP(p); err != nil {
-					return
-				}
-			}
-			return
-		}, func(frame *mrtp.Video) error {
-			for _, p := range frame.Packets {
-				if err := videoTLSRTP.WriteRTP(p); err != nil {
-					return err
-				}
-			}
-			return nil
-		}))
-	}
-	conn.OnICECandidate(func(ice *ICECandidate) {
-		if ice != nil {
-			suber.Info(ice.ToJSON().Candidate)
-		}
-	})
 	if err = conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

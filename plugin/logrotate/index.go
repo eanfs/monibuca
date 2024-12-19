@@ -7,9 +7,9 @@ import (
 	"github.com/alchemy/rotoslog"
 
 	"github.com/phsym/console-slog"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/plugin/logrotate/pb"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/plugin/logrotate/pb"
 )
 
 type LogRotatePlugin struct {
@@ -32,7 +32,7 @@ func (config *LogRotatePlugin) OnInit() (err error) {
 	}
 	config.handler, err = rotoslog.NewHandler(rotoslog.LogHandlerBuilder(builder), rotoslog.LogDir(config.Path), rotoslog.MaxFileSize(config.Size), rotoslog.DateTimeLayout(config.Formatter), rotoslog.MaxRotatedFiles(config.MaxFiles))
 	if err == nil {
-		config.AddLogHandler(config.handler)
+		config.Server.LogHandler.Add(config.handler)
 	}
 	return
 }

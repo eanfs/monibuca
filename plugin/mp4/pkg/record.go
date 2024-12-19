@@ -2,17 +2,18 @@ package mp4
 
 import (
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/plugin/mp4/pkg/box"
-	rtmp "m7s.live/m7s/v5/plugin/rtmp/pkg"
+	"gorm.io/gorm"
+	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/plugin/mp4/pkg/box"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
 type WriteTrailerQueueTask struct {
@@ -30,25 +31,75 @@ func (task *writeTrailerTask) Start() (err error) {
 	err = task.muxer.WriteTrailer()
 	if err != nil {
 		task.Error("write trailer", "err", err)
-		return task.muxer.File.Close()
-	} else {
-		task.Info("write trailer")
-		var temp *os.File
-		temp, err = os.CreateTemp("", "*.mp4")
-		if err != nil {
-			task.Error("create temp file", "err", err)
-			return
+		if errClose := task.muxer.File.Close(); errClose != nil {
+			return errClose
 		}
-		err = task.muxer.ReWriteWithMoov(temp)
-		if err != nil {
-			task.Error("rewrite with moov", "err", err)
-			return
-		}
-		err = task.muxer.File.Close()
-		err = temp.Close()
-		fs.MustCopyFile(temp.Name(), task.muxer.File.Name())
-		return os.Remove(temp.Name())
 	}
+	return
+}
+
+func (task *writeTrailerTask) Run() (err error) {
+	task.Info("write trailer")
+	var temp *os.File
+	temp, err = os.CreateTemp("", "*.mp4")
+	if err != nil {
+		task.Error("create temp file", "err", err)
+		return
+	}
+	defer os.Remove(temp.Name())
+	err = task.muxer.ReWriteWithMoov(temp)
+	if err != nil {
+		task.Error("rewrite with moov", "err", err)
+		return
+	}
+	if _, err = task.muxer.File.Seek(0, io.SeekStart); err != nil {
+		task.Error("seek file", "err", err)
+		return
+	}
+	if _, err = temp.Seek(0, io.SeekStart); err != nil {
+		task.Error("seek temp file", "err", err)
+		return
+	}
+	if _, err = io.Copy(task.muxer.File, temp); err != nil {
+		task.Error("copy file", "err", err)
+		return
+	}
+	if err = task.muxer.File.Close(); err != nil {
+		task.Error("close file", "err", err)
+		return
+	}
+	if err = temp.Close(); err != nil {
+		task.Error("close temp file", "err", err)
+	}
+	return
+}
+
+type eventRecordCheck struct {
+	task.Task
+	DB         *gorm.DB
+	streamPath string
+}
+
+func (t *eventRecordCheck) Run() (err error) {
+	var eventRecordStreams []m7s.RecordStream
+	t.DB.Find(&eventRecordStreams, "record_mode=1 AND event_level=0 AND stream_path=?", t.streamPath) //搜索事件录像，且为重要事件（无法自动删除）
+	if len(eventRecordStreams) > 0 {
+		for _, recordStream := range eventRecordStreams {
+			var unimportantEventRecordStreams []m7s.RecordStream
+			query := `(start_time BETWEEN ? AND ?)
+							OR (end_time BETWEEN ? AND ?) 
+							OR (? BETWEEN start_time AND end_time) 
+							OR (? BETWEEN start_time AND end_time) AND event_level=1 AND stream_path=? `
+			t.DB.Where(query, recordStream.StartTime, recordStream.EndTime, recordStream.StartTime, recordStream.EndTime, recordStream.StartTime, recordStream.EndTime, recordStream.StreamPath).Find(&unimportantEventRecordStreams)
+			if len(unimportantEventRecordStreams) > 0 {
+				for _, unimportantEventRecordStream := range unimportantEventRecordStreams {
+					unimportantEventRecordStream.EventLevel = "0"
+					t.DB.Save(&unimportantEventRecordStream)
+				}
+			}
+		}
+	}
+	return
 }
 
 func init() {
@@ -67,44 +118,67 @@ type Recorder struct {
 
 func (r *Recorder) writeTailer(end time.Time) {
 	r.stream.EndTime = end
-	r.RecordJob.Plugin.DB.Save(&r.stream)
+	if r.RecordJob.Plugin.DB != nil {
+		r.RecordJob.Plugin.DB.Save(&r.stream)
+		writeTrailerQueueTask.AddTask(&eventRecordCheck{
+			DB:         r.RecordJob.Plugin.DB,
+			streamPath: r.stream.StreamPath,
+		})
+	}
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
 		muxer: r.muxer,
 	}, r.Logger)
 }
 
+var CustomFileName = func(job *m7s.RecordJob) string {
+	if job.Fragment == 0 {
+		return fmt.Sprintf("%s.mp4", job.FilePath)
+	}
+	return filepath.Join(job.FilePath, fmt.Sprintf("%d.mp4", time.Now().Unix()))
+}
+
 func (r *Recorder) createStream(start time.Time) (err error) {
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
+	var file *os.File
 	r.stream = m7s.RecordStream{
-		StartTime: start,
-		FilePath:  recordJob.FilePath,
+		StartTime:      start,
+		StreamPath:     sub.StreamPath,
+		FilePath:       CustomFileName(&r.RecordJob),
+		EventId:        recordJob.EventId,
+		EventDesc:      recordJob.EventDesc,
+		EventName:      recordJob.EventName,
+		EventLevel:     recordJob.EventLevel,
+		BeforeDuration: recordJob.BeforeDuration,
+		AfterDuration:  recordJob.AfterDuration,
+		RecordMode:     recordJob.RecordMode,
 	}
+	dir := filepath.Dir(r.stream.FilePath)
+	if err = os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	if file, err = os.Create(r.stream.FilePath); err != nil {
+		return
+	}
+	r.muxer, err = NewFileMuxer(file)
 	if sub.Publisher.HasAudioTrack() {
 		r.stream.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.FourCC().String()
 	}
 	if sub.Publisher.HasVideoTrack() {
 		r.stream.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.FourCC().String()
 	}
-	recordJob.Plugin.DB.Save(&r.stream)
-	var file *os.File
-	if r.RecordJob.Fragment == 0 {
-		if file, err = os.Create(fmt.Sprintf("%d.mp4", r.RecordJob.FilePath)); err != nil {
-			return
-		}
-	} else {
-		if file, err = os.Create(filepath.Join(r.RecordJob.FilePath, fmt.Sprintf("%d.mp4", r.stream.ID))); err != nil {
-			return
-		}
+	if recordJob.Plugin.DB != nil {
+		recordJob.Plugin.DB.Save(&r.stream)
 	}
-	r.muxer, err = NewFileMuxer(file)
 	return
 }
 
 func (r *Recorder) Start() (err error) {
-	err = r.RecordJob.Plugin.DB.AutoMigrate(&r.stream)
-	if err != nil {
-		return
+	if r.RecordJob.Plugin.DB != nil {
+		err = r.RecordJob.Plugin.DB.AutoMigrate(&r.stream)
+		if err != nil {
+			return
+		}
 	}
 	return r.DefaultRecorder.Start()
 }
@@ -119,11 +193,24 @@ func (r *Recorder) Run() (err error) {
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
 	var audioTrack, videoTrack *Track
-	err = r.createStream(time.Now())
+	startTime := time.Now()
+	if recordJob.BeforeDuration > 0 {
+		startTime = startTime.Add(-recordJob.BeforeDuration)
+	}
+	err = r.createStream(startTime)
 	if err != nil {
 		return
 	}
 	var at, vt *pkg.AVTrack
+
+	checkEventRecordStop := func(absTime uint32) (err error) {
+		if duration := int64(absTime); time.Duration(duration)*time.Millisecond >= recordJob.AfterDuration+recordJob.BeforeDuration {
+			now := time.Now()
+			r.writeTailer(now)
+			r.RecordJob.Stop(task.ErrStopByUser)
+		}
+		return
+	}
 
 	checkFragment := func(absTime uint32) (err error) {
 		if duration := int64(absTime); time.Duration(duration)*time.Millisecond >= recordJob.Fragment {
@@ -147,10 +234,18 @@ func (r *Recorder) Run() (err error) {
 	}
 
 	return m7s.PlayBlock(sub, func(audio *pkg.RawAudio) error {
-		if sub.VideoReader == nil && recordJob.Fragment != 0 {
-			err := checkFragment(sub.AudioReader.AbsTime)
-			if err != nil {
-				return err
+		if sub.VideoReader == nil {
+			if recordJob.AfterDuration != 0 {
+				err := checkEventRecordStop(sub.VideoReader.AbsTime)
+				if err != nil {
+					return err
+				}
+			}
+			if recordJob.Fragment != 0 {
+				err := checkFragment(sub.AudioReader.AbsTime)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		if at == nil {
@@ -181,10 +276,18 @@ func (r *Recorder) Run() (err error) {
 			DTS:  uint64(dts),
 		})
 	}, func(video *rtmp.RTMPVideo) error {
-		if sub.VideoReader.Value.IDR && recordJob.Fragment != 0 {
-			err := checkFragment(sub.VideoReader.AbsTime)
-			if err != nil {
-				return err
+		if sub.VideoReader.Value.IDR {
+			if recordJob.AfterDuration != 0 {
+				err := checkEventRecordStop(sub.VideoReader.AbsTime)
+				if err != nil {
+					return err
+				}
+			}
+			if recordJob.Fragment != 0 {
+				err := checkFragment(sub.VideoReader.AbsTime)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		offset := 5
@@ -213,17 +316,20 @@ func (r *Recorder) Run() (err error) {
 			}
 		case *rtmp.H265Ctx:
 			if ctx.Enhanced {
-				switch bytes[1] & 0b1111 {
+				switch t := bytes[0] & 0b1111; t {
 				case rtmp.PacketTypeCodedFrames:
 					offset += 3
 				case rtmp.PacketTypeSequenceStart:
+					return nil
+				case rtmp.PacketTypeCodedFramesX:
+				default:
+					r.Warn("unknown h265 packet type", "type", t)
 					return nil
 				}
 			} else if bytes[1] == 0 {
 				return nil
 			}
 		}
-
 		return r.muxer.WriteSample(videoTrack, box.Sample{
 			KeyFrame: sub.VideoReader.Value.IDR,
 			Data:     bytes[offset:],

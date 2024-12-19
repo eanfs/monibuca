@@ -3,7 +3,7 @@ import "google/api/annotations.proto";
 //import "google/protobuf/empty.proto";
 import "global.proto";
 package rtmp;
-option go_package="m7s.live/m7s/v5/plugin/rtmp/pb";
+option go_package="m7s.live/v5/plugin/rtmp/pb";
 
 service api {
   rpc PushOut (PushRequest) returns (global.SuccessResponse) {

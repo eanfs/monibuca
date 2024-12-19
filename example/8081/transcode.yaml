@@ -1,0 +1,15 @@
+global:
+  loglevel: debug
+  http: :8081
+  tcp: :50052
+debug:
+  profile: cpu.prof
+transcode:
+  onpub:
+    transform:
+     ^live.+:
+       input:
+         mode: rtsp
+       output:
+         - target: rtmp://localhost/trans/$0/small
+           conf: -loglevel debug -c:a aac -c:v h264 -vf scale=320:240

@@ -1,15 +1,16 @@
 package gb28181
 
 import (
+	"errors"
 	"net"
 	"os"
 
 	"github.com/pion/rtp"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/pkg/util"
-	rtp2 "m7s.live/m7s/v5/plugin/rtp/pkg"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
+	rtp2 "m7s.live/v5/plugin/rtp/pkg"
 )
 
 const (
@@ -27,6 +28,8 @@ type PSPublisher struct {
 	*util.BufReader
 	Receiver Receiver
 }
+
+var ErrRTPReceiveLost = errors.New("rtp receive lost")
 
 type Receiver struct {
 	task.Task
@@ -100,6 +103,8 @@ func (p *PSPublisher) Demux() {
 			}
 		case StartCodeMAP:
 			p.decProgramStreamMap()
+		case StartCodeSYS, PrivateStreamCode:
+			p.ReadPayload()
 		default:
 			p.ReadPayload()
 		}
@@ -134,8 +139,15 @@ func (dec *PSPublisher) decProgramStreamMap() (err error) {
 }
 
 func (p *Receiver) ReadRTP(rtp util.Buffer) (err error) {
+	lastSeq := p.SequenceNumber
 	if err = p.Unmarshal(rtp); err != nil {
 		return
+	}
+	if p.SequenceNumber != lastSeq+1 {
+		return ErrRTPReceiveLost
+	}
+	if p.Enabled(p, task.TraceLevel) {
+		p.Trace("rtp", "len", rtp.Len(), "seq", p.SequenceNumber, "payloadType", p.PayloadType, "ssrc", p.SSRC)
 	}
 	copyData := make([]byte, len(p.Payload))
 	copy(copyData, p.Payload)

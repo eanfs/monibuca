@@ -1,0 +1,15 @@
+global:
+  loglevel: debug
+mp4:
+#  pull:
+#    record/test: record/live/test?start=2024-09-12T10:25:00
+  publish:
+    delayclosetimeout: 1s
+  onsub:
+    pull:
+      ^vod(\d)/(.+)$: live/$2
+  onpub:
+    record:
+      ^live/.+:
+        fragment: 1m
+        filepath: record/$0

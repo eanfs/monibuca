@@ -5,10 +5,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/util"
-	gb28181 "m7s.live/m7s/v5/plugin/gb28181/pkg"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg/util"
+	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 
 type RecordRequest struct {
@@ -29,7 +28,7 @@ type Channel struct {
 	RecordReqs          util.Collection[int, *RecordRequest]
 	*slog.Logger
 	gb28181.ChannelInfo
-	AbstractDevice *m7s.Device
+	AbstractDevice *m7s.PullProxy
 }
 
 func (c *Channel) GetKey() string {
@@ -37,5 +36,8 @@ func (c *Channel) GetKey() string {
 }
 
 func (c *Channel) Pull() {
-	c.Device.plugin.Pull(c.AbstractDevice.GetStreamPath(), config.Pull{URL: c.AbstractDevice.PullURL,MaxRetry: -1})
+	pubConf := c.Device.plugin.GetCommonConf().Publish
+	pubConf.PubAudio = c.AbstractDevice.Audio
+	pubConf.DelayCloseTimeout = util.Conditional(c.AbstractDevice.StopOnIdle, time.Second*5, 0)
+	c.Device.plugin.Pull(c.AbstractDevice.GetStreamPath(), c.AbstractDevice.Pull, &pubConf)
 }

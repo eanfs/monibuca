@@ -1,0 +1,66 @@
+syntax = "proto3";
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+package debug;
+option go_package="m7s.live/v5/plugin/debug/pb";
+
+service api {
+  rpc GetHeap (google.protobuf.Empty) returns (HeapResponse) {
+    option (google.api.http) = {
+      get: "/debug/api/heap"
+    };
+  }
+  rpc GetHeapGraph (google.protobuf.Empty) returns (HeapGraphResponse) {
+    option (google.api.http) = {
+      get: "/debug/api/heap/graph"
+    };
+  }
+}
+
+message HeapObject {
+  string type = 1;
+  int64 count = 2;
+  int64 size = 3;
+  double sizePerc = 4;
+  string address = 5;
+  repeated string refs = 6;
+}
+
+message HeapStats {
+  uint64 alloc = 1;
+  uint64 totalAlloc = 2;
+  uint64 sys = 3;
+  uint32 numGC = 4;
+  uint64 heapAlloc = 5;
+  uint64 heapSys = 6;
+  uint64 heapIdle = 7;
+  uint64 heapInuse = 8;
+  uint64 heapReleased = 9;
+  uint64 heapObjects = 10;
+  double gcCPUFraction = 11;
+}
+
+message HeapData {
+  HeapStats stats = 1;
+  repeated HeapObject objects = 2;
+  repeated HeapEdge edges = 3;
+}
+
+message HeapEdge {
+  string from = 1;
+  string to = 2;
+  string fieldName = 3;
+}
+
+message HeapResponse {
+  uint32 code = 1;
+  string message = 2;
+  HeapData data = 3;
+}
+
+message HeapGraphResponse {
+  uint32 code = 1;
+  string message = 2;
+  string data = 3;
+}

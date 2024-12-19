@@ -2,7 +2,7 @@ syntax = "proto3";
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 package logrotate;
-option go_package="m7s.live/m7s/v5/plugin/logrotate/pb";
+option go_package="m7s.live/v5/plugin/logrotate/pb";
 
 service api {
   rpc List (google.protobuf.Empty) returns (ResponseFileInfo) {
@@ -18,7 +18,9 @@ service api {
 }
 
 message ResponseOpen {
-  string content = 1;
+  int32 code = 1;
+  string message = 2;
+  string data = 3;
 }
 
 message RequestFileInfo {
@@ -26,7 +28,9 @@ message RequestFileInfo {
 }
 
 message ResponseFileInfo {
-  repeated FileInfo files = 1;
+  int32 code = 1;
+  string message = 2;
+  repeated FileInfo data = 3;
 }
 
 message FileInfo {

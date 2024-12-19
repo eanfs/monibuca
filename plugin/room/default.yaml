@@ -1,0 +1,6 @@
+subscribe:
+  http:
+    appname: room
+    size: 20
+    ping: ping
+    pong: pong 

@@ -1,0 +1,8 @@
+gb28181:
+  autoinvite: true
+  sip:
+    listenaddr:
+          - udp::5060
+  onsub:
+    pull:
+      .* : $0

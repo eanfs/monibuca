@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -23,6 +24,10 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ApiClient interface {
 	List(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*ResponseList, error)
+	Catalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ResponseCatalog, error)
+	Delete(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*ResponseDelete, error)
+	EventStart(ctx context.Context, in *ReqEventRecord, opts ...grpc.CallOption) (*ResponseEventRecord, error)
+	StartRecord(ctx context.Context, in *ReqStartRecord, opts ...grpc.CallOption) (*ResponseStartRecord, error)
 }
 
 type apiClient struct {
@@ -42,11 +47,51 @@ func (c *apiClient) List(ctx context.Context, in *ReqRecordList, opts ...grpc.Ca
 	return out, nil
 }
 
+func (c *apiClient) Catalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ResponseCatalog, error) {
+	out := new(ResponseCatalog)
+	err := c.cc.Invoke(ctx, "/mp4.api/Catalog", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) Delete(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*ResponseDelete, error) {
+	out := new(ResponseDelete)
+	err := c.cc.Invoke(ctx, "/mp4.api/Delete", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) EventStart(ctx context.Context, in *ReqEventRecord, opts ...grpc.CallOption) (*ResponseEventRecord, error) {
+	out := new(ResponseEventRecord)
+	err := c.cc.Invoke(ctx, "/mp4.api/EventStart", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) StartRecord(ctx context.Context, in *ReqStartRecord, opts ...grpc.CallOption) (*ResponseStartRecord, error) {
+	out := new(ResponseStartRecord)
+	err := c.cc.Invoke(ctx, "/mp4.api/StartRecord", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility
 type ApiServer interface {
 	List(context.Context, *ReqRecordList) (*ResponseList, error)
+	Catalog(context.Context, *emptypb.Empty) (*ResponseCatalog, error)
+	Delete(context.Context, *ReqRecordDelete) (*ResponseDelete, error)
+	EventStart(context.Context, *ReqEventRecord) (*ResponseEventRecord, error)
+	StartRecord(context.Context, *ReqStartRecord) (*ResponseStartRecord, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -56,6 +101,18 @@ type UnimplementedApiServer struct {
 
 func (UnimplementedApiServer) List(context.Context, *ReqRecordList) (*ResponseList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method List not implemented")
+}
+func (UnimplementedApiServer) Catalog(context.Context, *emptypb.Empty) (*ResponseCatalog, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Catalog not implemented")
+}
+func (UnimplementedApiServer) Delete(context.Context, *ReqRecordDelete) (*ResponseDelete, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedApiServer) EventStart(context.Context, *ReqEventRecord) (*ResponseEventRecord, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EventStart not implemented")
+}
+func (UnimplementedApiServer) StartRecord(context.Context, *ReqStartRecord) (*ResponseStartRecord, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartRecord not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 
@@ -88,6 +145,78 @@ func _Api_List_Handler(srv interface{}, ctx context.Context, dec func(interface{
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_Catalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).Catalog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mp4.api/Catalog",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).Catalog(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReqRecordDelete)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mp4.api/Delete",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).Delete(ctx, req.(*ReqRecordDelete))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_EventStart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReqEventRecord)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).EventStart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mp4.api/EventStart",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).EventStart(ctx, req.(*ReqEventRecord))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_StartRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReqStartRecord)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StartRecord(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mp4.api/StartRecord",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StartRecord(ctx, req.(*ReqStartRecord))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -98,6 +227,22 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "List",
 			Handler:    _Api_List_Handler,
+		},
+		{
+			MethodName: "Catalog",
+			Handler:    _Api_Catalog_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _Api_Delete_Handler,
+		},
+		{
+			MethodName: "EventStart",
+			Handler:    _Api_EventStart_Handler,
+		},
+		{
+			MethodName: "StartRecord",
+			Handler:    _Api_StartRecord_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

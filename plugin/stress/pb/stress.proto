@@ -3,7 +3,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "global.proto";
 package stress;
-option go_package="m7s.live/m7s/v5/plugin/stress/pb";
+option go_package="m7s.live/v5/plugin/stress/pb";
 
 service api {
   rpc PushRTMP (PushRequest) returns (m7s.SuccessResponse) {

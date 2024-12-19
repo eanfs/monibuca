@@ -5,8 +5,8 @@ import (
 	"errors"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"m7s.live/m7s/v5/plugin/monitor/pb"
-	monitor "m7s.live/m7s/v5/plugin/monitor/pkg"
+	"m7s.live/v5/plugin/monitor/pb"
+	monitor "m7s.live/v5/plugin/monitor/pkg"
 	"slices"
 )
 
@@ -55,7 +55,7 @@ func (cfg *MonitorPlugin) SessionList(context.Context, *emptypb.Empty) (res *pb.
 					Pid:       uint32(s.PID),
 					Args:      s.Args,
 					StartTime: timestamppb.New(s.StartTime),
-					EndTime:   timestamppb.New(s.EndTime),
+					EndTime:   timestamppb.New(s.EndTime.Time),
 				})
 			}
 		})

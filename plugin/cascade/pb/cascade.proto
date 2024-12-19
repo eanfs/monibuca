@@ -1,0 +1,99 @@
+syntax = "proto3";
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+package cascade;
+
+option go_package = "m7s.live/v5/plugin/cascade/pb";
+
+// CascadeService 定义了级联服务的RPC接口
+service server {
+  // GetClientList 获取所有级联客户端列表
+  rpc GetClientList(GetClientListRequest) returns (GetClientListResponse) {
+    option (google.api.http) = {
+      get: "/cascadeserver/api/list"
+    };
+  }
+
+  // CreateClient 创建新的级联客户端
+  rpc CreateClient(CreateClientRequest) returns (CreateClientResponse) {
+    option (google.api.http) = {
+      post: "/cascadeserver/api/create"
+      body: "*"
+    };
+  }
+
+  // UpdateClient 更新级联客户端
+  rpc UpdateClient(UpdateClientRequest) returns (UpdateClientResponse) {
+    option (google.api.http) = {
+      post: "/cascadeserver/api/update"
+      body: "*"
+    };
+  }
+
+  // DeleteClient 删除级联客户端
+  rpc DeleteClient(DeleteClientRequest) returns (DeleteClientResponse) {
+    option (google.api.http) = {
+      post: "/cascadeserver/api/delete/{id}"
+    };
+  }
+}
+
+// GetClientListRequest 获取客户端列表的请求
+message GetClientListRequest {
+  // 可以添加过滤条件等参数
+}
+
+// GetClientListResponse 获取客户端列表的响应
+message GetClientListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated CascadeClient data = 3;
+}
+
+// CreateClientRequest 创建客户端的请求
+message CreateClientRequest {
+  string name = 1;
+  string secret = 2;
+}
+
+// CreateClientResponse 创建客户端的响应
+message CreateClientResponse {
+  int32 code = 1;
+  string message = 2;
+  CascadeClient data = 3;
+}
+
+// UpdateClientRequest 更新客户端的请求
+message UpdateClientRequest {
+  uint32 id = 1;
+  string name = 2;
+  string secret = 3;
+}
+
+// UpdateClientResponse 更新客户端的响应
+message UpdateClientResponse {
+  int32 code = 1;
+  string message = 2;
+  CascadeClient data = 3;
+}
+
+// DeleteClientRequest 删除客户端的请求
+message DeleteClientRequest {
+  uint32 id = 1;
+}
+
+// DeleteClientResponse 删除客户端的响应
+message DeleteClientResponse {
+  int32 code = 1;
+  string message = 2;
+}
+
+// CascadeClient 表示一个级联客户端的信息
+message CascadeClient {
+  uint32 id = 1;
+  string name = 2;
+  string ip = 3;
+  bool online = 4;
+  google.protobuf.Timestamp createdTime = 5;
+  google.protobuf.Timestamp updatedTime = 6;
+} 

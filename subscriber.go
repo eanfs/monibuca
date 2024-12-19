@@ -3,7 +3,6 @@ package m7s
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,32 +13,43 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
-	"m7s.live/m7s/v5/pkg/task"
+	"m7s.live/v5/pkg/task"
 
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/util"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/util"
 )
 
 var AVFrameType = reflect.TypeOf((*AVFrame)(nil))
+var Owner task.TaskContextKey = "owner"
+
+const (
+	SubscribeTypePush      = "push"
+	SubscribeTypeServer    = "server"
+	SubscribeTypeVod       = "vod"
+	SubscribeTypeTransform = "transform"
+	SubscribeTypeReplay    = "replay"
+	SubscribeTypeAPI       = "api"
+)
 
 type PubSubBase struct {
 	task.Job
-	Plugin       *Plugin
-	StreamPath   string
-	Args         url.Values
-	TimeoutTimer *time.Timer
+	Plugin     *Plugin
+	Type       string
+	StreamPath string
+	Args       url.Values
+	RemoteAddr string
 }
 
 func (ps *PubSubBase) Init(streamPath string, conf any) {
 	if u, err := url.Parse(streamPath); err == nil {
 		ps.StreamPath, ps.Args = u.Path, u.Query()
 	}
-	ps.Description = map[string]any{
+	ps.SetDescriptions(task.Description{
 		"streamPath": ps.StreamPath,
 		"args":       ps.Args,
 		"plugin":     ps.Plugin.Meta.Name,
-	}
+	})
 	// args to config
 	if len(ps.Args) != 0 {
 		ignores, cc := make(map[string]struct{}), make(map[string]any)
@@ -63,16 +73,18 @@ type Subscriber struct {
 	PubSubBase
 	config.Subscribe
 	Publisher                  *Publisher
-	waitPublishDone            *util.Promise
+	DataChannel                chan IDataFrame
+	waitPublishDone            chan struct{}
+	waitStartTime              time.Time
 	AudioReader, VideoReader   *AVRingReader
 	StartAudioTS, StartVideoTS time.Duration
 }
 
 func createSubscriber(p *Plugin, streamPath string, conf config.Subscribe) *Subscriber {
-	subscriber := &Subscriber{Subscribe: conf, waitPublishDone: util.NewPromise(p)}
+	subscriber := &Subscriber{Subscribe: conf, waitPublishDone: make(chan struct{})}
 	subscriber.ID = task.GetNextTaskID()
 	subscriber.Plugin = p
-	subscriber.TimeoutTimer = time.NewTimer(subscriber.WaitTimeout)
+	subscriber.Type = SubscribeTypeServer
 	subscriber.Logger = p.Logger.With("streamPath", streamPath, "sId", subscriber.ID)
 	subscriber.Init(streamPath, &subscriber.Subscribe)
 	if subscriber.Subscribe.BufferTime > 0 {
@@ -81,34 +93,45 @@ func createSubscriber(p *Plugin, streamPath string, conf config.Subscribe) *Subs
 	return subscriber
 }
 
+func (s *Subscriber) waitingPublish() bool {
+	return !s.waitStartTime.IsZero()
+}
+
 func (s *Subscriber) Start() (err error) {
 	server := s.Plugin.Server
 	server.Subscribers.Add(s)
 	s.Info("subscribe")
-	if publisher, ok := server.Streams.Get(s.StreamPath); ok {
-		publisher.AddSubscriber(s)
-		return publisher.WaitTrack()
+
+	if alias, ok := server.AliasStreams.Get(s.StreamPath); ok {
+		if alias.Publisher != nil {
+			alias.Publisher.AddSubscriber(s)
+			return
+		} else {
+			server.OnSubscribe(alias.StreamPath, s.Args)
+		}
 	} else {
-		for reg, streamPath := range server.StreamAlias {
-			if g := reg.FindStringSubmatch(s.StreamPath); len(g) > 0 {
-				for i, gg := range g {
-					streamPath = strings.ReplaceAll(streamPath, fmt.Sprintf("$%d", i), gg)
-				}
-				if publisher, ok = server.Streams.Get(streamPath); ok {
-					s.Description["alias"] = streamPath
+		for reg, alias := range server.StreamAlias {
+			if streamPath := reg.Replace(s.StreamPath, alias); streamPath != "" {
+				server.AliasStreams.Set(&AliasStream{
+					StreamPath: streamPath,
+					Alias:      s.StreamPath,
+				})
+				if publisher, ok := server.Streams.Get(streamPath); ok {
 					publisher.AddSubscriber(s)
-					return publisher.WaitTrack()
+					return
+				} else {
+					server.OnSubscribe(streamPath, s.Args)
 				}
+				break
 			}
 		}
-		if waitStream, ok := server.Waiting.Get(s.StreamPath); ok {
-			waitStream.Add(s)
-		} else {
-			server.createWait(s.StreamPath).Add(s)
-		}
-		for plugin := range server.Plugins.Range {
-			plugin.OnSubscribe(s)
-		}
+	}
+	if publisher, ok := server.Streams.Get(s.StreamPath); ok {
+		publisher.AddSubscriber(s)
+		return
+	} else {
+		server.Waiting.Wait(s)
+		server.OnSubscribe(s.StreamPath, s.Args)
 	}
 	return
 }
@@ -116,10 +139,10 @@ func (s *Subscriber) Start() (err error) {
 func (s *Subscriber) Dispose() {
 	s.Plugin.Server.Subscribers.Remove(s)
 	s.Info("unsubscribe", "reason", s.StopReason())
-	if s.Publisher != nil {
+	if s.waitingPublish() {
+		s.Plugin.Server.Waiting.Leave(s)
+	} else {
 		s.Publisher.RemoveSubscriber(s)
-	} else if waitStream, ok := s.Plugin.Server.Waiting.Get(s.StreamPath); ok {
-		waitStream.Remove(s)
 	}
 }
 
@@ -133,19 +156,19 @@ func (pc *PlayController) Go() (err error) {
 	for err == nil {
 		var b []byte
 		b, err = wsutil.ReadClientBinary(pc.conn)
-		if pc.Subscriber.Publisher == nil {
-			continue
-		}
 		if len(b) >= 3 && [3]byte(b[:3]) == [3]byte{'c', 'm', 'd'} {
+			pc.Info("control", "cmd", b[3])
 			switch b[3] {
 			case 1: // pause
 				pc.Subscriber.Publisher.Pause()
 			case 2: // resume
 				pc.Subscriber.Publisher.Resume()
 			case 3: // seek
-				pc.Subscriber.Publisher.Seek(time.Duration(binary.BigEndian.Uint32(b[4:8])))
+				pc.Subscriber.Publisher.Seek(time.Unix(int64(binary.BigEndian.Uint32(b[4:8])), 0))
 			case 4: // speed
 				pc.Subscriber.Publisher.Speed = float64(binary.BigEndian.Uint32(b[4:8])) / 100
+			case 5: // scale
+				pc.Subscriber.Publisher.Scale = float64(binary.BigEndian.Uint32(b[4:8])) / 100
 			}
 		}
 	}
@@ -168,7 +191,7 @@ func (s *Subscriber) CheckWebSocket(w http.ResponseWriter, r *http.Request) (con
 }
 
 func (s *Subscriber) createAudioReader(dataType reflect.Type, startAudioTs time.Duration) (awi int) {
-	if s.Publisher == nil || dataType == nil {
+	if s.waitingPublish() || dataType == nil {
 		return
 	}
 	var at *AVTrack
@@ -185,17 +208,14 @@ func (s *Subscriber) createAudioReader(dataType reflect.Type, startAudioTs time.
 		if err := at.WaitReady(); err != nil {
 			return
 		}
-		ar := NewAVRingReader(at)
-		s.AudioReader = ar
-		ar.StartTs = startAudioTs
-		ar.Logger = s.Logger.With("reader", dataType.String())
-		ar.Info("start read")
+		s.AudioReader = NewAVRingReader(at, dataType.String())
+		s.AudioReader.StartTs = startAudioTs
 	}
 	return
 }
 
 func (s *Subscriber) createVideoReader(dataType reflect.Type, startVideoTs time.Duration) (vwi int) {
-	if s.Publisher == nil || dataType == nil {
+	if s.waitingPublish() || dataType == nil {
 		return
 	}
 	var vt *AVTrack
@@ -212,30 +232,32 @@ func (s *Subscriber) createVideoReader(dataType reflect.Type, startVideoTs time.
 		if err := vt.WaitReady(); err != nil {
 			return
 		}
-		vr := NewAVRingReader(vt)
-		vr.StartTs = startVideoTs
-		s.VideoReader = vr
-		vr.Logger = s.Logger.With("reader", dataType.String())
-		vr.Info("start read")
+		s.VideoReader = NewAVRingReader(vt, dataType.String())
+		s.VideoReader.StartTs = startVideoTs
 	}
 	return
 }
 
 type SubscribeHandler[A any, V any] struct {
-	task.Task
-	s                          *Subscriber
-	OnAudio                    func(A) error
-	OnVideo                    func(V) error
-	ProcessAudio, ProcessVideo chan func(*AVFrame)
+	//task.Task
+	s                            *Subscriber
+	p                            *Publisher
+	OnAudio                      func(A) error
+	OnVideo                      func(V) error
+	ProcessAudio, ProcessVideo   chan func(*AVFrame)
+	startAudioTs, startVideoTs   time.Duration
+	dataTypeAudio, dataTypeVideo reflect.Type
+	audioFrame, videoFrame       *AVFrame
+	awi, vwi                     int
 }
 
-func CreatePlayTask[A any, V any](s *Subscriber, onAudio func(A) error, onVideo func(V) error) task.ITask {
-	return &SubscribeHandler[A, V]{
-		s:       s,
-		OnAudio: onAudio,
-		OnVideo: onVideo,
-	}
-}
+//func Play[A any, V any](s *Subscriber, onAudio func(A) error, onVideo func(V) error) {
+//	s.AddTask(&SubscribeHandler[A, V]{
+//		s:       s,
+//		OnAudio: onAudio,
+//		OnVideo: onVideo,
+//	})
+//}
 
 func PlayBlock[A any, V any](s *Subscriber, onAudio func(A) error, onVideo func(V) error) (err error) {
 	handler := &SubscribeHandler[A, V]{
@@ -243,115 +265,130 @@ func PlayBlock[A any, V any](s *Subscriber, onAudio func(A) error, onVideo func(
 		OnAudio: onAudio,
 		OnVideo: onVideo,
 	}
-	err = handler.Start()
+	err = handler.Run()
 	s.Stop(err)
 	return
 }
 
-func (handler *SubscribeHandler[A, V]) Start() (err error) {
-	var a1, v1 reflect.Type
+func (handler *SubscribeHandler[A, V]) clearReader() {
 	s := handler.s
-	startAudioTs, startVideoTs := s.StartAudioTS, s.StartVideoTS
+	if s.AudioReader != nil {
+		handler.startAudioTs = time.Duration(s.AudioReader.AbsTime) * time.Millisecond
+		s.AudioReader.StopRead()
+		s.AudioReader = nil
+	}
+	if s.VideoReader != nil {
+		handler.startVideoTs = time.Duration(s.VideoReader.AbsTime) * time.Millisecond
+		s.VideoReader.StopRead()
+		s.VideoReader = nil
+	}
+}
+
+func (handler *SubscribeHandler[A, V]) checkPublishChanged() {
+	s := handler.s
+	if s.waitingPublish() {
+		handler.clearReader()
+	}
+	if handler.p != s.Publisher {
+		handler.clearReader()
+		handler.createReaders()
+		handler.p = s.Publisher
+	}
+	runtime.Gosched()
+}
+
+func (handler *SubscribeHandler[A, V]) sendAudioFrame() (err error) {
+	if handler.awi >= 0 {
+		if len(handler.audioFrame.Wraps) > handler.awi {
+			if handler.s.Enabled(handler.s, task.TraceLevel) {
+				handler.s.Trace("send audio frame", "seq", handler.audioFrame.Sequence)
+			}
+			err = handler.OnAudio(handler.audioFrame.Wraps[handler.awi].(A))
+		} else {
+			handler.s.AudioReader.StopRead()
+		}
+	} else {
+		err = handler.OnAudio(any(handler.audioFrame).(A))
+	}
+	if err != nil && !errors.Is(err, ErrInterrupt) {
+		handler.s.Stop(err)
+	}
+	if handler.ProcessAudio != nil {
+		if f, ok := <-handler.ProcessAudio; ok {
+			f(handler.audioFrame)
+		}
+	}
+	handler.audioFrame = nil
+	return
+}
+
+func (handler *SubscribeHandler[A, V]) sendVideoFrame() (err error) {
+	if handler.vwi >= 0 {
+		if len(handler.videoFrame.Wraps) > handler.vwi {
+			if handler.s.Enabled(handler.s, task.TraceLevel) {
+				handler.s.Trace("send video frame", "seq", handler.videoFrame.Sequence, "data", handler.videoFrame.Wraps[handler.vwi].String(), "size", handler.videoFrame.Wraps[handler.vwi].GetSize())
+			}
+			err = handler.OnVideo(handler.videoFrame.Wraps[handler.vwi].(V))
+		} else {
+			handler.s.VideoReader.StopRead()
+		}
+	} else {
+		err = handler.OnVideo(any(handler.videoFrame).(V))
+	}
+	if err != nil && !errors.Is(err, ErrInterrupt) {
+		handler.s.Stop(err)
+	}
+	if handler.ProcessVideo != nil {
+		if f, ok := <-handler.ProcessVideo; ok {
+			f(handler.videoFrame)
+		}
+	}
+	handler.videoFrame = nil
+	return
+}
+
+func (handler *SubscribeHandler[A, V]) createReaders() {
+	handler.createAudioReader()
+	handler.createVideoReader()
+}
+
+func (handler *SubscribeHandler[A, V]) createVideoReader() {
+	handler.vwi = handler.s.createVideoReader(handler.dataTypeVideo, handler.startVideoTs)
+}
+
+func (handler *SubscribeHandler[A, V]) createAudioReader() {
+	handler.awi = handler.s.createAudioReader(handler.dataTypeAudio, handler.startAudioTs)
+}
+
+func (handler *SubscribeHandler[A, V]) Run() (err error) {
+	handler.s.SetDescription("play", time.Now())
+	s := handler.s
+	handler.startAudioTs, handler.startVideoTs = s.StartAudioTS, s.StartVideoTS
 	var initState = 0
-	prePublisher := s.Publisher
-	var audioFrame, videoFrame *AVFrame
-	if s.SubAudio {
-		a1 = reflect.TypeOf(handler.OnAudio).In(0)
+	handler.p = s.Publisher
+	if s.SubAudio && handler.OnAudio != nil {
+		handler.dataTypeAudio = reflect.TypeOf(handler.OnAudio).In(0)
 	}
-	if s.SubVideo {
-		v1 = reflect.TypeOf(handler.OnVideo).In(0)
+	if s.SubVideo && handler.OnVideo != nil {
+		handler.dataTypeVideo = reflect.TypeOf(handler.OnVideo).In(0)
 	}
-	awi := s.createAudioReader(a1, startAudioTs)
-	vwi := s.createVideoReader(v1, startVideoTs)
+	handler.createReaders()
 	defer func() {
-		if s.AudioReader != nil {
-			s.AudioReader.StopRead()
-		}
-		if s.VideoReader != nil {
-			s.VideoReader.StopRead()
-		}
+		handler.clearReader()
+		handler.s.SetDescription("stopPlay", time.Now())
 	}()
-	sendAudioFrame := func() (err error) {
-		if awi >= 0 {
-			if len(audioFrame.Wraps) > awi {
-				if s.Enabled(s, task.TraceLevel) {
-					s.Trace("send audio frame", "seq", audioFrame.Sequence)
-				}
-				err = handler.OnAudio(audioFrame.Wraps[awi].(A))
-			} else {
-				s.AudioReader.StopRead()
-			}
-		} else {
-			err = handler.OnAudio(any(audioFrame).(A))
-		}
-		if err != nil && !errors.Is(err, ErrInterrupt) {
-			s.Stop(err)
-		}
-		if handler.ProcessAudio != nil {
-			if f, ok := <-handler.ProcessAudio; ok {
-				f(audioFrame)
-			}
-		}
-		audioFrame = nil
-		return
-	}
-	sendVideoFrame := func() (err error) {
-		if vwi >= 0 {
-			if len(videoFrame.Wraps) > vwi {
-				if s.Enabled(s, task.TraceLevel) {
-					s.Trace("send video frame", "seq", videoFrame.Sequence, "data", videoFrame.Wraps[vwi].String(), "size", videoFrame.Wraps[vwi].GetSize())
-				}
-				err = handler.OnVideo(videoFrame.Wraps[vwi].(V))
-			} else {
-				s.VideoReader.StopRead()
-			}
-		} else {
-			err = handler.OnVideo(any(videoFrame).(V))
-		}
-		if err != nil && !errors.Is(err, ErrInterrupt) {
-			s.Stop(err)
-		}
-		if handler.ProcessVideo != nil {
-			if f, ok := <-handler.ProcessVideo; ok {
-				f(videoFrame)
-			}
-		}
-		videoFrame = nil
-		return
-	}
-	checkPublisherChange := func() {
-		if prePublisher != s.Publisher {
-			if s.Publisher == nil {
-				s.Info("publisher gone", "prePublisher", prePublisher.ID)
-			} else {
-				s.Info("publisher changed", "prePublisher", prePublisher.ID, "publisher", s.Publisher.ID)
-			}
-			if s.AudioReader != nil {
-				startAudioTs = time.Duration(s.AudioReader.AbsTime) * time.Millisecond
-				s.AudioReader.StopRead()
-				s.AudioReader = nil
-			}
-			if s.VideoReader != nil {
-				startVideoTs = time.Duration(s.VideoReader.AbsTime) * time.Millisecond
-				s.VideoReader.StopRead()
-				s.VideoReader = nil
-			}
-			awi = s.createAudioReader(a1, startAudioTs)
-			vwi = s.createVideoReader(v1, startVideoTs)
-			prePublisher = s.Publisher
-		}
-	}
+
 	for err == nil {
 		err = s.Err()
 		ar, vr := s.AudioReader, s.VideoReader
 		if vr != nil {
 			for err == nil {
 				err = vr.ReadFrame(&s.Subscribe)
-				if prePublisher != s.Publisher {
+				if handler.p != s.Publisher || s.waitingPublish() {
 					break
 				}
 				if err == nil {
-					videoFrame = &vr.Value
+					handler.videoFrame = &vr.Value
 					err = s.Err()
 				} else if errors.Is(err, ErrDiscard) {
 					s.VideoReader = nil
@@ -363,18 +400,20 @@ func (handler *SubscribeHandler[A, V]) Start() (err error) {
 					return
 				}
 				// fmt.Println("video", s.VideoReader.Track.PreFrame().Sequence-frame.Sequence)
-				if videoFrame.IDR && vr.DecConfChanged() {
+				if handler.videoFrame.IDR && vr.DecConfChanged() {
 					vr.LastCodecCtx = vr.Track.ICodecCtx
 					if seqFrame := vr.Track.SequenceFrame; seqFrame != nil {
 						s.Debug("video codec changed", "data", seqFrame.String())
-						err = handler.OnVideo(seqFrame.(V))
+						if handler.vwi >= 0 {
+							err = handler.OnVideo(seqFrame.(V))
+						}
 					}
 				}
 				if ar != nil {
-					if audioFrame != nil {
-						if util.Conditional(s.SyncMode == 0, videoFrame.Timestamp > audioFrame.Timestamp, videoFrame.WriteTime.After(audioFrame.WriteTime)) {
+					if handler.audioFrame != nil {
+						if util.Conditional(s.SyncMode == 0, handler.videoFrame.Timestamp > handler.audioFrame.Timestamp, handler.videoFrame.WriteTime.After(handler.audioFrame.WriteTime)) {
 							// fmt.Println("switch audio", audioFrame.CanRead)
-							err = sendAudioFrame()
+							err = handler.sendAudioFrame()
 							break
 						}
 					} else if initState++; initState >= 2 {
@@ -382,15 +421,15 @@ func (handler *SubscribeHandler[A, V]) Start() (err error) {
 					}
 				}
 
-				if !s.IFrameOnly || videoFrame.IDR {
-					err = sendVideoFrame()
+				if !s.IFrameOnly || handler.videoFrame.IDR {
+					err = handler.sendVideoFrame()
 				}
 				if ar == nil {
 					break
 				}
 			}
 		} else {
-			vwi = s.createVideoReader(v1, startVideoTs)
+			handler.createVideoReader()
 		}
 		// 正常模式下或者纯音频模式下，音频开始播放
 		if ar != nil {
@@ -407,10 +446,10 @@ func (handler *SubscribeHandler[A, V]) Start() (err error) {
 				//	}
 				//}
 				if err = ar.ReadFrame(&s.Subscribe); err == nil {
-					if prePublisher != s.Publisher {
+					if handler.p != s.Publisher || s.waitingPublish() {
 						break
 					}
-					audioFrame = &ar.Value
+					handler.audioFrame = &ar.Value
 					err = s.Err()
 				} else if errors.Is(err, ErrDiscard) {
 					s.AudioReader = nil
@@ -425,26 +464,27 @@ func (handler *SubscribeHandler[A, V]) Start() (err error) {
 				if ar.DecConfChanged() {
 					ar.LastCodecCtx = ar.Track.ICodecCtx
 					if seqFrame := ar.Track.SequenceFrame; seqFrame != nil {
-						err = handler.OnAudio(seqFrame.(A))
+						if handler.awi >= 0 {
+							err = handler.OnAudio(seqFrame.(A))
+						}
 					}
 				}
-				if vr != nil && videoFrame != nil {
-					if util.Conditional(s.SyncMode == 0, audioFrame.Timestamp > videoFrame.Timestamp, audioFrame.WriteTime.After(videoFrame.WriteTime)) {
-						err = sendVideoFrame()
+				if vr != nil && handler.videoFrame != nil {
+					if util.Conditional(s.SyncMode == 0, handler.audioFrame.Timestamp > handler.videoFrame.Timestamp, handler.audioFrame.WriteTime.After(handler.videoFrame.WriteTime)) {
+						err = handler.sendVideoFrame()
 						break
 					}
 				}
-				if audioFrame.Timestamp >= ar.SkipTs {
-					err = sendAudioFrame()
+				if handler.audioFrame.Timestamp >= ar.SkipTs {
+					err = handler.sendAudioFrame()
 				} else {
-					s.Debug("skip audio", "frame.AbsTime", audioFrame.Timestamp, "s.AudioReader.SkipTs", ar.SkipTs)
+					s.Debug("skip audio", "frame.AbsTime", handler.audioFrame.Timestamp, "s.AudioReader.SkipTs", ar.SkipTs)
 				}
 			}
 		} else {
-			awi = s.createAudioReader(a1, startAudioTs)
+			handler.createAudioReader()
 		}
-		checkPublisherChange()
-		runtime.Gosched()
+		handler.checkPublishChanged()
 	}
 	return
 }

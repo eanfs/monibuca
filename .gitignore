@@ -12,3 +12,6 @@ bin
 !plugin/record
 *.flv
 pullcf.yaml
+admin.zip
+example/default/default
+__debug*

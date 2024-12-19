@@ -1,14 +1,18 @@
 package plugin_flv
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
-	"m7s.live/m7s/v5"
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
+	m7s "m7s.live/v5"
 
-	. "m7s.live/m7s/v5/plugin/flv/pkg"
+	"m7s.live/v5/pkg/util"
+	. "m7s.live/v5/plugin/flv/pkg"
 )
 
 type FLVPlugin struct {
@@ -21,33 +25,31 @@ const defaultConfig m7s.DefaultYaml = `publish:
 
 var _ = m7s.InstallPlugin[FLVPlugin](defaultConfig, NewPuller, NewRecorder)
 
+func (plugin *FLVPlugin) OnInit() (err error) {
+	_, port, _ := strings.Cut(plugin.GetCommonConf().HTTP.ListenAddr, ":")
+	if port == "80" {
+		plugin.PlayAddr = append(plugin.PlayAddr, "http://{hostName}/flv/{streamPath}", "ws://{hostName}/flv/{streamPath}")
+	} else if port != "" {
+		plugin.PlayAddr = append(plugin.PlayAddr, fmt.Sprintf("http://{hostName}:%s/flv/{streamPath}", port), fmt.Sprintf("ws://{hostName}:%s/flv/{streamPath}", port))
+	}
+	_, port, _ = strings.Cut(plugin.GetCommonConf().HTTP.ListenAddrTLS, ":")
+	if port == "443" {
+		plugin.PlayAddr = append(plugin.PlayAddr, "https://{hostName}/flv/{streamPath}", "wss://{hostName}/flv/{streamPath}")
+	} else if port != "" {
+		plugin.PlayAddr = append(plugin.PlayAddr, fmt.Sprintf("https://{hostName}:%s/flv/{streamPath}", port), fmt.Sprintf("wss://{hostName}:%s/flv/{streamPath}", port))
+	}
+	return
+}
+
 func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".flv")
-	//query := r.URL.Query()
-	//speedStr := query.Get("speed")
-	//speed, err := strconv.ParseFloat(speedStr, 64)
 	var err error
 	defer func() {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 	}()
-	//if err != nil {
-	//	speed = 1
-	//}
-	//if startTime, err := util.TimeQueryParse(query.Get("start")); err == nil {
-	//	var vod Vod
-	//	if err = vod.Init(startTime, filepath.Join(plugin.Path, streamPath)); err != nil {
-	//		http.Error(w, err.Error(), http.StatusBadRequest)
-	//		return
-	//	}
-	//	vod.Writer = w
-	//	vod.SetSpeed(speed)
-	//	plugin.Info("vod start", "streamPath", streamPath, "startTime", startTime, "speed", speed)
-	//	err = vod.Run(r.Context())
-	//	plugin.Info("vod done", "streamPath", streamPath, "err", err)
-	//	return
-	//}
+	var conn net.Conn
 	var live Live
 	if r.URL.RawQuery != "" {
 		streamPath += "?" + r.URL.RawQuery
@@ -56,9 +58,16 @@ func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	var conn net.Conn
+	live.Subscriber.RemoteAddr = r.RemoteAddr
 	conn, err = live.Subscriber.CheckWebSocket(w, r)
 	if err != nil {
+		return
+	}
+	if conn != nil {
+		live.WriteFlvTag = func(flv net.Buffers) (err error) {
+			return wsutil.WriteServerMessage(conn, ws.OpBinary, util.ConcatBuffers(flv))
+		}
+		err = live.Run()
 		return
 	}
 	wto := plugin.GetCommonConf().WriteTimeout
@@ -85,4 +94,11 @@ func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err = live.Run()
+}
+
+func (plugin *FLVPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxy) any {
+	d := &m7s.HTTPPullProxy{}
+	d.PullProxy = pullProxy
+	d.Plugin = &plugin.Plugin
+	return d
 }

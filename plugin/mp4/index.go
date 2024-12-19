@@ -1,6 +1,7 @@
 package plugin_mp4
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -8,13 +9,13 @@ import (
 	"time"
 
 	"github.com/Eyevinn/mp4ff/mp4"
-	"m7s.live/m7s/v5"
-	v5 "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/util"
-	"m7s.live/m7s/v5/plugin/mp4/pb"
-	pkg "m7s.live/m7s/v5/plugin/mp4/pkg"
-	rtmp "m7s.live/m7s/v5/plugin/rtmp/pkg"
+	"m7s.live/v5"
+	v5 "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
+	"m7s.live/v5/plugin/mp4/pb"
+	pkg "m7s.live/v5/plugin/mp4/pkg"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
 type MediaContext struct {
@@ -69,19 +70,56 @@ func (m *TrackContext) Push(ctx *MediaContext, dt uint32, dur uint32, data []byt
 type MP4Plugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
+	BeforeDuration           time.Duration `default:"30s" desc:"事件录像提前时长，不配置则默认30s"`
+	AfterDuration            time.Duration `default:"30s" desc:"事件录像结束时长，不配置则默认30s"`
+	RecordFileExpireDays     int           `desc:"录像自动删除的天数,0或未设置表示不自动删除"`
+	DiskMaxPercent           float64       `default:"90" desc:"硬盘使用百分之上限值，超上限后触发报警，并停止当前所有磁盘写入动作。"`
+	AutoOverWriteDiskPercent float64       `default:"80" desc:"自动覆盖功能磁盘占用上限值，超过上限时连续录像自动删除日有录像，事件录像自动删除非重要事件录像，删除规则为删除距离当日最久日期的连续录像或非重要事件录像。"`
+	ExceptionPostUrl         string        `desc:"第三方异常上报地址"`
+	EventRecordFilePath      string        `desc:"事件录像存放地址"`
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
   speed: 1`
 
+// var exceptionChannel = make(chan *Exception)
 var _ = m7s.InstallPlugin[MP4Plugin](defaultConfig, &pb.Api_ServiceDesc, pb.RegisterApiHandler, pkg.NewPuller, pkg.NewRecorder)
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/download/{filePath...}": p.download,
+		"/download/{streamPath...}": p.download,
 	}
 }
-
+func (p *MP4Plugin) OnInit() (err error) {
+	if p.DB != nil {
+		err = p.DB.AutoMigrate(&Exception{})
+		p.DB.AutoMigrate(&m7s.RecordStream{})
+		var deleteRecordTask DeleteRecordTask
+		deleteRecordTask.DB = p.DB
+		deleteRecordTask.DiskMaxPercent = p.DiskMaxPercent
+		deleteRecordTask.AutoOverWriteDiskPercent = p.AutoOverWriteDiskPercent
+		deleteRecordTask.RecordFileExpireDays = p.RecordFileExpireDays
+		p.AddTask(&deleteRecordTask)
+	}
+	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
+	// 	for exception := range exceptionChannel {
+	// 		p.SendToThirdPartyAPI(exception)
+	// 	}
+	// }()
+	_, port, _ := strings.Cut(p.GetCommonConf().HTTP.ListenAddr, ":")
+	if port == "80" {
+		p.PlayAddr = append(p.PlayAddr, "http://{hostName}/mp4/{streamPath}.mp4")
+	} else if port != "" {
+		p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("http://{hostName}:%s/mp4/{streamPath}.mp4", port))
+	}
+	_, port, _ = strings.Cut(p.GetCommonConf().HTTP.ListenAddrTLS, ":")
+	if port == "443" {
+		p.PlayAddr = append(p.PlayAddr, "https://{hostName}/mp4/{streamPath}.mp4")
+	} else if port != "" {
+		p.PlayAddr = append(p.PlayAddr, fmt.Sprintf("https://{hostName}:%s/mp4/{streamPath}.mp4", port))
+	}
+	return
+}
 func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".mp4")
 	if r.URL.RawQuery != "" {
@@ -92,6 +130,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	sub.RemoteAddr = r.RemoteAddr
 	var ctx MediaContext
 	ctx.conn, err = sub.CheckWebSocket(w, r)
 	if err != nil {
@@ -203,7 +242,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durVideo = video.Timestamp - lastVTime
 		}
 		bs := video.Memory.ToBytes()
-		if ctx, ok := sub.VideoReader.Track.ICodecCtx.(*rtmp.H265Ctx); ok && ctx.Enhanced && bs[1]&0b1111 == rtmp.PacketTypeCodedFrames {
+		if ctx, ok := sub.VideoReader.Track.ICodecCtx.(*rtmp.H265Ctx); ok && ctx.Enhanced && bs[0]&0b1111 == rtmp.PacketTypeCodedFrames {
 			offsetVideo = 8
 		} else {
 			offsetVideo = 5

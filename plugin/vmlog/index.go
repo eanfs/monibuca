@@ -2,14 +2,15 @@ package plugin_vmlog
 
 import (
 	"fmt"
+	"log/slog"
+	"net/http"
+
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vlinsert"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vlselect"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
-	"log/slog"
-	"m7s.live/m7s/v5"
-	"net/http"
+	"m7s.live/v5"
 	//"m7s.live/m7s/v5/plugin/logrotate/pb"
 )
 
@@ -37,7 +38,7 @@ func (config *VmLogPlugin) OnInit() (err error) {
 	vlinsert.Init()
 	config.handler, err = NewVmLogHandler(nil, nil)
 	if err == nil {
-		config.AddLogHandler(config.handler)
+		config.Server.LogHandler.Add(config.handler)
 	}
 	return
 }

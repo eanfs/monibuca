@@ -3,7 +3,7 @@ package rtsp
 import (
 	"errors"
 	"fmt"
-	"m7s.live/m7s/v5/pkg/util"
+	"m7s.live/v5/pkg/util"
 	"net/http"
 	"strconv"
 	"strings"
@@ -223,11 +223,18 @@ func (c *Stream) SetupMedia(media *Media, index int) (byte, error) {
 }
 
 func (c *Stream) Play() (err error) {
-	return c.WriteRequest(&util.Request{Method: MethodPlay, URL: c.URL})
+	_, err = c.Do(&util.Request{Method: MethodPlay, URL: c.URL})
+	return
+}
+
+func (c *Stream) Pause() (err error) {
+	_, err = c.Do(&util.Request{Method: MethodPause, URL: c.URL})
+	return
 }
 
 func (c *Stream) Record() (err error) {
-	return c.WriteRequest(&util.Request{Method: MethodRecord, URL: c.URL})
+	_, err = c.Do(&util.Request{Method: MethodRecord, URL: c.URL})
+	return
 }
 
 func (c *Stream) Teardown() (err error) {
@@ -235,7 +242,7 @@ func (c *Stream) Teardown() (err error) {
 	return c.WriteRequest(&util.Request{Method: MethodTeardown, URL: c.URL})
 }
 
-func (ns *Stream) Dispose() {
-	_ = ns.Teardown()
-	ns.NetConnection.Dispose()
-}
+//func (ns *Stream) Dispose() {
+//	//_ = ns.Teardown()
+//	ns.NetConnection.Dispose()
+//}

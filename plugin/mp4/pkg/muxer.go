@@ -2,10 +2,11 @@ package mp4
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 
-	. "m7s.live/m7s/v5/plugin/mp4/pkg/box"
+	. "m7s.live/v5/plugin/mp4/pkg/box"
 )
 
 const (
@@ -164,6 +165,9 @@ func (m *FileMuxer) WriteSample(t *Track, sample Sample) (err error) {
 }
 
 func (m *Muxer) WriteSample(w io.Writer, t *Track, sample Sample) (err error) {
+	if len(sample.Data) == 0 {
+		return errors.New("sample data is empty")
+	}
 	sample.Offset = m.CurrentOffset
 	sample.Size, err = w.Write(sample.Data)
 	if err != nil {

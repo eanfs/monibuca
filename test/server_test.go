@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/task"
 )
 
 func TestRestart(b *testing.T) {
@@ -20,7 +21,7 @@ func TestRestart(b *testing.T) {
 		server.Stop(pkg.ErrRestart)
 		b.Log("server stop2")
 		time.Sleep(time.Second * 2)
-		server.Stop(pkg.ErrStopFromAPI)
+		server.Stop(task.ErrStopByUser)
 		b.Log("server stop3")
 	}()
 	for err := pkg.ErrRestart; errors.Is(err, pkg.ErrRestart); {

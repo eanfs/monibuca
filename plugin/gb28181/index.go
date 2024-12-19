@@ -19,12 +19,12 @@ import (
 	"github.com/icholy/digest"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"m7s.live/m7s/v5"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/pkg/util"
-	"m7s.live/m7s/v5/plugin/gb28181/pb"
-	gb28181 "m7s.live/m7s/v5/plugin/gb28181/pkg"
+	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
+	"m7s.live/v5/plugin/gb28181/pb"
+	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 
 type SipConfig struct {
@@ -50,6 +50,7 @@ type GB28181Plugin struct {
 	Sip        SipConfig
 	MediaPort  util.Range[uint16] `default:"10000-20000" desc:"媒体端口范围"` //媒体端口范围
 	Position   PositionConfig
+	Parent     string `desc:"父级设备"`
 	ua         *sipgo.UserAgent
 	server     *sipgo.Server
 	devices    util.Collection[string, *Device]
@@ -57,7 +58,10 @@ type GB28181Plugin struct {
 	tcpPorts   chan uint16
 }
 
-var _ = m7s.InstallPlugin[GB28181Plugin](pb.RegisterApiHandler, &pb.Api_ServiceDesc, func() m7s.IPuller {
+var _ = m7s.InstallPlugin[GB28181Plugin](pb.RegisterApiHandler, &pb.Api_ServiceDesc, func(conf config.Pull) m7s.IPuller {
+	if util.Exist(conf.URL) {
+		return &gb28181.DumpPuller{}
+	}
 	return new(Dialog)
 })
 
@@ -68,54 +72,62 @@ func (gb *GB28181Plugin) OnInit() (err error) {
 	logger := zerolog.New(os.Stdout)
 	gb.ua, err = sipgo.NewUA(sipgo.WithUserAgent("M7S/" + m7s.Version)) // Build user agent
 	// Creating client handle for ua
-	gb.server, _ = sipgo.NewServer(gb.ua, sipgo.WithServerLogger(logger)) // Creating server handle for ua
-	gb.server.OnRegister(gb.OnRegister)
-	gb.server.OnMessage(gb.OnMessage)
-	gb.server.OnBye(gb.OnBye)
-	gb.devices.L = new(sync.RWMutex)
+	if len(gb.Sip.ListenAddr) > 0 {
+		gb.server, _ = sipgo.NewServer(gb.ua, sipgo.WithServerLogger(logger)) // Creating server handle for ua
+		gb.server.OnRegister(gb.OnRegister)
+		gb.server.OnMessage(gb.OnMessage)
+		gb.server.OnBye(gb.OnBye)
+		gb.devices.L = new(sync.RWMutex)
 
-	if gb.MediaPort.Valid() {
-		gb.tcpPorts = make(chan uint16, gb.MediaPort.Size())
-		for i := range gb.MediaPort.Size() {
-			gb.tcpPorts <- gb.MediaPort[0] + i
-		}
-	} else {
-		tcpConfig := &gb.GetCommonConf().TCP
-		tcpConfig.ListenAddr = fmt.Sprintf(":%d", gb.MediaPort[0])
-	}
-	for _, addr := range gb.Sip.ListenAddr {
-		netWork, addr, _ := strings.Cut(addr, ":")
-		go gb.server.ListenAndServe(gb, netWork, addr)
-	}
-	if len(gb.Sip.ListenTLSAddr) > 0 {
-		if tslConfig, err := config.GetTLSConfig(gb.Sip.CertFile, gb.Sip.KeyFile); err == nil {
-			for _, addr := range gb.Sip.ListenTLSAddr {
-				netWork, addr, _ := strings.Cut(addr, ":")
-				go gb.server.ListenAndServeTLS(gb, netWork, addr, tslConfig)
+		if gb.MediaPort.Valid() {
+			gb.SetDescription("tcp", fmt.Sprintf("%d-%d", gb.MediaPort[0], gb.MediaPort[1]))
+			gb.tcpPorts = make(chan uint16, gb.MediaPort.Size())
+			for i := range gb.MediaPort.Size() {
+				gb.tcpPorts <- gb.MediaPort[0] + i
 			}
 		} else {
-			return err
+			gb.SetDescription("tcp", fmt.Sprintf("%d", gb.MediaPort[0]))
+			tcpConfig := &gb.GetCommonConf().TCP
+			tcpConfig.ListenAddr = fmt.Sprintf(":%d", gb.MediaPort[0])
+		}
+		for _, addr := range gb.Sip.ListenAddr {
+			netWork, addr, _ := strings.Cut(addr, ":")
+			gb.SetDescription(netWork, strings.TrimPrefix(addr, ":"))
+			go gb.server.ListenAndServe(gb, netWork, addr)
+		}
+		if len(gb.Sip.ListenTLSAddr) > 0 {
+			if tslConfig, err := config.GetTLSConfig(gb.Sip.CertFile, gb.Sip.KeyFile); err == nil {
+				for _, addr := range gb.Sip.ListenTLSAddr {
+					netWork, addr, _ := strings.Cut(addr, ":")
+					gb.SetDescription(netWork+"TLS", strings.TrimPrefix(addr, ":"))
+					go gb.server.ListenAndServeTLS(gb, netWork, addr, tslConfig)
+				}
+			} else {
+				return err
+			}
+		}
+		if gb.DB != nil {
+			gb.DB.AutoMigrate(&Device{})
 		}
 	}
-	if gb.DB != nil {
-		gb.DB.AutoMigrate(&Device{})
+	if gb.Parent != "" {
+		var client Client
+		client.conf = gb
+		client.SetRetry(-1, time.Second*5)
+		gb.AddTask(&client)
 	}
 	return
 }
 
-func (p *GB28181Plugin) OnDeviceAdd(device *m7s.Device) (ret task.ITask) {
-	if device.Type != m7s.DeviceTypeGB {
-		return
-	}
-	deviceID, channelID, _ := strings.Cut(device.PullURL, "/")
+func (p *GB28181Plugin) OnPullProxyAdd(pullProxy *m7s.PullProxy) any {
+	deviceID, channelID, _ := strings.Cut(pullProxy.URL, "/")
 	if d, ok := p.devices.Get(deviceID); ok {
 		if channel, ok := d.channels.Get(channelID); ok {
-			channel.AbstractDevice = device
-			device.Handler = channel
-			device.ChangeStatus(m7s.DeviceStatusOnline)
+			channel.AbstractDevice = pullProxy
+			return channel
 		}
 	}
-	return
+	return nil
 }
 
 func (gb *GB28181Plugin) RegisterHandler() map[string]http.HandlerFunc {
@@ -208,7 +220,12 @@ func (gb *GB28181Plugin) OnRegister(req *sip.Request, tx sip.ServerTransaction) 
 			return
 		}
 	}
-	if err = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)); err != nil {
+	response := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	response.AppendHeader(sip.NewHeader("Expires", fmt.Sprintf("%d", expSec)))
+	response.AppendHeader(sip.NewHeader("Date", time.Now().Local().Format(util.LocalTimeFormat)))
+	response.AppendHeader(sip.NewHeader("Server", "M7S/"+m7s.Version))
+	response.AppendHeader(sip.NewHeader("Allow", "INVITE,ACK,CANCEL,BYE,NOTIFY,OPTIONS,PRACK,UPDATE,REFER"))
+	if err = tx.Respond(response); err != nil {
 		gb.Error("respond OK", "error", err.Error())
 	}
 	if isUnregister {
@@ -322,17 +339,17 @@ func (gb *GB28181Plugin) StoreDevice(id string, req *sip.Request) (d *Device) {
 	d.OnStart(func() {
 		gb.devices.Add(d)
 		d.channels.OnAdd(func(c *Channel) {
-			if absDevice, ok := gb.Server.Devices.Find(func(absDevice *m7s.Device) bool {
-				return absDevice.Type == m7s.DeviceTypeGB && absDevice.PullURL == fmt.Sprintf("%s/%s", d.ID, c.DeviceID)
+			if absDevice, ok := gb.Server.PullProxies.Find(func(absDevice *m7s.PullProxy) bool {
+				return absDevice.Type == "gb28181" && absDevice.URL == fmt.Sprintf("%s/%s", d.ID, c.DeviceID)
 			}); ok {
 				c.AbstractDevice = absDevice
 				absDevice.Handler = c
-				absDevice.ChangeStatus(m7s.DeviceStatusOnline)
+				absDevice.ChangeStatus(m7s.PullProxyStatusOnline)
 			}
 			if gb.AutoInvite {
 				gb.Pull(fmt.Sprintf("%s/%s", d.ID, c.DeviceID), config.Pull{
 					URL: fmt.Sprintf("%s/%s", d.ID, c.DeviceID),
-				})
+				}, nil)
 			}
 		})
 	})
@@ -341,7 +358,7 @@ func (gb *GB28181Plugin) StoreDevice(id string, req *sip.Request) (d *Device) {
 		if gb.devices.RemoveByKey(d.ID) {
 			for c := range d.channels.Range {
 				if c.AbstractDevice != nil {
-					c.AbstractDevice.ChangeStatus(m7s.DeviceStatusOffline)
+					c.AbstractDevice.ChangeStatus(m7s.PullProxyStatusOffline)
 				}
 			}
 		}
@@ -350,11 +367,16 @@ func (gb *GB28181Plugin) StoreDevice(id string, req *sip.Request) (d *Device) {
 	return
 }
 
-func (gb *GB28181Plugin) Pull(streamPath string, conf config.Pull) {
+func (gb *GB28181Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
+	if util.Exist(conf.URL) {
+		var puller gb28181.DumpPuller
+		puller.GetPullJob().Init(&puller, &gb.Plugin, streamPath, conf, pubConf)
+		return
+	}
 	dialog := Dialog{
 		gb: gb,
 	}
-	dialog.GetPullJob().Init(&dialog, &gb.Plugin, streamPath, conf)
+	dialog.GetPullJob().Init(&dialog, &gb.Plugin, streamPath, conf, pubConf)
 }
 
 func (gb *GB28181Plugin) GetPullableList() []string {

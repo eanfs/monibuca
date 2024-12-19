@@ -3,13 +3,14 @@ package pkg
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/deepch/vdk/codec/h264parser"
-	"github.com/deepch/vdk/codec/h265parser"
 	"io"
 	"time"
 
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/util"
+	"github.com/deepch/vdk/codec/h264parser"
+	"github.com/deepch/vdk/codec/h265parser"
+
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
 )
 
 var _ IAVFrame = (*AnnexB)(nil)
@@ -41,6 +42,7 @@ func (a *AnnexB) GetSize() int {
 func (a *AnnexB) GetTimestamp() time.Duration {
 	return a.DTS * time.Millisecond / 90
 }
+
 func (a *AnnexB) GetCTS() time.Duration {
 	return (a.PTS - a.DTS) * time.Millisecond / 90
 }
@@ -83,9 +85,14 @@ func (a *AnnexB) Parse(t *AVTrack) (err error) {
 			switch codec.ParseH264NALUType(nalu.Buffers[0][0]) {
 			case codec.NALU_SPS:
 				ctx.RecordInfo.SPS = [][]byte{nalu.ToBytes()}
+				if len(ctx.RecordInfo.PPS) > 0 {
+					ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.SPS(), ctx.PPS())
+				}
 			case codec.NALU_PPS:
 				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
-				ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.SPS(), ctx.PPS())
+				if len(ctx.RecordInfo.SPS) > 0 {
+					ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.SPS(), ctx.PPS())
+				}
 			case codec.NALU_IDR_Picture:
 				t.Value.IDR = true
 			}
@@ -129,6 +136,9 @@ func (a *AnnexB) Demux(codecCtx codec.ICodecCtx) (ret any, err error) {
 				startCode = 3
 			}
 			if startCode > 0 {
+				if reader.Offset() == 3 {
+					startCode = 3
+				}
 				reader.Unread(startCode)
 				if reader.Offset() > 0 {
 					gotNalu()
@@ -150,6 +160,9 @@ func (a *AnnexB) Demux(codecCtx codec.ICodecCtx) (ret any, err error) {
 }
 
 func (a *AnnexB) Mux(codecCtx codec.ICodecCtx, frame *AVFrame) {
+	a.DTS = frame.Timestamp * 90 / time.Millisecond
+	a.PTS = a.DTS + frame.CTS*90/time.Millisecond
+	a.InitRecycleIndexes(0)
 	delimiter2 := codec.NALU_Delimiter2[:]
 	a.AppendOne(delimiter2)
 	if frame.IDR {

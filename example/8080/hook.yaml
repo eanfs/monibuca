@@ -1,0 +1,7 @@
+hook:
+  server_keep_alive:
+    url: "http://your-webhook-endpoint"
+    method: "POST"
+    interval: 60  # 每60秒发送一次保活信息
+    retryTimes: 3
+    retryInterval: 1s

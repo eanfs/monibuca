@@ -3,16 +3,27 @@ package task
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
-	"m7s.live/m7s/v5/pkg/util"
+	"m7s.live/v5/pkg/util"
 )
 
 var idG atomic.Uint32
+var sourceFilePathPrefix string
+
+func init() {
+	if _, file, _, ok := runtime.Caller(0); ok {
+		sourceFilePathPrefix = strings.TrimSuffix(file, "pkg/task/job.go")
+	}
+}
 
 func GetNextTaskID() uint32 {
 	return idG.Add(1)
@@ -21,12 +32,14 @@ func GetNextTaskID() uint32 {
 // Job include tasks
 type Job struct {
 	Task
+	cases                 []reflect.SelectCase
 	addSub                chan ITask
 	children              []ITask
 	lazyRun               sync.Once
+	eventLoopLock         sync.Mutex
 	childrenDisposed      chan struct{}
 	childDisposeListeners []func(ITask)
-	blocked               bool
+	blocked               ITask
 }
 
 func (*Job) GetTaskType() TaskType {
@@ -37,12 +50,15 @@ func (mt *Job) getJob() *Job {
 	return mt
 }
 
-func (mt *Job) Blocked() bool {
+func (mt *Job) Blocked() ITask {
 	return mt.blocked
 }
 
 func (mt *Job) waitChildrenDispose() {
-	close(mt.addSub)
+	if blocked := mt.blocked; blocked != nil {
+		blocked.Stop(mt.StopReason())
+	}
+	mt.addSub <- nil
 	<-mt.childrenDisposed
 }
 
@@ -61,22 +77,22 @@ func (mt *Job) onDescendantsDispose(descendants ITask) {
 
 func (mt *Job) onChildDispose(child ITask) {
 	if child.getParent() == mt {
-		mt.onDescendantsDispose(child)
+		if child.GetTaskType() != TASK_TYPE_CALL || child.GetOwnerType() != "CallBack" {
+			mt.onDescendantsDispose(child)
+		}
 		child.dispose()
 	}
-}
-
-func (mt *Job) dispose() {
-	if mt.childrenDisposed != nil {
-		mt.OnBeforeDispose(mt.waitChildrenDispose)
-	}
-	mt.Task.dispose()
 }
 
 func (mt *Job) RangeSubTask(callback func(task ITask) bool) {
 	for _, task := range mt.children {
 		callback(task)
 	}
+}
+
+func (mt *Job) AddDependTask(t ITask, opt ...any) (task *Task) {
+	mt.Depend(t)
+	return mt.AddTask(t, opt...)
 }
 
 func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
@@ -86,7 +102,7 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 			case context.Context:
 				task.parentCtx = v
 			case Description:
-				task.Description = v
+				task.SetDescriptions(v)
 			case RetryConfig:
 				task.retry = v
 			case *slog.Logger:
@@ -98,19 +114,27 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 		switch t.(type) {
 		case TaskStarter, TaskBlock, TaskGo:
 			// need start now
-		default:
+		case IJob:
 			// lazy start
 			return
 		}
 	}
+	_, file, line, ok := runtime.Caller(1)
+
+	if ok {
+		task.StartReason = fmt.Sprintf("%s:%d", strings.TrimPrefix(file, sourceFilePathPrefix), line)
+	}
 
 	mt.lazyRun.Do(func() {
-		if mt.parent != nil && mt.Context == nil {
-			mt.parent.AddTask(mt.handler) // second add, lazy start
+		if mt.eventLoopLock.TryLock() {
+			defer mt.eventLoopLock.Unlock()
+			if mt.parent != nil && mt.Context == nil {
+				mt.parent.AddTask(mt.handler) // second add, lazy start
+			}
+			mt.childrenDisposed = make(chan struct{})
+			mt.addSub = make(chan ITask, 20)
+			go mt.run()
 		}
-		mt.childrenDisposed = make(chan struct{})
-		mt.addSub = make(chan ITask, 10)
-		go mt.run()
 	})
 	if task.Context == nil {
 		if task.parentCtx == nil {
@@ -132,34 +156,40 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 		task.startup.Reject(mt.StopReason())
 		return
 	}
-
+	if len(mt.addSub) > 10 {
+		if mt.Logger != nil {
+			mt.Warn("task wait list too many", "count", len(mt.addSub))
+		}
+	}
 	mt.addSub <- t
 	return
 }
 
-func (mt *Job) Call(callback func() error) {
-	mt.Post(callback).WaitStarted()
+func (mt *Job) Call(callback func() error, args ...any) {
+	mt.Post(callback, args...).WaitStarted()
 }
 
-func (mt *Job) Post(callback func() error) *Task {
+func (mt *Job) Post(callback func() error, args ...any) *Task {
 	task := CreateTaskByCallBack(callback, nil)
+	if len(args) > 0 {
+		task.SetDescription(OwnerTypeKey, args[0])
+	}
 	return mt.AddTask(task)
 }
 
-func (mt *Job) addChild(task ITask) int {
-	mt.children = append(mt.children, task)
-	return len(mt.children) - 1
-}
-
 func (mt *Job) run() {
-	cases := []reflect.SelectCase{{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(mt.addSub)}}
+	mt.cases = []reflect.SelectCase{{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(mt.addSub)}}
 	defer func() {
 		err := recover()
 		if err != nil {
 			if mt.Logger != nil {
-				mt.Logger.Error("job panic", "err", err)
+				mt.Logger.Error("job panic", "err", err, "stack", string(debug.Stack()))
 			}
-			mt.Stop(errors.Join(err.(error), ErrPanic))
+			if !ThrowPanic {
+				mt.Stop(errors.Join(err.(error), ErrPanic))
+			} else {
+				panic(err)
+			}
 		}
 		stopReason := mt.StopReason()
 		for _, task := range mt.children {
@@ -170,35 +200,34 @@ func (mt *Job) run() {
 		close(mt.childrenDisposed)
 	}()
 	for {
-		mt.blocked = false
-		if chosen, rev, ok := reflect.Select(cases); chosen == 0 {
-			mt.blocked = true
-			if !ok {
+		mt.blocked = nil
+		if chosen, rev, ok := reflect.Select(mt.cases); chosen == 0 {
+			if rev.IsNil() {
 				return
 			}
-			if child := rev.Interface().(ITask); child.getParent() != mt || child.start() {
-				mt.children = append(mt.children, child)
-				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(child.GetSignal())})
+			if mt.blocked = rev.Interface().(ITask); mt.blocked.getParent() != mt || mt.blocked.start() {
+				mt.children = append(mt.children, mt.blocked)
+				mt.cases = append(mt.cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(mt.blocked.GetSignal())})
 			}
 		} else {
 			taskIndex := chosen - 1
-			child := mt.children[taskIndex]
-			switch tt := child.(type) {
+			mt.blocked = mt.children[taskIndex]
+			switch tt := mt.blocked.(type) {
 			case IChannelTask:
 				tt.Tick(rev.Interface())
 				if tt.IsStopped() {
-					mt.onChildDispose(child)
+					mt.onChildDispose(mt.blocked)
 				}
 			}
 			if !ok {
-				if mt.onChildDispose(child); child.checkRetry(child.StopReason()) {
-					if child.reset(); child.start() {
-						cases[chosen].Chan = reflect.ValueOf(child.GetSignal())
+				if mt.onChildDispose(mt.blocked); mt.blocked.checkRetry(mt.blocked.StopReason()) {
+					if mt.blocked.reset(); mt.blocked.start() {
+						mt.cases[chosen].Chan = reflect.ValueOf(mt.blocked.GetSignal())
 						continue
 					}
 				}
 				mt.children = slices.Delete(mt.children, taskIndex, taskIndex+1)
-				cases = slices.Delete(cases, chosen, chosen+1)
+				mt.cases = slices.Delete(mt.cases, chosen, chosen+1)
 			}
 		}
 		if !mt.handler.keepalive() && len(mt.children) == 0 {

@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"m7s.live/m7s/v5/pkg/util"
-	. "m7s.live/m7s/v5/plugin/rtsp/pkg"
+	"m7s.live/v5/pkg/util"
+	. "m7s.live/v5/plugin/rtsp/pkg"
 )
 
 type RTSPServer struct {
@@ -81,6 +81,7 @@ func (task *RTSPServer) Go() (err error) {
 				})
 				return
 			}
+			receiver.Publisher.RemoteAddr = task.Conn.RemoteAddr().String()
 			if err = receiver.SetMedia(medias); err != nil {
 				return
 			}
@@ -88,14 +89,17 @@ func (task *RTSPServer) Go() (err error) {
 			if err = task.WriteResponse(res); err != nil {
 				return
 			}
-			receiver.Publisher.OnDispose(func() {
-				task.Stop(receiver.Publisher.StopReason())
-			})
+			task.Depend(receiver.Publisher)
 		case MethodDescribe:
 			sendMode = true
 			sender = &Sender{}
 			sender.NetConnection = task.NetConnection
-			sender.Subscriber, err = task.conf.Subscribe(task, strings.TrimPrefix(task.URL.Path, "/"))
+			rawQuery := req.URL.RawQuery
+			streamPath := strings.TrimPrefix(task.URL.Path, "/")
+			if rawQuery != "" {
+				streamPath += "?" + rawQuery
+			}
+			sender.Subscriber, err = task.conf.Subscribe(task, streamPath)
 			if err != nil {
 				res := &util.Response{
 					StatusCode: http.StatusBadRequest,
@@ -105,6 +109,7 @@ func (task *RTSPServer) Go() (err error) {
 				_ = task.WriteResponse(res)
 				return
 			}
+			sender.Subscriber.RemoteAddr = task.Conn.RemoteAddr().String()
 			res := &util.Response{
 				Header: map[string][]string{
 					"Content-Type": {"application/sdp"},

@@ -1,0 +1,13 @@
+global:
+  loglevel: debug
+  tcp: :50050
+  http: :8081
+  disableall: true
+rtmp:
+  enable: true
+  tcp: :1936
+  pull:
+      live/test: rtmp://localhost/live/test
+  onpub:
+    push:
+      live/test: rtmp://localhost/live/test2

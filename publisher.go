@@ -1,8 +1,7 @@
 package m7s
 
 import (
-	"context"
-	"math"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,11 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"m7s.live/m7s/v5/pkg/task"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/task"
 
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/util"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/util"
 )
 
 type PublisherState int
@@ -25,6 +26,14 @@ const (
 	PublisherStateSubscribed
 	PublisherStateWaitSubscriber
 	PublisherStateDisposed
+)
+
+const (
+	PublishTypePull      = "pull"
+	PublishTypeServer    = "server"
+	PublishTypeVod       = "vod"
+	PublishTypeTransform = "transform"
+	PublishTypeReplay    = "replay"
 )
 
 const threshold = 10 * time.Millisecond
@@ -42,17 +51,18 @@ func (s *SpeedControl) speedControl(speed float64, ts time.Duration) {
 		s.speed = speed
 		s.beginTime = time.Now()
 		s.beginTimestamp = ts
+		s.pausedTime = 0
 	} else {
 		elapsed := time.Since(s.beginTime) - s.pausedTime
 		if speed == 0 {
 			s.Delta = ts - elapsed
 			return
 		}
-		should := time.Duration(float64(ts) / speed)
+		should := time.Duration(float64(ts-s.beginTimestamp) / speed)
 		s.Delta = should - elapsed
 		//fmt.Println(speed, elapsed, should, s.Delta)
 		if s.Delta > threshold {
-			time.Sleep(s.Delta)
+			time.Sleep(min(s.Delta, time.Millisecond*500))
 		}
 	}
 }
@@ -66,11 +76,11 @@ type AVTracks struct {
 }
 
 func (t *AVTracks) Set(track *AVTrack) {
+	t.Lock()
+	defer t.Unlock()
 	t.AVTrack = track
 	track.BaseTs = t.baseTs
-	t.Lock()
 	t.Add(track)
-	t.Unlock()
 }
 
 func (t *AVTracks) SetMinBuffer(start time.Duration) {
@@ -100,7 +110,7 @@ func (t *AVTracks) CheckTimeout(timeout time.Duration) bool {
 }
 
 func (t *AVTracks) CreateSubTrack(dataType reflect.Type) (track *AVTrack) {
-	track = NewAVTrack(dataType, t.AVTrack, util.NewPromise(context.TODO()))
+	track = NewAVTrack(dataType, t.AVTrack)
 	track.WrapIndex = t.Length
 	t.Add(track)
 	return
@@ -110,6 +120,7 @@ func (t *AVTracks) Dispose() {
 	t.Lock()
 	defer t.Unlock()
 	for track := range t.Range {
+		track.Ready(ErrDiscard)
 		if track == t.AVTrack || track.RingWriter != t.AVTrack.RingWriter {
 			track.Dispose()
 		}
@@ -126,12 +137,25 @@ type Publisher struct {
 	pauseTime              time.Time
 	AudioTrack, VideoTrack AVTracks
 	audioReady, videoReady *util.Promise
+	TimeoutTimer           *time.Timer
 	DataTrack              *DataTrack
 	Subscribers            SubscriberCollection
 	GOP                    int
-	OnSeek                 func(time.Duration)
-	Device                 *Device
+	OnSeek                 func(time.Time)
+	OnGetPosition          func() time.Time
+	PullProxy              *PullProxy
 	dumpFile               *os.File
+}
+
+type AliasStream struct {
+	*Publisher
+	AutoRemove bool
+	StreamPath string
+	Alias      string
+}
+
+func (a *AliasStream) GetKey() string {
+	return a.Alias
 }
 
 func (p *Publisher) SubscriberRange(yield func(sub *Subscriber) bool) {
@@ -145,6 +169,7 @@ func (p *Publisher) GetKey() string {
 // createPublisher -> Start -> WriteAudio/WriteVideo -> Dispose
 func createPublisher(p *Plugin, streamPath string, conf config.Publish) (publisher *Publisher) {
 	publisher = &Publisher{Publish: conf}
+	publisher.Type = PublishTypeServer
 	publisher.ID = task.GetNextTaskID()
 	publisher.Plugin = p
 	publisher.TimeoutTimer = time.NewTimer(p.config.PublishTimeout)
@@ -164,36 +189,50 @@ func (p *Publisher) Start() (err error) {
 	}
 	s.Streams.Set(p)
 	p.Info("publish")
-	if device, ok := s.Devices.Find(func(device *Device) bool {
-		return device.GetStreamPath() == p.StreamPath
+	if pullProxy, ok := s.PullProxies.Find(func(pullProxy *PullProxy) bool {
+		return pullProxy.GetStreamPath() == p.StreamPath
 	}); ok {
-		p.Device = device
-		if device.Status == DeviceStatusOnline {
-			device.ChangeStatus(DeviceStatusPulling)
+		p.PullProxy = pullProxy
+		if pullProxy.Status == PullProxyStatusOnline {
+			pullProxy.ChangeStatus(PullProxyStatusPulling)
+			if mp4Plugin, ok := s.Plugins.Get("MP4"); ok && pullProxy.FilePath != "" {
+				mp4Plugin.Record(p, pullProxy.Record, nil)
+			}
 		}
 	}
-	p.audioReady = util.NewPromiseWithTimeout(p, time.Second*5)
-	p.videoReady = util.NewPromiseWithTimeout(p, time.Second*5)
+	p.audioReady = util.NewPromiseWithTimeout(p, p.PublishTimeout)
+	if !p.PubAudio {
+		p.audioReady.Reject(ErrMuted)
+	}
+	p.videoReady = util.NewPromiseWithTimeout(p, p.PublishTimeout)
+	if !p.PubVideo {
+		p.videoReady.Reject(ErrMuted)
+	}
 	if p.Dump {
 		f := filepath.Join("./dump", p.StreamPath)
 		os.MkdirAll(filepath.Dir(f), 0666)
 		p.dumpFile, _ = os.OpenFile(filepath.Join("./dump", p.StreamPath), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	}
-	if waiting, ok := s.Waiting.Get(p.StreamPath); ok {
-		for subscriber := range waiting.Range {
-			p.AddSubscriber(subscriber)
+
+	s.Waiting.WakeUp(p.StreamPath, p)
+
+	for alias := range s.AliasStreams.Range {
+		if alias.StreamPath != p.StreamPath {
+			continue
 		}
-		s.Waiting.Remove(waiting)
+		if alias.Publisher == nil {
+			alias.Publisher = p
+			s.Waiting.WakeUp(alias.Alias, p)
+		} else if alias.Publisher.StreamPath != alias.StreamPath {
+			alias.Publisher.TransferSubscribers(p)
+			alias.Publisher = p
+		}
 	}
+
 	for plugin := range s.Plugins.Range {
 		plugin.OnPublish(p)
 	}
-	s.Transforms.Post(func() error {
-		if m, ok := s.Transforms.Transformed.Get(p.StreamPath); ok {
-			m.TransformJob.TransformPublished(p)
-		}
-		return nil
-	})
+	//s.Transforms.PublishEvent <- p
 	p.AddTask(&PublishTimeout{Publisher: p})
 	if p.PublishTimeout > 0 {
 		p.AddTask(&PublishNoDataTimeout{Publisher: p})
@@ -213,9 +252,6 @@ func (p *PublishTimeout) Start() error {
 
 func (p *PublishTimeout) Dispose() {
 	p.Publisher.TimeoutTimer.Stop()
-	if p.Publisher.Device != nil && p.Publisher.Device.Status == DeviceStatusPulling && p.Publisher.Plugin.Server.Devices.Has(p.Publisher.Device.GetTaskID()) {
-		p.Publisher.Device.ChangeStatus(DeviceStatusOnline)
-	}
 }
 
 func (p *PublishTimeout) Tick(any) {
@@ -286,8 +322,18 @@ func (p *Publisher) RemoveSubscriber(subscriber *Subscriber) {
 }
 
 func (p *Publisher) AddSubscriber(subscriber *Subscriber) {
+	oldPublisher := subscriber.Publisher
 	subscriber.Publisher = p
-	subscriber.waitPublishDone.Resolve()
+	if oldPublisher == nil {
+		close(subscriber.waitPublishDone)
+	} else {
+		if subscriber.waitingPublish() {
+			subscriber.Info("publisher recover", "pid", p.ID)
+		} else {
+			subscriber.Info("publisher changed", "prePid", oldPublisher.ID, "pid", p.ID)
+		}
+	}
+	subscriber.waitStartTime = time.Time{}
 	if p.Subscribers.AddUnique(subscriber) {
 		p.Info("subscriber +1", "count", p.Subscribers.Length)
 		if subscriber.BufferTime > p.BufferTime {
@@ -310,25 +356,13 @@ func (p *Publisher) writeAV(t *AVTrack, data IAVFrame) {
 	frame.Wraps = append(frame.Wraps, data)
 	ts := data.GetTimestamp()
 	frame.CTS = data.GetCTS()
-	if t.LastTs == 0 {
-		t.BaseTs -= ts
-	}
-	frame.Timestamp = max(1, t.BaseTs+ts)
 	bytesIn := frame.Wraps[0].GetSize()
 	t.AddBytesIn(bytesIn)
-	if t.FPS > 0 {
-		frameDur := float64(time.Second) / float64(t.FPS)
-		if math.Abs(float64(frame.Timestamp-t.LastTs)) > 10*frameDur { //时间戳突变
-			p.Warn("timestamp mutation", "fps", t.FPS, "lastTs", t.LastTs, "ts", frame.Timestamp, "frameDur", time.Duration(frameDur))
-			frame.Timestamp = t.LastTs + time.Duration(frameDur)
-			t.BaseTs = frame.Timestamp - ts
-		}
-	}
-	t.LastTs = frame.Timestamp
+	frame.Timestamp = t.Tame(ts, t.FPS)
 	if p.Enabled(p, task.TraceLevel) {
 		codec := t.FourCC().String()
 		data := frame.Wraps[0].String()
-		p.Trace("write", "seq", frame.Sequence, "ts0", ts, "ts", uint32(frame.Timestamp/time.Millisecond), "codec", codec, "size", bytesIn, "data", data)
+		p.Trace("write", "seq", frame.Sequence, "baseTs", int32(t.BaseTs/time.Millisecond), "ts0", uint32(ts/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "codec", codec, "size", bytesIn, "data", data)
 	}
 }
 
@@ -506,21 +540,36 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 		}
 	}
 	t.Step()
-	p.AudioTrack.speedControl(p.Publish.Speed, t.LastTs)
+	p.AudioTrack.speedControl(p.Speed, t.LastTs)
 	return
 }
 
 func (p *Publisher) WriteData(data IDataFrame) (err error) {
-	if err = p.Err(); err != nil {
-		return
+	for subscriber := range p.SubscriberRange {
+		if subscriber.DataChannel == nil {
+			continue
+		}
+		select {
+		case subscriber.DataChannel <- data:
+		default:
+			p.Warn("subscriber channel full", "subscriber", subscriber.ID)
+		}
 	}
-	if p.DataTrack == nil {
-		p.DataTrack = &DataTrack{}
-		p.DataTrack.Logger = p.Logger.With("track", "data")
-		p.Call(p.trackAdded)
+	return nil
+}
+
+func (p *Publisher) GetAudioCodecCtx() (ctx codec.ICodecCtx) {
+	if p.HasAudioTrack() {
+		return p.AudioTrack.ICodecCtx
 	}
-	// TODO: Implement this function
-	return
+	return nil
+}
+
+func (p *Publisher) GetVideoCodecCtx() (ctx codec.ICodecCtx) {
+	if p.HasVideoTrack() {
+		return p.VideoTrack.ICodecCtx
+	}
+	return nil
 }
 
 func (p *Publisher) GetAudioTrack(dataType reflect.Type) (t *AVTrack) {
@@ -544,28 +593,63 @@ func (p *Publisher) Dispose() {
 	if !p.StopReasonIs(ErrKick) {
 		s.Streams.Remove(p)
 	}
+	if p.Paused != nil {
+		p.Paused.Reject(p.StopReason())
+	}
+	var relatedAlias []*AliasStream
+	for alias := range s.AliasStreams.Range {
+		if alias.StreamPath == p.StreamPath {
+			if alias.AutoRemove {
+				defer s.AliasStreams.Remove(alias)
+			}
+			relatedAlias = append(relatedAlias, alias)
+		}
+	}
+
 	if p.Subscribers.Length > 0 {
-		w := s.createWait(p.StreamPath)
-		if p.HasAudioTrack() {
-			w.baseTsAudio = p.AudioTrack.LastTs
-		}
-		if p.HasVideoTrack() {
-			w.baseTsVideo = p.VideoTrack.LastTs
-		}
-		w.Info("takeOver", "pId", p.ID)
+	SUBSCRIBER:
 		for subscriber := range p.SubscriberRange {
-			subscriber.Publisher = nil
-			w.Add(subscriber)
+			for _, alias := range relatedAlias {
+				if subscriber.StreamPath == alias.Alias {
+					if originStream, ok := s.Streams.Get(alias.Alias); ok {
+						originStream.AddSubscriber(subscriber)
+						continue SUBSCRIBER
+					}
+				}
+			}
+			s.Waiting.Wait(subscriber)
 		}
-		p.AudioTrack.Dispose()
-		p.VideoTrack.Dispose()
 		p.Subscribers.Clear()
 	}
+	p.AudioTrack.Dispose()
+	p.VideoTrack.Dispose()
 	p.Info("unpublish", "remain", s.Streams.Length, "reason", p.StopReason())
 	if p.dumpFile != nil {
 		p.dumpFile.Close()
 	}
 	p.State = PublisherStateDisposed
+	if p.PullProxy != nil && p.PullProxy.Status == PullProxyStatusPulling && s.PullProxies.Has(p.PullProxy.GetKey()) {
+		p.PullProxy.ChangeStatus(PullProxyStatusOnline)
+	}
+}
+
+func (p *Publisher) TransferSubscribers(newPublisher *Publisher) {
+	for subscriber := range p.SubscriberRange {
+		if subscriber.Type != SubscribeTypeServer {
+			continue
+		}
+		newPublisher.AddSubscriber(subscriber)
+		p.Subscribers.Remove(subscriber)
+	}
+	p.BufferTime = p.Plugin.GetCommonConf().Publish.BufferTime
+	p.AudioTrack.SetMinBuffer(p.BufferTime)
+	p.VideoTrack.SetMinBuffer(p.BufferTime)
+	if p.State == PublisherStateSubscribed {
+		p.State = PublisherStateWaitSubscriber
+		if p.DelayCloseTimeout > 0 {
+			p.TimeoutTimer.Reset(p.DelayCloseTimeout)
+		}
+	}
 }
 
 func (p *Publisher) takeOver(old *Publisher) {
@@ -577,8 +661,14 @@ func (p *Publisher) takeOver(old *Publisher) {
 	}
 	old.Stop(ErrKick)
 	p.Info("takeOver", "old", old.ID)
-	for subscriber := range old.SubscriberRange {
-		p.AddSubscriber(subscriber)
+	if old.Subscribers.Length > 0 {
+		p.Info(fmt.Sprintf("subscriber +%d", old.Subscribers.Length))
+		for subscriber := range old.SubscriberRange {
+			subscriber.Publisher = p
+			if subscriber.BufferTime > p.BufferTime {
+				p.BufferTime = subscriber.BufferTime
+			}
+		}
 	}
 	old.AudioTrack.Dispose()
 	old.VideoTrack.Dispose()
@@ -586,7 +676,7 @@ func (p *Publisher) takeOver(old *Publisher) {
 }
 
 func (p *Publisher) WaitTrack() (err error) {
-	var v, a error
+	var v, a = pkg.ErrNoTrack, pkg.ErrNoTrack
 	if p.PubVideo {
 		v = p.videoReady.Await()
 	}
@@ -611,8 +701,16 @@ func (p *Publisher) Resume() {
 	p.AudioTrack.pausedTime += time.Since(p.pauseTime)
 }
 
-func (p *Publisher) Seek(ts time.Duration) {
+func (p *Publisher) Seek(ts time.Time) {
+	p.Info("seek", "time", ts)
 	if p.OnSeek != nil {
 		p.OnSeek(ts)
 	}
+}
+
+func (p *Publisher) GetPosition() (t time.Time) {
+	if p.OnGetPosition != nil {
+		return p.OnGetPosition()
+	}
+	return
 }

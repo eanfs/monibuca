@@ -3,9 +3,9 @@ package pkg
 import (
 	"context"
 	"log/slog"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/task"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 	"time"
 )
 
@@ -42,10 +42,11 @@ func (r *AVRingReader) DecConfChanged() bool {
 	return r.LastCodecCtx != r.Track.ICodecCtx
 }
 
-func NewAVRingReader(t *AVTrack) *AVRingReader {
+func NewAVRingReader(t *AVTrack, dataType string) *AVRingReader {
 	t.Debug("create reader")
 	return &AVRingReader{
-		Track: t,
+		Track:  t,
+		Logger: t.With("reader", dataType),
 	}
 }
 
@@ -71,8 +72,10 @@ func (r *AVRingReader) ReadFrame(conf *config.Subscribe) (err error) {
 		idr := r.Track.GetIDR()
 		if idr != nil {
 			startRing = idr
-		} else {
+		} else if r.Track.ICodecCtx != nil {
 			r.Warn("no IDRring", "track", r.Track.FourCC().String())
+		} else {
+			r.Warn("no codec")
 		}
 		switch conf.SubMode {
 		case SUBMODE_REAL:
@@ -167,7 +170,11 @@ func (r *AVRingReader) ReadFrame(conf *config.Subscribe) (err error) {
 		}
 	}
 	r.Delay = r.Track.LastValue.Sequence - r.Value.Sequence
-	r.Log(context.TODO(), task.TraceLevel, r.Track.FourCC().String(), "ts", r.Value.Timestamp, "delay", r.Delay)
+	if r.Track.ICodecCtx != nil {
+		r.Log(context.TODO(), task.TraceLevel, r.Track.FourCC().String(), "ts", r.Value.Timestamp, "delay", r.Delay)
+	} else {
+		r.Warn("no codec")
+	}
 	return
 }
 

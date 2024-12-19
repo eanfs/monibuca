@@ -53,6 +53,14 @@ const (
 <DeviceID>%s</DeviceID>
 </Response>
 `
+	KeepAliveXML = `<?xml version="1.0"?>
+<Notify>
+<CmdType>Keepalive</CmdType>
+<SN>%d</SN>
+<DeviceID>%s</DeviceID>
+<Status>OK</Status>
+</Notify>
+`
 	ChannelOnStatus  ChannelStatus = "ON"
 	ChannelOffStatus ChannelStatus = "OFF"
 )
@@ -96,6 +104,10 @@ func BuildDevicePositionXML(sn int, id string, interval int) []byte {
 
 func BuildAlarmResponseXML(id string) []byte {
 	return toGB2312(fmt.Sprintf(AlarmResponseXML, id))
+}
+
+func BuildKeepAliveXML(sn int, id string) []byte {
+	return toGB2312(fmt.Sprintf(KeepAliveXML, sn, id))
 }
 
 type (

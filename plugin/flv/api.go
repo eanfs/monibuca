@@ -5,9 +5,9 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
-	"m7s.live/m7s/v5/pkg/util"
-	flv "m7s.live/m7s/v5/plugin/flv/pkg"
-	rtmp "m7s.live/m7s/v5/plugin/rtmp/pkg"
+	"m7s.live/v5/pkg/util"
+	flv "m7s.live/v5/plugin/flv/pkg"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,20 +19,7 @@ import (
 func (plugin *FLVPlugin) Download_(w http.ResponseWriter, r *http.Request) {
 	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/download/"), ".flv")
 	singleFile := filepath.Join(plugin.Path, streamPath+".flv")
-	query := r.URL.Query()
-	rangeStr := strings.Split(query.Get("range"), "~")
-	var startTime, endTime time.Time
-	if len(rangeStr) != 2 {
-		http.NotFound(w, r)
-		return
-	}
-	var err error
-	startTime, err = util.TimeQueryParse(rangeStr[0])
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	endTime, err = util.TimeQueryParse(rangeStr[1])
+	startTime, endTime, err := util.TimeRangeQueryParse(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

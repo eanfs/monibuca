@@ -4,7 +4,7 @@ import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 //import "global.proto";
 package gb28181;
-option go_package="m7s.live/m7s/v5/plugin/gb28181/pb";
+option go_package="m7s.live/v5/plugin/gb28181/pb";
 
 service api {
   rpc List (google.protobuf.Empty) returns (ResponseList) {

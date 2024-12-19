@@ -1,0 +1,12 @@
+global:
+  loglevel: debug
+  disableall: true
+  http: :8081
+  tcp: :50052
+cascadeclient:
+  enable: true
+  server: localhost:44944
+  secret: dexter
+  onsub:
+    pull:
+      .*: m7s://$0

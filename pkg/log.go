@@ -3,8 +3,10 @@ package pkg
 import (
 	"context"
 	"log/slog"
-	"m7s.live/m7s/v5/pkg/task"
 	"slices"
+	"sync"
+
+	"m7s.live/v5/pkg/task"
 )
 
 var _ slog.Handler = (*MultiLogHandler)(nil)
@@ -19,24 +21,52 @@ func ParseLevel(level string) slog.Level {
 	return lv.Level()
 }
 
+type HandlerInfo struct {
+	slog.Handler
+	origin slog.Handler
+}
+
 type MultiLogHandler struct {
-	handlers     []slog.Handler
-	attrChildren map[*MultiLogHandler][]slog.Attr
-	parentLevel  *slog.Level
-	level        *slog.Level
+	handlers                    []HandlerInfo
+	attrChildren, groupChildren sync.Map
+	parentLevel                 *slog.Level
+	level                       *slog.Level
 }
 
 func (m *MultiLogHandler) Add(h slog.Handler) {
-	m.handlers = append(m.handlers, h)
-	for child, attrs := range m.attrChildren {
-		child.Add(h.WithAttrs(attrs))
-	}
+	m.add(h, h)
+}
+
+func (m *MultiLogHandler) add(origin slog.Handler, warp slog.Handler) {
+	m.handlers = append(m.handlers, HandlerInfo{origin: origin, Handler: warp})
+	m.attrChildren.Range(func(key, value any) bool {
+		child := key.(*MultiLogHandler)
+		child.add(origin, origin.WithAttrs(value.([]slog.Attr)))
+		return true
+	})
+	m.groupChildren.Range(func(key, value any) bool {
+		child := key.(*MultiLogHandler)
+		child.add(origin, origin.WithGroup(value.(string)))
+		return true
+	})
 }
 
 func (m *MultiLogHandler) Remove(h slog.Handler) {
-	if i := slices.Index(m.handlers, h); i != -1 {
+	if i := slices.IndexFunc(m.handlers, func(info HandlerInfo) bool {
+		return info.origin == h
+	}); i != -1 {
 		m.handlers = slices.Delete(m.handlers, i, i+1)
 	}
+	m.attrChildren.Range(func(key, value any) bool {
+		child := key.(*MultiLogHandler)
+		child.Remove(h)
+		return true
+	})
+	m.groupChildren.Range(func(key, value any) bool {
+		child := key.(*MultiLogHandler)
+		child.Remove(h)
+		return true
+	})
 }
 
 func (m *MultiLogHandler) SetLevel(level slog.Level) {
@@ -68,18 +98,15 @@ func (m *MultiLogHandler) Handle(ctx context.Context, rec slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (m *MultiLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	result := &MultiLogHandler{
-		handlers:    make([]slog.Handler, len(m.handlers)),
+		handlers:    make([]HandlerInfo, len(m.handlers)),
 		parentLevel: m.parentLevel,
 	}
-	if m.attrChildren == nil {
-		m.attrChildren = make(map[*MultiLogHandler][]slog.Attr)
-	}
-	m.attrChildren[result] = attrs
+	m.attrChildren.Store(result, attrs)
 	if m.level != nil {
 		result.parentLevel = m.level
 	}
 	for i, h := range m.handlers {
-		result.handlers[i] = h.WithAttrs(attrs)
+		result.handlers[i] = HandlerInfo{origin: h.origin, Handler: h.WithAttrs(attrs)}
 	}
 	return result
 }
@@ -87,14 +114,15 @@ func (m *MultiLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup implements slog.Handler.
 func (m *MultiLogHandler) WithGroup(name string) slog.Handler {
 	result := &MultiLogHandler{
-		handlers:    make([]slog.Handler, len(m.handlers)),
+		handlers:    make([]HandlerInfo, len(m.handlers)),
 		parentLevel: m.parentLevel,
 	}
+	m.groupChildren.Store(result, name)
 	if m.level != nil {
 		result.parentLevel = m.level
 	}
 	for i, h := range m.handlers {
-		result.handlers[i] = h.WithGroup(name)
+		result.handlers[i] = HandlerInfo{origin: h.origin, Handler: h.WithGroup(name)}
 	}
 	return result
 }

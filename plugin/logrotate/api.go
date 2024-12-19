@@ -9,8 +9,8 @@ import (
 
 	"github.com/phsym/console-slog"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"m7s.live/m7s/v5/pkg/util"
-	"m7s.live/m7s/v5/plugin/logrotate/pb"
+	"m7s.live/v5/pkg/util"
+	"m7s.live/v5/plugin/logrotate/pb"
 )
 
 func (h *LogRotatePlugin) List(context.Context, *emptypb.Empty) (*pb.ResponseFileInfo, error) {
@@ -24,7 +24,7 @@ func (h *LogRotatePlugin) List(context.Context, *emptypb.Empty) (*pb.ResponseFil
 					Name: info.Name(), Size: info.Size(),
 				})
 			}
-			return &pb.ResponseFileInfo{Files: fileInfos}, nil
+			return &pb.ResponseFileInfo{Data: fileInfos}, nil
 		}
 	}
 	return nil, err
@@ -37,7 +37,7 @@ func (h *LogRotatePlugin) Get(_ context.Context, req *pb.RequestFileInfo) (res *
 		res = &pb.ResponseOpen{}
 		content, err2 := io.ReadAll(file)
 		if err2 == nil {
-			res.Content = string(content)
+			res.Data = string(content)
 		} else {
 			err = err2
 		}
@@ -51,9 +51,15 @@ func (h *LogRotatePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (l *LogRotatePlugin) API_tail(w http.ResponseWriter, r *http.Request) {
+func (l *LogRotatePlugin) API_trail(w http.ResponseWriter, r *http.Request) {
 	writer := util.NewSSE(w, r.Context())
+	file, err := os.Open(filepath.Join(l.Path, "current.log"))
+	if err == nil {
+		io.Copy(writer, file)
+		file.Close()
+	}
 	h := console.NewHandler(writer, &console.HandlerOptions{NoColor: true})
-	l.Server.AddLogHandler(h)
+	l.Server.LogHandler.Add(h)
 	<-r.Context().Done()
+	l.Server.LogHandler.Remove(h)
 }

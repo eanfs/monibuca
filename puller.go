@@ -1,7 +1,6 @@
 package m7s
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/task"
-	"m7s.live/m7s/v5/pkg/util"
+	"github.com/gorilla/websocket"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
 )
 
 type (
@@ -36,9 +36,9 @@ type (
 	PullJob struct {
 		Connection
 		Publisher     *Publisher
-		publishConfig *config.Publish
+		PublishConfig *config.Publish
 		puller        IPuller
-		conf          *config.Pull	
+		conf          *config.Pull
 	}
 
 	HTTPFilePuller struct {
@@ -49,11 +49,15 @@ type (
 
 	RecordFilePuller struct {
 		task.Task
-		PullJob       PullJob
-		PullStartTime time.Time
-		Streams       []RecordStream
-		File          *os.File
-		offsetTime    time.Duration
+		PullJob                    PullJob
+		PullStartTime, PullEndTime time.Time
+		Streams                    []RecordStream
+		File                       *os.File
+		MaxTS                      int64
+	}
+
+	wsReadCloser struct {
+		ws *websocket.Conn
 	}
 )
 
@@ -77,11 +81,9 @@ func (p *PullJob) GetPullJob() *PullJob {
 	return p
 }
 
-func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf config.Pull) *PullJob {
-	publishConfig := plugin.config.Publish
-	publishConfig.PublishTimeout = 0
-	p.publishConfig = &publishConfig
-	p.Args = conf.Args
+func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf config.Pull, pubConf *config.Publish) *PullJob {
+	p.PublishConfig = pubConf
+	p.Args = url.Values(conf.Args.DeepClone())
 	p.conf = &conf
 	remoteURL := conf.URL
 	u, err := url.Parse(remoteURL)
@@ -100,15 +102,15 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 			}
 		}
 	}
-	p.Connection.Init(plugin, streamPath, remoteURL, conf.Proxy, conf.Header)
+	p.Connection.Init(plugin, streamPath, remoteURL, conf.Proxy, http.Header(conf.Header))
 	p.puller = puller
-	p.Description = map[string]any{
+	p.SetDescriptions(task.Description{
 		"plugin":     plugin.Meta.Name,
 		"streamPath": streamPath,
 		"url":        conf.URL,
 		"args":       conf.Args,
 		"maxRetry":   conf.MaxRetry,
-	}
+	})
 	puller.SetRetry(conf.MaxRetry, conf.RetryInterval)
 	plugin.Server.Pulls.Add(p, plugin.Logger.With("pullURL", conf.URL, "streamPath", streamPath))
 	return p
@@ -123,11 +125,19 @@ func (p *PullJob) Publish() (err error) {
 	if len(p.Args) > 0 {
 		streamPath += "?" + p.Args.Encode()
 	}
-	p.Publisher, err = p.Plugin.PublishWithConfig(p.puller.GetTask().Context, streamPath, *p.publishConfig)
+	if p.PublishConfig == nil {
+		p.Publisher, err = p.Plugin.Publish(p.puller.GetTask().Context, streamPath)
+		p.PublishConfig = &p.Plugin.GetCommonConf().Publish
+	} else {
+		p.Publisher, err = p.Plugin.PublishWithConfig(p.puller.GetTask().Context, streamPath, *p.PublishConfig)
+	}
+	p.Publisher.Type = PublishTypePull
 	if err == nil && p.conf.MaxRetry != 0 {
 		p.Publisher.OnDispose(func() {
-			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout) {
-				p.Stop(pkg.ErrPublishDelayCloseTimeout)
+			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) {
+				p.Stop(p.Publisher.StopReason())
+			} else {
+				p.puller.Stop(p.Publisher.StopReason())
 			}
 		})
 	}
@@ -156,6 +166,15 @@ func (p *HTTPFilePuller) Start() (err error) {
 			}
 			p.ReadCloser = res.Body
 		}
+	} else if strings.HasPrefix(remoteURL, "ws") {
+		var ws *websocket.Conn
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+		}
+		if ws, _, err = dialer.Dial(remoteURL, nil); err == nil {
+			p.ReadCloser = &wsReadCloser{ws: ws}
+		}
+
 	} else {
 		var res *os.File
 		if res, err = os.Open(remoteURL); err == nil {
@@ -179,20 +198,43 @@ func (p *RecordFilePuller) GetPullJob() *PullJob {
 }
 
 func (p *RecordFilePuller) Start() (err error) {
+	p.SetRetry(0, 0)
+	if p.PullJob.Plugin.DB == nil {
+		return pkg.ErrNoDB
+	}
 	if err = p.PullJob.Publish(); err != nil {
 		return
 	}
-	if p.PullStartTime, err = util.TimeQueryParse(p.PullJob.Args.Get("start")); err != nil {
+	if p.PullStartTime, p.PullEndTime, err = util.TimeRangeQueryParse(p.PullJob.Args); err != nil {
 		return
 	}
-
-	tx := p.PullJob.Plugin.DB.Find(&p.Streams, "end_time>? AND file_path=?", p.PullStartTime, p.PullJob.RemoteURL)
+	tx := p.PullJob.Plugin.DB.Find(&p.Streams, "end_time>=? AND start_time<=? AND stream_path=? AND record_mode=0", p.PullStartTime, p.PullEndTime, p.PullJob.RemoteURL)
 	if tx.Error != nil {
 		return tx.Error
 	}
+	p.MaxTS = p.PullEndTime.Sub(p.PullStartTime).Milliseconds()
+
 	if len(p.Streams) == 0 {
-		return fmt.Errorf("stream not found")
+		return pkg.ErrNotFound
 	}
 	p.Info("vod", "streams", p.Streams)
 	return
+}
+
+func (p *RecordFilePuller) Dispose() {
+	if p.File != nil {
+		p.File.Close()
+	}
+}
+
+func (w *wsReadCloser) Read(p []byte) (n int, err error) {
+	_, message, err := w.ws.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	return copy(p, message), nil
+}
+
+func (w *wsReadCloser) Close() error {
+	return w.ws.Close()
 }

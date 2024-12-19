@@ -1,25 +1,30 @@
 package m7s
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
 
-	"m7s.live/m7s/v5/pkg/task"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"google.golang.org/protobuf/proto"
 
-	"m7s.live/m7s/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
+
+	"m7s.live/v5/pkg/config"
 
 	sysruntime "runtime"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	myip "github.com/husanpao/ip"
+
 	"github.com/phsym/console-slog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,10 +32,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
-	"m7s.live/m7s/v5/pb"
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/db"
-	"m7s.live/m7s/v5/pkg/util"
+	"m7s.live/v5/pb"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/db"
+	"m7s.live/v5/pkg/util"
 )
 
 var (
@@ -38,12 +43,11 @@ var (
 	MergeConfigs = [...]string{"Publish", "Subscribe", "HTTP", "PublicIP", "PublicIPv6", "LogLevel", "EnableAuth", "DB"}
 	ExecPath     = os.Args[0]
 	ExecDir      = filepath.Dir(ExecPath)
-	serverMeta   = PluginMeta{
+	ServerMeta   = PluginMeta{
 		Name:    "Global",
 		Version: Version,
 	}
 	Servers           task.RootManager[uint32, *Server]
-	Routes            = map[string]string{}
 	defaultLogHandler = console.NewHandler(os.Stdout, &console.HandlerOptions{TimeFormat: "15:04:05.000000"})
 )
 
@@ -55,34 +59,37 @@ type (
 		PulseInterval  time.Duration            `default:"5s" desc:"心跳事件间隔"`    //心跳事件间隔
 		DisableAll     bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
 		StreamAlias    map[config.Regexp]string `desc:"流别名"`
+		PullProxy      []*PullProxy
 	}
 	WaitStream struct {
-		*slog.Logger
 		StreamPath string
 		SubscriberCollection
-		baseTsAudio, baseTsVideo time.Duration
 	}
 	Server struct {
 		pb.UnimplementedApiServer
 		Plugin
 		ServerConfig
-		Plugins         util.Collection[string, *Plugin]
-		Streams         task.Manager[string, *Publisher]
-		Waiting         util.Collection[string, *WaitStream]
-		Pulls           task.Manager[string, *PullJob]
-		Pushs           task.Manager[string, *PushJob]
-		Records         task.Manager[string, *RecordJob]
-		Transforms      Transforms
-		Devices         DeviceManager
-		Subscribers     SubscriberCollection
-		LogHandler      MultiLogHandler
-		apiList         []string
-		grpcServer      *grpc.Server
-		grpcClientConn  *grpc.ClientConn
-		lastSummaryTime time.Time
-		lastSummary     *pb.SummaryResponse
-		conf            any
-		prometheusDesc  prometheusDesc
+		Plugins           util.Collection[string, *Plugin]
+		Streams           task.Manager[string, *Publisher]
+		AliasStreams      util.Collection[string, *AliasStream]
+		Waiting           WaitManager
+		Pulls             task.Manager[string, *PullJob]
+		Pushs             task.Manager[string, *PushJob]
+		Records           task.Manager[string, *RecordJob]
+		Transforms        Transforms
+		PullProxies       PullProxyManager
+		PushProxies       PushProxyManager
+		Subscribers       SubscriberCollection
+		LogHandler        MultiLogHandler
+		apiList           []string
+		grpcServer        *grpc.Server
+		grpcClientConn    *grpc.ClientConn
+		lastSummaryTime   time.Time
+		lastSummary       *pb.SummaryResponse
+		conf              any
+		configFileContent []byte
+		disabledPlugins   []*Plugin
+		prometheusDesc    prometheusDesc
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -96,24 +103,25 @@ type (
 	RawConfig = map[string]map[string]any
 )
 
-
 func (w *WaitStream) GetKey() string {
 	return w.StreamPath
 }
 
 func NewServer(conf any) (s *Server) {
 	s = &Server{
-		conf: conf,
+		conf:            conf,
+		disabledPlugins: make([]*Plugin, 0),
 	}
 	s.ID = task.GetNextTaskID()
-	s.Meta = &serverMeta
-	s.Description = map[string]any{
+	s.Meta = &ServerMeta
+	s.SetDescriptions(task.Description{
 		"version":   Version,
 		"goVersion": sysruntime.Version(),
 		"os":        sysruntime.GOOS,
 		"arch":      sysruntime.GOARCH,
 		"cpus":      int32(sysruntime.NumCPU()),
-	}
+	})
+	//s.Transforms.PublishEvent = make(chan *Publisher, 10)
 	s.prometheusDesc.init()
 	return
 }
@@ -130,21 +138,34 @@ func exit() {
 			meta.OnExit()
 		}
 	}
-	if serverMeta.OnExit != nil {
-		serverMeta.OnExit()
+	if ServerMeta.OnExit != nil {
+		ServerMeta.OnExit()
 	}
 	os.Exit(0)
 }
 
+var zipReader *zip.ReadCloser
+var adminZipLastModTime time.Time
+var lastCheckTime time.Time
+var checkInterval = time.Second * 3 // 检查间隔为3秒
+
 func init() {
 	Servers.Init()
+	Servers.OnBeforeDispose(func() {
+		time.AfterFunc(3*time.Second, exit)
+	})
 	Servers.OnDispose(exit)
-	for k, v := range myip.LocalAndInternalIPs() {
-		Routes[k] = v
-		fmt.Println(k, v)
-		if lastdot := strings.LastIndex(k, "."); lastdot >= 0 {
-			Routes[k[0:lastdot]] = k
-		}
+	loadAdminZip()
+}
+
+func loadAdminZip() {
+	if zipReader != nil {
+		zipReader.Close()
+		zipReader = nil
+	}
+	if info, err := os.Stat("admin.zip"); err == nil {
+		adminZipLastModTime = info.ModTime()
+		zipReader, _ = zip.OpenReader("admin.zip")
 	}
 }
 
@@ -169,7 +190,16 @@ func (s *Server) Start() (err error) {
 	s.LogHandler.SetLevel(slog.LevelDebug)
 	s.LogHandler.Add(defaultLogHandler)
 	s.Logger = slog.New(&s.LogHandler).With("server", s.ID)
-	mux := runtime.NewServeMux(runtime.WithMarshalerOption("text/plain", &pb.TextPlain{}), runtime.WithRoutingErrorHandler(func(_ context.Context, _ *runtime.ServeMux, _ runtime.Marshaler, w http.ResponseWriter, r *http.Request, _ int) {
+	s.Waiting.Logger = s.Logger
+	mux := runtime.NewServeMux(runtime.WithMarshalerOption("text/plain", &pb.TextPlain{}), runtime.WithForwardResponseOption(func(ctx context.Context, w http.ResponseWriter, m proto.Message) error {
+		header := w.Header()
+		header.Set("Access-Control-Allow-Credentials", "true")
+		header.Set("Cross-Origin-Resource-Policy", "cross-origin")
+		header.Set("Access-Control-Allow-Headers", "Content-Type,Access-Token")
+		header.Set("Access-Control-Allow-Private-Network", "true")
+		header.Set("Access-Control-Allow-Origin", "*")
+		return nil
+	}), runtime.WithRoutingErrorHandler(func(_ context.Context, _ *runtime.ServeMux, _ runtime.Marshaler, w http.ResponseWriter, r *http.Request, _ int) {
 		httpConf.GetHttpMux().ServeHTTP(w, r)
 	}))
 	httpConf.SetMux(mux)
@@ -182,6 +212,8 @@ func (s *Server) Start() (err error) {
 		}
 		if configYaml, err = os.ReadFile(v); err != nil {
 			s.Warn("read config file failed", "error", err.Error())
+		} else {
+			s.configFileContent = configYaml
 		}
 	case []byte:
 		configYaml = v
@@ -190,7 +222,7 @@ func (s *Server) Start() (err error) {
 	}
 	if configYaml != nil {
 		if err = yaml.Unmarshal(configYaml, &cg); err != nil {
-			s.Error("parsing yml error:", err)
+			s.Error("parsing yml", "error", err)
 		}
 	}
 	s.Config.Parse(&s.config, "GLOBAL")
@@ -209,6 +241,7 @@ func (s *Server) Start() (err error) {
 		"/api/config/json/{name}":             s.api_Config_JSON_,
 		"/api/stream/annexb/{streamPath...}":  s.api_Stream_AnnexB_,
 		"/api/videotrack/sse/{streamPath...}": s.api_VideoTrack_SSE,
+		"/api/audiotrack/sse/{streamPath...}": s.api_AudioTrack_SSE,
 	})
 	if s.config.DSN != "" {
 		if factory, ok := db.Factory[s.config.DBType]; ok {
@@ -220,10 +253,10 @@ func (s *Server) Start() (err error) {
 		}
 	}
 	if httpConf.ListenAddrTLS != "" {
-		s.stopOnError(httpConf.CreateHTTPSWork(s.Logger))
+		s.AddDependTask(httpConf.CreateHTTPSWork(s.Logger))
 	}
 	if httpConf.ListenAddr != "" {
-		s.stopOnError(httpConf.CreateHTTPWork(s.Logger))
+		s.AddDependTask(httpConf.CreateHTTPWork(s.Logger))
 	}
 	var grpcServer *GRPCServer
 	if tcpConf.ListenAddr != "" {
@@ -251,7 +284,7 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.Pulls)
 	s.AddTask(&s.Pushs)
 	s.AddTask(&s.Transforms)
-	s.AddTask(&s.Devices)
+	s.AddTask(&s.PullProxies)
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
@@ -277,26 +310,68 @@ func (s *Server) Start() (err error) {
 	s.Streams.OnStart(func() {
 		s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
 	})
+	// s.Transforms.AddTask(&TransformsPublishEvent{Transforms: &s.Transforms})
 	s.Info("server started")
 	s.Post(func() error {
 		for plugin := range s.Plugins.Range {
 			if plugin.Meta.Puller != nil {
 				for streamPath, conf := range plugin.config.Pull {
-					plugin.handler.Pull(streamPath, conf)
+					plugin.handler.Pull(streamPath, conf, nil)
+				}
+			}
+			if plugin.Meta.Transformer != nil {
+				for streamPath, conf := range plugin.config.Transform {
+					transformer := plugin.Meta.Transformer()
+					transformer.GetTransformJob().Init(transformer, plugin, streamPath, conf)
 				}
 			}
 		}
 		if s.DB != nil {
-			s.DB.AutoMigrate(&Device{})
-			var devices []*Device
-			s.DB.Find(&devices)
-			for _, device := range devices {
-				device.server = s
-				s.Devices.Add(device)
+			s.DB.AutoMigrate(&PullProxy{})
+		}
+		for _, d := range s.PullProxy {
+			if d.ID != 0 {
+				d.server = s
+				if d.Type == "" {
+					u, err := url.Parse(d.URL)
+					if err != nil {
+						s.Error("parse pull url failed", "error", err)
+						continue
+					}
+					switch u.Scheme {
+					case "srt", "rtsp", "rtmp":
+						d.Type = u.Scheme
+					default:
+						ext := filepath.Ext(u.Path)
+						switch ext {
+						case ".m3u8":
+							d.Type = "hls"
+						case ".flv":
+							d.Type = "flv"
+						case ".mp4":
+							d.Type = "mp4"
+						}
+					}
+				}
+				if s.DB != nil {
+					s.DB.Save(d)
+				} else {
+					s.PullProxies.Add(d, s.Logger.With("pullProxy", d.ID, "type", d.Type, "name", d.Name))
+				}
+			}
+		}
+		if s.DB != nil {
+			var pullProxies []*PullProxy
+			s.DB.Find(&pullProxies)
+			for _, d := range pullProxies {
+				d.server = s
+				d.Logger = s.Logger.With("pullProxy", d.ID, "type", d.Type, "name", d.Name)
+				d.ChangeStatus(PullProxyStatusOffline)
+				s.PullProxies.Add(d)
 			}
 		}
 		return nil
-	})
+	}, "serverStart")
 	return
 }
 
@@ -305,15 +380,13 @@ func (c *CheckSubWaitTimeout) GetTickInterval() time.Duration {
 }
 
 func (c *CheckSubWaitTimeout) Tick(any) {
-	for waits := range c.s.Waiting.Range {
-		for sub := range waits.Range {
-			select {
-			case <-sub.TimeoutTimer.C:
-				sub.Stop(ErrSubscribeTimeout)
-			default:
-			}
+	percents, err := cpu.Percent(time.Second, false)
+	if err == nil {
+		for _, cpu := range percents {
+			c.Info("tick", "cpu", cpu, "streams", c.s.Streams.Length, "subscribers", c.s.Subscribers.Length, "waits", c.s.Waiting.Length)
 		}
 	}
+	c.s.Waiting.checkTimeout()
 }
 
 func (gRPC *GRPCServer) Dispose() {
@@ -338,17 +411,32 @@ func (s *Server) Dispose() {
 	}
 }
 
-func (s *Server) createWait(streamPath string) *WaitStream {
-	newPublisher := &WaitStream{
-		StreamPath: streamPath,
-		Logger:     s.Logger.With("streamPath", streamPath),
+func (s *Server) OnSubscribe(streamPath string, args url.Values) {
+	for plugin := range s.Plugins.Range {
+		plugin.OnSubscribe(streamPath, args)
 	}
-	s.Info("createWait")
-	s.Waiting.Set(newPublisher)
-	return newPublisher
+	for pullProxy := range s.PullProxies.Range {
+		if pullProxy.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath && !pullProxy.PullOnStart {
+			pullProxy.Handler.Pull()
+		}
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 检查 admin.zip 是否需要重新加载
+	now := time.Now()
+	if now.Sub(lastCheckTime) > checkInterval {
+		if info, err := os.Stat("admin.zip"); err == nil && info.ModTime() != adminZipLastModTime {
+			s.Info("admin.zip changed, reloading...")
+			loadAdminZip()
+		}
+		lastCheckTime = now
+	}
+
+	if zipReader != nil {
+		http.ServeFileFS(w, r, zipReader, strings.TrimPrefix(r.URL.Path, "/admin"))
+		return
+	}
 	if r.URL.Path == "/favicon.ico" {
 		http.ServeFile(w, r, "favicon.ico")
 		return

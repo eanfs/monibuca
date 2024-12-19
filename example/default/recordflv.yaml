@@ -1,7 +1,0 @@
-global:
-  loglevel: debug
-flv:
-  onpub:
-    record:
-      .+:
-        filepath: record/$0

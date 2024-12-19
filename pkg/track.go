@@ -3,14 +3,15 @@ package pkg
 import (
 	"context"
 	"log/slog"
+	"math"
 	"reflect"
 	"time"
 
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/config"
-	"m7s.live/m7s/v5/pkg/task"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 
-	"m7s.live/m7s/v5/pkg/util"
+	"m7s.live/v5/pkg/util"
 )
 
 type (
@@ -28,15 +29,17 @@ type (
 	DataTrack struct {
 		Track
 	}
-
+	TsTamer struct {
+		BaseTs, LastTs time.Duration
+	}
 	AVTrack struct {
 		Track
 		*RingWriter
 		codec.ICodecCtx
-		Allocator      *util.ScalableMemoryAllocator
-		SequenceFrame  IAVFrame
-		WrapIndex      int
-		BaseTs, LastTs time.Duration
+		Allocator     *util.ScalableMemoryAllocator
+		SequenceFrame IAVFrame
+		WrapIndex     int
+		TsTamer
 	}
 )
 
@@ -54,6 +57,7 @@ func NewAVTrack(args ...any) (t *AVTrack) {
 		case *AVTrack:
 			t.Logger = v.Logger.With("subtrack", t.FrameType.String())
 			t.RingWriter = v.RingWriter
+			t.ready = util.NewPromiseWithTimeout(context.TODO(), time.Second*5)
 		case *config.Publish:
 			t.RingWriter = NewRingWriter(v.RingSize)
 			t.BufferRange[0] = v.BufferTime
@@ -84,7 +88,7 @@ func (t *Track) AddBytesIn(n int) {
 }
 
 func (t *AVTrack) Ready(err error) {
-	if !t.IsReady() {
+	if t.ready.IsPending() {
 		if err != nil {
 			t.Error("ready", "err", err)
 		} else {
@@ -100,7 +104,7 @@ func (t *AVTrack) Ready(err error) {
 }
 
 func (t *Track) Ready(err error) {
-	if !t.IsReady() {
+	if t.ready.IsPending() {
 		if err != nil {
 			t.Error("ready", "err", err)
 		} else {
@@ -120,4 +124,21 @@ func (t *Track) WaitReady() error {
 
 func (t *Track) Trace(msg string, fields ...any) {
 	t.Log(context.TODO(), task.TraceLevel, msg, fields...)
+}
+
+func (t *TsTamer) Tame(ts time.Duration, fps int) (result time.Duration) {
+	if t.LastTs == 0 {
+		t.BaseTs -= ts
+	}
+	result = max(1*time.Millisecond, t.BaseTs+ts)
+	if fps > 0 {
+		frameDur := float64(time.Second) / float64(fps)
+		if math.Abs(float64(result-t.LastTs)) > 10*frameDur { //时间戳突变
+			// t.Warn("timestamp mutation", "fps", t.FPS, "lastTs", uint32(t.LastTs/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "frameDur", time.Duration(frameDur))
+			result = t.LastTs + time.Duration(frameDur)
+			t.BaseTs = result - ts
+		}
+	}
+	t.LastTs = result
+	return
 }

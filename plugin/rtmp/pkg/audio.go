@@ -1,11 +1,12 @@
 package rtmp
 
 import (
-	"github.com/deepch/vdk/codec/aacparser"
-	. "m7s.live/m7s/v5/pkg"
-	"m7s.live/m7s/v5/pkg/codec"
-	"m7s.live/m7s/v5/pkg/util"
 	"time"
+
+	"github.com/deepch/vdk/codec/aacparser"
+	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
 )
 
 type RTMPAudio struct {
@@ -81,12 +82,15 @@ func (avcc *RTMPAudio) Demux(codecCtx codec.ICodecCtx) (raw any, err error) {
 func (avcc *RTMPAudio) Mux(codecCtx codec.ICodecCtx, from *AVFrame) {
 	avcc.Timestamp = uint32(from.Timestamp / time.Millisecond)
 	audioData := from.Raw.(AudioData)
+	avcc.InitRecycleIndexes(1)
 	switch c := codecCtx.FourCC(); c {
 	case codec.FourCC_MP4A:
-		avcc.AppendOne([]byte{0xAF, 0x01})
+		head := avcc.NextN(2)
+		head[0], head[1] = 0xAF, 0x01
 		avcc.Append(audioData.Buffers...)
 	case codec.FourCC_ALAW, codec.FourCC_ULAW:
-		avcc.AppendOne([]byte{byte(ParseAudioCodec(c))<<4 | (1 << 1)})
+		head := avcc.NextN(1)
+		head[0] = byte(ParseAudioCodec(c))<<4 | (1 << 1)
 		avcc.Append(audioData.Buffers...)
 	}
 }

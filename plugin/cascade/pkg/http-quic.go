@@ -8,12 +8,9 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/quic-go/quic-go"
-	"m7s.live/m7s/v5/pkg/task"
 )
 
 type Http2Quic struct {
-	task.Task
-	quic.Connection
 	quic.Stream
 }
 
@@ -56,7 +53,7 @@ func (q *Http2Quic) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		var err error
 		for err == nil {
 			msg, err = wsutil.ReadServerText(rw)
-			q.Debug("read server", "msg", string(msg))
+			// q.Debug("read server", "msg", string(msg))
 			if err == nil {
 				err = wsutil.WriteServerText(rw, msg)
 			}
@@ -65,13 +62,13 @@ func (q *Http2Quic) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	var msg []byte
 	for err == nil {
 		msg, err = wsutil.ReadClientText(rw)
-		q.Debug("read client", "msg", string(msg))
+		// q.Debug("read client", "msg", string(msg))
 		if err == nil {
 			err = wsutil.WriteClientText(rw, msg)
 		}
 	}
 	if err != nil {
-		q.Error("websocket", "err", err)
+		// q.Error("websocket", "err", err)
 	}
 }
 

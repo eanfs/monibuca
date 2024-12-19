@@ -1,7 +1,0 @@
-global:
-  device:
-    - name: default
-      description: Example device
-      stream:
-        - rtsp://xxx.xxx.xxx.xxx:554/live/test
-
