@@ -3,7 +3,7 @@ module monibuca
 go 1.21
 
 require (
-	github.com/eanfs/plugin-record/v4 v4.6.7
+	github.com/eanfs/plugin-record/v4 v4.6.8
 	go.uber.org/zap v1.27.0
 	m7s.live/engine/v4 v4.15.2
 	m7s.live/plugin/debug/v4 v4.0.3
