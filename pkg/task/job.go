@@ -158,7 +158,7 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 	}
 	if len(mt.addSub) > 10 {
 		if mt.Logger != nil {
-			mt.Warn("task wait list too many", "count", len(mt.addSub))
+			mt.Warn("task wait list too many", "count", len(mt.addSub), "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType(), "parent", mt.GetOwnerType())
 		}
 	}
 	mt.addSub <- t
