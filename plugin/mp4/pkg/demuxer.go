@@ -6,6 +6,7 @@ import (
 	"io"
 	"slices"
 
+	"m7s.live/v5/pkg"
 	. "m7s.live/v5/plugin/mp4/pkg/box"
 )
 
@@ -454,6 +455,8 @@ func (d *Demuxer) SeekTime(dts uint64) (sample *Sample, err error) {
 		}
 		d.ReadSampleIdx[audioTrack.TrackId-1] = uint32(idx)
 		sample = &audioTrack.Samplelist[idx]
+	} else {
+		return nil, pkg.ErrNoTrack
 	}
 	return
 }
