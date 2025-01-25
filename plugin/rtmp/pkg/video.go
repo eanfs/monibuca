@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"time"
@@ -47,6 +48,9 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 		case codec.FourCC_H264:
 			var ctx codec.H264Ctx
 			ctx.Record = cloneFrame.Buffers[0][reader.Offset():]
+			if t.ICodecCtx != nil && bytes.Equal(t.ICodecCtx.(*codec.H264Ctx).Record, ctx.Record) {
+				return ErrSkip
+			}
 			// fmt.Printf("record: %s", hex.Dump(ctx.Record))
 			if _, err = ctx.RecordInfo.Unmarshal(ctx.Record); err == nil {
 				t.SequenceFrame = &cloneFrame
@@ -57,6 +61,9 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 			var ctx H265Ctx
 			ctx.Enhanced = enhanced
 			ctx.Record = cloneFrame.Buffers[0][reader.Offset():]
+			if t.ICodecCtx != nil && bytes.Equal(t.ICodecCtx.(*codec.H265Ctx).Record, ctx.Record) {
+				return ErrSkip
+			}
 			if _, err = ctx.RecordInfo.Unmarshal(ctx.Record); err == nil {
 				ctx.RecordInfo.LengthSizeMinusOne = 3 // Unmarshal wrong LengthSizeMinusOne
 				t.SequenceFrame = &cloneFrame

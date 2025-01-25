@@ -400,6 +400,10 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	}
 	oldCodecCtx := t.ICodecCtx
 	err = data.Parse(t)
+	if err == ErrSkip {
+		data.Recycle()
+		return nil
+	}
 	codecCtxChanged := oldCodecCtx != t.ICodecCtx
 	if err != nil {
 		p.Error("parse", "err", err)
@@ -518,6 +522,10 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 	}
 	oldCodecCtx := t.ICodecCtx
 	err = data.Parse(t)
+	if err == ErrSkip {
+		data.Recycle()
+		return nil
+	}
 	codecCtxChanged := oldCodecCtx != t.ICodecCtx
 	if t.ICodecCtx == nil {
 		return ErrUnsupportCodec

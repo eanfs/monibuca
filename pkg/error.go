@@ -18,6 +18,7 @@ var (
 	ErrInterrupt                = errors.New("interrupt")
 	ErrUnsupportCodec           = errors.New("unsupport codec")
 	ErrMuted                    = errors.New("muted")
+	ErrSkip                     = errors.New("skip")
 	ErrNoTrack                  = errors.New("no track")
 	ErrNoDB                     = errors.New("no db")
 	ErrLost                     = errors.New("lost")
