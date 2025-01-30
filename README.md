@@ -36,8 +36,10 @@
     <li><a href="#build-tags">Build Tags</a></li>
     <li><a href="#monitoring">Monitoring</a></li>
     <li><a href="#plugin-development">Plugin Development</a></li>
+    <li><a href="#arch">Architecture</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
   </ol>
 </details>
 
@@ -130,6 +132,12 @@ scrape_configs:
 ## Plugin Development
 
 Monibuca's functionality can be extended through plugins. For information on creating plugins, see the [plugin guide](./plugin/README.md).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Architecture
+
+For detailed architecture design documentation, please refer to the [Architecture Documentation](./doc/arch/index.md).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
