@@ -134,89 +134,105 @@ func (conf *WebRTCPlugin) Batch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create data channel for signaling
-	dataChannel, err := conn.PeerConnection.CreateDataChannel("signal", nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	conn.PeerConnection.OnDataChannel(func(dataChannel *DataChannel) {
+		conf.Debug("data channel created", "label", dataChannel.Label())
 
-	dataChannel.OnMessage(func(msg DataChannelMessage) {
-		var signal Signal
-		if err := json.Unmarshal(msg.Data, &signal); err != nil {
-			conf.Error("failed to unmarshal signal", "error", err)
-			return
-		}
-
-		switch signal.Type {
-		case SignalTypePublish:
-			if publisher, err := conf.Publish(conf.Context, signal.StreamPath); err == nil {
-				conn.Publisher = publisher
-				conn.Publisher.RemoteAddr = r.RemoteAddr
-				conn.Receive()
-				// Renegotiate SDP after successful publish
-				if answer, err := conn.GetAnswer(); err == nil {
-					dataChannel.SendText(NewAnswerSingal(answer.SDP))
-				} else {
-					dataChannel.SendText(NewErrorSignal(err.Error(), signal.StreamPath))
-				}
-			} else {
-				dataChannel.SendText(NewErrorSignal(err.Error(), signal.StreamPath))
-			}
-		case SignalTypeSubscribe:
-			if err := conn.SetRemoteDescription(SessionDescription{
-				Type: SDPTypeOffer,
-				SDP:  signal.Offer,
-			}); err != nil {
-				dataChannel.SendText(NewErrorSignal("Failed to set remote description: "+err.Error(), ""))
+		dataChannel.OnMessage(func(msg DataChannelMessage) {
+			conf.Debug("received data channel message", "length", len(msg.Data), "is_string", msg.IsString)
+			var signal Signal
+			if err := json.Unmarshal(msg.Data, &signal); err != nil {
+				conf.Error("failed to unmarshal signal", "error", err)
 				return
 			}
-			// First remove subscribers that are not in the new list
-			for streamPath := range conn.Subscribers {
-				found := false
-				for _, newPath := range signal.StreamList {
-					if streamPath == newPath {
-						found = true
-						break
+			conf.Debug("signal received", "type", signal.Type, "stream_path", signal.StreamPath)
+
+			switch signal.Type {
+			case SignalTypePublish:
+				if publisher, err := conf.Publish(conf.Context, signal.StreamPath); err == nil {
+					conn.Publisher = publisher
+					conn.Publisher.RemoteAddr = r.RemoteAddr
+					conn.Receive()
+					// Renegotiate SDP after successful publish
+					if answer, err := conn.GetAnswer(); err == nil {
+						answerSignal := NewAnswerSingal(answer.SDP)
+						conf.Debug("sending answer signal", "stream_path", signal.StreamPath)
+						dataChannel.SendText(answerSignal)
+					} else {
+						errSignal := NewErrorSignal(err.Error(), signal.StreamPath)
+						conf.Debug("sending error signal", "error", err.Error(), "stream_path", signal.StreamPath)
+						dataChannel.SendText(errSignal)
+					}
+				} else {
+					errSignal := NewErrorSignal(err.Error(), signal.StreamPath)
+					conf.Debug("sending error signal", "error", err.Error(), "stream_path", signal.StreamPath)
+					dataChannel.SendText(errSignal)
+				}
+			case SignalTypeSubscribe:
+				if err := conn.SetRemoteDescription(SessionDescription{
+					Type: SDPTypeOffer,
+					SDP:  signal.Offer,
+				}); err != nil {
+					errSignal := NewErrorSignal("Failed to set remote description: "+err.Error(), "")
+					conf.Debug("sending error signal", "error", err.Error())
+					dataChannel.SendText(errSignal)
+					return
+				}
+				// First remove subscribers that are not in the new list
+				for streamPath := range conn.Subscribers {
+					found := false
+					for _, newPath := range signal.StreamList {
+						if streamPath == newPath {
+							found = true
+							break
+						}
+					}
+					if !found {
+						conn.RemoveSubscriber(streamPath)
 					}
 				}
-				if !found {
-					conn.RemoveSubscriber(streamPath)
+				// Then add new subscribers
+				for _, streamPath := range signal.StreamList {
+					// Skip if already subscribed
+					if conn.HasSubscriber(streamPath) {
+						continue
+					}
+					if subscriber, err := conf.Subscribe(conf.Context, streamPath); err == nil {
+						subscriber.RemoteAddr = r.RemoteAddr
+						conn.AddSubscriber(streamPath, subscriber)
+					} else {
+						errSignal := NewErrorSignal(err.Error(), streamPath)
+						conf.Debug("sending error signal", "error", err.Error(), "stream_path", streamPath)
+						dataChannel.SendText(errSignal)
+					}
+				}
+			case SignalTypeUnpublish:
+				// Handle stream removal
+				if conn.Publisher != nil && conn.Publisher.StreamPath == signal.StreamPath {
+					conn.Publisher.Stop(task.ErrStopByUser)
+					conn.Publisher = nil
+					// Renegotiate SDP after unpublish
+					if answer, err := conn.GetAnswer(); err == nil {
+						answerSignal := NewAnswerSingal(answer.SDP)
+						conf.Debug("sending answer signal", "stream_path", signal.StreamPath)
+						dataChannel.SendText(answerSignal)
+					} else {
+						errSignal := NewErrorSignal(err.Error(), signal.StreamPath)
+						conf.Debug("sending error signal", "error", err.Error(), "stream_path", signal.StreamPath)
+						dataChannel.SendText(errSignal)
+					}
+				}
+			case SignalTypeAnswer:
+				// Handle received answer from browser
+				if err := conn.SetRemoteDescription(SessionDescription{
+					Type: SDPTypeAnswer,
+					SDP:  signal.Answer,
+				}); err != nil {
+					errSignal := NewErrorSignal("Failed to set remote description: "+err.Error(), "")
+					conf.Debug("sending error signal", "error", err.Error())
+					dataChannel.SendText(errSignal)
 				}
 			}
-			// Then add new subscribers
-			for _, streamPath := range signal.StreamList {
-				// Skip if already subscribed
-				if conn.HasSubscriber(streamPath) {
-					continue
-				}
-				if subscriber, err := conf.Subscribe(conf.Context, streamPath); err == nil {
-					subscriber.RemoteAddr = r.RemoteAddr
-					conn.AddSubscriber(streamPath, subscriber)
-				} else {
-					dataChannel.SendText(NewErrorSignal(err.Error(), streamPath))
-				}
-			}
-		case SignalTypeUnpublish:
-			// Handle stream removal
-			if conn.Publisher != nil && conn.Publisher.StreamPath == signal.StreamPath {
-				conn.Publisher.Stop(task.ErrStopByUser)
-				conn.Publisher = nil
-				// Renegotiate SDP after unpublish
-				if answer, err := conn.GetAnswer(); err == nil {
-					dataChannel.SendText(NewAnswerSingal(answer.SDP))
-				} else {
-					dataChannel.SendText(NewErrorSignal(err.Error(), signal.StreamPath))
-				}
-			}
-		case SignalTypeAnswer:
-			// Handle received answer from browser
-			if err := conn.SetRemoteDescription(SessionDescription{
-				Type: SDPTypeAnswer,
-				SDP:  signal.Answer,
-			}); err != nil {
-				dataChannel.SendText(NewErrorSignal("Failed to set remote description: "+err.Error(), ""))
-			}
-		}
+		})
 	})
 
 	conf.AddTask(conn)
@@ -234,4 +250,38 @@ func (conf *WebRTCPlugin) Batch(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
+}
+
+// 在Connection结构体中添加状态标记
+type Connection struct {
+	// ...其他字段
+	initialOffer bool
+}
+
+func (conn *Connection) GetAnswer() (SessionDescription, error) {
+	if conn.initialOffer {
+		// 完整SDP处理
+		answer, err := conn.PeerConnection.CreateAnswer(nil)
+		conn.initialOffer = false
+		return answer, err
+	} else {
+		// 增量更新时生成部分SDP
+		return SessionDescription{
+			SDP:  conn.generatePartialSDP(),
+			Type: SDPTypeAnswer,
+		}, nil
+	}
+}
+
+// 生成部分SDP的逻辑
+func (conn *Connection) generatePartialSDP() string {
+	var sdp strings.Builder
+	// 这里简化实现，实际需要根据变化生成对应媒体部分
+	sdp.WriteString("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\n")
+	for _, transceiver := range conn.PeerConnection.GetTransceivers() {
+		if transceiver.Direction() == RTPTransceiverDirectionRecvonly {
+			sdp.WriteString(fmt.Sprintf("m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=recvonly\r\n"))
+		}
+	}
+	return sdp.String()
 }
