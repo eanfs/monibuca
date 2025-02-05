@@ -75,6 +75,7 @@ type (
 		Header        HTTPValues
 	}
 	Record struct {
+		Type     string        `desc:"录制类型"`   // 录制类型 mp4、flv、hls、hlsv7
 		FilePath string        `desc:"录制文件路径"` // 录制文件路径
 		Fragment time.Duration `desc:"分片时长"`   // 分片时长
 		Append   bool          `desc:"是否追加录制"` // 是否追加录制

@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
@@ -137,7 +138,7 @@ func writeMetaTag(file *os.File, suber *m7s.Subscriber, filepositions []uint64, 
 	writeMetaTagQueueTask.AddTask(task)
 }
 
-func NewRecorder() m7s.IRecorder {
+func NewRecorder(conf config.Record) m7s.IRecorder {
 	return &Recorder{}
 }
 
@@ -147,10 +148,10 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	if job.Fragment == 0 || job.Append {
-		return fmt.Sprintf("%s.flv", job.FilePath)
+	if job.RecConf.Fragment == 0 || job.RecConf.Append {
+		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
 	}
-	return filepath.Join(job.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
+	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
@@ -245,7 +246,7 @@ func (r *Recorder) Run() (err error) {
 	var duration int64
 	ctx := &r.RecordJob
 	suber := ctx.Subscriber
-	noFragment := ctx.Fragment == 0 || ctx.Append
+	noFragment := ctx.RecConf.Fragment == 0 || ctx.RecConf.Append
 	startTime := time.Now()
 	if ctx.BeforeDuration > 0 {
 		startTime = startTime.Add(-ctx.BeforeDuration)
@@ -254,13 +255,13 @@ func (r *Recorder) Run() (err error) {
 		return
 	}
 	if noFragment {
-		file, err = os.OpenFile(r.stream.FilePath, os.O_CREATE|os.O_RDWR|util.Conditional(ctx.Append, os.O_APPEND, os.O_TRUNC), 0666)
+		file, err = os.OpenFile(r.stream.FilePath, os.O_CREATE|os.O_RDWR|util.Conditional(ctx.RecConf.Append, os.O_APPEND, os.O_TRUNC), 0666)
 		if err != nil {
 			return
 		}
 		defer writeMetaTag(file, suber, filepositions, times, &duration)
 	}
-	if ctx.Append {
+	if ctx.RecConf.Append {
 		var metaData rtmp.EcmaArray
 		metaData, err = ReadMetaData(file)
 		keyframes := metaData["keyframes"].(map[string]any)
@@ -287,7 +288,7 @@ func (r *Recorder) Run() (err error) {
 			suber.StartVideoTS = time.Duration(ts) * time.Millisecond
 			offset, err = file.Seek(0, io.SeekEnd)
 		}
-	} else if ctx.Fragment == 0 {
+	} else if ctx.RecConf.Fragment == 0 {
 		_, err = file.Write(FLVHead)
 	} else {
 		if file, err = os.OpenFile(r.stream.FilePath, os.O_CREATE|os.O_RDWR, 0666); err != nil {
@@ -297,7 +298,7 @@ func (r *Recorder) Run() (err error) {
 	}
 	writer := NewFlvWriter(file)
 	checkFragment := func(absTime uint32) {
-		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.Fragment {
+		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.RecConf.Fragment {
 			writeMetaTag(file, suber, filepositions, times, &duration)
 			r.writeTailer(time.Now())
 			filepositions = []uint64{0}

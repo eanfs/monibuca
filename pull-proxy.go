@@ -43,7 +43,6 @@ type (
 		PullOnStart, Audio, StopOnIdle bool
 		config.Pull                    `gorm:"embedded;embeddedPrefix:pull_"`
 		config.Record                  `gorm:"embedded;embeddedPrefix:record_"`
-		RecordType                     string
 		ParentID                       uint
 		Type                           string
 		Status                         byte

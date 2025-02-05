@@ -26,16 +26,14 @@ type (
 		task.ITask
 		GetRecordJob() *RecordJob
 	}
-	Recorder  = func() IRecorder
+	Recorder  = func(config.Record) IRecorder
 	RecordJob struct {
 		task.Job
 		StreamPath     string // 对应本地流
 		Plugin         *Plugin
 		Subscriber     *Subscriber
 		SubConf        *config.Subscribe
-		Fragment       time.Duration
-		Append         bool
-		FilePath       string
+		RecConf        *config.Record
 		recorder       IRecorder
 		EventId        string        `json:"eventId" desc:"事件编号"`
 		Mode           RecordMode    `json:"mode" desc:"事件类型,auto=连续录像模式，event=事件录像模式"`
@@ -77,7 +75,7 @@ func (r *DefaultRecorder) Start() (err error) {
 }
 
 func (p *RecordJob) GetKey() string {
-	return p.FilePath
+	return p.RecConf.FilePath
 }
 
 func (p *RecordJob) Subscribe() (err error) {
@@ -88,9 +86,7 @@ func (p *RecordJob) Subscribe() (err error) {
 
 func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, conf config.Record, subConf *config.Subscribe) *RecordJob {
 	p.Plugin = plugin
-	p.Fragment = conf.Fragment
-	p.Append = conf.Append
-	p.FilePath = conf.FilePath
+	p.RecConf = &conf
 	p.StreamPath = streamPath
 	if subConf == nil {
 		conf := p.Plugin.config.Subscribe

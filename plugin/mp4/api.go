@@ -176,7 +176,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	res = &mp4pb.ResponseStartRecord{}
 	p.Server.Records.Call(func() error {
 		_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-			return job.StreamPath == req.StreamPath && job.FilePath == req.FilePath
+			return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
 		})
 		return nil
 	})
@@ -215,7 +215,7 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 			p.Error("EventStart", "error", err)
 		}
 	}
-	recorder := p.Meta.Recorder()
+	recorder := p.Meta.Recorder(config.Record{})
 	var tmpJob *m7s.RecordJob
 	p.Server.Records.Call(func() error {
 		tmpJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {

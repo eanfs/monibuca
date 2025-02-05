@@ -72,7 +72,7 @@ func main() {
 
 	mp4.CustomFileName = func(job *m7s.RecordJob) string {
 
-		fileDir := strings.ReplaceAll(job.FilePath, job.StreamPath, "")
+		fileDir := strings.ReplaceAll(job.RecConf.FilePath, job.StreamPath, "")
 		if err := os.MkdirAll(fileDir, 0755); err != nil {
 			log.Default().Printf("创建目录失败：%s", err)
 			return fmt.Sprintf("%s_%s%s", job.StreamPath, time.Now().Local().Format("2006-01-02-15-04-05"), ".mp4")

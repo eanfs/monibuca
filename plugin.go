@@ -644,7 +644,7 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 }
 
 func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subscribe) *RecordJob {
-	recorder := p.Meta.Recorder()
+	recorder := p.Meta.Recorder(conf)
 	job := recorder.GetRecordJob().Init(recorder, p, pub.StreamPath, conf, subConf)
 	job.Depend(pub)
 	return job

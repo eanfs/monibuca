@@ -185,10 +185,10 @@ func (s *Server) StreamInfo(ctx context.Context, req *pb.StreamSnapRequest) (res
 		for record := range s.Records.Range {
 			if record.StreamPath == req.StreamPath {
 				recordings = append(recordings, &pb.RecordingDetail{
-					FilePath:   record.FilePath,
+					FilePath:   record.RecConf.FilePath,
 					Mode:       record.Mode,
-					Fragment:   durationpb.New(record.Fragment),
-					Append:     record.Append,
+					Fragment:   durationpb.New(record.RecConf.Fragment),
+					Append:     record.RecConf.Append,
 					PluginName: record.Plugin.Meta.Name,
 				})
 			}
@@ -589,10 +589,10 @@ func (s *Server) StreamList(_ context.Context, req *pb.StreamListRequest) (res *
 	s.Records.Call(func() error {
 		for record := range s.Records.Range {
 			recordingMap[record.StreamPath] = append(recordingMap[record.StreamPath], &pb.RecordingDetail{
-				FilePath:   record.FilePath,
+				FilePath:   record.RecConf.FilePath,
 				Mode:       record.Mode,
-				Fragment:   durationpb.New(record.Fragment),
-				Append:     record.Append,
+				Fragment:   durationpb.New(record.RecConf.Fragment),
+				Append:     record.RecConf.Append,
 				PluginName: record.Plugin.Meta.Name,
 				Pointer:    uint64(record.GetTaskPointer()),
 			})

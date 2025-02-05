@@ -10,12 +10,13 @@ import (
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	mpegts "m7s.live/v5/plugin/hls/pkg/ts"
 )
 
-func NewRecorder() m7s.IRecorder {
+func NewRecorder(conf config.Record) m7s.IRecorder {
 	return &Recorder{}
 }
 
@@ -31,10 +32,10 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	if job.Fragment == 0 || job.Append {
-		return fmt.Sprintf("%s/%s.ts", job.FilePath, time.Now().Format("20060102150405"))
+	if job.RecConf.Fragment == 0 || job.RecConf.Append {
+		return fmt.Sprintf("%s/%s.ts", job.RecConf.FilePath, time.Now().Format("20060102150405"))
 	}
-	return filepath.Join(job.FilePath, time.Now().Format("20060102150405")+".ts")
+	return filepath.Join(job.RecConf.FilePath, time.Now().Format("20060102150405")+".ts")
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
@@ -141,7 +142,7 @@ func (r *Recorder) createNewTs() {
 }
 
 func (r *Recorder) writeSegment(ts time.Duration) (err error) {
-	if dur := ts - r.lastTs; dur >= r.RecordJob.Fragment || r.lastTs == 0 {
+	if dur := ts - r.lastTs; dur >= r.RecordJob.RecConf.Fragment || r.lastTs == 0 {
 		if dur == ts && r.lastTs == 0 { //时间戳不对的情况，首个默认为2s
 			dur = time.Duration(2) * time.Second
 		}
