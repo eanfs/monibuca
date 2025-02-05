@@ -2,7 +2,10 @@ global:
   location:
     "^/hdl/(.*)": "/flv/$1"
   loglevel: debug
-  enablelogin: false
+  admin:
+    enablelogin: false
+  subscribe:
+    subaudio: false
   # db:
   #   dbtype: mysql
   #   dsn: root:Monibuca#!4@tcp(sh-cynosdbmysql-grp-kxt43lv6.sql.tencentcdb.com:28520)/lkm7s_v5?parseTime=true
@@ -22,9 +25,14 @@ gb28181:
       .* : $0
 mp4:
   # enable: false
-  # publish:
-  #   delayclosetimeout: 3s
-
+  publish:
+    delayclosetimeout: 3s
+  # onpub:
+  #   record:
+  #     ^live/.+:
+  #         fragment: 10s
+  #         filepath: record/$0
+  #         type: fmp4
   onsub:
     pull:
       ^vod_mp4_\d+/(.+)$: $1
@@ -41,12 +49,17 @@ flv:
   #     ^live/.+:
   #         fragment: 1m
   #         filepath: record/$0
+  publish:
+    delayclosetimeout: 3s
   onsub:
     pull:
       ^vod_flv_\d+/(.+)$: $1
 #   pull:
 #     live/test: https://livecb.alicdn.com/mediaplatform/afb241b3-408c-42dd-b665-04d22b64f9df.flv?auth_key=1734575216-0-0-c62721303ce751c8e5b2c95a2ec242a0&F=pc&source=34675810_null_live_detail&ali_flv_retain=2
 hls:
+  # onsub:
+  #   pull:
+  #     ^vod_hls_\d+/(.+)$: $1
   # pull:
   #   live/test: https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/gear3/prog_index.m3u8
 #   onpub:

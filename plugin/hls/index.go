@@ -39,11 +39,116 @@ func (p *HLSPlugin) OnInit() (err error) {
 	return
 }
 
+func (p *HLSPlugin) RegisterHandler() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"/vod/{streamPath...}": p.vod,
+	}
+}
+
 func (p *HLSPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxy) any {
 	d := &m7s.HTTPPullProxy{}
 	d.PullProxy = pullProxy
 	d.Plugin = &p.Plugin
 	return d
+}
+
+func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
+	recordType := "ts"
+	if r.PathValue("streamPath") == "mp4.m3u8" {
+		recordType = "mp4"
+	} else if r.PathValue("streamPath") == "fmp4.m3u8" {
+		recordType = "fmp4"
+	}
+	query := r.URL.Query()
+	fileName := query.Get("streamPath")
+	waitTimeout, err := time.ParseDuration(query.Get("timeout"))
+	if err == nil {
+		config.Debug("request", "fileName", fileName, "timeout", waitTimeout)
+	} else {
+		waitTimeout = time.Second * 10
+	}
+	// waitStart := time.Now()
+	if strings.HasSuffix(r.URL.Path, ".m3u8") {
+		w.Header().Add("Content-Type", "application/vnd.apple.mpegurl")
+		streamPath := strings.TrimSuffix(fileName, ".m3u8")
+		// If memory lookup failed or returned empty, try database
+		startTime, endTime, _ := util.TimeRangeQueryParse(query)
+		if !startTime.IsZero() {
+			if config.DB != nil {
+				var records []m7s.RecordStream
+				if endTime.IsZero() {
+					query := `stream_path = ? AND type = ? AND start_time IS NOT NULL AND end_time > ?`
+					config.DB.Where(query, streamPath, recordType, startTime).Find(&records)
+				} else {
+					query := `stream_path = ? AND type = ? AND start_time IS NOT NULL AND end_time IS NOT NULL AND ? <= end_time AND ? >= start_time`
+					config.DB.Where(query, streamPath, recordType, startTime, endTime).Find(&records)
+				}
+				if len(records) > 0 {
+					playlist := hls.Playlist{
+						Version:        7,
+						Sequence:       0,
+						Targetduration: 90,
+					}
+					var plBuffer util.Buffer
+					playlist.Writer = &plBuffer
+					playlist.Init()
+
+					for _, record := range records {
+						duration := record.EndTime.Sub(record.StartTime).Seconds()
+						playlist.WriteInf(hls.PlaylistInf{
+							Duration: duration,
+							Title:    record.FilePath,
+							FilePath: record.FilePath,
+						})
+					}
+					plBuffer.WriteString("#EXT-X-ENDLIST\n")
+					w.Write(plBuffer)
+					return
+				}
+			}
+		}
+
+		// if v, ok := hls.MemoryM3u8.Load(streamPath); ok && v.(string) != "" {
+		// 	w.Write([]byte(v.(string)))
+		// 	return
+		// }
+		// for {
+		// 	if v, ok := hls.MemoryM3u8.Load(streamPath); ok && v.(string) != "" {
+		// 		w.Write([]byte(v.(string)))
+		// 		return
+		// 	}
+		// 	if waitTimeout > 0 && time.Since(waitStart) < waitTimeout {
+		// 		config.Server.OnSubscribe(streamPath, r.URL.Query())
+		// 		time.Sleep(time.Second)
+		// 		continue
+		// 	} else {
+		// 		break
+		// 	}
+		// }
+	} else if strings.HasSuffix(r.URL.Path, ".mp4") {
+		w.Header().Add("Content-Type", "video/mp4") //video/mp4
+		data, err := os.ReadFile(r.PathValue("streamPath"))
+		if err == nil {
+			w.Write(data)
+			return
+		}
+		// 	streamPath := path.Dir(fileName)
+		// 	tsData, ok := hls.MemoryTs.Load(streamPath)
+		// 	if !ok {
+		// 		tsData, ok = hls.MemoryTs.Load(path.Dir(streamPath))
+		// 	}
+		// 	if ok {
+		// 		if tsData, ok := tsData.(hls.TsCacher).GetTs(fileName); ok {
+		// 			switch v := tsData.(type) {
+		// 			case *hls.TsInMemory:
+		// 				v.WriteTo(w)
+		// 			case util.Buffer:
+		// 				w.Write(v)
+		// 			}
+		// 			return
+		// 		}
+		// 	}
+	}
 }
 
 func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {

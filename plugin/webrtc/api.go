@@ -251,37 +251,3 @@ func (conf *WebRTCPlugin) Batch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
-
-// 在Connection结构体中添加状态标记
-type Connection struct {
-	// ...其他字段
-	initialOffer bool
-}
-
-func (conn *Connection) GetAnswer() (SessionDescription, error) {
-	if conn.initialOffer {
-		// 完整SDP处理
-		answer, err := conn.PeerConnection.CreateAnswer(nil)
-		conn.initialOffer = false
-		return answer, err
-	} else {
-		// 增量更新时生成部分SDP
-		return SessionDescription{
-			SDP:  conn.generatePartialSDP(),
-			Type: SDPTypeAnswer,
-		}, nil
-	}
-}
-
-// 生成部分SDP的逻辑
-func (conn *Connection) generatePartialSDP() string {
-	var sdp strings.Builder
-	// 这里简化实现，实际需要根据变化生成对应媒体部分
-	sdp.WriteString("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\n")
-	for _, transceiver := range conn.PeerConnection.GetTransceivers() {
-		if transceiver.Direction() == RTPTransceiverDirectionRecvonly {
-			sdp.WriteString(fmt.Sprintf("m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=recvonly\r\n"))
-		}
-	}
-	return sdp.String()
-}

@@ -44,7 +44,15 @@ func NewTrackFragmentRandomAccessBox(trackid uint32) *TrackFragmentRandomAccessB
 }
 
 func (tfra *TrackFragmentRandomAccessBox) Size() uint64 {
-	return tfra.Box.Size() + 12 + uint64(len(tfra.FragEntrys))*19
+	entrySize := 0
+	if tfra.Box.Version == 1 {
+		entrySize = 16 // 8 bytes for time + 8 bytes for moof_offset
+	} else {
+		entrySize = 8 // 4 bytes for time + 4 bytes for moof_offset
+	}
+	// Add size for traf_number, trun_number, and sample_number
+	entrySize += int(tfra.LengthSizeOfTrafNum + tfra.LengthSizeOfTrunNum + tfra.LengthSizeOfSampleNum + 3)
+	return tfra.Box.Size() + 12 + uint64(len(tfra.FragEntrys)*entrySize) // 12 = 4(track_id) + 4(reserved) + 4(number_of_entry)
 }
 
 func (tfra *TrackFragmentRandomAccessBox) Decode(r io.Reader) (offset int, err error) {
@@ -90,7 +98,11 @@ func (tfra *TrackFragmentRandomAccessBox) Encode() (int, []byte) {
 	offset, boxdata := tfra.Box.Encode()
 	binary.BigEndian.PutUint32(boxdata[offset:], tfra.TrackID)
 	offset += 4
-	binary.BigEndian.PutUint32(boxdata[offset:], 0)
+	// Pack length size fields into the reserved uint32
+	lengthSizeFlags := uint32(tfra.LengthSizeOfTrafNum&0x03)<<4 |
+		uint32(tfra.LengthSizeOfTrunNum&0x03)<<2 |
+		uint32(tfra.LengthSizeOfSampleNum&0x03)
+	binary.BigEndian.PutUint32(boxdata[offset:], lengthSizeFlags)
 	offset += 4
 	binary.BigEndian.PutUint32(boxdata[offset:], uint32(len(tfra.FragEntrys)))
 	offset += 4
@@ -106,10 +118,19 @@ func (tfra *TrackFragmentRandomAccessBox) Encode() (int, []byte) {
 			binary.BigEndian.PutUint32(boxdata[offset:], uint32(frag.MoofOffset))
 			offset += 4
 		}
-		boxdata[offset] = 1
-		boxdata[offset+1] = 1
-		boxdata[offset+2] = 1
-		offset += 3
+		// Write traf_number, trun_number, and sample_number based on length sizes
+		for i := uint8(0); i < tfra.LengthSizeOfTrafNum+1; i++ {
+			boxdata[offset] = 1
+			offset++
+		}
+		for i := uint8(0); i < tfra.LengthSizeOfTrunNum+1; i++ {
+			boxdata[offset] = 1
+			offset++
+		}
+		for i := uint8(0); i < tfra.LengthSizeOfSampleNum+1; i++ {
+			boxdata[offset] = 1
+			offset++
+		}
 	}
 	return offset, boxdata
 }

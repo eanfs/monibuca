@@ -12,9 +12,9 @@ import (
 	"m7s.live/v5"
 	v5 "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/util"
 	"m7s.live/v5/plugin/mp4/pb"
 	pkg "m7s.live/v5/plugin/mp4/pkg"
+	"m7s.live/v5/plugin/mp4/pkg/box"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
@@ -23,7 +23,10 @@ type MediaContext struct {
 	conn         net.Conn
 	wto          time.Duration
 	seqNumber    uint32
-	audio, video TrackContext
+	muxer        *pkg.Muxer
+	audio, video *pkg.Track
+	buffer       []byte
+	offset       int64
 }
 
 func (m *MediaContext) Write(p []byte) (n int, err error) {
@@ -31,6 +34,33 @@ func (m *MediaContext) Write(p []byte) (n int, err error) {
 		m.conn.SetWriteDeadline(time.Now().Add(m.wto))
 	}
 	return m.Writer.Write(p)
+}
+
+func (m *MediaContext) Read(p []byte) (n int, err error) {
+	if m.offset >= int64(len(m.buffer)) {
+		return 0, io.EOF
+	}
+	n = copy(p, m.buffer[m.offset:])
+	m.offset += int64(n)
+	return
+}
+
+func (m *MediaContext) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		m.offset = offset
+	case io.SeekCurrent:
+		m.offset += offset
+	case io.SeekEnd:
+		m.offset = int64(len(m.buffer)) + offset
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
+	if m.offset > int64(len(m.buffer)) {
+		m.offset = int64(len(m.buffer))
+	}
+	return m.offset, nil
 }
 
 type TrackContext struct {
@@ -146,108 +176,112 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	initSegment := mp4.CreateEmptyInit()
-	initSegment.Moov.Mvhd.NextTrackID = 1
-
-	ctx.wto = p.GetCommonConf().WriteTimeout
-	var ftyp *mp4.FtypBox
-	var offsetAudio, offsetVideo = 1, 5
-	var durAudio, durVideo uint32 = 40, 40
-	if sub.Publisher.HasVideoTrack() {
-		v := sub.Publisher.VideoTrack.AVTrack
-		if err = v.WaitReady(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		moov := initSegment.Moov
-		trackID := moov.Mvhd.NextTrackID
-		moov.Mvhd.NextTrackID++
-		newTrak := mp4.CreateEmptyTrak(trackID, 1000, "video", "chi")
-		moov.AddChild(newTrak)
-		moov.Mvex.AddChild(mp4.CreateTrex(trackID))
-		ctx.video.TrackId = trackID
-		ftyp = mp4.NewFtyp("isom", 0x200, []string{
-			"isom", "iso2", v.ICodecCtx.FourCC().String(), "mp41",
-		})
-		switch v.ICodecCtx.FourCC() {
-		case codec.FourCC_H264:
-			h264Ctx := v.ICodecCtx.GetBase().(*codec.H264Ctx)
-			durVideo = uint32(h264Ctx.PacketDuration(nil) / time.Millisecond)
-			newTrak.SetAVCDescriptor("avc1", h264Ctx.RecordInfo.SPS, h264Ctx.RecordInfo.PPS, true)
-		case codec.FourCC_H265:
-			h265Ctx := v.ICodecCtx.GetBase().(*codec.H265Ctx)
-			durVideo = uint32(h265Ctx.PacketDuration(nil) / time.Millisecond)
-			newTrak.SetHEVCDescriptor("hvc1", h265Ctx.RecordInfo.VPS, h265Ctx.RecordInfo.SPS, h265Ctx.RecordInfo.PPS, nil, true)
-		case codec.FourCC_AV1:
-			//av1Ctx := v.ICodecCtx.GetBase().(*codec.AV1Ctx)
-			//durVideo = uint32(av1Ctx.PacketDuration(nil) / time.Millisecond)
-		}
-	}
-	if sub.Publisher.HasAudioTrack() {
-		a := sub.Publisher.AudioTrack.AVTrack
-		if err = a.WaitReady(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		moov := initSegment.Moov
-		trackID := moov.Mvhd.NextTrackID
-		moov.Mvhd.NextTrackID++
-		newTrak := mp4.CreateEmptyTrak(trackID, 1000, "audio", "chi")
-		moov.AddChild(newTrak)
-		moov.Mvex.AddChild(mp4.CreateTrex(trackID))
-		ctx.audio.TrackId = trackID
-		audioCtx := a.ICodecCtx.(v5.IAudioCodecCtx)
-		switch a.ICodecCtx.FourCC() {
-		case codec.FourCC_MP4A:
-			offsetAudio = 2
-			aacCtx := a.ICodecCtx.GetBase().(*codec.AACCtx)
-			newTrak.SetAACDescriptor(byte(aacCtx.Config.ObjectType), aacCtx.Config.SampleRate)
-		case codec.FourCC_ALAW:
-			stsd := newTrak.Mdia.Minf.Stbl.Stsd
-			pcma := mp4.CreateAudioSampleEntryBox("pcma",
-				uint16(audioCtx.GetChannels()),
-				uint16(audioCtx.GetSampleSize()), uint16(audioCtx.GetSampleRate()), nil)
-			stsd.AddChild(pcma)
-		case codec.FourCC_ULAW:
-			stsd := newTrak.Mdia.Minf.Stbl.Stsd
-			pcmu := mp4.CreateAudioSampleEntryBox("pcmu",
-				uint16(audioCtx.GetChannels()),
-				uint16(audioCtx.GetSampleSize()), uint16(audioCtx.GetSampleRate()), nil)
-			stsd.AddChild(pcmu)
-		}
-	}
 	if ctx.conn != nil {
 		ctx.Writer = ctx.conn
 	} else {
 		ctx.Writer = w
 		w.(http.Flusher).Flush()
 	}
-	ftyp.Encode(&ctx)
-	initSegment.Moov.Encode(&ctx)
-	var lastATime, lastVTime uint32
+
+	ctx.wto = p.GetCommonConf().WriteTimeout
+	ctx.muxer = pkg.NewMuxer(pkg.FLAG_FRAGMENT)
+	ctx.muxer.WriteInitSegment(ctx.Writer)
+	var offsetAudio, offsetVideo = 1, 5
+
+	if sub.Publisher.HasVideoTrack() {
+		v := sub.Publisher.VideoTrack.AVTrack
+		if err = v.WaitReady(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var codecID box.MP4_CODEC_TYPE
+		switch v.ICodecCtx.FourCC() {
+		case codec.FourCC_H264:
+			codecID = box.MP4_CODEC_H264
+		case codec.FourCC_H265:
+			codecID = box.MP4_CODEC_H265
+		}
+		ctx.video = ctx.muxer.AddTrack(codecID)
+		ctx.video.Timescale = 1000
+
+		switch v.ICodecCtx.FourCC() {
+		case codec.FourCC_H264:
+			h264Ctx := v.ICodecCtx.GetBase().(*codec.H264Ctx)
+			ctx.video.ExtraData = h264Ctx.Record
+			ctx.video.Width = uint32(h264Ctx.Width())
+			ctx.video.Height = uint32(h264Ctx.Height())
+		case codec.FourCC_H265:
+			h265Ctx := v.ICodecCtx.GetBase().(*codec.H265Ctx)
+			ctx.video.ExtraData = h265Ctx.Record
+			ctx.video.Width = uint32(h265Ctx.Width())
+			ctx.video.Height = uint32(h265Ctx.Height())
+		}
+	}
+
+	if sub.Publisher.HasAudioTrack() {
+		a := sub.Publisher.AudioTrack.AVTrack
+		if err = a.WaitReady(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var codecID box.MP4_CODEC_TYPE
+		switch a.ICodecCtx.FourCC() {
+		case codec.FourCC_MP4A:
+			codecID = box.MP4_CODEC_AAC
+		}
+		ctx.audio = ctx.muxer.AddTrack(codecID)
+		ctx.audio.Timescale = 1000
+		audioCtx := a.ICodecCtx.(v5.IAudioCodecCtx)
+		ctx.audio.SampleRate = uint32(audioCtx.GetSampleRate())
+		ctx.audio.ChannelCount = uint8(audioCtx.GetChannels())
+		ctx.audio.SampleSize = uint16(audioCtx.GetSampleSize())
+
+		switch a.ICodecCtx.FourCC() {
+		case codec.FourCC_MP4A:
+			offsetAudio = 2
+			ctx.audio.ExtraData = a.ICodecCtx.GetBase().(*codec.AACCtx).ConfigBytes
+		default:
+			offsetAudio = 1
+		}
+	}
+
+	err = ctx.muxer.WriteInitSegment(&ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	m7s.PlayBlock(sub, func(audio *rtmp.RTMPAudio) error {
 		bs := audio.Memory.ToBytes()
 		if offsetAudio == 2 && bs[1] == 0 {
 			return nil
 		}
-		if lastATime > 0 {
-			durAudio = audio.Timestamp - lastATime
+		sample := box.Sample{
+			Offset:   0,
+			Data:     bs[offsetAudio:],
+			Size:     len(bs) - offsetAudio,
+			DTS:      uint64(audio.Timestamp),
+			PTS:      uint64(audio.Timestamp),
+			KeyFrame: true,
 		}
-		ctx.audio.Push(&ctx, audio.Timestamp, durAudio, bs[offsetAudio:], mp4.SyncSampleFlags)
-		lastATime = audio.Timestamp
+		ctx.audio.AddSampleEntry(sample)
 		return nil
 	}, func(video *rtmp.RTMPVideo) error {
-		if lastVTime > 0 {
-			durVideo = video.Timestamp - lastVTime
-		}
 		bs := video.Memory.ToBytes()
 		if ctx, ok := sub.VideoReader.Track.ICodecCtx.(*rtmp.H265Ctx); ok && ctx.Enhanced && bs[0]&0b1111 == rtmp.PacketTypeCodedFrames {
 			offsetVideo = 8
 		} else {
 			offsetVideo = 5
 		}
-		ctx.video.Push(&ctx, video.Timestamp, durVideo, bs[offsetVideo:], util.Conditional(sub.VideoReader.Value.IDR, mp4.SyncSampleFlags, mp4.NonSyncSampleFlags))
-		lastVTime = video.Timestamp
+		sample := box.Sample{
+			Offset:   0,
+			Data:     bs[offsetVideo:],
+			Size:     len(bs) - offsetVideo,
+			DTS:      uint64(video.Timestamp),
+			PTS:      uint64(video.Timestamp),
+			KeyFrame: sub.VideoReader.Value.IDR,
+		}
+		ctx.video.AddSampleEntry(sample)
 		return nil
 	})
 }

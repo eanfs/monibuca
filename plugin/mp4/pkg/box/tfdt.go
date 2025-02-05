@@ -15,16 +15,25 @@ import (
 
 type TrackFragmentBaseMediaDecodeTimeBox struct {
 	BaseMediaDecodeTime uint64
+	version             uint8
 }
 
 func NewTrackFragmentBaseMediaDecodeTimeBox(fragStart uint64) *TrackFragmentBaseMediaDecodeTimeBox {
+	version := uint8(0)
+	if fragStart > 0xFFFFFFFF {
+		version = 1
+	}
 	return &TrackFragmentBaseMediaDecodeTimeBox{
+		version:             version,
 		BaseMediaDecodeTime: fragStart,
 	}
 }
 
 func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Size() uint64 {
-	return FullBoxLen + 8
+	if tfdt.version == 1 {
+		return FullBoxLen + 8 // 8 bytes for base_media_decode_time
+	}
+	return FullBoxLen + 4 // 4 bytes for base_media_decode_time
 }
 
 func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Decode(r io.Reader, size uint32) (offset int, err error) {
@@ -49,6 +58,7 @@ func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Decode(r io.Reader, size uint32
 
 func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Encode() (int, []byte) {
 	fullbox := NewFullBox(TypeTFDT, 1)
+	tfdt.version = fullbox.Version
 	fullbox.Box.Size = tfdt.Size()
 	offset, boxdata := fullbox.Encode()
 	binary.BigEndian.PutUint64(boxdata[offset:], tfdt.BaseMediaDecodeTime)

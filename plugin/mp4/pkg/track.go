@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"fmt"
 	"io"
 
 	. "m7s.live/v5/plugin/mp4/pkg/box"
@@ -11,27 +12,29 @@ type (
 		Cid     MP4_CODEC_TYPE
 		TrackId uint32
 		SampleTable
-		Duration           uint32
-		Height             uint32
-		Width              uint32
-		SampleRate         uint32
-		SampleSize         uint16
-		SampleCount        uint32
-		ChannelCount       uint8
-		Timescale          uint32
-		StartDts           uint64
-		EndDts             uint64
-		StartPts           uint64
-		EndPts             uint64
-		Samplelist         []Sample
-		ELST               *EditListBox
-		ExtraData          []byte
-		writer             io.WriteSeeker
-		fragments          []Fragment
-		defaultSize        uint32
-		defaultDuration    uint32
-		defaultSampleFlags uint32
-		baseDataOffset     uint64
+		Duration               uint32
+		Height                 uint32
+		Width                  uint32
+		SampleRate             uint32
+		SampleSize             uint16
+		SampleCount            uint32
+		ChannelCount           uint8
+		Timescale              uint32
+		StartDts               uint64
+		EndDts                 uint64
+		StartPts               uint64
+		EndPts                 uint64
+		Samplelist             []Sample
+		ELST                   *EditListBox
+		ExtraData              []byte
+		writer                 io.WriteSeeker
+		fragments              []Fragment
+		defaultSize            uint32
+		defaultDuration        uint32
+		defaultSampleFlags     uint32
+		baseDataOffset         uint64
+		stbl                   []byte
+		FragmentSequenceNumber uint32
 
 		//for subsample
 		defaultIsProtected     uint8
@@ -255,79 +258,182 @@ func (track *Track) makeStsd(handler_type HandlerType) []byte {
 }
 
 // fmp4
-func (track *Track) makeTraf(moofOffset int64, moofSize int64) []byte {
-	tfhd := track.makeTfhdBox(uint64(moofOffset))
-	tfdt := track.makeTfdtBox()
-	trun := track.makeTrunBoxes(moofSize)
+func (track *Track) makeTraf(dataOffsetOffset *int) []byte {
+	// Create tfhd box
+	tfFlags := uint32(0)
+	tfFlags |= TF_FLAG_DEFAULT_BASE_IS_MOOF
+	tfFlags |= TF_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT
+	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT
+	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT
+	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT
 
-	traf := BasicBox{Type: TypeTRAF, Size: 8 + uint64(len(tfhd)+len(tfdt)+len(trun))}
-	offset, boxData := traf.Encode()
-	copy(boxData[offset:], tfhd)
-	offset += len(tfhd)
-	copy(boxData[offset:], tfdt)
-	offset += len(tfdt)
-	copy(boxData[offset:], trun)
-	offset += len(trun)
-	return boxData
-}
-
-func (track *Track) makeTfhdBox(offset uint64) []byte {
-	tfFlags := TF_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT
-	tfFlags |= TF_FLAG_DEAAULT_BASE_IS_MOOF
 	tfhd := NewTrackFragmentHeaderBox(track.TrackId)
-	tfhd.BaseDataOffset = offset
+	tfhd.SampleDescriptionIndex = 1
+
+	// Calculate default sample duration
 	if len(track.Samplelist) > 1 {
-		tfhd.DefaultSampleDuration = uint32(track.Samplelist[1].DTS - track.Samplelist[0].DTS)
-	} else if len(track.Samplelist) == 1 && len(track.fragments) > 0 {
-		tfhd.DefaultSampleDuration = uint32(track.Samplelist[0].DTS - track.fragments[len(track.fragments)-1].LastDts)
-	} else {
-		tfhd.DefaultSampleDuration = 0
-		tfFlags |= TF_FLAG_DURATION_IS_EMPTY
+		var totalDuration uint64 = 0
+		var count int = 0
+		for i := 1; i < len(track.Samplelist); i++ {
+			duration := track.Samplelist[i].DTS - track.Samplelist[i-1].DTS
+			if duration > 0 {
+				totalDuration += duration
+				count++
+			}
+		}
+		if count > 0 {
+			tfhd.DefaultSampleDuration = uint32(totalDuration / uint64(count))
+		}
 	}
+
+	// Set default sample size
 	if len(track.Samplelist) > 0 {
-		tfFlags |= TF_FLAG_DEAAULT_SAMPLE_FLAGS_PRESENT
-		tfFlags |= TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT
-		tfFlags |= TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT
 		tfhd.DefaultSampleSize = uint32(track.Samplelist[0].Size)
-	} else {
-		tfhd.DefaultSampleSize = 0
 	}
-	//ffmpeg movenc.c mov_write_tfhd_tag
+
+	// Set default sample flags
 	if track.Cid.IsVideo() {
 		tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES | MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC
 	} else {
 		tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO
 	}
+
+	// Create tfdt box
+	tfdt := NewTrackFragmentBaseMediaDecodeTimeBox(uint64(track.Samplelist[0].DTS))
+
+	// Calculate traf size first (including header)
+	_, tfhdbox := tfhd.Encode(tfFlags)
+	_, tfdtbox := tfdt.Encode()
+	trafSize := uint64(8) + uint64(len(tfhdbox)) + uint64(len(tfdtbox))
+	// Create trun box with total moof size
+	// moof = header(8) + mfhd(16) + traf
+	// traf = header(8) + tfhd + tfdt + trun
+	// So the data offset should be relative to moof start
+	trun := track.makeTrunBox(0, len(track.Samplelist))
+
+	// Update traf size with trun size
+	trafSize += uint64(len(trun))
+
+	// Create traf box
+	traf := BasicBox{Type: TypeTRAF, Size: trafSize}
+	offset, boxData := traf.Encode()
+	copy(boxData[offset:], tfhdbox)
+	offset += len(tfhdbox)
+	copy(boxData[offset:], tfdtbox)
+	offset += len(tfdtbox)
+	copy(boxData[offset:], trun)
+	*dataOffsetOffset = offset + 12 + 4 // 12 for trun header, 4 for trun sample count
+	offset += len(trun)
+
+	if offset != int(trafSize) {
+		panic("traf box size mismatch")
+	}
+
+	return boxData
+}
+
+func (track *Track) makeTfhdBox(offset uint64) []byte {
+	// Set flags in the correct order
+	tfFlags := uint32(0)
+
+	// Set base is moof flag (0x020000)
+	tfFlags |= TF_FLAG_DEFAULT_BASE_IS_MOOF
+
+	// Then set sample description index flag (0x000002)
+	tfFlags |= TF_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT
+
+	// Then set default sample duration flag (0x000008)
+	if len(track.Samplelist) > 0 {
+		// Calculate average duration
+		var totalDuration uint64 = 0
+		var count int = 0
+		for i := 1; i < len(track.Samplelist); i++ {
+			duration := track.Samplelist[i].DTS - track.Samplelist[i-1].DTS
+			if duration > 0 {
+				totalDuration += duration
+				count++
+			}
+		}
+
+		if count > 0 {
+			tfFlags |= TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT
+		} else if len(track.fragments) > 0 {
+			lastFrag := track.fragments[len(track.fragments)-1]
+			if lastFrag.Duration > 0 {
+				tfFlags |= TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT
+			}
+		}
+	}
+
+	// Then set default sample size flag (0x000010)
+	if len(track.Samplelist) > 0 {
+		tfFlags |= TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT
+	}
+
+	// Then set default sample flags flag (0x000020)
+	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT
+
+	// Create tfhd box
+	tfhd := NewTrackFragmentHeaderBox(track.TrackId)
+
+	// Set default values based on flags
+	if tfFlags&TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT != 0 {
+		if len(track.Samplelist) > 1 {
+			var totalDuration uint64 = 0
+			var count int = 0
+			for i := 1; i < len(track.Samplelist); i++ {
+				duration := track.Samplelist[i].DTS - track.Samplelist[i-1].DTS
+				if duration > 0 {
+					totalDuration += duration
+					count++
+				}
+			}
+			if count > 0 {
+				tfhd.DefaultSampleDuration = uint32(totalDuration / uint64(count))
+			}
+		} else if len(track.fragments) > 0 {
+			lastFrag := track.fragments[len(track.fragments)-1]
+			if lastFrag.Duration > 0 {
+				tfhd.DefaultSampleDuration = lastFrag.Duration
+			}
+		}
+	}
+
+	if tfFlags&TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT != 0 {
+		tfhd.DefaultSampleSize = uint32(track.Samplelist[0].Size)
+	}
+
+	if tfFlags&TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT != 0 {
+		if track.Cid.IsVideo() {
+			tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES | MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC
+		} else {
+			tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO
+		}
+	}
+
+	// Store default values for later use
 	track.defaultDuration = tfhd.DefaultSampleDuration
 	track.defaultSize = tfhd.DefaultSampleSize
 	track.defaultSampleFlags = tfhd.DefaultSampleFlags
+
+	// Print tfhd box details
+	fmt.Printf("tfhd box: flags=0x%08x, track_id=%d\n", tfFlags, track.TrackId)
+	fmt.Printf("tfhd box: default_sample_duration=%d, default_sample_size=%d, default_sample_flags=0x%08x\n",
+		tfhd.DefaultSampleDuration, tfhd.DefaultSampleSize, tfhd.DefaultSampleFlags)
+
 	_, boxData := tfhd.Encode(tfFlags)
+	fmt.Printf("tfhd box first 32 bytes: % 02X\n", boxData[:32])
 	return boxData
 }
 
 func (track *Track) makeTfdtBox() []byte {
 	tfdt := NewTrackFragmentBaseMediaDecodeTimeBox(uint64(track.Samplelist[0].DTS))
-	_, boxData := tfdt.Encode()
-	return boxData
-}
-
-func (track *Track) makeTrunBoxes(moofSize int64) []byte {
-	boxes := make([]byte, 0, 128)
-	start := 0
-	end := 0
-	for i := 1; i < len(track.Samplelist); i++ {
-		if track.Samplelist[i].Offset == track.Samplelist[i-1].Offset+int64(track.Samplelist[i-1].Size) {
-			continue
-		}
-		end = i
-		boxes = append(boxes, track.makeTrunBox(start, end, moofSize)...)
-		start = end
+	offset, boxData := tfdt.Encode()
+	expectedSize := tfdt.Size()
+	if uint64(offset) != expectedSize {
+		panic("tfdt box size is wrong")
 	}
-
-	if start < len(track.Samplelist) {
-		boxes = append(boxes, track.makeTrunBox(start, len(track.Samplelist), moofSize)...)
-	}
-	return boxes
+	return boxData[:offset]
 }
 
 func (track *Track) makeStssBox() (boxdata []byte) {
@@ -356,51 +462,68 @@ func (track *Track) makeTfraBox() []byte {
 	return tfraData
 }
 
-func (track *Track) makeTrunBox(start, end int, moofSize int64) []byte {
-	flag := TR_FLAG_DATA_OFFSET
-	if track.Cid.IsVideo() && track.Samplelist[start].KeyFrame {
-		flag |= TR_FLAG_DATA_FIRST_SAMPLE_FLAGS
-	}
-
-	for j := start; j < end; j++ {
-		if track.Samplelist[j].Size != int(track.defaultSize) {
-			flag |= TR_FLAG_DATA_SAMPLE_SIZE
-		}
-		if j+1 < end {
-			if track.Samplelist[j+1].DTS-track.Samplelist[j].DTS != uint64(track.defaultDuration) {
-				flag |= TR_FLAG_DATA_SAMPLE_DURATION
-			}
-		} else {
-			// if track.lastSample.DTS-track.Samplelist[j].DTS != uint64(track.defaultDuration) {
-			// 	flag |= TR_FLAG_DATA_SAMPLE_DURATION
-			// }
-		}
-		if track.Samplelist[j].PTS != track.Samplelist[j].DTS {
-			flag |= TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME
-		}
-	}
-
+func (track *Track) makeTrunBox(start, end int) []byte {
+	// Create a new TrackRunBox
 	trun := NewTrackRunBox()
 	trun.SampleCount = uint32(end - start)
 
-	trun.Dataoffset = int32(moofSize + track.Samplelist[start].Offset)
-	trun.FirstSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO
-	for i := start; i < end; i++ {
-		sampleDuration := uint32(0)
-		if i == len(track.Samplelist)-1 {
-			sampleDuration = track.defaultDuration
-		} else {
-			sampleDuration = uint32(track.Samplelist[i+1].DTS - track.Samplelist[i].DTS)
-		}
+	// Set flags in the correct order
+	flag := TR_FLAG_DATA_OFFSET
 
-		entry := TrunEntry{
-			SampleDuration:              sampleDuration,
-			SampleSize:                  uint32(track.Samplelist[i].Size),
-			SampleCompositionTimeOffset: uint32(track.Samplelist[i].PTS - track.Samplelist[i].DTS),
-		}
-		trun.EntryList = append(trun.EntryList, entry)
+	// Then set sample duration flag (0x000100)
+	flag |= TR_FLAG_DATA_SAMPLE_DURATION
+
+	// Then set sample size flag (0x000200)
+	flag |= TR_FLAG_DATA_SAMPLE_SIZE
+
+	// Then set sample flags if needed (0x000400)
+	if track.Cid.IsVideo() {
+		flag |= TR_FLAG_DATA_SAMPLE_FLAGS
 	}
+
+	// Finally set composition time offset flag if needed (0x000800)
+	for i := start; i < end; i++ {
+		if track.Samplelist[i].PTS != track.Samplelist[i].DTS {
+			flag |= TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME
+			break
+		}
+	}
+
+	// Fill entry list
+	trun.EntryList = make([]TrunEntry, trun.SampleCount)
+	for i := 0; i < int(trun.SampleCount); i++ {
+		sample := &track.Samplelist[start+i]
+		// Duration
+		if i < int(trun.SampleCount)-1 {
+			trun.EntryList[i].SampleDuration = uint32(track.Samplelist[start+i+1].DTS - sample.DTS)
+		} else {
+			trun.EntryList[i].SampleDuration = trun.EntryList[i-1].SampleDuration
+		}
+		// Size
+		trun.EntryList[i].SampleSize = uint32(sample.Size)
+		// Flags
+		if flag&TR_FLAG_DATA_SAMPLE_FLAGS != 0 {
+			if sample.KeyFrame {
+				trun.EntryList[i].SampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO | MOV_FRAG_SAMPLE_FLAG_IS_SYNC
+			} else {
+				trun.EntryList[i].SampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES | MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC
+			}
+		}
+		// Composition time offset
+		if flag&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
+			trun.EntryList[i].SampleCompositionTimeOffset = int32(sample.PTS - sample.DTS)
+		}
+	}
+
+	// Calculate data offset
+	// Data offset is relative to the start of the moof box
+	// When TF_FLAG_DEFAULT_BASE_IS_MOOF is set, we need to add the size of the moof box
+	// to point to the start of the data in the mdat box
+	// trun.Dataoffset = int32(moofSize + 8) // +8 for mdat header
+
+	// Print trun box details
 	_, boxData := trun.Encode(flag)
+
 	return boxData
 }
 

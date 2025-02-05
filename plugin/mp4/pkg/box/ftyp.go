@@ -5,10 +5,6 @@ import (
 	"io"
 )
 
-func mov_tag(tag [4]byte) uint32 {
-	return binary.LittleEndian.Uint32(tag[:])
-}
-
 type FileTypeBox struct {
 	Major_brand       [4]byte
 	Minor_version     uint32

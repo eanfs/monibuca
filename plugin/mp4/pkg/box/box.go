@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	BasicBoxLen = 8
-	FullBoxLen  = 12
+	BasicBoxLen = 8  // size(4) + type(4)
+	FullBoxLen  = 12 // BasicBoxLen + version(1) + flags(3)
 )
 
 func f(s string) [4]byte {
@@ -207,4 +207,20 @@ func (box *FullBox) Encode() (int, []byte) {
 	buf[offset] = box.Version
 	copy(buf[offset+1:], box.Flags[:])
 	return offset + 4, buf
+}
+
+type TimeToSampleEntry struct {
+	SampleCount uint32
+	SampleDelta uint32
+}
+
+type CompositionTimeToSampleEntry struct {
+	SampleCount  uint32
+	SampleOffset int32
+}
+
+type SampleToChunkEntry struct {
+	FirstChunk             uint32
+	SamplesPerChunk        uint32
+	SampleDescriptionIndex uint32
 }

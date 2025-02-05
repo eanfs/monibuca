@@ -39,7 +39,7 @@ type TrunEntry struct {
 	SampleDuration              uint32
 	SampleSize                  uint32
 	SampleFlags                 uint32
-	SampleCompositionTimeOffset uint32
+	SampleCompositionTimeOffset int32
 }
 
 type SENC struct {

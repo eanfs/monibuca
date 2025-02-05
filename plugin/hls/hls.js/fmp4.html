@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M3U8 to MP4 Player</title>
+  <style>
+    body {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+
+    .input-container {
+      margin-bottom: 20px;
+    }
+
+    input {
+      width: 70%;
+      padding: 8px;
+      margin-right: 10px;
+    }
+
+    button {
+      padding: 8px 15px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    video {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    #debug {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #f5f5f5;
+      border: 1px solid #ddd;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="input-container">
+    <input type="text" id="m3u8Url" placeholder="输入 M3U8 地址">
+    <button onclick="loadM3U8()">加载</button>
+  </div>
+  <video id="videoPlayer" controls></video>
+  <div id="debug"></div>
+
+  <script>
+    let currentPlaylist = [];
+    let currentIndex = 0;
+    let mediaSource;
+    let sourceBuffer;
+    let pendingBuffers = [];
+    let isBuffering = false;
+    const MAX_BUFFER_LENGTH = 30; // 保持30秒的缓冲区
+
+    function log(message) {
+      const debug = document.getElementById('debug');
+      const time = new Date().toLocaleTimeString();
+      debug.textContent = `[${time}] ${message}\n` + debug.textContent;
+    }
+
+    async function loadM3U8() {
+      const m3u8Url = document.getElementById('m3u8Url').value;
+      if (!m3u8Url) {
+        alert('请输入 M3U8 地址');
+        return;
+      }
+
+      try {
+        log(`开始加载 M3U8: ${m3u8Url}`);
+        const response = await fetch(m3u8Url);
+        const content = await response.text();
+        const mp4Urls = parseM3U8(content, m3u8Url);
+        log(`解析到 ${mp4Urls.length} 个 MP4 文件`);
+
+        if (mp4Urls.length === 0) {
+          alert('未找到可播放的 MP4 文件');
+          return;
+        }
+
+        currentPlaylist = mp4Urls;
+        currentIndex = 0;
+        initMSE();
+      } catch (error) {
+        console.error('加载 M3U8 文件失败:', error);
+        log(`加载失败: ${error.message}`);
+        alert('加载 M3U8 文件失败');
+      }
+    }
+
+    function parseM3U8(content, baseUrl) {
+      const lines = content.split('\n');
+      const mp4Urls = [];
+
+      for (const line of lines) {
+        if (line.trim() && !line.startsWith('#')) {
+          const url = line.startsWith('http') ? line : new URL(line, baseUrl).href;
+          if (url.endsWith('.mp4')) {
+            mp4Urls.push(url);
+            log(`找到 MP4: ${url}`);
+          }
+        }
+      }
+
+      return mp4Urls;
+    }
+
+    function initMSE() {
+      const video = document.getElementById('videoPlayer');
+      log('初始化 MSE');
+
+      if (mediaSource) {
+        if (mediaSource.readyState === 'open') {
+          mediaSource.endOfStream();
+        }
+        URL.revokeObjectURL(video.src);
+        log('清理旧的 MediaSource');
+      }
+
+      mediaSource = new MediaSource();
+      video.src = URL.createObjectURL(mediaSource);
+      pendingBuffers = [];
+      isBuffering = false;
+
+      mediaSource.addEventListener('sourceopen', async () => {
+        log('MediaSource 已打开');
+        try {
+          // Try different codec combinations
+          const codecConfigs = [
+            'video/mp4; codecs="avc1.64001f"', // Video only
+            'video/mp4; codecs="avc1.64001f,mp4a.40.2"', // Video + AAC
+            'video/mp4' // Let the browser figure it out
+          ];
+
+          let sourceBufferCreated = false;
+          for (const codec of codecConfigs) {
+            try {
+              if (MediaSource.isTypeSupported(codec)) {
+                sourceBuffer = mediaSource.addSourceBuffer(codec);
+                sourceBufferCreated = true;
+                log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
+                break;
+              }
+            } catch (e) {
+              log(`尝试编解码器 ${codec} 失败: ${e.message}`);
+            }
+          }
+
+          if (!sourceBufferCreated) {
+            throw new Error('无法创建支持的 SourceBuffer');
+          }
+
+          sourceBuffer.mode = 'sequence';
+          sourceBuffer.addEventListener('updateend', handleUpdateEnd);
+          sourceBuffer.addEventListener('error', (e) => {
+            log(`SourceBuffer 错误: ${e}`);
+          });
+
+          // 先加载第一个片段，等待缓冲完成后再播放
+          log('等待第一个片段加载完成...');
+          await loadNextSegment();
+          await new Promise(resolve => {
+            const checkBuffer = () => {
+              if (!sourceBuffer.updating && video.buffered.length > 0) {
+                log('首个片段缓冲完成，开始播放');
+                resolve();
+              } else {
+                setTimeout(checkBuffer, 100);
+              }
+            };
+            checkBuffer();
+          });
+
+          video.play().catch(e => {
+            log(`播放失败: ${e.message}`);
+            console.error('播放失败:', e);
+          });
+        } catch (error) {
+          log(`创建 SourceBuffer 失败: ${error.message}`);
+        }
+      });
+
+      mediaSource.addEventListener('sourceended', () => {
+        log('MediaSource 已结束');
+      });
+
+      mediaSource.addEventListener('error', (e) => {
+        log(`MediaSource 错误: ${e}`);
+      });
+
+      video.addEventListener('error', (e) => {
+        log(`视频错误: ${video.error.message}`);
+      });
+    }
+
+    async function loadNextSegment() {
+      if (currentIndex >= currentPlaylist.length) {
+        if (mediaSource.readyState === 'open') {
+          mediaSource.endOfStream();
+          log('已到达播放列表末尾');
+        }
+        return;
+      }
+
+      try {
+        // 在加载新片段前检查并清理缓冲区
+        await removeOldBuffers();
+
+        log(`加载视频片段 ${currentIndex + 1}`);
+        const response = await fetch(currentPlaylist[currentIndex]);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const buffer = await response.arrayBuffer();
+        log(`视频片段 ${currentIndex + 1} 加载完成，大小: ${buffer.byteLength} 字节`);
+        appendBuffer(buffer);
+
+        // 预加载下一个片段，但要控制预加载的数量
+        if (currentIndex < currentPlaylist.length - 1 && pendingBuffers.length < 2) {
+          currentIndex++;
+          loadNextSegment();
+        }
+      } catch (error) {
+        log(`加载视频片段失败: ${error.message}`);
+        console.error('加载视频片段失败:', error);
+      }
+    }
+
+    async function removeOldBuffers() {
+      if (!sourceBuffer || !video.buffered.length) return;
+
+      const currentTime = video.currentTime;
+      const buffered = video.buffered;
+
+      // 计算当前缓冲区的范围
+      for (let i = 0; i < buffered.length; i++) {
+        const start = buffered.start(i);
+        const end = buffered.end(i);
+
+        // 如果缓冲区超过了最大长度，移除旧的部分
+        if (end - currentTime > MAX_BUFFER_LENGTH) {
+          const removeEnd = currentTime - 1; // 保留当前播放位置前1秒
+          if (removeEnd > start) {
+            try {
+              log(`清理缓冲区: ${start.toFixed(2)} - ${removeEnd.toFixed(2)}`);
+              await new Promise((resolve, reject) => {
+                sourceBuffer.remove(start, removeEnd);
+                const onUpdate = () => {
+                  sourceBuffer.removeEventListener('updateend', onUpdate);
+                  resolve();
+                };
+                sourceBuffer.addEventListener('updateend', onUpdate);
+              });
+            } catch (e) {
+              log(`清理缓冲区失败: ${e.message}`);
+            }
+          }
+        }
+      }
+    }
+
+    function appendBuffer(buffer) {
+      if (!sourceBuffer || sourceBuffer.updating || pendingBuffers.length > 0) {
+        // 限制等待队列的长度
+        if (pendingBuffers.length < 3) {
+          pendingBuffers.push(buffer);
+          log('缓冲区正忙，将数据加入队列');
+        } else {
+          log('等待队列已满，丢弃数据');
+        }
+        return;
+      }
+
+      try {
+        sourceBuffer.appendBuffer(buffer);
+        isBuffering = true;
+        log('添加数据到缓冲区');
+      } catch (error) {
+        if (error.name === 'QuotaExceededError') {
+          log('缓冲区已满，将进行清理');
+          pendingBuffers.push(buffer);
+          removeOldBuffers();
+        } else {
+          log(`添加缓冲区失败: ${error.message}`);
+          console.error('添加缓冲区失败:', error);
+        }
+      }
+    }
+
+    function handleUpdateEnd() {
+      isBuffering = false;
+      log('缓冲区更新完成');
+
+      if (pendingBuffers.length > 0) {
+        const nextBuffer = pendingBuffers.shift();
+        appendBuffer(nextBuffer);
+      }
+    }
+
+    document.getElementById('videoPlayer').addEventListener('ended', () => {
+      log('视频播放结束，重新开始');
+      currentIndex = 0;
+      initMSE();
+    });
+
+    const video = document.getElementById('videoPlayer');
+    video.addEventListener('playing', () => log('视频开始播放'));
+    video.addEventListener('pause', () => log('视频暂停'));
+    video.addEventListener('waiting', () => log('视频缓冲中'));
+    video.addEventListener('canplay', () => log('视频可以播放'));
+    video.addEventListener('loadedmetadata', () => log('视频元数据已加载'));
+  </script>
+</body>
+
+</html>

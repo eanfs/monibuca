@@ -355,7 +355,7 @@ func (d *Demuxer) Demux() (err error) {
 			d.currentTrack.StartDts = tfdt.BaseMediaDecodeTime
 		case TypeTRUN:
 			var trun TrackRunBox
-			trun.Decode(d.reader, uint32(basebox.Size), uint32(d.dataOffset))
+			trun.Decode(d.reader, uint32(basebox.Size), int32(d.dataOffset))
 			d.decodeTRUN(&trun)
 		case TypeSENC:
 			var senc SencBox
