@@ -16,6 +16,20 @@ type MediaDataBox struct {
 	net.Buffers
 }
 
+func (box *MediaDataBox) HeaderSize() uint32 {
+	if box.size == 1 {
+		return BasicBoxLen + 8
+	}
+	return BasicBoxLen
+}
+
+func (box *MediaDataBox) Size() uint64 {
+	if box.size == 1 {
+		return uint64(len(box.Data)) + 8 + 8
+	}
+	return uint64(box.size)
+}
+
 func (box *MediaDataBox) WriteTo(w io.Writer) (n int64, err error) {
 	var tmp [8]byte
 	var buffers net.Buffers

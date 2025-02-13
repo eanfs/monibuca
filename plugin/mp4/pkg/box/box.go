@@ -15,7 +15,7 @@ type (
 	BoxHeader interface {
 		Type() BoxType
 		HeaderSize() uint32
-		Size() uint32
+		Size() uint64
 		Header() BoxHeader
 		HeaderWriteTo(w io.Writer) (n int64, err error)
 	}
@@ -85,7 +85,7 @@ func CreateContainerBox(typ BoxType, children ...IBox) *ContainerBox {
 		if reflect.ValueOf(child).IsNil() {
 			continue
 		}
-		size += child.Size()
+		size += uint32(child.Size())
 		realChildren = append(realChildren, child)
 	}
 	return &ContainerBox{
@@ -101,9 +101,9 @@ func (b *BigBox) HeaderSize() uint32 { return BasicBoxLen + 8 }
 
 func (b *BaseBox) Header() BoxHeader  { return b }
 func (b *BaseBox) HeaderSize() uint32 { return BasicBoxLen }
-func (b *BaseBox) Size() uint32       { return b.size }
-
-func (b *BaseBox) Type() BoxType { return b.typ }
+func (b *BaseBox) Size() uint64       { return uint64(b.size) }
+func (b *BigBox) Size() uint64        { return uint64(b.size) }
+func (b *BaseBox) Type() BoxType      { return b.typ }
 
 func (b *BaseBox) HeaderWriteTo(w io.Writer) (n int64, err error) {
 	var tmp [4]byte

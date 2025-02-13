@@ -49,9 +49,10 @@ type (
 		ReadSampleIdx []uint32
 		IsFragment    bool
 		// pssh          []*PsshBox
-		moov     *MoovBox
-		mdat     *MediaDataBox
-		QuicTime bool
+		moov       *MoovBox
+		mdat       *MediaDataBox
+		mdatOffset uint64
+		QuicTime   bool
 	}
 )
 
@@ -96,6 +97,7 @@ func (d *Demuxer) Demux() (err error) {
 	// 	return
 	// }
 	var b IBox
+	var offset uint64
 	for {
 		b, err = box.ReadFrom(d.reader)
 		if err != nil {
@@ -104,6 +106,7 @@ func (d *Demuxer) Demux() (err error) {
 			}
 			return err
 		}
+		offset += b.Size()
 		switch box := b.(type) {
 		case *FileTypeBox:
 			if slices.Contains(box.CompatibleBrands, [4]byte{'q', 't', ' ', ' '}) {
@@ -112,6 +115,7 @@ func (d *Demuxer) Demux() (err error) {
 		case *FreeBox:
 		case *MediaDataBox:
 			d.mdat = box
+			d.mdatOffset = offset - b.Size() + uint64(box.HeaderSize())
 		case *MoovBox:
 			if box.MVEX != nil {
 				d.IsFragment = true

@@ -144,6 +144,13 @@ func (t *TrakBox) ParseSamples() (samplelist []Sample) {
 			}
 		}
 	}
+
+	if stbl.STSS != nil {
+		for _, keyIndex := range stbl.STSS.Entries {
+			samplelist[keyIndex-1].KeyFrame = true
+		}
+	}
+
 	return samplelist
 }
 
