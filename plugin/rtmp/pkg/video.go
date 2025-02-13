@@ -99,7 +99,7 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 		} else {
 			fourCC = codec.FourCC_H264
 		}
-		_, err = reader.ReadBE(3) // cts == 0
+		avcc.CTS, err = reader.ReadBE(3) // cts == 0
 		if err != nil {
 			return
 		}
