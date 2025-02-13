@@ -210,9 +210,9 @@ func (visual *VisualSampleEntry) Unmarshal(buf []byte) (IBox, error) {
 	visual.FrameCount = binary.BigEndian.Uint16(buf[16:])
 	copy(visual.Compressorname[:], buf[18:50])
 	visual.Depth = binary.BigEndian.Uint16(buf[50:])
-
-	if len(buf) > 52 {
-		box, err := ReadFrom(bytes.NewReader(buf[52:]))
+	// 52 pre-defined
+	if len(buf) > 54 {
+		box, err := ReadFrom(bytes.NewReader(buf[54:]))
 		if err != nil {
 			return nil, err
 		}

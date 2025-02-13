@@ -105,9 +105,8 @@ func (box *DataInformationBox) WriteTo(w io.Writer) (n int64, err error) {
 	return WriteTo(w, box.Dref)
 }
 
-func (box *DataInformationBox) Unmarshal(buf []byte) (IBox, error) {
-	r := bytes.NewReader(buf)
-	b, err := ReadFrom(r)
+func (box *DataInformationBox) Unmarshal(buf []byte) (b IBox, err error) {
+	b, err = ReadFrom(bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}

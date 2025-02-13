@@ -38,12 +38,10 @@ func (t *TrakBox) WriteTo(w io.Writer) (n int64, err error) {
 	return WriteTo(w, t.MDIA, t.EDTS, t.TKHD)
 }
 
-func (t *TrakBox) Unmarshal(buf []byte) (IBox, error) {
-	for {
-		b, err := ReadFrom(bytes.NewReader(buf))
-		if err != nil {
-			return t, err
-		}
+func (t *TrakBox) Unmarshal(buf []byte) (b IBox, err error) {
+	r := bytes.NewReader(buf)
+	for err == nil {
+		b, err = ReadFrom(r)
 		switch box := b.(type) {
 		case *MdiaBox:
 			t.MDIA = box
@@ -53,6 +51,7 @@ func (t *TrakBox) Unmarshal(buf []byte) (IBox, error) {
 			t.TKHD = box
 		}
 	}
+	return t, err
 }
 
 // ParseSamples parses the sample table and builds the sample list

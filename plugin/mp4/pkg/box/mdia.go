@@ -16,11 +16,12 @@ func (m *MdiaBox) WriteTo(w io.Writer) (n int64, err error) {
 	return WriteTo(w, m.MDHD, m.MINF, m.HDLR)
 }
 
-func (m *MdiaBox) Unmarshal(buf []byte) (IBox, error) {
+func (m *MdiaBox) Unmarshal(buf []byte) (b IBox, err error) {
+	r := bytes.NewReader(buf)
 	for {
-		b, err := ReadFrom(bytes.NewReader(buf))
+		b, err = ReadFrom(r)
 		if err != nil {
-			return nil, err
+			return m, err
 		}
 		switch box := b.(type) {
 		case *MediaHeaderBox:
@@ -46,12 +47,10 @@ func (m *MediaInformationBox) WriteTo(w io.Writer) (n int64, err error) {
 	return WriteTo(w, m.VMHD, m.SMHD, m.HMHD, m.STBL, m.DINF)
 }
 
-func (m *MediaInformationBox) Unmarshal(buf []byte) (IBox, error) {
-	for {
-		b, err := ReadFrom(bytes.NewReader(buf))
-		if err != nil {
-			return nil, err
-		}
+func (m *MediaInformationBox) Unmarshal(buf []byte) (b IBox, err error) {
+	r := bytes.NewReader(buf)
+	for err == nil {
+		b, err = ReadFrom(r)
 		switch box := b.(type) {
 		case *VideoMediaHeaderBox:
 			m.VMHD = box
@@ -65,8 +64,10 @@ func (m *MediaInformationBox) Unmarshal(buf []byte) (IBox, error) {
 			m.DINF = box
 		}
 	}
+	return m, err
 }
 
 func init() {
 	RegisterBox[*MdiaBox](TypeMDIA)
+	RegisterBox[*MediaInformationBox](TypeMINF)
 }

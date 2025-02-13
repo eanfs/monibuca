@@ -56,5 +56,5 @@ func (box *CTTSBox) Unmarshal(buf []byte) (IBox, error) {
 }
 
 func init() {
-	RegisterBox[CTTSBox](TypeCTTS)
+	RegisterBox[*CTTSBox](TypeCTTS)
 }

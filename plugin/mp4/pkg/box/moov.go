@@ -30,11 +30,11 @@ func (m *MoovBox) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (m *MoovBox) Unmarshal(buf []byte) (IBox, error) {
+	r := bytes.NewReader(buf)
 	for {
-		b, err := ReadFrom(bytes.NewReader(buf))
-
+		b, err := ReadFrom(r)
 		if err != nil {
-			return nil, err
+			return m, err
 		}
 		switch box := b.(type) {
 		case *TrakBox:
@@ -51,17 +51,19 @@ func (e *EdtsBox) WriteTo(w io.Writer) (n int64, err error) {
 	return WriteTo(w, e.Elst)
 }
 
-func (e *EdtsBox) Unmarshal(buf []byte) (IBox, error) {
-	for {
-		b, err := ReadFrom(bytes.NewReader(buf))
+func (e *EdtsBox) Unmarshal(buf []byte) (b IBox, err error) {
+	r := bytes.NewReader(buf)
+	for err == nil {
+		b, err = ReadFrom(r)
 		if err != nil {
-			return nil, err
+			return e, err
 		}
 		switch box := b.(type) {
 		case *EditListBox:
 			e.Elst = box
 		}
 	}
+	return e, err
 }
 
 func init() {

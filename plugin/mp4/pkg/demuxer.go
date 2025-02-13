@@ -50,6 +50,7 @@ type (
 		IsFragment    bool
 		// pssh          []*PsshBox
 		moov     *MoovBox
+		mdat     *MediaDataBox
 		QuicTime bool
 	}
 )
@@ -94,11 +95,14 @@ func (d *Demuxer) Demux() (err error) {
 	// 	}
 	// 	return
 	// }
-
+	var b IBox
 	for {
-		b, err := box.ReadFrom(d.reader)
+		b, err = box.ReadFrom(d.reader)
 		if err != nil {
-			break
+			if err == io.EOF {
+				break
+			}
+			return err
 		}
 		switch box := b.(type) {
 		case *FileTypeBox:
@@ -107,6 +111,7 @@ func (d *Demuxer) Demux() (err error) {
 			}
 		case *FreeBox:
 		case *MediaDataBox:
+			d.mdat = box
 		case *MoovBox:
 			if box.MVEX != nil {
 				d.IsFragment = true

@@ -172,8 +172,8 @@ func WriteTo(w io.Writer, box ...IBox) (n int64, err error) {
 		if err != nil {
 			return
 		}
-		if n1 + n2 != int64(b.Size()) {
-			panic(fmt.Sprintf("write to %s size error, %d != %d", b.Type(), n1 + n2, b.Size()))
+		if n1+n2 != int64(b.Size()) {
+			panic(fmt.Sprintf("write to %s size error, %d != %d", b.Type(), n1+n2, b.Size()))
 		}
 		n += n1 + n2
 	}
@@ -193,7 +193,7 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 	if !exists {
 		return nil, fmt.Errorf("unknown box type: %s", baseBox.typ)
 	}
-	b := reflect.New(t).Interface().(IBox)
+	b := reflect.New(t.Elem()).Interface().(IBox)
 	var payload []byte
 	if baseBox.size == 1 {
 		if _, err = io.ReadFull(r, tmp[:]); err != nil {
@@ -203,8 +203,10 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 	} else {
 		payload = make([]byte, baseBox.size-BasicBoxLen)
 	}
-
 	_, err = io.ReadFull(r, payload)
+	if err != nil {
+		return nil, err
+	}
 	boxHeader := b.Header()
 	switch header := boxHeader.(type) {
 	case *BaseBox:
@@ -215,6 +217,9 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 		header.Version = payload[0]
 		header.Flags = [3]byte(payload[1:4])
 		box, err = b.Unmarshal(payload[4:])
+	}
+	if err == io.EOF {
+		return box, nil
 	}
 	return
 }

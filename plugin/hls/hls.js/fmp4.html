@@ -142,9 +142,9 @@
         try {
           // Try different codec combinations
           const codecConfigs = [
-            'video/mp4; codecs="avc1.64001f"', // Video only
+            //'video/mp4; codecs="avc1.64001f"', // Video only
             'video/mp4; codecs="avc1.64001f,mp4a.40.2"', // Video + AAC
-            'video/mp4' // Let the browser figure it out
+            // 'video/mp4' // Let the browser figure it out
           ];
 
           let sourceBufferCreated = false;

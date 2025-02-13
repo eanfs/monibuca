@@ -91,3 +91,7 @@ func MakeHdlrBox(hdt HandlerType) *HandlerBox {
 	}
 	return hdlr
 }
+
+func init() {
+	RegisterBox[*HandlerBox](TypeHDLR)
+}
