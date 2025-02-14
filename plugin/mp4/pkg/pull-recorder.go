@@ -90,7 +90,7 @@ func (p *RecordReader) Run() (err error) {
 					tsOffset = 0
 					continue
 				}
-				tsOffset = -int64(startSample.DTS)
+				tsOffset = -int64(startSample.Timestamp)
 			}
 
 			for track, sample := range p.demuxer.ReadSample {
@@ -121,8 +121,8 @@ func (p *RecordReader) Run() (err error) {
 				// 	allocator.Free(sample.Data)
 				// 	return
 				// }
-				ts = int64(sample.DTS + uint64(tsOffset))
-				realTime = stream.StartTime.Add(time.Duration(sample.DTS) * time.Millisecond)
+				ts = int64(sample.Timestamp + uint32(tsOffset))
+				realTime = stream.StartTime.Add(time.Duration(sample.Timestamp) * time.Millisecond)
 				if p.MaxTS > 0 && ts > p.MaxTS {
 					return
 				}
@@ -130,7 +130,7 @@ func (p *RecordReader) Run() (err error) {
 				case box.MP4_CODEC_H264:
 					var videoFrame rtmp.RTMPVideo
 					// videoFrame.SetAllocator(allocator)
-					videoFrame.CTS = uint32(sample.PTS - sample.DTS)
+					videoFrame.CTS = sample.CTS
 					videoFrame.Timestamp = uint32(ts)
 					videoFrame.Append([]byte{util.Conditional[byte](sample.KeyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)}, sample.Data)
 					// videoFrame.AddRecycleBytes(sample.Data)
@@ -138,7 +138,7 @@ func (p *RecordReader) Run() (err error) {
 				case box.MP4_CODEC_H265:
 					var videoFrame rtmp.RTMPVideo
 					// videoFrame.SetAllocator(allocator)
-					videoFrame.CTS = uint32(sample.PTS - sample.DTS)
+					videoFrame.CTS = sample.CTS
 					videoFrame.Timestamp = uint32(ts)
 					var head []byte
 					var b0 byte = 0b1010_0000

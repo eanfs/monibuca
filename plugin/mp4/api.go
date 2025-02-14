@@ -109,11 +109,11 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				tsOffset = 0
 				continue
 			}
-			tsOffset = -int64(startSample.DTS)
+			tsOffset = -int64(startSample.Timestamp)
 		}
 		var part *ContentPart
 		for track, sample := range demuxer.RangeSample {
-			if i == streamCount-1 && int64(sample.DTS) > endTime.Sub(stream.StartTime).Milliseconds() {
+			if i == streamCount-1 && int64(sample.Timestamp) > endTime.Sub(stream.StartTime).Milliseconds() {
 				break
 			}
 			if part == nil {
@@ -123,10 +123,9 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			part.Size += sample.Size
-			lastTs = int64(sample.DTS + uint64(tsOffset))
+			lastTs = int64(sample.Timestamp + uint32(tsOffset))
 			fixSample := *sample
-			fixSample.DTS += uint64(tsOffset)
-			fixSample.PTS += uint64(tsOffset)
+			fixSample.Timestamp += uint32(tsOffset)
 			fixSample.Offset += sampleOffset - part.Start
 			if track.Cid.IsAudio() {
 				audioTrack.AddSampleEntry(fixSample)

@@ -335,10 +335,10 @@ func TestFLVToFMP4(t *testing.T) {
 				}
 
 				sample := box.Sample{
-					Data:     aacData,
-					DTS:      uint64(tag.Timestamp),
-					PTS:      uint64(tag.Timestamp),
-					KeyFrame: true,
+					Data:      aacData,
+					Timestamp: uint32(tag.Timestamp),
+					CTS:       0,
+					KeyFrame:  true,
 				}
 				if err := muxer.WriteSample(outFile, audioTrack, sample); err != nil {
 					t.Fatalf("Failed to write audio sample: %v", err)
@@ -378,10 +378,10 @@ func TestFLVToFMP4(t *testing.T) {
 					}
 
 					sample := box.Sample{
-						Data:     validData,
-						DTS:      uint64(tag.Timestamp),
-						PTS:      uint64(int64(tag.Timestamp) + int64(compositionTime)),
-						KeyFrame: frameType == 1,
+						Data:      validData,
+						Timestamp: uint32(tag.Timestamp),
+						CTS:       uint32(compositionTime),
+						KeyFrame:  frameType == 1,
 					}
 					if err := muxer.WriteSample(outFile, videoTrack, sample); err != nil {
 						t.Fatalf("Failed to write video sample: %v", err)

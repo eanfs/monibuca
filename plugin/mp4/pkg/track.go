@@ -51,15 +51,13 @@ type (
 	Fragment struct {
 		Offset   uint64
 		Duration uint32
-		FirstDts uint64
-		FirstPts uint64
-		LastPts  uint64
-		LastDts  uint64
+		FirstTs  uint64
+		LastTs   uint64
 	}
 )
 
 func (track *Track) makeElstBox() *EditListBox {
-	delay := track.Samplelist[0].PTS * 1000 / uint64(track.Timescale)
+	delay := track.Samplelist[0].Timestamp * 1000 / uint32(track.Timescale)
 	entryCount := 1
 	version := byte(0)
 	boxSize := 12
@@ -94,7 +92,7 @@ func (track *Track) makeElstBox() *EditListBox {
 
 func (track *Track) Seek(dts uint64) int {
 	for i, sample := range track.Samplelist {
-		if sample.DTS*1000/uint64(track.Timescale) < dts {
+		if sample.Timestamp*1000/uint32(track.Timescale) < uint32(dts) {
 			continue
 		} else if track.Cid.IsVideo() {
 			if sample.KeyFrame {
@@ -115,7 +113,7 @@ func (track *Track) AddSampleEntry(entry Sample) {
 	if len(track.Samplelist) <= 1 {
 		track.Duration = 0
 	} else {
-		delta := int64(entry.DTS - track.Samplelist[len(track.Samplelist)-1].DTS)
+		delta := int64(entry.Timestamp - track.Samplelist[len(track.Samplelist)-1].Timestamp)
 		if delta < 0 {
 			track.Duration += 1
 		} else {
@@ -236,9 +234,9 @@ func (track *Track) makeTfhdBox(moofOffset uint64) *TrackFragmentHeaderBox {
 		var totalDuration uint64 = 0
 		var count int = 0
 		for i := 1; i < len(track.Samplelist); i++ {
-			duration := track.Samplelist[i].DTS - track.Samplelist[i-1].DTS
+			duration := track.Samplelist[i].Timestamp - track.Samplelist[i-1].Timestamp
 			if duration > 0 {
-				totalDuration += duration
+				totalDuration += uint64(duration)
 				count++
 			}
 		}
@@ -262,7 +260,7 @@ func (track *Track) makeTfhdBox(moofOffset uint64) *TrackFragmentHeaderBox {
 }
 
 func (track *Track) makeTfdtBox() *TrackFragmentBaseMediaDecodeTimeBox {
-	return CreateTrackFragmentBaseMediaDecodeTimeBox(uint64(track.Samplelist[0].DTS))
+	return CreateTrackFragmentBaseMediaDecodeTimeBox(uint64(track.Samplelist[0].Timestamp))
 }
 
 func (track *Track) makeStssBox() *STSSBox {
@@ -279,7 +277,7 @@ func (track *Track) makeTfraBox() *TrackFragmentRandomAccessBox {
 	return CreateTrackFragmentRandomAccessBox(track.TrackId, slices.Collect(func(yield func(TFRAEntry) bool) {
 		for _, f := range track.fragments {
 			if !yield(TFRAEntry{
-				Time:       f.FirstPts,
+				Time:       f.FirstTs,
 				MoofOffset: f.Offset,
 			}) {
 				break
@@ -300,7 +298,7 @@ func (track *Track) makeTrunBox(start, end int) *TrackRunBox {
 
 	// Finally set composition time offset flag if needed (0x000800)
 	for i := start; i < end; i++ {
-		if track.Samplelist[i].PTS != track.Samplelist[i].DTS {
+		if track.Samplelist[i].CTS != 0 {
 			flag |= TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME
 			break
 		}
@@ -315,7 +313,7 @@ func (track *Track) makeTrunBox(start, end int) *TrackRunBox {
 
 		// Composition time offset
 		if flag&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
-			trun.Entries[i].SampleCompositionTimeOffset = int32(sample.PTS - sample.DTS)
+			trun.Entries[i].SampleCompositionTimeOffset = int32(sample.CTS)
 		}
 	}
 
@@ -332,16 +330,16 @@ func (track *Track) makeStblTable() {
 
 	for i, sample := range track.Samplelist {
 		sttsEntry := STTSEntry{SampleCount: 1, SampleDelta: 1}
-		cttsEntry := CTTSEntry{SampleCount: 1, SampleOffset: uint32(sample.PTS) - uint32(sample.DTS)}
+		cttsEntry := CTTSEntry{SampleCount: 1, SampleOffset: uint32(sample.CTS)}
 		if i == len(track.Samplelist)-1 {
 			stts = append(stts, sttsEntry)
 		} else {
-			var delta uint64 = 1
-			if track.Samplelist[i+1].PTS >= sample.PTS {
-				delta = track.Samplelist[i+1].PTS - sample.PTS
+			var delta uint32 = 1
+			if track.Samplelist[i+1].Timestamp >= sample.Timestamp {
+				delta = track.Samplelist[i+1].Timestamp - sample.Timestamp
 			}
 
-			if len(stts) > 0 && delta == uint64(stts[len(stts)-1].SampleDelta) {
+			if len(stts) > 0 && delta == uint32(stts[len(stts)-1].SampleDelta) {
 				stts[len(stts)-1].SampleCount++
 			} else {
 				sttsEntry.SampleDelta = uint32(delta)

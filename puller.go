@@ -136,9 +136,9 @@ func (p *PullJob) Publish() (err error) {
 		streamPath += "?" + p.Args.Encode()
 	}
 	p.Publisher, err = p.Plugin.PublishWithConfig(p.puller.GetTask().Context, streamPath, p.PublishConfig)
-	if err == nil && p.conf.MaxRetry != 0 {
+	if err == nil {
 		p.Publisher.OnDispose(func() {
-			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) {
+			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) || p.conf.MaxRetry == 0 {
 				p.Stop(p.Publisher.StopReason())
 			} else {
 				p.puller.Stop(p.Publisher.StopReason())

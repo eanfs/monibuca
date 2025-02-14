@@ -116,16 +116,15 @@ func (t *TrakBox) ParseSamples() (samplelist []Sample) {
 	// Process STTS entries for timestamps
 	if stbl.STTS != nil {
 		sampleIndex := 0
-		timestamp := uint64(0)
+		timestamp := uint32(0)
 
 		for _, entry := range stbl.STTS.Entries {
 			for i := uint32(0); i < entry.SampleCount; i++ {
 				if sampleIndex >= len(samplelist) {
 					break
 				}
-				samplelist[sampleIndex].DTS = timestamp
-				samplelist[sampleIndex].PTS = timestamp
-				timestamp += uint64(entry.SampleDelta)
+				samplelist[sampleIndex].Timestamp = timestamp
+				timestamp += entry.SampleDelta
 				sampleIndex++
 			}
 		}
@@ -139,7 +138,7 @@ func (t *TrakBox) ParseSamples() (samplelist []Sample) {
 				if sampleIndex >= len(samplelist) {
 					break
 				}
-				samplelist[sampleIndex].PTS = samplelist[sampleIndex].DTS + uint64(entry.SampleOffset)
+				samplelist[sampleIndex].CTS = entry.SampleOffset
 				sampleIndex++
 			}
 		}

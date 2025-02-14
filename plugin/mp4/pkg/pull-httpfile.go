@@ -80,8 +80,8 @@ func (p *HTTPReader) Run() (err error) {
 		case box.MP4_CODEC_H264:
 			var videoFrame rtmp.RTMPVideo
 			videoFrame.SetAllocator(allocator)
-			videoFrame.CTS = uint32(sample.PTS - sample.DTS)
-			videoFrame.Timestamp = uint32(sample.DTS)
+			videoFrame.CTS = sample.CTS
+			videoFrame.Timestamp = sample.Timestamp
 			keyFrame := codec.H264NALUType(sample.Data[5]&0x1F) == codec.NALU_IDR_Picture
 			videoFrame.AppendOne([]byte{util.Conditional[byte](keyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
 			videoFrame.AddRecycleBytes(sample.Data)
@@ -89,8 +89,8 @@ func (p *HTTPReader) Run() (err error) {
 		case box.MP4_CODEC_H265:
 			var videoFrame rtmp.RTMPVideo
 			videoFrame.SetAllocator(allocator)
-			videoFrame.CTS = uint32(sample.PTS - sample.DTS)
-			videoFrame.Timestamp = uint32(sample.DTS)
+			videoFrame.CTS = uint32(sample.CTS)
+			videoFrame.Timestamp = uint32(sample.Timestamp)
 			var head []byte
 			var b0 byte = 0b1010_0000
 			switch codec.ParseH265NALUType(sample.Data[5]) {
@@ -116,7 +116,7 @@ func (p *HTTPReader) Run() (err error) {
 		case box.MP4_CODEC_AAC:
 			var audioFrame rtmp.RTMPAudio
 			audioFrame.SetAllocator(allocator)
-			audioFrame.Timestamp = uint32(sample.DTS)
+			audioFrame.Timestamp = sample.Timestamp
 			audioFrame.AppendOne([]byte{0xaf, 0x01})
 			audioFrame.AddRecycleBytes(sample.Data)
 			err = publisher.WriteAudio(&audioFrame)

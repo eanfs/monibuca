@@ -286,9 +286,8 @@ func (r *Recorder) Run() (err error) {
 		}
 		dts := sub.AudioReader.AbsTime
 		return r.muxer.WriteSample(r.file, audioTrack, box.Sample{
-			Data: audio.ToBytes(),
-			PTS:  uint64(dts),
-			DTS:  uint64(dts),
+			Data:      audio.ToBytes(),
+			Timestamp: uint32(dts),
 		})
 	}, func(video *rtmp.RTMPVideo) error {
 		if sub.VideoReader.Value.IDR {
@@ -367,10 +366,10 @@ func (r *Recorder) Run() (err error) {
 			}
 		}
 		return r.muxer.WriteSample(r.file, videoTrack, box.Sample{
-			KeyFrame: sub.VideoReader.Value.IDR,
-			Data:     bytes[offset:],
-			PTS:      uint64(sub.VideoReader.AbsTime) + uint64(video.CTS),
-			DTS:      uint64(sub.VideoReader.AbsTime),
+			KeyFrame:  sub.VideoReader.Value.IDR,
+			Data:      bytes[offset:],
+			Timestamp: uint32(sub.VideoReader.AbsTime),
+			CTS:       video.CTS,
 		})
 	})
 }

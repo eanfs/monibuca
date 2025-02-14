@@ -257,12 +257,11 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		sample := box.Sample{
-			Offset:   0,
-			Data:     bs[offsetAudio:],
-			Size:     len(bs) - offsetAudio,
-			DTS:      uint64(audio.Timestamp),
-			PTS:      uint64(audio.Timestamp),
-			KeyFrame: true,
+			Offset:    0,
+			Data:      bs[offsetAudio:],
+			Size:      len(bs) - offsetAudio,
+			Timestamp: audio.Timestamp,
+			KeyFrame:  true,
 		}
 		ctx.audio.AddSampleEntry(sample)
 		return nil
@@ -274,12 +273,12 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			offsetVideo = 5
 		}
 		sample := box.Sample{
-			Offset:   0,
-			Data:     bs[offsetVideo:],
-			Size:     len(bs) - offsetVideo,
-			DTS:      uint64(video.Timestamp),
-			PTS:      uint64(video.Timestamp),
-			KeyFrame: sub.VideoReader.Value.IDR,
+			Offset:    0,
+			Data:      bs[offsetVideo:],
+			Size:      len(bs) - offsetVideo,
+			Timestamp: video.Timestamp,
+			CTS:       video.CTS,
+			KeyFrame:  sub.VideoReader.Value.IDR,
 		}
 		ctx.video.AddSampleEntry(sample)
 		return nil

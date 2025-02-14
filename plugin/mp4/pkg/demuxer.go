@@ -376,7 +376,7 @@ func (d *Demuxer) SeekTime(dts uint64) (sample *Sample, err error) {
 func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 	for {
 		maxdts := int64(-1)
-		minTsSample := Sample{DTS: uint64(maxdts)}
+		minTsSample := Sample{Timestamp: uint32(maxdts)}
 		var whichTrack *Track
 		whichTracki := 0
 		for i, track := range d.Tracks {
@@ -389,8 +389,8 @@ func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 				whichTrack = track
 				whichTracki = i
 			} else {
-				dts1 := minTsSample.DTS * uint64(d.moov.MVHD.Timescale) / uint64(whichTrack.Timescale)
-				dts2 := track.Samplelist[idx].DTS * uint64(d.moov.MVHD.Timescale) / uint64(track.Timescale)
+				dts1 := minTsSample.Timestamp * uint32(d.moov.MVHD.Timescale) / uint32(whichTrack.Timescale)
+				dts2 := track.Samplelist[idx].Timestamp * uint32(d.moov.MVHD.Timescale) / uint32(track.Timescale)
 				if dts1 > dts2 {
 					minTsSample = track.Samplelist[idx]
 					whichTrack = track
@@ -399,7 +399,7 @@ func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 			}
 			// subSample := d.readSubSample(idx, whichTrack)
 		}
-		if minTsSample.DTS == uint64(maxdts) {
+		if minTsSample.Timestamp == uint32(maxdts) {
 			return
 		}
 

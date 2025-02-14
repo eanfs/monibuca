@@ -368,17 +368,13 @@ func (m *Muxer) flushFragment(w io.Writer) (err error) {
 
 		// Record fragment info
 		if len(track.Samplelist) > 0 {
-			firstPts := track.Samplelist[0].PTS
-			firstDts := track.Samplelist[0].DTS
-			lastPts := track.Samplelist[len(track.Samplelist)-1].PTS
-			lastDts := track.Samplelist[len(track.Samplelist)-1].DTS
+			firstTs := track.Samplelist[0].Timestamp
+			lastTs := track.Samplelist[len(track.Samplelist)-1].Timestamp
 			frag := Fragment{
 				Offset:   uint64(m.CurrentOffset),
 				Duration: track.Duration,
-				FirstDts: firstDts,
-				FirstPts: firstPts,
-				LastPts:  lastPts,
-				LastDts:  lastDts,
+				FirstTs:  uint64(firstTs),
+				LastTs:   uint64(lastTs),
 			}
 			track.fragments = append(track.fragments, frag)
 		}
