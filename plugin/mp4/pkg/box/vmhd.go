@@ -32,8 +32,6 @@ func CreateVideoMediaHeaderBox() *VideoMediaHeaderBox {
 			Version: 0,
 			Flags:   [3]byte{0, 0, 1}, // Flags = 1
 		},
-		Graphicsmode: 0,
-		Opcolor:      [3]uint16{0, 0, 0},
 	}
 }
 

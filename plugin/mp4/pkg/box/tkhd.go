@@ -50,10 +50,11 @@ type TrackHeaderBox struct {
 }
 
 func CreateTrackHeaderBox(trackID uint32, duration uint64, width, height uint32) *TrackHeaderBox {
-	_, offset := time.Now().Zone()
-	now := uint64(time.Now().Unix() + int64(offset) + 0x7C25B080)
+	now := ConvertUnixTimeToISO14496(uint64(time.Now().Unix()))
 	version := util.Conditional[uint8](duration > 0xFFFFFFFF, 1, 0)
-
+	if duration == 0 {
+		now = 0
+	}
 	return &TrackHeaderBox{
 		FullBox: FullBox{
 			BaseBox: BaseBox{

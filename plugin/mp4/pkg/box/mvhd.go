@@ -42,6 +42,9 @@ type MovieHeaderBox struct {
 
 func CreateMovieHeaderBox(nextTrackID uint32, duration uint32) *MovieHeaderBox {
 	now := time.Now().Unix()
+	if duration == 0 {
+		now = 0
+	}
 	return &MovieHeaderBox{
 		FullBox: FullBox{
 			BaseBox: BaseBox{

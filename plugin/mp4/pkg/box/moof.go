@@ -25,7 +25,7 @@ func CreateTrackFragmentBox(tfhd *TrackFragmentHeaderBox, tfdt *TrackFragmentBas
 	return &TrackFragmentBox{
 		BaseBox: BaseBox{
 			typ:  TypeTRAF,
-			size: uint32(BasicBoxLen + tfhd.size + trun.size),
+			size: uint32(BasicBoxLen + tfhd.size + trun.size + tfdt.size),
 		},
 		TFHD: tfhd,
 		TFDT: tfdt,
@@ -42,7 +42,7 @@ func (box *MovieFragmentBox) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (box *TrackFragmentBox) WriteTo(w io.Writer) (n int64, err error) {
-	return WriteTo(w, box.TFHD, box.TRUN)
+	return WriteTo(w, box.TFHD, box.TFDT, box.TRUN)
 }
 
 func (box *MovieFragmentBox) Unmarshal(buf []byte) (IBox, error) {

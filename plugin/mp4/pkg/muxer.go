@@ -97,6 +97,7 @@ func (m *Muxer) AddTrack(cid MP4_CODEC_TYPE) *Track {
 	}
 	if m.isFragment() || m.isDash() {
 		track.writer = NewFmp4WriterSeeker(1024 * 1024)
+		track.isFragment = true
 	}
 	m.Tracks[m.nextTrackId] = track
 	m.nextTrackId++
@@ -191,13 +192,11 @@ func (m *Muxer) makeMvex() *box.MovieExtendsBox {
 	trexs := make([]*box.TrackExtendsBox, 0, m.nextTrackId-1)
 	for i := uint32(1); i < m.nextTrackId; i++ {
 		if track := m.Tracks[i]; track != nil {
-
 			trex := box.CreateTrackExtendsBox(track.TrackId)
-			trex.DefaultSampleDescriptionIndex = 1
 			if track.Cid.IsVideo() {
-				trex.DefaultSampleFlags = 0x00010000 // NonSyncSampleFlags in mp4ff
+				trex.DefaultSampleFlags = 0x01010000
 			} else {
-				trex.DefaultSampleFlags = 0x02000000 // SyncSampleFlags in mp4ff
+				trex.DefaultSampleFlags = 0x02000000
 			}
 			trexs = append(trexs, trex)
 		}
@@ -250,8 +249,7 @@ func (m *Muxer) WriteMoov(w io.Writer) (err error) {
 	} else {
 		mvhd = box.CreateMovieHeaderBox(m.nextTrackId, maxdurtaion)
 	}
-	children = append(children, mvhd)
-	m.moov = box.CreateContainerBox(TypeMOOV, children...)
+	m.moov = box.CreateContainerBox(TypeMOOV, append([]IBox{mvhd}, children...)...)
 	var n int64
 	n, err = box.WriteTo(w, m.moov)
 	m.CurrentOffset += n
@@ -342,7 +340,7 @@ func (m *Muxer) flushFragment(w io.Writer) (err error) {
 		}
 		track := m.Tracks[i]
 		// 传递 moof 偏移和 mdat 大小
-		traf := track.makeTraf() // +8 for moof box header
+		traf := track.makeTraf(uint64(m.CurrentOffset)) // +8 for moof box header
 		// Record trun data_offset position: current offset + 16 (after trun header)
 		trafs[i-1] = traf
 		moofChildren = append(moofChildren, traf)
@@ -363,7 +361,6 @@ func (m *Muxer) flushFragment(w io.Writer) (err error) {
 
 		// Update sample offsets relative to mdat start
 		for j := range track.Samplelist {
-			track.Samplelist[j].Offset = sampleOffset
 			sampleOffset += int64(track.Samplelist[j].Size)
 		}
 
@@ -396,8 +393,11 @@ func (m *Muxer) flushFragment(w io.Writer) (err error) {
 	// Write mdat box
 	mdat := CreateBaseBox(TypeMDAT, uint64(sampleOffset)+BasicBoxLen)
 
-	for _, traf := range trafs {
+	for i, traf := range trafs {
 		traf.TRUN.DataOffset = int32(moof.Size()) + int32(mdat.HeaderSize())
+		if i > 0 {
+			traf.TRUN.DataOffset += int32(len(sampleData[i-1]))
+		}
 	}
 
 	var n int64

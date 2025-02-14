@@ -229,7 +229,7 @@ func findBoxOffsets(filename string) error {
 
 func TestFLVToFMP4(t *testing.T) {
 	// Open FLV file
-	flvFile, err := os.Open("/Users/dexter/Movies/frame_counter_4k_60fps.flv")
+	flvFile, err := os.Open("/Users/dexter/Movies/daxiangge.flv")
 	if err != nil {
 		t.Fatalf("Failed to open FLV file: %v", err)
 	}
@@ -252,23 +252,28 @@ func TestFLVToFMP4(t *testing.T) {
 	}
 
 	hasVideo := header.Flags&0x01 != 0
-
+	hasAudio := header.Flags&0x04 != 0
 	// Skip to the first tag
 	if _, err := flvFile.Seek(int64(header.DataOffset), io.SeekStart); err != nil {
 		t.Fatalf("Failed to seek to first tag: %v", err)
 	}
 
 	// Create tracks
-	var videoTrack *Track
+	var videoTrack, audioTrack *Track
 	if hasVideo {
 		videoTrack = muxer.AddTrack(box.MP4_CODEC_H264)
 		videoTrack.Width = 3840 // 4K resolution
 		videoTrack.Height = 2160
 		videoTrack.Timescale = 1000
 	}
+	if hasAudio {
+		audioTrack = muxer.AddTrack(box.MP4_CODEC_AAC)
+		audioTrack.Timescale = 1000
+	}
 
 	// Variables to store codec configuration
 	var videoConfig []byte
+	var audioConfig []byte
 	var frameCount int
 
 	// Process FLV tags
@@ -283,6 +288,63 @@ func TestFLVToFMP4(t *testing.T) {
 		}
 
 		switch tag.TagType {
+		case 8: // Audio
+			if !hasAudio || audioTrack == nil {
+				continue
+			}
+
+			soundFormat := tag.Data[0] >> 4
+			if soundFormat != 10 { // AAC
+				continue
+			}
+
+			aacPacketType := tag.Data[1]
+			if aacPacketType == 0 { // AAC sequence header
+				fmt.Println("Found AAC sequence header")
+				// 解析 AAC 配置
+				if len(tag.Data) < 4 {
+					t.Fatalf("Invalid AAC sequence header")
+				}
+				audioConfig = tag.Data[2:]
+				// 设置音频轨道参数
+				audioObjectType := (audioConfig[0] >> 3) & 0x1F
+				samplingFrequencyIndex := ((audioConfig[0] & 0x07) << 1) | (audioConfig[1] >> 7)
+				channelConfig := (audioConfig[1] >> 3) & 0x0F
+				audioTrack.SampleSize = uint16(16)
+				// 设置采样率（根据 ISO/IEC 14496-3 标准）
+				sampleRates := []int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+				if int(samplingFrequencyIndex) < len(sampleRates) {
+					audioTrack.SampleRate = uint32(sampleRates[samplingFrequencyIndex])
+				}
+				audioTrack.ChannelCount = uint8(channelConfig)
+
+				fmt.Printf("AAC Config: ObjectType=%d, SampleRate=%d, Channels=%d\n",
+					audioObjectType, audioTrack.SampleRate, audioTrack.ChannelCount)
+
+				audioTrack.ExtraData = append(audioConfig, 0x56, 0xe5, 0x00)
+			} else if len(audioConfig) > 0 { // Audio data
+				if len(tag.Data) <= 2 {
+					fmt.Printf("Skipping empty audio sample at timestamp %d\n", tag.Timestamp)
+					continue
+				}
+
+				// 确保只写入原始 AAC 负载（去掉 ADTS 头）
+				aacData := tag.Data[2:]
+				if len(aacData) < 1 {
+					continue
+				}
+
+				sample := box.Sample{
+					Data:     aacData,
+					DTS:      uint64(tag.Timestamp),
+					PTS:      uint64(tag.Timestamp),
+					KeyFrame: true,
+				}
+				if err := muxer.WriteSample(outFile, audioTrack, sample); err != nil {
+					t.Fatalf("Failed to write audio sample: %v", err)
+				}
+				frameCount++
+			}
 		case 9: // Video
 			if !hasVideo || videoTrack == nil {
 				continue

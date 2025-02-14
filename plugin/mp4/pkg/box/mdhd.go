@@ -49,10 +49,11 @@ type MediaHeaderBox struct {
 }
 
 func CreateMediaHeaderBox(timescale uint32, duration uint64) *MediaHeaderBox {
-	_, offset := time.Now().Zone()
-	now := uint64(time.Now().Unix() + int64(offset) + 0x7C25B080)
+	now := ConvertUnixTimeToISO14496(uint64(time.Now().Unix()))
 	version := util.Conditional[uint8](duration > 0xFFFFFFFF, 1, 0)
-
+	if duration == 0 {
+		now = 0
+	}
 	return &MediaHeaderBox{
 		FullBox: FullBox{
 			BaseBox: BaseBox{
@@ -60,7 +61,6 @@ func CreateMediaHeaderBox(timescale uint32, duration uint64) *MediaHeaderBox {
 				size: util.Conditional[uint32](version == 1, 32, 20) + FullBoxLen,
 			},
 			Version: version,
-			Flags:   [3]byte{0, 0, 0},
 		},
 		CreationTime:     now,
 		ModificationTime: now,

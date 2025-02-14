@@ -375,3 +375,7 @@ type SampleToChunkEntry struct {
 	SamplesPerChunk        uint32
 	SampleDescriptionIndex uint32
 }
+
+func ConvertUnixTimeToISO14496(unixTime uint64) uint64 {
+	return unixTime + 0x7C25B080
+}

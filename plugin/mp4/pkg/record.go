@@ -266,6 +266,9 @@ func (r *Recorder) Run() (err error) {
 			case *codec.AACCtx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
 				audioTrack = track
+				track.SampleSize = uint16(16)
+				track.SampleRate = uint32(ctx.SampleRate())
+				track.ChannelCount = uint8(ctx.ChannelLayout().Count())
 				track.ExtraData = ctx.ConfigBytes
 			case *codec.PCMACtx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_G711A)

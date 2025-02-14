@@ -82,9 +82,9 @@ func (audio *AudioSampleEntry) WriteTo(w io.Writer) (n int64, err error) {
 		return
 	}
 	var buf [20]byte
-	binary.BigEndian.PutUint16(buf[8:], audio.Version)
-	binary.BigEndian.PutUint16(buf[10:], audio.ChannelCount)
-	binary.BigEndian.PutUint16(buf[12:], audio.SampleSize)
+	binary.BigEndian.PutUint16(buf[:], audio.Version)
+	binary.BigEndian.PutUint16(buf[8:], audio.ChannelCount)
+	binary.BigEndian.PutUint16(buf[10:], audio.SampleSize)
 	binary.BigEndian.PutUint32(buf[16:], audio.Samplerate<<16)
 	_, err = w.Write(buf[:])
 	n += 20
@@ -103,7 +103,7 @@ func (audio *AudioSampleEntry) WriteTo(w io.Writer) (n int64, err error) {
 func (audio *AudioSampleEntry) Unmarshal(buf []byte) (IBox, error) {
 	audio.SampleEntry.Unmarshal(buf)
 	buf = buf[8:]
-	audio.Version = binary.BigEndian.Uint16(buf[0:])
+	audio.Version = binary.BigEndian.Uint16(buf)
 	audio.ChannelCount = binary.BigEndian.Uint16(buf[8:])
 	audio.SampleSize = binary.BigEndian.Uint16(buf[10:])
 

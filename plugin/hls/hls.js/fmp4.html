@@ -21,6 +21,8 @@
       width: 70%;
       padding: 8px;
       margin-right: 10px;
+      margin-bottom: 10px;
+      display: block;
     }
 
     button {
@@ -29,6 +31,7 @@
       color: white;
       border: none;
       cursor: pointer;
+      margin-right: 10px;
     }
 
     button:hover {
@@ -48,13 +51,45 @@
       font-family: monospace;
       white-space: pre-wrap;
     }
+
+    .drop-zone {
+      width: 100%;
+      height: 100px;
+      border: 2px dashed #4CAF50;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      background-color: #f8f8f8;
+      transition: all 0.3s ease;
+    }
+
+    .drop-zone.drag-over {
+      background-color: #e8f5e9;
+      border-color: #2e7d32;
+    }
+
+    .drop-zone p {
+      margin: 0;
+      color: #666;
+      text-align: center;
+    }
   </style>
 </head>
 
 <body>
   <div class="input-container">
     <input type="text" id="m3u8Url" placeholder="输入 M3U8 地址">
-    <button onclick="loadM3U8()">加载</button>
+    <button onclick="loadM3U8()">加载 M3U8</button>
+
+    <input type="text" id="fmp4Url" placeholder="输入 FMP4 地址">
+    <button onclick="testFMP4()">测试 FMP4</button>
+
+    <div class="drop-zone" id="dropZone">
+      <p>拖放 FMP4 文件到这里<br>或点击选择文件</p>
+      <input type="file" id="fileInput" style="display: none" accept=".mp4,.fmp4">
+    </div>
   </div>
   <video id="videoPlayer" controls></video>
   <div id="debug"></div>
@@ -67,6 +102,116 @@
     let pendingBuffers = [];
     let isBuffering = false;
     const MAX_BUFFER_LENGTH = 30; // 保持30秒的缓冲区
+
+    // 初始化拖放区域事件处理
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    dropZone.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleLocalFile(files[0]);
+      }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleLocalFile(e.target.files[0]);
+      }
+    });
+
+    async function handleLocalFile(file) {
+      if (!file.name.toLowerCase().endsWith('.mp4') && !file.name.toLowerCase().endsWith('.fmp4')) {
+        alert('请选择 FMP4/MP4 文件');
+        return;
+      }
+
+      try {
+        log(`开始处理本地文件: ${file.name}`);
+        const video = document.getElementById('videoPlayer');
+
+        if (mediaSource) {
+          if (mediaSource.readyState === 'open') {
+            mediaSource.endOfStream();
+          }
+          URL.revokeObjectURL(video.src);
+          log('清理旧的 MediaSource');
+        }
+
+        mediaSource = new MediaSource();
+        video.src = URL.createObjectURL(mediaSource);
+        pendingBuffers = [];
+        isBuffering = false;
+
+        mediaSource.addEventListener('sourceopen', async () => {
+          log('MediaSource 已打开');
+          try {
+            const codecConfigs = [
+              'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
+              'video/mp4; codecs="avc1.64001f"',
+              'video/mp4'
+            ];
+
+            let sourceBufferCreated = false;
+            for (const codec of codecConfigs) {
+              try {
+                if (MediaSource.isTypeSupported(codec)) {
+                  sourceBuffer = mediaSource.addSourceBuffer(codec);
+                  sourceBufferCreated = true;
+                  log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
+                  break;
+                }
+              } catch (e) {
+                log(`尝试编解码器 ${codec} 失败: ${e.message}`);
+              }
+            }
+
+            if (!sourceBufferCreated) {
+              throw new Error('无法创建支持的 SourceBuffer');
+            }
+
+            sourceBuffer.mode = 'sequence';
+            sourceBuffer.addEventListener('updateend', () => {
+              log('FMP4 片段添加完成');
+              if (!video.playing) {
+                video.play().catch(e => {
+                  log(`播放失败: ${e.message}`);
+                });
+              }
+            });
+
+            // 读取并播放本地文件
+            const buffer = await file.arrayBuffer();
+            log(`本地文件加载完成，大小: ${buffer.byteLength} 字节`);
+            sourceBuffer.appendBuffer(buffer);
+
+          } catch (error) {
+            log(`处理本地文件失败: ${error.message}`);
+            console.error('处理本地文件失败:', error);
+          }
+        });
+
+      } catch (error) {
+        log(`加载本地文件失败: ${error.message}`);
+        console.error('加载本地文件失败:', error);
+      }
+    }
 
     function log(message) {
       const debug = document.getElementById('debug');
@@ -168,6 +313,7 @@
           sourceBuffer.mode = 'sequence';
           sourceBuffer.addEventListener('updateend', handleUpdateEnd);
           sourceBuffer.addEventListener('error', (e) => {
+            console.log(e);
             log(`SourceBuffer 错误: ${e}`);
           });
 
@@ -324,6 +470,88 @@
     video.addEventListener('waiting', () => log('视频缓冲中'));
     video.addEventListener('canplay', () => log('视频可以播放'));
     video.addEventListener('loadedmetadata', () => log('视频元数据已加载'));
+
+    async function testFMP4() {
+      const fmp4Url = document.getElementById('fmp4Url').value;
+      if (!fmp4Url) {
+        alert('请输入 FMP4 地址');
+        return;
+      }
+
+      try {
+        log(`开始测试 FMP4: ${fmp4Url}`);
+        const video = document.getElementById('videoPlayer');
+
+        if (mediaSource) {
+          if (mediaSource.readyState === 'open') {
+            mediaSource.endOfStream();
+          }
+          URL.revokeObjectURL(video.src);
+          log('清理旧的 MediaSource');
+        }
+
+        mediaSource = new MediaSource();
+        video.src = URL.createObjectURL(mediaSource);
+        pendingBuffers = [];
+        isBuffering = false;
+
+        mediaSource.addEventListener('sourceopen', async () => {
+          log('MediaSource 已打开');
+          try {
+            const codecConfigs = [
+              'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
+              'video/mp4; codecs="avc1.64001f"',
+              'video/mp4'
+            ];
+
+            let sourceBufferCreated = false;
+            for (const codec of codecConfigs) {
+              try {
+                if (MediaSource.isTypeSupported(codec)) {
+                  sourceBuffer = mediaSource.addSourceBuffer(codec);
+                  sourceBufferCreated = true;
+                  log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
+                  break;
+                }
+              } catch (e) {
+                log(`尝试编解码器 ${codec} 失败: ${e.message}`);
+              }
+            }
+
+            if (!sourceBufferCreated) {
+              throw new Error('无法创建支持的 SourceBuffer');
+            }
+
+            sourceBuffer.mode = 'sequence';
+            sourceBuffer.addEventListener('updateend', () => {
+              log('FMP4 片段添加完成');
+              if (!video.playing) {
+                video.play().catch(e => {
+                  log(`播放失败: ${e.message}`);
+                });
+              }
+            });
+
+            // 加载并播放 FMP4
+            const response = await fetch(fmp4Url);
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const buffer = await response.arrayBuffer();
+            log(`FMP4 文件加载完成，大小: ${buffer.byteLength} 字节`);
+            sourceBuffer.appendBuffer(buffer);
+
+          } catch (error) {
+            log(`处理 FMP4 失败: ${error.message}`);
+            console.error('处理 FMP4 失败:', error);
+          }
+        });
+
+      } catch (error) {
+        log(`加载 FMP4 文件失败: ${error.message}`);
+        console.error('加载 FMP4 文件失败:', error);
+      }
+    }
   </script>
 </body>
 

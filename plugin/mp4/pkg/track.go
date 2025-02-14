@@ -28,13 +28,14 @@ type (
 		ELST            *EditListBox
 		ExtraData       []byte
 		writer          io.WriteSeeker
+		isFragment      bool
 		fragments       []Fragment
 		defaultSize     uint32
 		defaultDuration uint32
 		// defaultSampleFlags     uint32
 		// baseDataOffset         uint64
 		// stbl                   []byte
-		FragmentSequenceNumber uint32
+		// FragmentSequenceNumber uint32
 
 		//for subsample
 		// defaultIsProtected     uint8
@@ -125,9 +126,11 @@ func (track *Track) AddSampleEntry(entry Sample) {
 }
 
 func (track *Track) makeTkhdBox() *TrackHeaderBox {
-	tkhd := CreateTrackHeaderBox(track.TrackId, uint64(track.Duration), track.Width, track.Height)
-	tkhd.Duration = uint64(track.Duration)
-	tkhd.TrackID = track.TrackId
+	duration := uint64(track.Duration)
+	if track.isFragment {
+		duration = 0
+	}
+	tkhd := CreateTrackHeaderBox(track.TrackId, duration, track.Width, track.Height)
 
 	if track.Cid == MP4_CODEC_AAC || track.Cid == MP4_CODEC_G711A || track.Cid == MP4_CODEC_G711U || track.Cid == MP4_CODEC_OPUS {
 		tkhd.Volume = 0x0100
@@ -156,7 +159,11 @@ func (track *Track) makeMinfBox() *ContainerBox {
 }
 
 func (track *Track) makeMdiaBox() *ContainerBox {
-	mdhdbox := CreateMediaHeaderBox(track.Timescale, uint64(track.Duration))
+	duration := uint64(track.Duration)
+	if track.isFragment {
+		duration = 0
+	}
+	mdhdbox := CreateMediaHeaderBox(track.Timescale, duration)
 	hdlrbox := MakeHdlrBox(GetHandlerType(track.Cid))
 	minfbox := track.makeMinfBox()
 	return CreateContainerBox(TypeMDIA, mdhdbox, hdlrbox, minfbox)
@@ -164,8 +171,15 @@ func (track *Track) makeMdiaBox() *ContainerBox {
 
 func (track *Track) makeStblBox() IBox {
 	track.STSD = track.makeStsd(GetHandlerType(track.Cid))
-	if track.Cid == MP4_CODEC_H264 || track.Cid == MP4_CODEC_H265 {
-		track.STSS = track.makeStssBox()
+	if !track.isFragment {
+		if track.Cid == MP4_CODEC_H264 || track.Cid == MP4_CODEC_H265 {
+			track.STSS = track.makeStssBox()
+		}
+	} else {
+		track.STTS = CreateSTTSBox(nil)
+		track.STSC = CreateSTSCBox(nil)
+		track.STSZ = CreateSTSZBox(0, nil)
+		track.STCO = CreateSTCOBox(nil)
 	}
 	return CreateContainerBox(TypeSTBL, track.STSD, track.STSS, track.STTS, track.CTTS, track.STSC, track.STSZ, track.STCO)
 }
@@ -191,9 +205,9 @@ func (track *Track) makeStsd(handler_type HandlerType) *STSDBox {
 }
 
 // fmp4
-func (track *Track) makeTraf() *TrackFragmentBox {
+func (track *Track) makeTraf(moofOffset uint64) *TrackFragmentBox {
 	// Create tfhd box
-	tfhd := track.makeTfhdBox()
+	tfhd := track.makeTfhdBox(moofOffset)
 
 	// Create tfdt box
 	tfdt := track.makeTfdtBox()
@@ -207,7 +221,7 @@ func (track *Track) makeTraf() *TrackFragmentBox {
 	return traf
 }
 
-func (track *Track) makeTfhdBox() *TrackFragmentHeaderBox {
+func (track *Track) makeTfhdBox(moofOffset uint64) *TrackFragmentHeaderBox {
 	tfFlags := uint32(0)
 	tfFlags |= TF_FLAG_DEFAULT_BASE_IS_MOOF
 	tfFlags |= TF_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT
@@ -216,7 +230,7 @@ func (track *Track) makeTfhdBox() *TrackFragmentHeaderBox {
 	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT
 
 	tfhd := CreateTrackFragmentHeaderBox(track.TrackId, tfFlags)
-
+	tfhd.BaseDataOffset = moofOffset
 	// Calculate default sample duration
 	if len(track.Samplelist) > 1 {
 		var totalDuration uint64 = 0
@@ -279,16 +293,9 @@ func (track *Track) makeTrunBox(start, end int) *TrackRunBox {
 	// Set flags in the correct order
 	flag := TR_FLAG_DATA_OFFSET
 
-	// Then set sample duration flag (0x000100)
-	flag |= TR_FLAG_DATA_SAMPLE_DURATION
-
 	// Then set sample size flag (0x000200)
 	flag |= TR_FLAG_DATA_SAMPLE_SIZE
 
-	// Then set sample flags if needed (0x000400)
-	if track.Cid.IsVideo() {
-		flag |= TR_FLAG_DATA_SAMPLE_FLAGS
-	}
 	// Create a new TrackRunBox
 
 	// Finally set composition time offset flag if needed (0x000800)
@@ -303,22 +310,9 @@ func (track *Track) makeTrunBox(start, end int) *TrackRunBox {
 	trun.Entries = make([]TrunEntry, trun.SampleCount)
 	for i := 0; i < int(trun.SampleCount); i++ {
 		sample := &track.Samplelist[start+i]
-		// Duration
-		if i < int(trun.SampleCount)-1 {
-			trun.Entries[i].SampleDuration = uint32(track.Samplelist[start+i+1].DTS - sample.DTS)
-		} else {
-			trun.Entries[i].SampleDuration = trun.Entries[i-1].SampleDuration
-		}
 		// Size
 		trun.Entries[i].SampleSize = uint32(sample.Size)
-		// Flags
-		if flag&TR_FLAG_DATA_SAMPLE_FLAGS != 0 {
-			if sample.KeyFrame {
-				trun.Entries[i].SampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO | MOV_FRAG_SAMPLE_FLAG_IS_SYNC
-			} else {
-				trun.Entries[i].SampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES | MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC
-			}
-		}
+
 		// Composition time offset
 		if flag&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
 			trun.Entries[i].SampleCompositionTimeOffset = int32(sample.PTS - sample.DTS)
