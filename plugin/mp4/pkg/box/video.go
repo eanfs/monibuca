@@ -7,4 +7,5 @@ type Sample struct {
 	CTS       uint32
 	Offset    int64
 	Size      int
+	Duration  uint32
 }

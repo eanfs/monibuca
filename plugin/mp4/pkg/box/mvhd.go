@@ -41,10 +41,7 @@ type MovieHeaderBox struct {
 }
 
 func CreateMovieHeaderBox(nextTrackID uint32, duration uint32) *MovieHeaderBox {
-	now := time.Now().Unix()
-	if duration == 0 {
-		now = 0
-	}
+	now := ConvertUnixTimeToISO14496(uint64(time.Now().Unix()))
 	return &MovieHeaderBox{
 		FullBox: FullBox{
 			BaseBox: BaseBox{
@@ -54,8 +51,8 @@ func CreateMovieHeaderBox(nextTrackID uint32, duration uint32) *MovieHeaderBox {
 			Version: 0,
 			Flags:   [3]byte{0, 0, 0},
 		},
-		CreationTime:     uint64(now),
-		ModificationTime: uint64(now),
+		CreationTime:     now,
+		ModificationTime: now,
 		Timescale:        1000,
 		Duration:         uint64(duration),
 		Rate:             0x00010000,
@@ -75,7 +72,7 @@ func (box *MovieHeaderBox) WriteTo(w io.Writer) (n int64, err error) {
 		binary.BigEndian.PutUint64(tmp[20:], box.Duration)
 		binary.BigEndian.PutUint32(tmp[28:], uint32(box.Rate))
 		binary.BigEndian.PutUint16(tmp[32:], uint16(box.Volume))
-		offset := 34 + 8
+		offset := 44
 		for i := 0; i < 9; i++ {
 			binary.BigEndian.PutUint32(tmp[offset:], uint32(box.Matrix[i]))
 			offset += 4
@@ -91,7 +88,7 @@ func (box *MovieHeaderBox) WriteTo(w io.Writer) (n int64, err error) {
 		binary.BigEndian.PutUint32(tmp[12:], uint32(box.Duration))
 		binary.BigEndian.PutUint32(tmp[16:], uint32(box.Rate))
 		binary.BigEndian.PutUint16(tmp[20:], uint16(box.Volume))
-		offset := 22 + 8
+		offset := 32
 		for i := 0; i < 9; i++ {
 			binary.BigEndian.PutUint32(tmp[offset:], uint32(box.Matrix[i]))
 			offset += 4

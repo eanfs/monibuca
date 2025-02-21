@@ -110,10 +110,11 @@ func (track *Track) makeEdtsBox() *ContainerBox {
 }
 
 func (track *Track) AddSampleEntry(entry Sample) {
-	if len(track.Samplelist) <= 1 {
+	if len(track.Samplelist) < 1 {
 		track.Duration = 0
 	} else {
 		delta := int64(entry.Timestamp - track.Samplelist[len(track.Samplelist)-1].Timestamp)
+		track.Samplelist[len(track.Samplelist)-1].Duration = uint32(delta)
 		if delta < 0 {
 			track.Duration += 1
 		} else {
@@ -125,9 +126,6 @@ func (track *Track) AddSampleEntry(entry Sample) {
 
 func (track *Track) makeTkhdBox() *TrackHeaderBox {
 	duration := uint64(track.Duration)
-	if track.isFragment {
-		duration = 0
-	}
 	tkhd := CreateTrackHeaderBox(track.TrackId, duration, track.Width, track.Height)
 
 	if track.Cid == MP4_CODEC_AAC || track.Cid == MP4_CODEC_G711A || track.Cid == MP4_CODEC_G711U || track.Cid == MP4_CODEC_OPUS {
@@ -179,7 +177,7 @@ func (track *Track) makeStblBox() IBox {
 		track.STSZ = CreateSTSZBox(0, nil)
 		track.STCO = CreateSTCOBox(nil)
 	}
-	return CreateContainerBox(TypeSTBL, track.STSD, track.STSS, track.STTS, track.CTTS, track.STSC, track.STSZ, track.STCO)
+	return CreateContainerBox(TypeSTBL, track.STSD, track.STSS, track.STSZ, track.STSC, track.STTS, track.CTTS, track.STCO)
 }
 
 func (track *Track) makeStsd(handler_type HandlerType) *STSDBox {
@@ -202,31 +200,38 @@ func (track *Track) makeStsd(handler_type HandlerType) *STSDBox {
 	return CreateSTSDBox(entry)
 }
 
-// fmp4
-func (track *Track) makeTraf(moofOffset uint64) *TrackFragmentBox {
-	// Create tfhd box
-	tfhd := track.makeTfhdBox(moofOffset)
-
-	// Create tfdt box
+func (track *Track) MakeMoof(fragmentId uint32) *ContainerBox {
+	tfhd := track.makeTfhdBox(0)
 	tfdt := track.makeTfdtBox()
 
-	// Create trun box with all samples
-	trun := track.makeTrunBox(0, len(track.Samplelist))
+	turnEntries := make([]TrunEntry, 0)
+	for _, sample := range track.Samplelist {
+		var sampleFlags uint32
+		if sample.KeyFrame {
+			sampleFlags = SAMPLE_FLAG_IS_LEADING | SAMPLE_FLAG_IS_DEPENDED_ON | SAMPLE_FLAG_DEPENDS_ON_NO
+		} else {
+			sampleFlags = SAMPLE_FLAG_DEPENDS_ON_YES
+		}
+		turnEntries = append(turnEntries, TrunEntry{
+			SampleSize:                  uint32(sample.Size),
+			SampleDuration:              uint32(sample.Duration),
+			SampleCompositionTimeOffset: int32(sample.CTS),
+			SampleFlags:                 sampleFlags,
+		})
+	}
 
-	// Create track fragment box with all necessary boxes
-	traf := CreateTrackFragmentBox(tfhd, tfdt, trun)
+	trun := CreateTrackRunBox(TR_FLAG_DATA_OFFSET|TR_FLAG_DATA_SAMPLE_DURATION|TR_FLAG_DATA_SAMPLE_SIZE|TR_FLAG_DATA_SAMPLE_FLAGS|TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME, turnEntries)
 
-	return traf
+	traf := CreateContainerBox(TypeTRAF, tfhd, tfdt, trun)
+	result := CreateContainerBox(TypeMOOF, CreateMovieFragmentHeaderBox(fragmentId), traf)
+	trun.DataOffset = int32(result.Size()) + int32(BasicBoxLen) // TODO: mdat large than 4GB
+	return result
 }
 
 func (track *Track) makeTfhdBox(moofOffset uint64) *TrackFragmentHeaderBox {
 	tfFlags := uint32(0)
-	tfFlags |= TF_FLAG_DEFAULT_BASE_IS_MOOF
-	tfFlags |= TF_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT
-	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT
-	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT
-	tfFlags |= TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT
-
+	// tfFlags |= TF_FLAG_DEFAULT_BASE_IS_MOOF
+	// tfFlags |= TF_FLAG_DEFAULT_SAMPLE_FLAGS_PRESENT
 	tfhd := CreateTrackFragmentHeaderBox(track.TrackId, tfFlags)
 	tfhd.BaseDataOffset = moofOffset
 	// Calculate default sample duration
@@ -252,9 +257,9 @@ func (track *Track) makeTfhdBox(moofOffset uint64) *TrackFragmentHeaderBox {
 
 	// Set default sample flags
 	if track.Cid.IsVideo() {
-		tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES | MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC
+		tfhd.DefaultSampleFlags = 16842752
 	} else {
-		tfhd.DefaultSampleFlags = MOV_FRAG_SAMPLE_FLAG_DEPENDS_NO
+		tfhd.DefaultSampleFlags = 0
 	}
 	return tfhd
 }
@@ -277,47 +282,16 @@ func (track *Track) makeTfraBox() *TrackFragmentRandomAccessBox {
 	return CreateTrackFragmentRandomAccessBox(track.TrackId, slices.Collect(func(yield func(TFRAEntry) bool) {
 		for _, f := range track.fragments {
 			if !yield(TFRAEntry{
-				Time:       f.FirstTs,
-				MoofOffset: f.Offset,
+				Time:         f.FirstTs,
+				MoofOffset:   f.Offset,
+				TrafNumber:   uint32(1),
+				TrunNumber:   uint32(1),
+				SampleNumber: uint32(1),
 			}) {
 				break
 			}
 		}
 	}))
-}
-
-func (track *Track) makeTrunBox(start, end int) *TrackRunBox {
-
-	// Set flags in the correct order
-	flag := TR_FLAG_DATA_OFFSET
-
-	// Then set sample size flag (0x000200)
-	flag |= TR_FLAG_DATA_SAMPLE_SIZE
-
-	// Create a new TrackRunBox
-
-	// Finally set composition time offset flag if needed (0x000800)
-	for i := start; i < end; i++ {
-		if track.Samplelist[i].CTS != 0 {
-			flag |= TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME
-			break
-		}
-	}
-	trun := CreateTrackRunBox(flag, uint32(end-start))
-	// Fill entry list
-	trun.Entries = make([]TrunEntry, trun.SampleCount)
-	for i := 0; i < int(trun.SampleCount); i++ {
-		sample := &track.Samplelist[start+i]
-		// Size
-		trun.Entries[i].SampleSize = uint32(sample.Size)
-
-		// Composition time offset
-		if flag&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
-			trun.Entries[i].SampleCompositionTimeOffset = int32(sample.CTS)
-		}
-	}
-
-	return trun
 }
 
 func (track *Track) makeStblTable() {

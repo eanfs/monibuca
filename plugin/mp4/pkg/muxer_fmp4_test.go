@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/deepch/vdk/codec/h264parser"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
@@ -27,42 +28,6 @@ type (
 		Data      []byte
 	}
 )
-
-// validateAndFixAVCC 验证并修复 AVCC 格式的 NALU
-func validateAndFixAVCC(data []byte) ([]byte, error) {
-	if len(data) < 4 {
-		return nil, fmt.Errorf("data too short for AVCC")
-	}
-
-	var pos int
-	var output []byte
-
-	for pos < len(data) {
-		if pos+4 > len(data) {
-			return nil, fmt.Errorf("incomplete NALU length at position %d", pos)
-		}
-
-		// 读取 NALU 长度（4字节，大端序）
-		naluLen := binary.BigEndian.Uint32(data[pos : pos+4])
-
-		// 验证 NALU 长度
-		if naluLen == 0 || pos+4+int(naluLen) > len(data) {
-			return nil, fmt.Errorf("invalid NALU length %d at position %d", naluLen, pos)
-		}
-
-		// 验证 NALU 类型
-		naluType := data[pos+4] & 0x1F
-		if naluType == 0 || naluType > 12 {
-			return nil, fmt.Errorf("invalid NALU type %d at position %d", naluType, pos)
-		}
-
-		// 复制长度前缀和 NALU 数据
-		output = append(output, data[pos:pos+4+int(naluLen)]...)
-		pos += 4 + int(naluLen)
-	}
-
-	return output, nil
-}
 
 func readFLVHeader(r io.Reader) (*FLVHeader, error) {
 	header := &FLVHeader{}
@@ -229,7 +194,7 @@ func findBoxOffsets(filename string) error {
 
 func TestFLVToFMP4(t *testing.T) {
 	// Open FLV file
-	flvFile, err := os.Open("/Users/dexter/Movies/daxiangge.flv")
+	flvFile, err := os.Open("/Users/dexter/Movies/002.flv")
 	if err != nil {
 		t.Fatalf("Failed to open FLV file: %v", err)
 	}
@@ -253,6 +218,7 @@ func TestFLVToFMP4(t *testing.T) {
 
 	hasVideo := header.Flags&0x01 != 0
 	hasAudio := header.Flags&0x04 != 0
+	// hasAudio := false
 	// Skip to the first tag
 	if _, err := flvFile.Seek(int64(header.DataOffset), io.SeekStart); err != nil {
 		t.Fatalf("Failed to seek to first tag: %v", err)
@@ -262,8 +228,6 @@ func TestFLVToFMP4(t *testing.T) {
 	var videoTrack, audioTrack *Track
 	if hasVideo {
 		videoTrack = muxer.AddTrack(box.MP4_CODEC_H264)
-		videoTrack.Width = 3840 // 4K resolution
-		videoTrack.Height = 2160
 		videoTrack.Timescale = 1000
 	}
 	if hasAudio {
@@ -281,10 +245,11 @@ func TestFLVToFMP4(t *testing.T) {
 	for {
 		tag, err := readFLVTag(flvFile)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			t.Fatalf("Failed to read FLV tag: %v", err)
+			// if err == io.EOF {
+			// 	break
+			// }
+			// t.Fatalf("Failed to read FLV tag: %v", err)
+			break
 		}
 
 		switch tag.TagType {
@@ -356,7 +321,16 @@ func TestFLVToFMP4(t *testing.T) {
 				if tag.Data[1] == 0 { // AVC sequence header
 					fmt.Println("Found AVC sequence header")
 					videoConfig = tag.Data[5:] // Store AVC config (skip composition time)
+					codecData, err := h264parser.NewCodecDataFromAVCDecoderConfRecord(videoConfig)
+					if err != nil {
+						t.Fatalf("Failed to parse AVC sequence header: %v", err)
+					}
+					fmt.Printf("Codec data: %+v\n", codecData)
 					videoTrack.ExtraData = videoConfig
+					videoTrack.Width = uint32(codecData.Width())
+					videoTrack.Height = uint32(codecData.Height())
+					videoTrack.Timescale = 1000
+
 				} else if len(videoConfig) > 0 { // Video data
 					if len(tag.Data) <= 5 {
 						fmt.Printf("Skipping empty video sample at timestamp %d\n", tag.Timestamp)
@@ -370,15 +344,8 @@ func TestFLVToFMP4(t *testing.T) {
 						compositionTime |= ^0xffffff
 					}
 
-					// 验证和修复 AVCC 格式
-					validData, err := validateAndFixAVCC(tag.Data[5:])
-					if err != nil {
-						fmt.Printf("Warning: Invalid AVCC data at timestamp %d: %v\n", tag.Timestamp, err)
-						continue
-					}
-
 					sample := box.Sample{
-						Data:      validData,
+						Data:      tag.Data[5:],
 						Timestamp: uint32(tag.Timestamp),
 						CTS:       uint32(compositionTime),
 						KeyFrame:  frameType == 1,

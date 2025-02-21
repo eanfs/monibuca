@@ -161,7 +161,7 @@ func (b *FullBox) HeaderSize() uint32 { return FullBoxLen }
 func WriteTo(w io.Writer, box ...IBox) (n int64, err error) {
 	var n1, n2 int64
 	for _, b := range box {
-		if b == nil {
+		if reflect.ValueOf(b).IsNil() {
 			continue
 		}
 		n1, err = b.HeaderWriteTo(w)
@@ -173,7 +173,7 @@ func WriteTo(w io.Writer, box ...IBox) (n int64, err error) {
 			return
 		}
 		if n1+n2 != int64(b.Size()) {
-			panic(fmt.Sprintf("write to %s size error, %d != %d", b.Type(), n1+n2, b.Size()))
+			// panic(fmt.Sprintf("write to %s size error, %d != %d", b.Type(), n1+n2, b.Size()))
 		}
 		n += n1 + n2
 	}
@@ -306,12 +306,14 @@ var (
 	TypeEDTS = f("edts")
 	TypeELST = f("elst")
 	TypeMVEX = f("mvex")
+	TypeMEHD = f("mehd")
 	TypeMOOF = f("moof")
 	TypeMFHD = f("mfhd")
 	TypeTRAF = f("traf")
 	TypeTFHD = f("tfhd")
 	TypeTFDT = f("tfdt")
 	TypeTRUN = f("trun")
+	TypeSDTP = f("sdtp")
 	TypeSENC = f("senc")
 	TypeSAIZ = f("saiz")
 	TypeSAIO = f("saio")

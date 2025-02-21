@@ -33,6 +33,12 @@ const (
 	TR_FLAG_DATA_SAMPLE_SIZE             uint32 = 0x000200
 	TR_FLAG_DATA_SAMPLE_FLAGS            uint32 = 0x000400
 	TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME uint32 = 0x000800
+
+	SAMPLE_FLAG_IS_LEADING     uint32 = 1 << 3
+	SAMPLE_FLAG_DEPENDS_ON_YES uint32 = 1 << 4
+	SAMPLE_FLAG_DEPENDS_ON_NO  uint32 = 2 << 4
+	SAMPLE_FLAG_IS_DEPENDED_ON uint32 = 1 << 6
+	SAMPLE_FLAG_HAS_REDUNDANCY uint32 = 1 << 7
 )
 
 type TrunEntry struct {
@@ -50,7 +56,7 @@ type TrackRunBox struct {
 	Entries          []TrunEntry
 }
 
-func CreateTrackRunBox(flags uint32, sampleCount uint32) *TrackRunBox {
+func CreateTrackRunBox(flags uint32, entries []TrunEntry) *TrackRunBox {
 	size := uint32(FullBoxLen + 4) // base size + sample_count
 
 	if flags&TR_FLAG_DATA_OFFSET != 0 {
@@ -74,7 +80,7 @@ func CreateTrackRunBox(flags uint32, sampleCount uint32) *TrackRunBox {
 		entrySize += 4
 	}
 
-	size += entrySize * sampleCount
+	size += entrySize * uint32(len(entries))
 
 	return &TrackRunBox{
 		FullBox: FullBox{
@@ -85,8 +91,8 @@ func CreateTrackRunBox(flags uint32, sampleCount uint32) *TrackRunBox {
 			Version: 1, // Use version 1 for signed composition time offsets
 			Flags:   [3]byte{byte(flags >> 16), byte(flags >> 8), byte(flags)},
 		},
-		SampleCount: sampleCount,
-		Entries:     make([]TrunEntry, sampleCount),
+		SampleCount: uint32(len(entries)),
+		Entries:     entries,
 	}
 }
 

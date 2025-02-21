@@ -86,56 +86,565 @@
     <input type="text" id="fmp4Url" placeholder="输入 FMP4 地址">
     <button onclick="testFMP4()">测试 FMP4</button>
 
+    <input type="text" id="wsUrl" placeholder="输入 WebSocket 地址" value="ws://localhost:8080/mp4/live/test.mp4">
+    <button onclick="connectWebSocket()">连接 WebSocket</button>
+
+    <div style="margin: 10px 0;">
+      <label for="bufferCount">缓存包数量: <span id="bufferCountValue">10</span></label>
+      <input type="range" id="bufferCount" min="1" max="50" value="10" style="width: 200px; margin-left: 10px;">
+    </div>
+
     <div class="drop-zone" id="dropZone">
       <p>拖放 FMP4 文件到这里<br>或点击选择文件</p>
       <input type="file" id="fileInput" style="display: none" accept=".mp4,.fmp4">
     </div>
   </div>
-  <video id="videoPlayer" controls></video>
+  <video id="videoPlayer" controls autoplay></video>
   <div id="debug"></div>
 
   <script>
+    // MSE Player Class
+    class MSEPlayer {
+      constructor(videoElement, onLog = console.log) {
+        this.video = videoElement;
+        this.mediaSource = null;
+        this.sourceBuffer = null;
+        this.pendingBuffers = [];
+        this.isBuffering = false;
+        this.onLog = onLog;
+        this.codecConfigs = [
+          // 'video/mp4; codecs="avc1.4d001f, mp4a.40.2"',
+          'video/mp4; codecs="avc1.4d001f"',
+          'video/mp4'
+        ];
+        this.MAX_BUFFER_LENGTH = 30;
+        this.hasError = false;
+        this.isDestroyed = false;
+        this.retryCount = 0;
+        this.MAX_RETRIES = 3;
+        this.isSourceBufferReady = false;
+        this.hasMetadata = false;
+      }
+
+      log(message) {
+        this.onLog(message);
+      }
+
+      async init() {
+        if (this.mediaSource) {
+          if (this.mediaSource.readyState === 'open') {
+            try {
+              // 等待 SourceBuffer 更新完成
+              if (this.sourceBuffer && this.sourceBuffer.updating) {
+                await new Promise((resolve) => {
+                  const onUpdate = () => {
+                    this.sourceBuffer.removeEventListener('updateend', onUpdate);
+                    resolve();
+                  };
+                  this.sourceBuffer.addEventListener('updateend', onUpdate);
+                });
+              }
+              // 不在这里调用 endOfStream，而是等待视频元数据加载完成
+            } catch (e) {
+              this.log(`清理旧的 MediaSource 失败: ${e.message}`);
+            }
+          }
+          URL.revokeObjectURL(this.video.src);
+          this.log('清理旧的 MediaSource');
+        }
+
+        this.mediaSource = new MediaSource();
+        this.video.src = URL.createObjectURL(this.mediaSource);
+        this.pendingBuffers = [];
+        this.isBuffering = false;
+        this.hasError = false;
+        this.isDestroyed = false;
+        this.retryCount = 0;
+        this.isSourceBufferReady = false;
+        this.hasMetadata = false;
+
+        // 监听视频元数据加载事件
+        this.video.addEventListener('loadedmetadata', () => {
+          this.hasMetadata = true;
+          this.log('视频元数据已加载');
+        });
+
+        return new Promise((resolve, reject) => {
+          let timeoutId;
+          let sourceOpenHandler, errorHandler;
+
+          sourceOpenHandler = async () => {
+            this.log('MediaSource 已打开');
+            clearTimeout(timeoutId);
+            try {
+              await this.initSourceBuffer();
+              this.mediaSource.removeEventListener('sourceopen', sourceOpenHandler);
+              this.mediaSource.removeEventListener('error', errorHandler);
+              resolve();
+            } catch (error) {
+              this.log(`初始化失败: ${error.message}`);
+              this.handleError(error.message);
+              reject(error);
+            }
+          };
+
+          errorHandler = (e) => {
+            clearTimeout(timeoutId);
+            this.log(`MediaSource 错误: ${e}`);
+            this.mediaSource.removeEventListener('sourceopen', sourceOpenHandler);
+            this.mediaSource.removeEventListener('error', errorHandler);
+            this.handleError(e);
+            reject(e);
+          };
+
+          this.mediaSource.addEventListener('sourceopen', sourceOpenHandler);
+          this.mediaSource.addEventListener('error', errorHandler);
+
+          // 添加超时处理
+          timeoutId = setTimeout(() => {
+            if (!this.isDestroyed && this.mediaSource && this.mediaSource.readyState !== 'open') {
+              const error = new Error('MediaSource 打开超时');
+              this.mediaSource.removeEventListener('sourceopen', sourceOpenHandler);
+              this.mediaSource.removeEventListener('error', errorHandler);
+              this.handleError(error.message);
+              reject(error);
+            }
+          }, 5000); // 5秒超时
+        });
+      }
+
+      async initSourceBuffer() {
+        if (!this.mediaSource || this.mediaSource.readyState !== 'open') {
+          debugger;
+          throw new Error('MediaSource 未准备好');
+        }
+
+        let sourceBufferCreated = false;
+        for (const codec of this.codecConfigs) {
+          try {
+            if (MediaSource.isTypeSupported(codec)) {
+              this.sourceBuffer = this.mediaSource.addSourceBuffer(codec);
+              sourceBufferCreated = true;
+              this.log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
+              break;
+            }
+          } catch (e) {
+            this.log(`尝试编解码器 ${codec} 失败: ${e.message}`);
+          }
+        }
+
+        if (!sourceBufferCreated) {
+          throw new Error('无法创建支持的 SourceBuffer');
+        }
+
+        this.sourceBuffer.mode = 'sequence';
+        const handleUpdateEnd = () => this.handleUpdateEnd();
+        const handleError = (e) => {
+          const errorMessage = e.message || e.toString();
+          this.log(`SourceBuffer 错误: ${errorMessage}`);
+          this.handleError(new Error(`SourceBuffer 错误: ${errorMessage}`));
+        };
+
+        this.sourceBuffer.addEventListener('updateend', handleUpdateEnd);
+        this.sourceBuffer.addEventListener('error', handleError);
+
+        // 保存事件处理函数的引用，以便在销毁时正确移除
+        this._updateEndHandler = handleUpdateEnd;
+        this._errorHandler = handleError;
+
+        // 等待一小段时间确保 SourceBuffer 完全准备好
+        await new Promise(resolve => setTimeout(resolve, 100));
+        this.isSourceBufferReady = true;
+      }
+
+      async appendBuffer(buffer) {
+        if (this.hasError || this.isDestroyed) {
+          this.log('播放器处于错误状态或已销毁，忽略新数据');
+          return;
+        }
+
+        // 如果 SourceBuffer 还未准备好，将数据加入队列
+        if (!this.isSourceBufferReady) {
+          if (this.pendingBuffers.length < 10) {
+            this.pendingBuffers.push(buffer);
+            this.log('SourceBuffer 未准备好，将数据加入队列');
+          }
+          return;
+        }
+
+        if (!this.sourceBuffer || this.sourceBuffer.updating || this.pendingBuffers.length > 0) {
+          if (this.pendingBuffers.length < 10) {
+            this.pendingBuffers.push(buffer);
+            this.log('缓冲区正忙，将数据加入队列');
+          } else {
+            this.log('等待队列已满，丢弃数据');
+          }
+          return;
+        }
+
+        try {
+          if (!buffer || buffer.byteLength === 0) {
+            throw new Error('收到空数据');
+          }
+
+          // 检查 MediaSource 状态
+          if (!this.mediaSource || this.mediaSource.readyState !== 'open') {
+            if (this.retryCount < this.MAX_RETRIES) {
+              this.retryCount++;
+              this.log(`MediaSource 未准备好，重试 ${this.retryCount}/${this.MAX_RETRIES}`);
+              this.pendingBuffers.unshift(buffer);
+              setTimeout(() => this.processNextBuffer(), 500);
+              return;
+            }
+            throw new Error('MediaSource 未准备好或已关闭');
+          }
+
+          await this.removeOldBuffers();
+          this.sourceBuffer.appendBuffer(buffer);
+          this.isBuffering = true;
+          this.retryCount = 0; // 重置重试计数
+          this.log(`添加数据到缓冲区，大小: ${buffer.byteLength} 字节`);
+        } catch (error) {
+          const errorMessage = error.message || '未知错误';
+          this.log(`添加缓冲区失败: ${errorMessage}`);
+          console.error('添加缓冲区失败:', error);
+
+          // 只有在重试次数用完后才触发致命错误
+          if (this.retryCount >= this.MAX_RETRIES) {
+            this.handleError(new Error(`添加缓冲区失败: ${errorMessage}`));
+            throw error;
+          }
+        }
+      }
+
+      async processNextBuffer() {
+        if (this.pendingBuffers.length > 0 && !this.sourceBuffer.updating) {
+          const nextBuffer = this.pendingBuffers.shift();
+          await this.appendBuffer(nextBuffer);
+        }
+      }
+
+      async removeOldBuffers() {
+        if (!this.sourceBuffer || !this.video.buffered.length) return;
+
+        const currentTime = this.video.currentTime;
+        const buffered = this.video.buffered;
+
+        for (let i = 0; i < buffered.length; i++) {
+          const start = buffered.start(i);
+          const end = buffered.end(i);
+
+          if (end - currentTime > this.MAX_BUFFER_LENGTH) {
+            const removeEnd = currentTime - 1;
+            if (removeEnd > start) {
+              try {
+                this.log(`清理缓冲区: ${start.toFixed(2)} - ${removeEnd.toFixed(2)}`);
+                await new Promise((resolve, reject) => {
+                  this.sourceBuffer.remove(start, removeEnd);
+                  const onUpdate = () => {
+                    this.sourceBuffer.removeEventListener('updateend', onUpdate);
+                    resolve();
+                  };
+                  this.sourceBuffer.addEventListener('updateend', onUpdate);
+                });
+              } catch (e) {
+                this.log(`清理缓冲区失败: ${e.message}`);
+              }
+            }
+          }
+        }
+      }
+
+      handleUpdateEnd() {
+        this.isBuffering = false;
+        this.log('缓冲区更新完成');
+
+        // 处理队列中的下一个缓冲区
+        this.processNextBuffer();
+
+        if (!this.hasError && !this.video.playing) {
+          this.video.play().catch(e => {
+            this.log(`播放失败: ${e.message}`);
+            this.handleError(e.message);
+          });
+        }
+      }
+
+      handleError(error) {
+        if (this.hasError || this.isDestroyed) {
+          return; // 防止重复处理错误
+        }
+        this.hasError = true;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log(`播放器错误: ${errorMessage}`);
+        this.destroy().catch(e => {
+          this.log(`销毁播放器时发生错误: ${e.message}`);
+        });
+      }
+
+      async destroy() {
+        if (this.isDestroyed) {
+          return; // 防止重复销毁
+        }
+        this.isDestroyed = true;
+        this.hasError = true;
+
+        try {
+          this.video.pause();
+
+          // 等待 SourceBuffer 更新完成
+          if (this.sourceBuffer && this.sourceBuffer.updating) {
+            await new Promise((resolve) => {
+              const onUpdate = () => {
+                if (this.sourceBuffer) {
+                  this.sourceBuffer.removeEventListener('updateend', onUpdate);
+                }
+                resolve();
+              };
+              this.sourceBuffer.addEventListener('updateend', onUpdate);
+            });
+          }
+
+          // 清理 SourceBuffer 事件监听器
+          if (this.sourceBuffer) {
+            if (this._updateEndHandler) {
+              this.sourceBuffer.removeEventListener('updateend', this._updateEndHandler);
+            }
+            if (this._errorHandler) {
+              this.sourceBuffer.removeEventListener('error', this._errorHandler);
+            }
+          }
+
+          // 清理 MediaSource
+          if (this.mediaSource && this.mediaSource.readyState === 'open') {
+            // 移除所有 SourceBuffers
+            if (this.sourceBuffer && !this.sourceBuffer.updating) {
+              try {
+                this.mediaSource.removeSourceBuffer(this.sourceBuffer);
+              } catch (e) {
+                this.log(`移除 SourceBuffer 失败: ${e.message}`);
+              }
+            }
+
+            // 只有在视频元数据加载完成后才调用 endOfStream
+            if (this.hasMetadata) {
+              try {
+                await new Promise(resolve => {
+                  // 确保在下一个事件循环中执行 endOfStream
+                  setTimeout(() => {
+                    try {
+                      this.mediaSource.endOfStream();
+                    } catch (e) {
+                      this.log(`关闭 MediaSource 失败: ${e.message}`);
+                    }
+                    resolve();
+                  }, 0);
+                });
+              } catch (e) {
+                this.log(`关闭 MediaSource 失败: ${e.message}`);
+              }
+            }
+          }
+
+          if (this.video.src) {
+            URL.revokeObjectURL(this.video.src);
+            this.video.removeAttribute('src');
+            this.video.load();
+          }
+        } catch (error) {
+          this.log(`销毁播放器时发生错误: ${error.message}`);
+        } finally {
+          // 确保清理所有资源
+          this.sourceBuffer = null;
+          this.mediaSource = null;
+          this.pendingBuffers = [];
+          this.isBuffering = false;
+          this._updateEndHandler = null;
+          this._errorHandler = null;
+          this.hasMetadata = false;
+        }
+      }
+    }
+
+    // Global variables
     let currentPlaylist = [];
     let currentIndex = 0;
-    let mediaSource;
-    let sourceBuffer;
-    let pendingBuffers = [];
-    let isBuffering = false;
-    const MAX_BUFFER_LENGTH = 30; // 保持30秒的缓冲区
+    let msePlayer = null;
+    let wsConnection = null;
+    let bufferMergeCount = 10; // 默认缓存包数量
 
-    // 初始化拖放区域事件处理
-    const dropZone = document.getElementById('dropZone');
-    const fileInput = document.getElementById('fileInput');
+    // 添加滑动条事件监听
+    const bufferCountSlider = document.getElementById('bufferCount');
+    const bufferCountValue = document.getElementById('bufferCountValue');
 
-    dropZone.addEventListener('click', () => {
-      fileInput.click();
-    });
-
-    dropZone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      dropZone.classList.add('drag-over');
-    });
-
-    dropZone.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('drag-over');
-    });
-
-    dropZone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('drag-over');
-      const files = e.dataTransfer.files;
-      if (files.length > 0) {
-        handleLocalFile(files[0]);
+    bufferCountSlider.addEventListener('input', (e) => {
+      bufferMergeCount = parseInt(e.target.value);
+      bufferCountValue.textContent = bufferMergeCount;
+      if (wsConnection) {
+        log(`已更新缓存包数量为: ${bufferMergeCount}`);
       }
     });
 
-    fileInput.addEventListener('change', (e) => {
-      if (e.target.files.length > 0) {
-        handleLocalFile(e.target.files[0]);
+    function log(message) {
+      const debug = document.getElementById('debug');
+      const time = new Date().toLocaleTimeString();
+      const newLine = document.createElement('div');
+      newLine.innerHTML = `[${time}] ${message}`;
+      if (debug.firstChild) {
+        debug.insertBefore(newLine, debug.firstChild);
+      } else {
+        debug.appendChild(newLine);
       }
-    });
+    }
 
+    // Initialize MSE player
+    function initPlayer() {
+      const video = document.getElementById('videoPlayer');
+      if (msePlayer) {
+        msePlayer.destroy();
+      }
+      msePlayer = new MSEPlayer(video, log);
+      return msePlayer.init();
+    }
+
+    // WebSocket handling
+    async function connectWebSocket() {
+      const wsUrl = document.getElementById('wsUrl').value;
+      if (!wsUrl) {
+        alert('请输入 WebSocket 地址');
+        return;
+      }
+
+      try {
+        await initPlayer();
+
+        if (wsConnection) {
+          wsConnection.close();
+          wsConnection = null;
+        }
+
+        wsConnection = new WebSocket(wsUrl);
+        wsConnection.binaryType = 'arraybuffer';
+        log(`正在连接 WebSocket: ${wsUrl}`);
+
+        wsConnection.onopen = () => {
+          log('WebSocket 连接已建立');
+        };
+
+        wsConnection.onmessage = async (event) => {
+          if (!msePlayer || msePlayer.hasError || msePlayer.isDestroyed) {
+            if (wsConnection) {
+              wsConnection.close();
+              wsConnection = null;
+            }
+            return;
+          }
+
+          try {
+            if (!event.data || event.data.byteLength === 0) {
+              throw new Error('收到空数据');
+            }
+
+            // 为前两个 buffer 创建 Blob URL
+            if (!wsConnection.bufferCount) {
+              wsConnection.bufferCount = 0;
+            }
+            if (wsConnection.bufferCount < 2) {
+              const blob = new Blob([event.data], { type: 'application/octet-stream' });
+              const url = URL.createObjectURL(blob);
+              const linkElement = document.createElement('a');
+              linkElement.href = url;
+              linkElement.download = `buffer-${wsConnection.bufferCount + 1}.mp4`;
+              linkElement.textContent = `下载第 ${wsConnection.bufferCount + 1} 个 buffer`;
+              linkElement.target = '_blank';
+              const debug = document.getElementById('debug');
+              const time = new Date().toLocaleTimeString();
+              const newLine = document.createElement('div');
+              newLine.textContent = `[${time}] 第 ${wsConnection.bufferCount + 1} 个 buffer 大小: ${event.data.byteLength} 字节 `;
+              newLine.appendChild(linkElement);
+              debug.insertBefore(newLine, debug.firstChild);
+              wsConnection.bufferCount++;
+            }
+
+            // 初始化缓存数组
+            if (!wsConnection.cachedBuffers) {
+              wsConnection.cachedBuffers = [];
+            }
+
+            // 添加到缓存
+            wsConnection.cachedBuffers.push(new Uint8Array(event.data));
+            log(`已缓存 ${wsConnection.cachedBuffers.length} 个数据包`);
+
+            // 当累积到指定数量的数据包时，合并并添加到 buffer
+            if (wsConnection.cachedBuffers.length >= bufferMergeCount) {
+              // 计算总长度
+              const totalLength = wsConnection.cachedBuffers.reduce((acc, curr) => acc + curr.byteLength, 0);
+
+              // 创建合并后的 buffer
+              const mergedBuffer = new Uint8Array(totalLength);
+              let offset = 0;
+
+              // 合并所有缓存的数据
+              for (const buffer of wsConnection.cachedBuffers) {
+                mergedBuffer.set(buffer, offset);
+                offset += buffer.byteLength;
+              }
+
+              log(`合并 ${wsConnection.cachedBuffers.length} 个数据包，总大小: ${totalLength} 字节`);
+
+              // 清空缓存
+              wsConnection.cachedBuffers = [];
+
+              // 添加到 MSE
+              await msePlayer.appendBuffer(mergedBuffer);
+            }
+          } catch (error) {
+            const errorMessage = error.message || '未知错误';
+            log(`处理数据失败: ${errorMessage}`);
+            // 只有在发生致命错误时才关闭连接
+            if (msePlayer.hasError) {
+              if (wsConnection) {
+                wsConnection.close();
+                wsConnection = null;
+              }
+            }
+          }
+        };
+
+        wsConnection.onclose = (event) => {
+          const reason = event.reason || '未知原因';
+          log(`WebSocket 连接已关闭: ${reason} (code: ${event.code})`);
+          if (msePlayer && !msePlayer.isDestroyed) {
+            msePlayer.destroy();
+          }
+        };
+
+        wsConnection.onerror = (error) => {
+          const errorMessage = error.message || '未知错误';
+          log(`WebSocket 错误: ${errorMessage}`);
+          if (msePlayer && !msePlayer.isDestroyed) {
+            msePlayer.destroy();
+          }
+          if (wsConnection) {
+            wsConnection.close();
+            wsConnection = null;
+          }
+        };
+
+      } catch (error) {
+        const errorMessage = error.message || '未知错误';
+        log(`WebSocket 初始化失败: ${errorMessage}`);
+        if (msePlayer && !msePlayer.isDestroyed) {
+          msePlayer.destroy();
+        }
+        if (wsConnection) {
+          wsConnection.close();
+          wsConnection = null;
+        }
+      }
+    }
+
+    // Handle local file
     async function handleLocalFile(file) {
       if (!file.name.toLowerCase().endsWith('.mp4') && !file.name.toLowerCase().endsWith('.fmp4')) {
         alert('请选择 FMP4/MP4 文件');
@@ -144,414 +653,62 @@
 
       try {
         log(`开始处理本地文件: ${file.name}`);
-        const video = document.getElementById('videoPlayer');
-
-        if (mediaSource) {
-          if (mediaSource.readyState === 'open') {
-            mediaSource.endOfStream();
-          }
-          URL.revokeObjectURL(video.src);
-          log('清理旧的 MediaSource');
-        }
-
-        mediaSource = new MediaSource();
-        video.src = URL.createObjectURL(mediaSource);
-        pendingBuffers = [];
-        isBuffering = false;
-
-        mediaSource.addEventListener('sourceopen', async () => {
-          log('MediaSource 已打开');
-          try {
-            const codecConfigs = [
-              'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
-              'video/mp4; codecs="avc1.64001f"',
-              'video/mp4'
-            ];
-
-            let sourceBufferCreated = false;
-            for (const codec of codecConfigs) {
-              try {
-                if (MediaSource.isTypeSupported(codec)) {
-                  sourceBuffer = mediaSource.addSourceBuffer(codec);
-                  sourceBufferCreated = true;
-                  log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
-                  break;
-                }
-              } catch (e) {
-                log(`尝试编解码器 ${codec} 失败: ${e.message}`);
-              }
-            }
-
-            if (!sourceBufferCreated) {
-              throw new Error('无法创建支持的 SourceBuffer');
-            }
-
-            sourceBuffer.mode = 'sequence';
-            sourceBuffer.addEventListener('updateend', () => {
-              log('FMP4 片段添加完成');
-              if (!video.playing) {
-                video.play().catch(e => {
-                  log(`播放失败: ${e.message}`);
-                });
-              }
-            });
-
-            // 读取并播放本地文件
-            const buffer = await file.arrayBuffer();
-            log(`本地文件加载完成，大小: ${buffer.byteLength} 字节`);
-            sourceBuffer.appendBuffer(buffer);
-
-          } catch (error) {
-            log(`处理本地文件失败: ${error.message}`);
-            console.error('处理本地文件失败:', error);
-          }
-        });
-
+        await initPlayer();
+        const buffer = await file.arrayBuffer();
+        log(`本地文件加载完成，大小: ${buffer.byteLength} 字节`);
+        await msePlayer.appendBuffer(buffer);
       } catch (error) {
-        log(`加载本地文件失败: ${error.message}`);
-        console.error('加载本地文件失败:', error);
+        log(`处理本地文件失败: ${error.message}`);
       }
     }
 
-    function log(message) {
-      const debug = document.getElementById('debug');
-      const time = new Date().toLocaleTimeString();
-      debug.textContent = `[${time}] ${message}\n` + debug.textContent;
-    }
+    // Event listeners
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const video = document.getElementById('videoPlayer');
 
-    async function loadM3U8() {
-      const m3u8Url = document.getElementById('m3u8Url').value;
-      if (!m3u8Url) {
-        alert('请输入 M3U8 地址');
-        return;
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+    });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleLocalFile(files[0]);
       }
-
-      try {
-        log(`开始加载 M3U8: ${m3u8Url}`);
-        const response = await fetch(m3u8Url);
-        const content = await response.text();
-        const mp4Urls = parseM3U8(content, m3u8Url);
-        log(`解析到 ${mp4Urls.length} 个 MP4 文件`);
-
-        if (mp4Urls.length === 0) {
-          alert('未找到可播放的 MP4 文件');
-          return;
-        }
-
-        currentPlaylist = mp4Urls;
-        currentIndex = 0;
-        initMSE();
-      } catch (error) {
-        console.error('加载 M3U8 文件失败:', error);
-        log(`加载失败: ${error.message}`);
-        alert('加载 M3U8 文件失败');
+    });
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleLocalFile(e.target.files[0]);
       }
-    }
-
-    function parseM3U8(content, baseUrl) {
-      const lines = content.split('\n');
-      const mp4Urls = [];
-
-      for (const line of lines) {
-        if (line.trim() && !line.startsWith('#')) {
-          const url = line.startsWith('http') ? line : new URL(line, baseUrl).href;
-          if (url.endsWith('.mp4')) {
-            mp4Urls.push(url);
-            log(`找到 MP4: ${url}`);
-          }
-        }
-      }
-
-      return mp4Urls;
-    }
-
-    function initMSE() {
-      const video = document.getElementById('videoPlayer');
-      log('初始化 MSE');
-
-      if (mediaSource) {
-        if (mediaSource.readyState === 'open') {
-          mediaSource.endOfStream();
-        }
-        URL.revokeObjectURL(video.src);
-        log('清理旧的 MediaSource');
-      }
-
-      mediaSource = new MediaSource();
-      video.src = URL.createObjectURL(mediaSource);
-      pendingBuffers = [];
-      isBuffering = false;
-
-      mediaSource.addEventListener('sourceopen', async () => {
-        log('MediaSource 已打开');
-        try {
-          // Try different codec combinations
-          const codecConfigs = [
-            //'video/mp4; codecs="avc1.64001f"', // Video only
-            'video/mp4; codecs="avc1.64001f,mp4a.40.2"', // Video + AAC
-            // 'video/mp4' // Let the browser figure it out
-          ];
-
-          let sourceBufferCreated = false;
-          for (const codec of codecConfigs) {
-            try {
-              if (MediaSource.isTypeSupported(codec)) {
-                sourceBuffer = mediaSource.addSourceBuffer(codec);
-                sourceBufferCreated = true;
-                log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
-                break;
-              }
-            } catch (e) {
-              log(`尝试编解码器 ${codec} 失败: ${e.message}`);
-            }
-          }
-
-          if (!sourceBufferCreated) {
-            throw new Error('无法创建支持的 SourceBuffer');
-          }
-
-          sourceBuffer.mode = 'sequence';
-          sourceBuffer.addEventListener('updateend', handleUpdateEnd);
-          sourceBuffer.addEventListener('error', (e) => {
-            console.log(e);
-            log(`SourceBuffer 错误: ${e}`);
-          });
-
-          // 先加载第一个片段，等待缓冲完成后再播放
-          log('等待第一个片段加载完成...');
-          await loadNextSegment();
-          await new Promise(resolve => {
-            const checkBuffer = () => {
-              if (!sourceBuffer.updating && video.buffered.length > 0) {
-                log('首个片段缓冲完成，开始播放');
-                resolve();
-              } else {
-                setTimeout(checkBuffer, 100);
-              }
-            };
-            checkBuffer();
-          });
-
-          video.play().catch(e => {
-            log(`播放失败: ${e.message}`);
-            console.error('播放失败:', e);
-          });
-        } catch (error) {
-          log(`创建 SourceBuffer 失败: ${error.message}`);
-        }
-      });
-
-      mediaSource.addEventListener('sourceended', () => {
-        log('MediaSource 已结束');
-      });
-
-      mediaSource.addEventListener('error', (e) => {
-        log(`MediaSource 错误: ${e}`);
-      });
-
-      video.addEventListener('error', (e) => {
-        log(`视频错误: ${video.error.message}`);
-      });
-    }
-
-    async function loadNextSegment() {
-      if (currentIndex >= currentPlaylist.length) {
-        if (mediaSource.readyState === 'open') {
-          mediaSource.endOfStream();
-          log('已到达播放列表末尾');
-        }
-        return;
-      }
-
-      try {
-        // 在加载新片段前检查并清理缓冲区
-        await removeOldBuffers();
-
-        log(`加载视频片段 ${currentIndex + 1}`);
-        const response = await fetch(currentPlaylist[currentIndex]);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const buffer = await response.arrayBuffer();
-        log(`视频片段 ${currentIndex + 1} 加载完成，大小: ${buffer.byteLength} 字节`);
-        appendBuffer(buffer);
-
-        // 预加载下一个片段，但要控制预加载的数量
-        if (currentIndex < currentPlaylist.length - 1 && pendingBuffers.length < 2) {
-          currentIndex++;
-          loadNextSegment();
-        }
-      } catch (error) {
-        log(`加载视频片段失败: ${error.message}`);
-        console.error('加载视频片段失败:', error);
-      }
-    }
-
-    async function removeOldBuffers() {
-      if (!sourceBuffer || !video.buffered.length) return;
-
-      const currentTime = video.currentTime;
-      const buffered = video.buffered;
-
-      // 计算当前缓冲区的范围
-      for (let i = 0; i < buffered.length; i++) {
-        const start = buffered.start(i);
-        const end = buffered.end(i);
-
-        // 如果缓冲区超过了最大长度，移除旧的部分
-        if (end - currentTime > MAX_BUFFER_LENGTH) {
-          const removeEnd = currentTime - 1; // 保留当前播放位置前1秒
-          if (removeEnd > start) {
-            try {
-              log(`清理缓冲区: ${start.toFixed(2)} - ${removeEnd.toFixed(2)}`);
-              await new Promise((resolve, reject) => {
-                sourceBuffer.remove(start, removeEnd);
-                const onUpdate = () => {
-                  sourceBuffer.removeEventListener('updateend', onUpdate);
-                  resolve();
-                };
-                sourceBuffer.addEventListener('updateend', onUpdate);
-              });
-            } catch (e) {
-              log(`清理缓冲区失败: ${e.message}`);
-            }
-          }
-        }
-      }
-    }
-
-    function appendBuffer(buffer) {
-      if (!sourceBuffer || sourceBuffer.updating || pendingBuffers.length > 0) {
-        // 限制等待队列的长度
-        if (pendingBuffers.length < 3) {
-          pendingBuffers.push(buffer);
-          log('缓冲区正忙，将数据加入队列');
-        } else {
-          log('等待队列已满，丢弃数据');
-        }
-        return;
-      }
-
-      try {
-        sourceBuffer.appendBuffer(buffer);
-        isBuffering = true;
-        log('添加数据到缓冲区');
-      } catch (error) {
-        if (error.name === 'QuotaExceededError') {
-          log('缓冲区已满，将进行清理');
-          pendingBuffers.push(buffer);
-          removeOldBuffers();
-        } else {
-          log(`添加缓冲区失败: ${error.message}`);
-          console.error('添加缓冲区失败:', error);
-        }
-      }
-    }
-
-    function handleUpdateEnd() {
-      isBuffering = false;
-      log('缓冲区更新完成');
-
-      if (pendingBuffers.length > 0) {
-        const nextBuffer = pendingBuffers.shift();
-        appendBuffer(nextBuffer);
-      }
-    }
-
-    document.getElementById('videoPlayer').addEventListener('ended', () => {
-      log('视频播放结束，重新开始');
-      currentIndex = 0;
-      initMSE();
     });
 
-    const video = document.getElementById('videoPlayer');
+    video.addEventListener('ended', () => {
+      log('视频播放结束');
+    });
+
     video.addEventListener('playing', () => log('视频开始播放'));
     video.addEventListener('pause', () => log('视频暂停'));
     video.addEventListener('waiting', () => log('视频缓冲中'));
     video.addEventListener('canplay', () => log('视频可以播放'));
     video.addEventListener('loadedmetadata', () => log('视频元数据已加载'));
-
-    async function testFMP4() {
-      const fmp4Url = document.getElementById('fmp4Url').value;
-      if (!fmp4Url) {
-        alert('请输入 FMP4 地址');
-        return;
+    video.addEventListener('error', (e) => {
+      if (msePlayer && !msePlayer.isDestroyed) {
+        log(`视频错误: ${video.error ? video.error.message : '未知错误'}`);
+        msePlayer.handleError(video.error ? video.error.message : '未知错误');
       }
-
-      try {
-        log(`开始测试 FMP4: ${fmp4Url}`);
-        const video = document.getElementById('videoPlayer');
-
-        if (mediaSource) {
-          if (mediaSource.readyState === 'open') {
-            mediaSource.endOfStream();
-          }
-          URL.revokeObjectURL(video.src);
-          log('清理旧的 MediaSource');
-        }
-
-        mediaSource = new MediaSource();
-        video.src = URL.createObjectURL(mediaSource);
-        pendingBuffers = [];
-        isBuffering = false;
-
-        mediaSource.addEventListener('sourceopen', async () => {
-          log('MediaSource 已打开');
-          try {
-            const codecConfigs = [
-              'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
-              'video/mp4; codecs="avc1.64001f"',
-              'video/mp4'
-            ];
-
-            let sourceBufferCreated = false;
-            for (const codec of codecConfigs) {
-              try {
-                if (MediaSource.isTypeSupported(codec)) {
-                  sourceBuffer = mediaSource.addSourceBuffer(codec);
-                  sourceBufferCreated = true;
-                  log(`成功创建 SourceBuffer，使用编解码器: ${codec}`);
-                  break;
-                }
-              } catch (e) {
-                log(`尝试编解码器 ${codec} 失败: ${e.message}`);
-              }
-            }
-
-            if (!sourceBufferCreated) {
-              throw new Error('无法创建支持的 SourceBuffer');
-            }
-
-            sourceBuffer.mode = 'sequence';
-            sourceBuffer.addEventListener('updateend', () => {
-              log('FMP4 片段添加完成');
-              if (!video.playing) {
-                video.play().catch(e => {
-                  log(`播放失败: ${e.message}`);
-                });
-              }
-            });
-
-            // 加载并播放 FMP4
-            const response = await fetch(fmp4Url);
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const buffer = await response.arrayBuffer();
-            log(`FMP4 文件加载完成，大小: ${buffer.byteLength} 字节`);
-            sourceBuffer.appendBuffer(buffer);
-
-          } catch (error) {
-            log(`处理 FMP4 失败: ${error.message}`);
-            console.error('处理 FMP4 失败:', error);
-          }
-        });
-
-      } catch (error) {
-        log(`加载 FMP4 文件失败: ${error.message}`);
-        console.error('加载 FMP4 文件失败:', error);
+      if (wsConnection) {
+        wsConnection.close();
+        wsConnection = null;
       }
-    }
+    });
   </script>
 </body>
 

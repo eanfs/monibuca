@@ -62,7 +62,7 @@ func CreateTrackHeaderBox(trackID uint32, duration uint64, width, height uint32)
 				size: util.Conditional[uint32](version == 1, 92, 80) + FullBoxLen,
 			},
 			Version: version,
-			Flags:   [3]byte{0, 0, 3}, // Track_enabled | Track_in_movie
+			Flags:   [3]byte{0, 0, 7}, // Track_enabled | Track_in_movie | Track_in_preview
 		},
 		CreationTime:     now,
 		ModificationTime: now,

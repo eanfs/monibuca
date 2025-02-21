@@ -128,15 +128,8 @@ func TestFLVToMP4(t *testing.T) {
 						compositionTime |= ^0xffffff
 					}
 
-					// Validate and fix AVCC format
-					validData, err := validateAndFixAVCC(tag.Data[5:])
-					if err != nil {
-						fmt.Printf("Warning: Invalid AVCC data at timestamp %d: %v\n", tag.Timestamp, err)
-						continue
-					}
-
 					sample := box.Sample{
-						Data:      validData,
+						Data:      tag.Data[5:],
 						Timestamp: uint32(tag.Timestamp),
 						CTS:       uint32(compositionTime),
 						KeyFrame:  frameType == 1,
