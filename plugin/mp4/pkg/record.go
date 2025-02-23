@@ -41,7 +41,9 @@ func (task *writeTrailerTask) Start() (err error) {
 	}
 	return
 }
-
+const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
+// 将 moov 从末尾移动到前方
+// 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
 	var temp *os.File
@@ -50,8 +52,31 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("create temp file", "err", err)
 		return
 	}
+	
 	defer os.Remove(temp.Name())
-	err = t.muxer.ReWriteWithMoov(temp, t.file)
+
+	_, err = t.file.Seek(0, io.SeekStart)
+	if err != nil {
+		t.Error("seek file", "err", err)
+		return
+	}
+	// 复制 mdat box之前的内容
+	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData)
+	if err != nil {
+		return
+	}
+	for _, track := range t.muxer.Tracks {
+		for i := range len(track.Samplelist) {
+			track.Samplelist[i].Offset += int64(t.muxer.moov.Size())
+		}
+	}
+	err = t.muxer.WriteMoov(temp)
+	if err != nil {
+		return
+	}
+	// 复制 mdat box
+	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatSize)+BeforeMdatData)
+
 	if err != nil {
 		if err == pkg.ErrSkip {
 			return task.ErrTaskComplete

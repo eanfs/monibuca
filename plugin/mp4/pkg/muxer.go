@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 
-	"m7s.live/v5/pkg"
 	. "m7s.live/v5/plugin/mp4/pkg/box"
 )
 
@@ -157,31 +156,6 @@ func (m *Muxer) reWriteMdatSize(w io.WriteSeeker) (err error) {
 			return
 		}
 	}
-	return
-}
-
-func (m *Muxer) ReWriteWithMoov(f io.WriteSeeker, r io.Reader) (err error) {
-	if m.isFragment() {
-		return pkg.ErrSkip
-	}
-	_, err = f.Seek(0, io.SeekStart)
-	if err != nil {
-		return
-	}
-	_, err = io.CopyN(f, r, int64(m.mdatOffset)-16)
-	if err != nil {
-		return
-	}
-	for _, track := range m.Tracks {
-		for i := range len(track.Samplelist) {
-			track.Samplelist[i].Offset += int64(m.moov.Size())
-		}
-	}
-	err = m.WriteMoov(f)
-	if err != nil {
-		return
-	}
-	_, err = io.CopyN(f, r, int64(m.mdatSize)+16)
 	return
 }
 
