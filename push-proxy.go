@@ -108,8 +108,17 @@ func (d *PushProxy) ChangeStatus(status byte) {
 	d.Update()
 	switch status {
 	case PushProxyStatusOnline:
-		if d.PushOnStart && from == PushProxyStatusOffline {
-			d.Handler.Push()
+		if from == PushProxyStatusOffline {
+			if d.PushOnStart {
+				d.Handler.Push()
+			} else {
+				d.server.Streams.Call(func() error {
+					if d.server.Streams.Has(d.GetStreamPath()) {
+						d.Handler.Push()
+					}
+					return nil
+				})
+			}
 		}
 	}
 }

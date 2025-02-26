@@ -569,6 +569,17 @@ func (s *Server) Dispose() {
 	}
 }
 
+func (s *Server) OnPublish(p *Publisher) {
+	for plugin := range s.Plugins.Range {
+		plugin.OnPublish(p)
+	}
+	for pushProxy := range s.PushProxies.Range {
+		if pushProxy.Status == PushProxyStatusOnline && pushProxy.GetStreamPath() == p.StreamPath && !pushProxy.PushOnStart {
+			pushProxy.Handler.Push()
+		}
+	}
+}
+
 func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 	for plugin := range s.Plugins.Range {
 		plugin.OnSubscribe(streamPath, args)

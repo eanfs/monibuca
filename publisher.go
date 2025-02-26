@@ -197,9 +197,7 @@ func (p *Publisher) Start() (err error) {
 
 	s.Waiting.WakeUp(p.StreamPath, p)
 	p.processAliasOnStart()
-	for plugin := range s.Plugins.Range {
-		plugin.OnPublish(p)
-	}
+	p.Plugin.Server.OnPublish(p)
 	//s.Transforms.PublishEvent <- p
 	p.AddTask(&PublishTimeout{Publisher: p})
 	if p.PublishTimeout > 0 {
