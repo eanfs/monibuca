@@ -783,29 +783,6 @@ func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb
 	return
 }
 
-func (s *Server) ModifyConfig(_ context.Context, req *pb.ModifyConfigRequest) (res *pb.SuccessResponse, err error) {
-	var conf *config.Config
-	if req.Name == "global" {
-		conf = &s.Config
-		defer s.SaveConfig()
-	} else {
-		p, ok := s.Plugins.Get(req.Name)
-		if !ok {
-			err = pkg.ErrNotFound
-			return
-		}
-		defer p.SaveConfig()
-		conf = &p.Config
-	}
-	var modified map[string]any
-	err = yaml.Unmarshal([]byte(req.Yaml), &modified)
-	if err != nil {
-		return
-	}
-	conf.ParseModifyFile(modified)
-	return
-}
-
 func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.ResponseList, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB

@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/mcuadros/go-defaults"
 	"log/slog"
 	"maps"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mcuadros/go-defaults"
 
 	"gopkg.in/yaml.v3"
 )

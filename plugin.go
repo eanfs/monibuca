@@ -150,7 +150,9 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 		p.Warn("plugin disabled")
 		return
 	} else {
-		p.assign()
+		if v, ok := instance.(IRegisterHandler); ok {
+			p.registerHandler(v.RegisterHandler())
+		}
 	}
 	p.Info("init", "version", plugin.Version)
 	var err error
@@ -269,32 +271,10 @@ func (p *Plugin) GetPublicIP(netcardIP string) string {
 	return localIp
 }
 
-func (p *Plugin) settingPath() string {
-	return filepath.Join(p.Server.SettingDir, strings.ToLower(p.Meta.Name)+".yaml")
-}
-
 func (p *Plugin) disable(reason string) {
 	p.Disabled = true
 	p.SetDescription("disableReason", reason)
 	p.Server.disabledPlugins = append(p.Server.disabledPlugins, p)
-}
-
-func (p *Plugin) assign() {
-	f, err := os.Open(p.settingPath())
-	defer f.Close()
-	if err == nil {
-		var modifyConfig map[string]any
-		err = yaml.NewDecoder(f).Decode(&modifyConfig)
-		if err != nil {
-			panic(err)
-		}
-		p.Config.ParseModifyFile(modifyConfig)
-	}
-	var handlerMap map[string]http.HandlerFunc
-	if v, ok := p.handler.(IRegisterHandler); ok {
-		handlerMap = v.RegisterHandler()
-	}
-	p.registerHandler(handlerMap)
 }
 
 func (p *Plugin) Start() (err error) {
@@ -730,35 +710,6 @@ func (p *Plugin) handle(pattern string, handler http.Handler) {
 		p.Server.config.HTTP.Handle(pattern, handler, last)
 	}
 	p.Server.apiList = append(p.Server.apiList, pattern)
-}
-
-func (p *Plugin) SaveConfig() (err error) {
-	return Servers.AddTask(&SaveConfig{Plugin: p}).WaitStopped()
-}
-
-type SaveConfig struct {
-	task.Task
-	Plugin *Plugin
-	file   *os.File
-}
-
-func (s *SaveConfig) Start() (err error) {
-	if s.Plugin.Modify == nil {
-		err = os.Remove(s.Plugin.settingPath())
-		if err == nil {
-			err = task.ErrTaskComplete
-		}
-	}
-	s.file, err = os.OpenFile(s.Plugin.settingPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-	return
-}
-
-func (s *SaveConfig) Run() (err error) {
-	return yaml.NewEncoder(s.file).Encode(s.Plugin.Modify)
-}
-
-func (s *SaveConfig) Dispose() {
-	s.file.Close()
 }
 
 func (p *Plugin) sendPublishWebhook(pub *Publisher) {

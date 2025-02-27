@@ -58,7 +58,6 @@ var (
 
 type (
 	ServerConfig struct {
-		SettingDir    string                   `default:".m7s" desc:""`
 		FatalDir      string                   `default:"fatal" desc:""`
 		PulseInterval time.Duration            `default:"5s" desc:"心跳事件间隔"`    //心跳事件间隔
 		DisableAll    bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
