@@ -150,9 +150,11 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 		p.Warn("plugin disabled")
 		return
 	} else {
+		var handlers map[string]http.HandlerFunc
 		if v, ok := instance.(IRegisterHandler); ok {
-			p.registerHandler(v.RegisterHandler())
+			handlers = v.RegisterHandler()
 		}
+		p.registerHandler(handlers)
 	}
 	p.Info("init", "version", plugin.Version)
 	var err error
