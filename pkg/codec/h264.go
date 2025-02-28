@@ -2,6 +2,7 @@ package codec
 
 import (
 	"fmt"
+
 	"github.com/deepch/vdk/codec/h264parser"
 )
 
@@ -125,4 +126,8 @@ func (h264 *H264Ctx) GetBase() ICodecCtx {
 
 func (ctx *H264Ctx) GetRecord() []byte {
 	return ctx.Record
+}
+
+func (h264 *H264Ctx) String() string {
+	return fmt.Sprintf("avc1.%02X%02X%02X", h264.RecordInfo.AVCProfileIndication, h264.RecordInfo.ProfileCompatibility, h264.RecordInfo.AVCLevelIndication)
 }

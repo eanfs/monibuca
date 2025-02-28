@@ -30,6 +30,10 @@ func (f FourCC) String() string {
 	return string(f[:])
 }
 
+func (f FourCC) MatchString(str string) bool {
+	return string(f[:]) == str[:4]
+}
+
 func (f FourCC) Name() string {
 	switch f {
 	case FourCC_H264:

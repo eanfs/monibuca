@@ -61,10 +61,10 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 		return
 	}
 	if sub.Publisher.HasAudioTrack() {
-		r.stream.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.FourCC().String()
+		r.stream.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
 	}
 	if sub.Publisher.HasVideoTrack() {
-		r.stream.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.FourCC().String()
+		r.stream.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.String()
 	}
 	if recordJob.Plugin.DB != nil {
 		recordJob.Plugin.DB.Save(&r.stream)

@@ -55,11 +55,17 @@ func (mt *Job) Blocked() ITask {
 }
 
 func (mt *Job) waitChildrenDispose() {
+	defer func() {
+		// 忽略由于在任务关闭过程中可能存在竞态条件，当父任务关闭时子任务可能已经被释放。
+		if err := recover(); err != nil {
+			mt.Debug("waitChildrenDispose panic", "err", err)
+		}
+		mt.addSub <- nil
+		<-mt.childrenDisposed
+	}()
 	if blocked := mt.blocked; blocked != nil {
 		blocked.Stop(mt.StopReason())
 	}
-	mt.addSub <- nil
-	<-mt.childrenDisposed
 }
 
 func (mt *Job) OnChildDispose(listener func(ITask)) {

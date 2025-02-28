@@ -276,7 +276,7 @@ func (p *Puller) pull(info *M3u8Info) (err error) {
 						tsFilePath := p.PullJob.StreamPath + "/" + tsFilename
 						ss := strings.Split(p.PullJob.StreamPath, "/")
 						var plInfo = PlaylistInf{
-							Title:    fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
+							URL:      fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
 							Duration: v.dur,
 							FilePath: tsFilePath,
 						}

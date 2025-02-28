@@ -2,6 +2,7 @@ package codec
 
 import (
 	"fmt"
+
 	"github.com/deepch/vdk/codec/aacparser"
 	"github.com/deepch/vdk/codec/opusparser"
 )
@@ -58,6 +59,12 @@ func (ctx *AACCtx) GetSampleRate() int {
 func (ctx *AACCtx) GetBase() ICodecCtx {
 	return ctx
 }
+
+func (ctx *AACCtx) String() string {
+	// https://www.w3.org/TR/webcodecs-aac-codec-registration/
+	return fmt.Sprintf("mp4a.40.%d", ctx.Config.ObjectType)
+}
+
 func (ctx *AACCtx) GetRecord() []byte {
 	return ctx.ConfigBytes
 }
@@ -78,9 +85,18 @@ func (ctx *PCMACtx) GetBase() ICodecCtx {
 	return ctx
 }
 
+func (ctx *PCMACtx) String() string {
+	return "alaw"
+}
+
+func (ctx *PCMUCtx) String() string {
+	return "ulaw"
+}
+
 func (ctx *PCMUCtx) GetBase() ICodecCtx {
 	return ctx
 }
+
 func (*PCMUCtx) GetRecord() []byte {
 	return []byte{} //TODO
 }
@@ -95,6 +111,11 @@ func (*OPUSCtx) FourCC() FourCC {
 func (ctx *OPUSCtx) GetBase() ICodecCtx {
 	return ctx
 }
+
+func (ctx *OPUSCtx) String() string {
+	return "opus"
+}
+
 func (ctx *OPUSCtx) GetChannels() int {
 	return ctx.ChannelLayout().Count()
 }

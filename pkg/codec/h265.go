@@ -1,7 +1,10 @@
 package codec
 
-import "fmt"
-import "github.com/deepch/vdk/codec/h265parser"
+import (
+	"fmt"
+
+	"github.com/deepch/vdk/codec/h265parser"
+)
 
 type H265NALUType byte
 
@@ -35,4 +38,8 @@ func (h265 *H265Ctx) GetBase() ICodecCtx {
 
 func (h265 *H265Ctx) GetRecord() []byte {
 	return h265.Record
+}
+
+func (h265 *H265Ctx) String() string {
+	return fmt.Sprintf("hvc1.%02X%02X%02X", h265.RecordInfo.AVCProfileIndication, h265.RecordInfo.ProfileCompatibility, h265.RecordInfo.AVCLevelIndication)
 }

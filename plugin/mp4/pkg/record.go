@@ -41,6 +41,7 @@ func (task *writeTrailerTask) Start() (err error) {
 	}
 	return
 }
+
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 将 moov 从末尾移动到前方
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
@@ -52,7 +53,7 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("create temp file", "err", err)
 		return
 	}
-	
+
 	defer os.Remove(temp.Name())
 
 	_, err = t.file.Seek(0, io.SeekStart)
@@ -208,10 +209,10 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	}
 	r.muxer.WriteInitSegment(r.file)
 	if sub.Publisher.HasAudioTrack() {
-		r.stream.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.FourCC().String()
+		r.stream.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
 	}
 	if sub.Publisher.HasVideoTrack() {
-		r.stream.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.FourCC().String()
+		r.stream.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.String()
 	}
 	if recordJob.Plugin.DB != nil {
 		recordJob.Plugin.DB.Save(&r.stream)

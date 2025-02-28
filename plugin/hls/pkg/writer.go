@@ -135,7 +135,7 @@ func (w *HLSWriter) checkFragment(ts time.Duration) (err error) {
 		inf := PlaylistInf{
 			//浮点计算精度
 			Duration: dur.Seconds(),
-			Title:    fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
+			URL:      fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
 			FilePath: tsFilePath,
 		}
 

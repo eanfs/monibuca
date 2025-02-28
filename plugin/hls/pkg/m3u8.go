@@ -96,8 +96,10 @@ type PlaylistKey struct {
 
 type PlaylistInf struct {
 	Duration float64
+	URL      string
 	Title    string
 	FilePath string
+	Codecs   string
 }
 
 func (pl *Playlist) Init() (err error) {
@@ -113,13 +115,14 @@ func (pl *Playlist) Init() (err error) {
 		"#EXT-X-VERSION:%d\n"+
 		"#EXT-X-MEDIA-SEQUENCE:%d\n"+
 		"#EXT-X-TARGETDURATION:%d\n", pl.Version, pl.Sequence, pl.Targetduration)
+
 	pl.Sequence++
 	return
 }
 
 func (pl *Playlist) WriteInf(inf PlaylistInf) (err error) {
-	_, err = fmt.Fprintf(pl, "#EXTINF:%.3f,\n"+
-		"%s\n", inf.Duration, inf.Title)
+	_, err = fmt.Fprintf(pl, "#EXTINF:%.3f,%s,%s\n"+
+		"%s\n", inf.Duration, inf.Title, inf.Codecs, inf.URL)
 	pl.tsCount++
 	return
 }
