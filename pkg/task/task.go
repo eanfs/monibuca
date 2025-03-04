@@ -202,10 +202,16 @@ func (task *Task) Trace(msg string, fields ...any) {
 }
 
 func (task *Task) IsStopped() bool {
+	if task.Context == nil {
+		return false
+	}
 	return task.Err() != nil
 }
 
 func (task *Task) StopReason() error {
+	if task.Context == nil {
+		return nil
+	}
 	return context.Cause(task.Context)
 }
 

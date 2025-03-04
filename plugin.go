@@ -282,6 +282,12 @@ func (p *Plugin) disable(reason string) {
 
 func (p *Plugin) Start() (err error) {
 	s := p.Server
+	if s == nil {
+		return fmt.Errorf("server is nil")
+	}
+	if p.Meta == nil {
+		return fmt.Errorf("plugin meta is nil")
+	}
 	if p.Meta.ServiceDesc != nil && s.grpcServer != nil {
 		s.grpcServer.RegisterService(p.Meta.ServiceDesc, p.handler)
 		if p.Meta.RegisterGRPCHandler != nil {

@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"errors"
 
 	. "m7s.live/v5/pkg/util"
@@ -19,6 +20,27 @@ type Manager[K comparable, T ManagerItem[K]] struct {
 }
 
 func (m *Manager[K, T]) Add(ctx T, opt ...any) *Task {
+	// 检查是否有上下文参数
+	var ctxParam context.Context
+	if len(opt) > 0 {
+		if ctx, ok := opt[len(opt)-1].(context.Context); ok {
+			// 保存上下文参数
+			ctxParam = ctx
+			// 移除上下文参数，我们不需要它
+			opt = opt[:len(opt)-1]
+		}
+	}
+
+	// 确保上下文字段不为 nil
+	// 如果是包含 Context 字段的类型，确保其 Context 字段不为 nil
+	if v, ok := any(ctx).(interface{ SetContext(context.Context) }); ok {
+		if ctxParam != nil {
+			v.SetContext(ctxParam)
+		} else {
+			v.SetContext(context.Background())
+		}
+	}
+
 	ctx.OnStart(func() {
 		if !m.Collection.AddUnique(ctx) {
 			ctx.Stop(ErrExist)

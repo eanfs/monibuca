@@ -7,6 +7,7 @@ import (
 	"m7s.live/v5"
 	_ "m7s.live/v5/plugin/cascade"
 
+	_ "m7s.live/v5/plugin/cluster"
 	_ "m7s.live/v5/plugin/crypto"
 	_ "m7s.live/v5/plugin/debug"
 	_ "m7s.live/v5/plugin/flv"

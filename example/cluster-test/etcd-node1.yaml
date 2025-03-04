@@ -1,0 +1,50 @@
+global:
+  http: :8080
+  tcp: :50054
+cluster:
+  nodeid: "etcd-node1"
+  role: "manager"
+  region: "default"
+  clustersecret: "test-cluster-secret"
+
+  # Etcd 配置
+  etcd:
+    enabled: true
+    endpoints: ["http://localhost:2379"]
+    keyprefix: "cluster-test/"
+    nodekeyttl: 30
+    streamkeyttl: 30
+    dialtimeout: 5s
+    requesttimeout: 3s
+    retryinterval: 1s
+    maxretries: 3
+    enablewatcher: true
+    watchtimeout: 10s
+    autosyncinterval: 30s
+
+    # 内嵌 etcd 服务器配置
+    server:
+      enabled: true
+      datadir: "./data/etcd1"
+      listenclienturls: ["http://localhost:2379"]
+      advertiseclienturls: ["http://localhost:2379"]
+      listenpeerurls: ["http://localhost:2380"]
+      advertisepeerurls: ["http://localhost:2380"]
+      initialcluster: "etcd-node1=http://localhost:2380"
+      initialclusterstate: "new"
+      initialclustertoken: "cluster-etcd-cluster"
+      snapshotcount: 10000
+      autocompactionmode: "revision"
+      autocompactionretention: "1000"
+      quotabackendbytes: 2147483648  # 2GB
+
+  # 流同步配置
+  sync:
+    fullsyncinterval: 30s
+    incrementalsyncinterval: 5s
+    maxstreamsperrequest: 100
+    syncretryinterval: 5s
+    maxretries: 3
+
+flv:
+  publish: 1

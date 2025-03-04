@@ -22,7 +22,7 @@ func (c *Collection[K, T]) OnRemove(listener func(T)) {
 	c.removeListeners = append(c.removeListeners, listener)
 }
 
-func (c *Collection[K, T]) Add(item T) {
+func (c *Collection[K, T]) Add(item T, opt ...any) {
 	if c.L != nil {
 		c.L.Lock()
 		defer c.L.Unlock()
@@ -43,14 +43,14 @@ func (c *Collection[K, T]) Add(item T) {
 	}
 }
 
-func (c *Collection[K, T]) AddUnique(item T) (ok bool) {
+func (c *Collection[K, T]) AddUnique(item T, opt ...any) (ok bool) {
 	if _, ok = c.Get(item.GetKey()); !ok {
-		c.Add(item)
+		c.Add(item, opt...)
 	}
 	return !ok
 }
 
-func (c *Collection[K, T]) Set(item T) (added bool) {
+func (c *Collection[K, T]) Set(item T, opt ...any) (added bool) {
 	key := item.GetKey()
 	if c.m != nil {
 		c.m[key] = item
@@ -61,7 +61,7 @@ func (c *Collection[K, T]) Set(item T) (added bool) {
 			return false
 		}
 	}
-	c.Add(item)
+	c.Add(item, opt...)
 	return true
 }
 

@@ -84,6 +84,9 @@ func (config *Config) MarshalJSON() ([]byte, error) {
 }
 
 func (config *Config) GetValue() any {
+	if !config.Ptr.IsValid() {
+		return config.Default
+	}
 	return config.Ptr.Interface()
 }
 

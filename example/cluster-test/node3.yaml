@@ -1,0 +1,19 @@
+cluster:
+  localNodeId: "node3"
+  localNodeRole: "worker"
+  listenAddr: ":8092"
+  advertiseAddr: "127.0.0.1:8092"
+  seedNodes: ["127.0.0.1:8090"]
+  enableMetrics: true
+  metricInterval: 5
+  healthCheckInterval: 2
+  failureDetectionThreshold: 3
+  
+rtmp:
+  listen: ":1935"
+
+http:
+  listen: ":8892"
+  
+flv:
+  enable: true 

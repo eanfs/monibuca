@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "m7s.live/v5/plugin/cluster/pb";
+
+// 节点信息
+message NodeInfo {
+  string id = 1;
+  string address = 2;
+  string role = 3;             // manager, edge, worker, transcoder
+  string status = 4;           // healthy, degraded, offline
+  string region = 5;
+  int64 last_heartbeat = 6;    // Unix timestamp in milliseconds
+  int32 stream_count = 7;
+
+  // 资源容量
+  ResourceCapacity capacity = 8;
+
+  // 当前资源使用情况
+  ResourceUsage current_load = 9;
+
+  // 节点元数据
+  map<string, string> metadata = 10;
+}
+
+// 资源容量配置
+message ResourceCapacity {
+  int32 max_concurrent_streams = 1;
+  double max_bandwidth_mbps = 2;
+  double max_cpu_percent = 3;
+  double max_memory_gb = 4;
+  int32 max_transcoding_slots = 5;
+}
+
+// 资源使用情况
+message ResourceUsage {
+  double cpu_percent = 1;
+  double memory_gb = 2;
+  double bandwidth_mbps = 3;
+  int32 concurrent_streams = 4;
+  int32 active_transcoding_tasks = 5;
+}
+
+// 流信息
+message StreamInfo {
+  string stream_path = 1;
+  string publisher_node_id = 2;
+  string state = 3;           // active, inactive
+  double bandwidth_mbps = 4;
+  string codec = 5;
+  string resolution = 6;
+  double fps = 7;
+
+  // 矢量时钟，用于冲突解决
+  map<string, uint64> vector_clock = 8;
+
+  // 流已复制到的节点列表
+  repeated string replicated_to = 9;
+
+  // 当前订阅者计数
+  int32 subscriber_count = 10;
+
+  // 流的元数据
+  map<string, string> metadata = 11;
+}
+
+// 健康状态报告
+message HealthReport {
+  string node_id = 1;
+  ResourceUsage resource_usage = 2;
+  int64 timestamp = 3;         // Unix timestamp in milliseconds
+  repeated string active_streams = 4;
+  map<string, double> latency_ms = 5;  // 与其他节点的延迟
+}
+
+// 同步响应
+message SyncResponse {
+  bool success = 1;
+  string message = 2;
+  int32 affected_items = 3;
+}
+
+// 流动态信息
+message StreamDynamicInfo {
+  double bandwidth_mbps = 1;    // 带宽使用 (Mbps)
+  double fps = 2;               // 帧率
+  int32 subscriber_count = 3;   // 订阅者数量
+  int64 last_updated = 4;       // 最后更新时间 (Unix timestamp in milliseconds)
+}
+
+// 流更新信息
+message StreamUpdate {
+  string stream_path = 1;
+  StreamDynamicInfo dynamic_info = 2;
+}

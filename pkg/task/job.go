@@ -162,7 +162,12 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 	})
 	if task.Context == nil {
 		if task.parentCtx == nil {
-			task.parentCtx = mt.Context
+			// 如果父上下文为空，使用任务的上下文或创建一个新的背景上下文
+			if mt.Context != nil {
+				task.parentCtx = mt.Context
+			} else {
+				task.parentCtx = context.Background()
+			}
 		}
 		task.level = mt.level + 1
 		if task.ID == 0 {

@@ -1,0 +1,10 @@
+cluster:
+  localNodeId: "node1"
+  localNodeRole: "manager"
+  listenAddr: ":8090"
+  advertiseAddr: "127.0.0.1:8090"
+  seedNodes: []
+  enableMetrics: true
+  metricInterval: 5
+  healthCheckInterval: 2
+  failureDetectionThreshold: 3 
