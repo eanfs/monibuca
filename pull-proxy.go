@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mcuadros/go-defaults"
@@ -63,8 +64,9 @@ type (
 	}
 	TCPPullProxy struct {
 		PullProxyTask
-		TCPAddr *net.TCPAddr
-		URL     *url.URL
+		TCPAddr    *net.TCPAddr
+		URL        *url.URL
+		Connecting atomic.Bool
 	}
 )
 
@@ -200,16 +202,22 @@ func (d *TCPPullProxy) GetTickInterval() time.Duration {
 }
 
 func (d *TCPPullProxy) Tick(any) {
-	startTime := time.Now()
-	conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
-	if err != nil {
-		d.PullProxy.ChangeStatus(PullProxyStatusOffline)
-		return
-	}
-	conn.Close()
-	d.PullProxy.RTT = time.Since(startTime)
-	if d.PullProxy.Status == PullProxyStatusOffline {
-		d.PullProxy.ChangeStatus(PullProxyStatusOnline)
+	switch d.PullProxy.Status {
+	case PullProxyStatusOffline:
+		if d.Connecting.CompareAndSwap(false, true) {
+			go func() {
+				defer d.Connecting.Store(false)
+				startTime := time.Now()
+				conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
+				if err != nil {
+					d.PullProxy.ChangeStatus(PullProxyStatusOffline)
+					return
+				}
+				conn.Close()
+				d.PullProxy.RTT = time.Since(startTime)
+				d.PullProxy.ChangeStatus(PullProxyStatusOnline)
+			}()
+		}
 	}
 }
 
@@ -413,7 +421,7 @@ func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (re
 		})
 		return
 	} else if req.StreamPath != "" {
-		var deviceList []PullProxy
+		var deviceList []*PullProxy
 		s.DB.Find(&deviceList, "stream_path=?", req.StreamPath)
 		if len(deviceList) > 0 {
 			for _, device := range deviceList {
