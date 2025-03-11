@@ -99,7 +99,6 @@ type PlaylistInf struct {
 	URL      string
 	Title    string
 	FilePath string
-	Codecs   string
 }
 
 func (pl *Playlist) Init() (err error) {
@@ -121,8 +120,8 @@ func (pl *Playlist) Init() (err error) {
 }
 
 func (pl *Playlist) WriteInf(inf PlaylistInf) (err error) {
-	_, err = fmt.Fprintf(pl, "#EXTINF:%.3f,%s,%s\n"+
-		"%s\n", inf.Duration, inf.Title, inf.Codecs, inf.URL)
+	_, err = fmt.Fprintf(pl, "#EXTINF:%.3f,%s\n"+
+		"%s\n", inf.Duration, inf.Title, inf.URL)
 	pl.tsCount++
 	return
 }

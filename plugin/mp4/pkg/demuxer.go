@@ -152,7 +152,7 @@ func (d *Demuxer) Demux() (err error) {
 						switch entry.Type() {
 						case TypeAVC1:
 							track.Cid = MP4_CODEC_H264
-						case TypeHVCC:
+						case TypeHVC1:
 							track.Cid = MP4_CODEC_H265
 						}
 						track.Width = uint32(entry.Width)

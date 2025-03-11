@@ -92,19 +92,11 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 					playlist.Init()
 
 					for _, record := range records {
-						var codecs []string
-						if record.VideoCodec != "" {
-							codecs = append(codecs, record.VideoCodec)
-						}
-						if record.AudioCodec != "" {
-							codecs = append(codecs, record.AudioCodec)
-						}
 						duration := record.EndTime.Sub(record.StartTime).Seconds()
 						playlist.WriteInf(hls.PlaylistInf{
 							Duration: duration,
 							URL:      fmt.Sprintf("/mp4/download/%s.fmp4?id=%d", streamPath, record.ID),
 							Title:    record.StartTime.Format(time.RFC3339),
-							Codecs:   strings.Join(codecs, ", "),
 						})
 					}
 					plBuffer.WriteString("#EXT-X-ENDLIST\n")
