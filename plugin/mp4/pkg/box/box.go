@@ -2,7 +2,6 @@ package box
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -191,7 +190,8 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 	baseBox.typ = BoxType(tmp[4:])
 	t, exists := registry[baseBox.typ.Uint32I()]
 	if !exists {
-		return nil, fmt.Errorf("unknown box type: %s", baseBox.typ)
+		io.CopyN(io.Discard, r, int64(baseBox.size-BasicBoxLen))
+		return &baseBox, nil
 	}
 	b := reflect.New(t.Elem()).Interface().(IBox)
 	var payload []byte
