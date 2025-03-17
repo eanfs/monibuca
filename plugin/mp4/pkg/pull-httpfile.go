@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deepch/vdk/codec/h265parser"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
@@ -81,25 +80,18 @@ func (p *HTTPReader) Run() (err error) {
 			var videoFrame rtmp.RTMPVideo
 			videoFrame.SetAllocator(allocator)
 			videoFrame.CTS = sample.CTS
-			videoFrame.Timestamp = sample.Timestamp
-			keyFrame := codec.H264NALUType(sample.Data[5]&0x1F) == codec.NALU_IDR_Picture
-			videoFrame.AppendOne([]byte{util.Conditional[byte](keyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
+			videoFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
+			videoFrame.AppendOne([]byte{util.Conditional[byte](sample.KeyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
 			videoFrame.AddRecycleBytes(sample.Data)
 			err = publisher.WriteVideo(&videoFrame)
 		case box.MP4_CODEC_H265:
 			var videoFrame rtmp.RTMPVideo
 			videoFrame.SetAllocator(allocator)
 			videoFrame.CTS = uint32(sample.CTS)
-			videoFrame.Timestamp = uint32(sample.Timestamp)
+			videoFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
 			var head []byte
 			var b0 byte = 0b1010_0000
-			switch codec.ParseH265NALUType(sample.Data[5]) {
-			case h265parser.NAL_UNIT_CODED_SLICE_BLA_W_LP,
-				h265parser.NAL_UNIT_CODED_SLICE_BLA_W_RADL,
-				h265parser.NAL_UNIT_CODED_SLICE_BLA_N_LP,
-				h265parser.NAL_UNIT_CODED_SLICE_IDR_W_RADL,
-				h265parser.NAL_UNIT_CODED_SLICE_IDR_N_LP,
-				h265parser.NAL_UNIT_CODED_SLICE_CRA:
+			if sample.KeyFrame {
 				b0 = 0b1001_0000
 			}
 			if videoFrame.CTS == 0 {
@@ -116,7 +108,7 @@ func (p *HTTPReader) Run() (err error) {
 		case box.MP4_CODEC_AAC:
 			var audioFrame rtmp.RTMPAudio
 			audioFrame.SetAllocator(allocator)
-			audioFrame.Timestamp = sample.Timestamp
+			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
 			audioFrame.AppendOne([]byte{0xaf, 0x01})
 			audioFrame.AddRecycleBytes(sample.Data)
 			err = publisher.WriteAudio(&audioFrame)
