@@ -21,6 +21,10 @@ import (
 	mpegts "m7s.live/v5/plugin/hls/pkg/ts"
 )
 
+func NewPuller(conf config.Pull) m7s.IPuller {
+	return &Puller{}
+}
+
 type Puller struct {
 	task.Job
 	PullJob     m7s.PullJob

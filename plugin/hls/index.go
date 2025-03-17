@@ -14,7 +14,7 @@ import (
 	hls "m7s.live/v5/plugin/hls/pkg"
 )
 
-var _ = m7s.InstallPlugin[HLSPlugin](hls.NewTransform, hls.NewRecorder)
+var _ = m7s.InstallPlugin[HLSPlugin](hls.NewTransform, hls.NewRecorder, hls.NewPuller)
 
 //go:embed hls.js
 var hls_js embed.FS
