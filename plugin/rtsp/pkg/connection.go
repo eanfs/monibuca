@@ -69,9 +69,15 @@ func (c *NetConnection) StopWrite() {
 }
 
 func (c *NetConnection) Dispose() {
-	c.Conn.Close()
-	c.BufReader.Recycle()
-	c.MemoryAllocator.Recycle()
+	if c.Conn != nil {
+		c.Conn.Close()
+	}
+	if c.BufReader != nil {
+		c.BufReader.Recycle()
+	}
+	if c.MemoryAllocator != nil {
+		c.MemoryAllocator.Recycle()
+	}
 	c.Info("destroy connection")
 }
 
