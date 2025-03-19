@@ -295,7 +295,16 @@ func (handler *SubscribeHandler[A, V]) sendAudioFrame() (err error) {
 		if handler.s.Enabled(handler.s, task.TraceLevel) {
 			handler.s.Trace("send audio frame", "seq", handler.audioFrame.Sequence, "data", frame.String(), "size", frameSize)
 		}
-		err = handler.OnAudio(frame.(A))
+		if audioFrame, ok := frame.(A); ok {
+			err = handler.OnAudio(audioFrame)
+		} else {
+			if handler.s.AudioReader != nil {
+				handler.s.Error("audio frame type error", "wrapIndex", handler.s.AudioReader.Track.WrapIndex, "awi", handler.awi)
+			} else {
+				handler.s.Error("audio frame type error", "awi", handler.awi)
+			}
+			return errors.New("audio frame type error")
+		}
 		// Calculate BPS
 		if handler.s.AudioReader != nil {
 			handler.bytesRead += uint32(frameSize)
@@ -331,7 +340,16 @@ func (handler *SubscribeHandler[A, V]) sendVideoFrame() (err error) {
 		if handler.s.Enabled(handler.s, task.TraceLevel) {
 			handler.s.Trace("send video frame", "seq", handler.videoFrame.Sequence, "data", frame.String(), "size", frameSize)
 		}
-		err = handler.OnVideo(frame.(V))
+		if videoFrame, ok := frame.(V); ok {
+			err = handler.OnVideo(videoFrame)
+		} else {
+			if handler.s.VideoReader != nil {
+				handler.s.Error("video frame type error", "wrapIndex", handler.s.VideoReader.Track.WrapIndex, "vwi", handler.vwi)
+			} else {
+				handler.s.Error("video frame type error", "vwi", handler.vwi)
+			}
+			return errors.New("video frame type error")
+		}
 		// Calculate BPS
 		if handler.s.VideoReader != nil {
 			handler.bytesRead += uint32(frameSize)
