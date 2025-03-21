@@ -34,11 +34,22 @@ const (
 	TR_FLAG_DATA_SAMPLE_FLAGS            uint32 = 0x000400
 	TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME uint32 = 0x000800
 
-	SAMPLE_FLAG_IS_LEADING     uint32 = 1 << 3
-	SAMPLE_FLAG_DEPENDS_ON_YES uint32 = 1 << 4
-	SAMPLE_FLAG_DEPENDS_ON_NO  uint32 = 2 << 4
-	SAMPLE_FLAG_IS_DEPENDED_ON uint32 = 1 << 6
-	SAMPLE_FLAG_HAS_REDUNDANCY uint32 = 1 << 7
+	/*
+			bit(4) reserved=0;
+		unsigned int(2) is_leading;
+		unsigned int(2) sample_depends_on;
+		unsigned int(2) sample_is_depended_on;
+		unsigned int(2) sample_has_redundancy;
+		bit(3) sample_padding_value;
+		bit(1) sample_is_non_sync_sample;
+		unsigned int(16) sample_degradation_priority;
+	*/
+
+	SAMPLE_FLAG_IS_LEADING     uint32 = 0x0C000000 // bits 4-5
+	SAMPLE_FLAG_DEPENDS_ON_YES uint32 = 0x01000000 // bits 6-7: 01
+	SAMPLE_FLAG_DEPENDS_ON_NO  uint32 = 0x02000000 // bits 6-7: 10
+	SAMPLE_FLAG_IS_DEPENDED_ON uint32 = 0x00300000 // bits 8-9
+	SAMPLE_FLAG_HAS_REDUNDANCY uint32 = 0x000C0000 // bits 10-11
 )
 
 type TrunEntry struct {
