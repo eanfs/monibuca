@@ -30,7 +30,8 @@ type (
 		Track
 	}
 	TsTamer struct {
-		BaseTs, LastTs time.Duration
+		BaseTs, LastTs, BeforeScaleChangedTs time.Duration
+		LastScale                            float64
 	}
 	AVTrack struct {
 		Track
@@ -140,6 +141,10 @@ func (t *TsTamer) Tame(ts time.Duration, fps int, scale float64) (result time.Du
 		}
 	}
 	t.LastTs = result
-	result = time.Duration(float64(result) / scale)
+	if t.LastScale != scale {
+		t.BeforeScaleChangedTs = result
+		t.LastScale = scale
+	}
+	result = t.BeforeScaleChangedTs + time.Duration(float64(result-t.BeforeScaleChangedTs)/scale)
 	return
 }
