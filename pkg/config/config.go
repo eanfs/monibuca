@@ -101,6 +101,12 @@ func (config *Config) Parse(s any, prefix ...string) {
 	}
 
 	config.Ptr = v
+
+	if v.IsZero() || v.IsNil() {
+		fmt.Println("parse to ", prefix, config.name, s, "is zero or nil")
+		return
+	}
+
 	config.Default = v.Interface()
 
 	if l := len(prefix); l > 0 { // 读取环境变量
