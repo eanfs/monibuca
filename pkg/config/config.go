@@ -102,8 +102,8 @@ func (config *Config) Parse(s any, prefix ...string) {
 
 	config.Ptr = v
 
-	if v.IsZero() || v.IsNil() {
-		fmt.Println("parse to ", prefix, config.name, s, "is zero or nil")
+	if !v.IsValid() {
+		fmt.Println("parse to ", prefix, config.name, s, "is not valid")
 		return
 	}
 
