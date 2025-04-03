@@ -25,25 +25,21 @@ record:
       autorecord: false
       filter: ""
       fragment: 0
-      duration: 30m
   mp4:
       ext: .mp4
       path: record/mp4
       autorecord: false
       filter: ""
       fragment: 0
-      duration: 5m
   hls:
       ext: .m3u8
       path: record/hls
       autorecord: false
       filter: ""
       fragment: 0
-      duration: 5m
   raw:
       ext: .
       path: record/raw
       autorecord: false
       filter: ""
       fragment: 0 
-      duration: 5m 
