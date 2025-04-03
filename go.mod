@@ -5,20 +5,21 @@ go 1.21
 require (
 	github.com/eanfs/plugin-record/v4 v4.6.8
 	go.uber.org/zap v1.27.0
-	m7s.live/engine/v4 v4.15.2
+	m7s.live/engine/v4 v4.15.3
 	m7s.live/plugin/debug/v4 v4.0.3
 	m7s.live/plugin/fmp4/v4 v4.0.6
-	m7s.live/plugin/gb28181/v4 v4.4.5
+	m7s.live/plugin/gb28181/v4 v4.4.6
 	m7s.live/plugin/hdl/v4 v4.1.11
 	m7s.live/plugin/hls/v4 v4.3.9
 	m7s.live/plugin/hook/v4 v4.0.3
 	m7s.live/plugin/jessica/v4 v4.2.1
-	m7s.live/plugin/logrotate/v4 v4.0.6
+	m7s.live/plugin/logrotate/v4 v4.0.7
 	m7s.live/plugin/monitor/v4 v4.0.5
 	m7s.live/plugin/preview/v4 v4.1.5
+	m7s.live/plugin/record/v4 v4.4.8
 	m7s.live/plugin/room/v4 v4.1.1
 	m7s.live/plugin/rtmp/v4 v4.3.1
-	m7s.live/plugin/rtsp/v4 v4.3.5
+	m7s.live/plugin/rtsp/v4 v4.3.6
 	m7s.live/plugin/snap/v4 v4.0.8
 	m7s.live/plugin/webrtc/v4 v4.2.6
 	m7s.live/plugin/webtransport/v4 v4.0.11
@@ -34,7 +35,10 @@ require (
 	github.com/discoviking/fsm v0.0.0-20150126104936-f4a273feecca // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ghettovoice/gosip v0.0.0-20231227123312-6b80e2d3e6f7 // indirect
+	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/glebarez/sqlite v1.11.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/go-sql-driver/mysql v1.7.0 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
@@ -44,9 +48,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/husanpao/ip v0.0.0-20220711082147-73160bb611a8 // indirect
-	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/logrusorgru/aurora/v4 v4.0.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20240226150601-1dcf7310316a // indirect
 	github.com/marten-seemann/qpack v0.3.0 // indirect
@@ -83,7 +86,7 @@ require (
 	github.com/quangngotan95/go-m3u8 v0.1.0 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
 	github.com/quic-go/quic-go v0.41.0 // indirect
-	github.com/rs/xid v1.5.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/shirou/gopsutil/v3 v3.24.2 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
@@ -108,7 +111,13 @@ require (
 	golang.org/x/tools v0.19.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	m7s.live/plugin/ps/v4 v4.1.5 // indirect
+	gorm.io/driver/mysql v1.5.7 // indirect
+	gorm.io/gorm v1.25.12 // indirect
+	m7s.live/plugin/ps/v4 v4.1.6-0.20240913054305-b03e0471fff9 // indirect
+	modernc.org/libc v1.22.5 // indirect
+	modernc.org/mathutil v1.5.0 // indirect
+	modernc.org/memory v1.5.0 // indirect
+	modernc.org/sqlite v1.23.1 // indirect
 
 )
 
