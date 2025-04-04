@@ -133,7 +133,9 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	var conn net.Conn
 	if istls {
 		var tlsconn *tls.Conn
-		tlsconn, err = tls.Dial("tcp", rtspURL.Host, &tls.Config{})
+		tlsconn, err = tls.Dial("tcp", rtspURL.Host, &tls.Config{
+			InsecureSkipVerify: true,
+		})
 		conn = tlsconn
 	} else {
 		conn, err = net.Dial("tcp", rtspURL.Host)

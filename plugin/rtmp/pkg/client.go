@@ -42,7 +42,9 @@ func (c *Client) Start() (err error) {
 	var conn net.Conn
 	if isRtmps {
 		var tlsconn *tls.Conn
-		tlsconn, err = tls.Dial("tcp", c.u.Host, &tls.Config{})
+		tlsconn, err = tls.Dial("tcp", c.u.Host, &tls.Config{
+			InsecureSkipVerify: true,
+		})
 		conn = tlsconn
 	} else {
 		conn, err = net.Dial("tcp", c.u.Host)
