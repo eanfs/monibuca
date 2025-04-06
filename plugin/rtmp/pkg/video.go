@@ -85,6 +85,7 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 	enhanced := b0&0b1000_0000 != 0 // https://veovera.github.io/enhanced-rtmp/docs/enhanced/enhanced-rtmp-v1.pdf
 	t.Value.IDR = b0&0b0111_0000>>4 == 1
 	packetType := b0 & 0b1111
+	codecId := VideoCodecID(b0 & 0x0F)
 	var fourCC codec.FourCC
 	parseSequence := func() (err error) {
 		t.Value.IDR = false
@@ -149,7 +150,7 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 		if err != nil {
 			return
 		}
-		if VideoCodecID(b0&0x0F) == CodecID_H265 {
+		if codecId == CodecID_H265 {
 			fourCC = codec.FourCC_H265
 		} else {
 			fourCC = codec.FourCC_H264
