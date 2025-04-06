@@ -7,39 +7,154 @@ global:
   disableall: false # 是否禁用所有插件
   loglang: zh # 日志语言，可选值：zh,en
   loglevel: info # 日志级别，可选值：debug,info,warn,error,panic,fatal
+  http:
+    listenaddr: :8080 # 网关地址，用于访问API
+    listenaddrtls: :8443 # 用于HTTPS方式访问API的端口配置
+    certfile: ""
+    keyfile: ""
+    cors: true # 是否自动添加cors头
+    username: "" # 用户名和密码，用于API访问时的基本身份认证
+    password: ""
+    readtimeout: 0 # 读超时时间
+    writetimeout: 0 # 写超时时间
+    idletimeout: 0 # 空闲超时时间
+  publish:
+    pubaudio: true # 是否发布音频流
+    pubvideo: true # 是否发布视频流
+    kickexist: false # 剔出已经存在的发布者，用于顶替原有发布者
+    insertsei: false # 是否启用插入SEI功能
+    publishtimeout: 120s # 发布流默认过期时间，超过该时间发布者没有恢复流将被删除
+    idletimeout: 0 # 发布者空闲超时时间，超过该时间发布者没有任何操作将被删除，0为关闭该功能
+    delayclosetimeout: 0 # 自动关闭触发后延迟的时间(期间内如果有新的订阅则取消触发关闭)，0为关闭该功能，保持连接。
+    waitclosetimeout: 0 # 发布者断开后等待时间，超过该时间发布者没有恢复流将被删除，0为关闭该功能，由订阅者决定是否删除
+    buffertime: 0 # 缓存时间，用于时光回溯，0为关闭缓存
+    key: "" # 订阅者鉴权秘钥
+    secretargname: secret # 订阅者鉴权参数名
+    expireargname: expire # 订阅者鉴权过期时间参数名
+    speedlimit: 500ms # 限速超时时间0为不限速，对于读取文件这类流需要限速，否则读取过快
+  subscribe:
+    subaudio: true # 是否订阅音频流
+    subvideo: true # 是否订阅视频流
+    subaudioargname: ats # 订阅音频轨道参数名
+    subvideoargname: vts # 订阅视频轨道参数名
+    subdataargname: dts # 订阅数据轨道参数名
+    subaudiotracks: [] # 订阅音频轨道名称列表
+    subvideotracks: [] # 订阅视频轨道名称列表
+    submode: 0 # 订阅模式，0为跳帧追赶模式，1为不追赶（多用于录制），2为时光回溯模式
+    syncmode: 0 # 音视频同步模式，0 为按照时间戳同步，1 为按照写入时间同步
+    iframeonly: false # 只订阅关键帧
+    waittimeout: 120s # 等待发布者的超时时间，用于订阅尚未发布的流
+    writebuffersize: 0 # 订阅者写缓存大小，用于减少io次数，但可能影响实时性
+    key: "" # 订阅者鉴权秘钥
+    secretargname: secret # 订阅者鉴权参数名
+    expireargname: expire # 订阅者鉴权过期时间参数名
+    internal: false # 是否内部订阅，内部订阅不会触发发布者自动断开功能
+  enableavcc: true # 启用AVCC格式缓存，用于rtmp协议
+  enablertp: true # 启用rtp格式缓存，用于rtsp、websocket、gb28181协议
+  enableauth: true # 启用鉴权,详细查看鉴权机制
+  enablesubevent: true # 启用订阅事件，用于订阅者上下线事件,关闭可以提高性能
+  rtpreorderbufferlen: 50 # rtp乱序重排缓存长度
+  eventbussize: 10 # 事件总线缓存大小，事件较多时容易堵阻塞线程，需要增大缓存
+  poolsize: 0 # 内存池大小，高并发需要提高性能可以加大内存池，减少 GC
+  pulseinterval: 5s # 心跳事件间隔时间
+  # console:
+  #   server: 172.16.12.82:44944 # 连接远程控制台的地址
+  #   secret: "c26cbddc228b158ff06c9be4a2b4ffd1" # 远程控制台的秘钥
+  #   publicaddr: "" # 实例公网地址，提供远程控制台访问的地址，不配置的话使用自动识别的地址
+  #   publicaddrtls: "" # 实例公网地址，提供远程控制台访问的地址，不配置的话使用自动识别的
+llhls:
+  enable: false
 hls:
   enable: false
 monitor:
-  enable: false
-
+  enable: true
+gb28181:
+  invitemode: 1  #0、手动invite 1、表示自动发起invite，当Server（SIP）接收到设备信息时，立即向设备发送invite命令获取流,2、按需拉流，既等待订阅者触发
+  position:
+    autosubposition: false #是否自动订阅定位
+    expires: 3600s #订阅周期(单位：秒)，默认3600
+    interval: 6s #订阅间隔（单位：秒），默认6
+  udpcachesize: 0 #表示UDP缓存大小，默认为0，不开启。仅当TCP关闭，切缓存大于0时才开启
+  sipip: "172.16.12.82" #sip服务器地址 默认 自动适配设备网段
+  serial: "31011232111188000110"
+  realm: "3101123211"
+  username: ""
+  password: "Xiding@2023"
+  registervalidity: 60s #注册有效期
+  mediaip: "172.16.12.82" #媒体服务器地址 默认 自动适配设备网段
+  port:
+    sip: udp:5060 #sip服务器端口
+    media: tcp:58200-59200 #媒体服务器端口，用于接收设备的流
+  removebaninterval: 10m #定时移除注册失败的设备黑名单，单位秒，默认10分钟（600秒）
+  loglevel: info
 record:
   subscribe: # 参考全局配置格式
   storage: 
-      endpoint: storage-test.xiding.tech
-      accesskey: xidinguser
-      secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
-      bucket: vidu-media-bucket
+    endpoint: storage.xiding.tech
+    accesskey: xidinguser
+    secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
+    bucket: vidu-media-bucket  
   flv:
-      ext: .flv
-      path: record/flv
-      autorecord: false
-      filter: ""
-      fragment: 0
+    ext: .flv
+    path: record/flv
+    autorecord: false
+    filter: ""
+    fragment: 0
   mp4:
-      ext: .mp4
-      path: record/mp4
-      autorecord: false
-      filter: ""
-      fragment: 0
+    ext: .mp4
+    path: record/mp4
+    autorecord: false
+    filter: ""
+    fragment: 0   
   hls:
-      ext: .m3u8
-      path: record/hls
-      autorecord: false
-      filter: ""
-      fragment: 0
+    ext: .m3u8
+    path: record/hls
+    autorecord: false
+    filter: ""
+    fragment: 0
   raw:
-      ext: .
-      path: record/raw
-      autorecord: false
-      filter: ""
-      fragment: 0 
+    ext: .
+    path: record/raw
+    autorecord: false
+    filter: ""
+    fragment: 0  
+hook:
+  keepalive: 0 # 定时发送心跳请求，单位秒，默认0不开启
+  retrytimes: 3 # 重试次数
+  baseurl: "" # url前缀
+  header: {} # 自定义HTTP请求头
+  urllist: 
+    "*": "http://172.16.5.193:8442" # 任意时间均会发送请求
+    startup: "http://172.16.5.193:8442" # m7s启动时发送请求
+    publish: "http://172.16.5.193:8442/publish" # 发布时发送请求
+    subscribe: "http://172.16.5.193:8442/subscribe" # 订阅时发送请求
+    unsubscribe: "http://172.16.5.193:8442/unsubscribe" # 取消订阅时发送请求
+    streamClose: "http://172.16.5.193:8442/streamClose" # 流关闭时发送请求
+    keepalive: "http://172.16.5.193:8442/keepalive" # 心跳时发送请求
+   # url列表
+  requestlist: {} # 请求列表
+  extra: {} # 额外自定义传输数据
+webrtc:
+  iceservers: 
+    # - urls: 
+    #     - stun:172.16.12.82:3478
+    #     - turn:172.16.12.82
+    #   username: xiding
+    #   credential: Xiding2022
+  publicip:
+    - 172.16.12.82 # 可以是数组也可以是字符串（内部自动转成数组）
+  port: udp:8000-9000 # 可以是udp:8000-9000 范围端口，也可以udp:9000 单个端口
+  pli: 1s # 2s
+  enableopus: false
+  enableav1: false
+rtsp:
+  pull:
+    repull: 10 # 0代表不重拉，-1 无限重拉， 其它整数代表重拉次数
+  push:
+    repush: 10 # 0代表不重拉，-1 无限重拉， 其它整数代表重拉次数
+  listenaddr: :554
+  udpaddr: :8002
+  rtcpaddr: :8003
+  readbuffercount: 2048 # 读取缓存队列大小
+  writebuffercount: 2048 # 写出缓存队列大小
+  pullprotocol: tcp # auto, tcp, udp
