@@ -38,7 +38,7 @@ type (
 		BufferTime        time.Duration   `desc:"缓冲时长，0代表取最近关键帧"`                                           // 缓冲长度(单位：秒)，0代表取最近关键帧
 		Speed             float64         `default:"0" desc:"发送速率"`                                         // 发送速率，0 为不限速
 		Scale             float64         `default:"1" desc:"缩放倍数"`                                         // 缩放倍数
-		MaxFPS            int             `default:"30" desc:"最大FPS"`                                       // 最大FPS
+		MaxFPS            int             `default:"60" desc:"最大FPS"`                                       // 最大FPS
 		Key               string          `desc:"发布鉴权key"`                                                  // 发布鉴权key
 		RingSize          util.Range[int] `default:"20-1024" desc:"RingSize范围"`                             // 缓冲区大小范围
 		RelayMode         string          `default:"remux" desc:"转发模式" enum:"remux:转格式,relay:纯转发,mix:混合转发"` // 转发模式

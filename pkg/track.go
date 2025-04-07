@@ -41,6 +41,8 @@ type (
 		SequenceFrame IAVFrame
 		WrapIndex     int
 		TsTamer
+		DropFrameLevel      int // 0: no drop, 1: drop P-frame, 2: drop all
+		LastDropLevelChange time.Time
 	}
 )
 
@@ -68,7 +70,7 @@ func NewAVTrack(args ...any) (t *AVTrack) {
 		}
 	}
 	//t.ready = util.NewPromise(struct{}{})
-	t.Info("create")
+	t.Info("create", "dropFrameLevel", t.DropFrameLevel)
 	return
 }
 
@@ -86,6 +88,20 @@ func (t *Track) AddBytesIn(n int) {
 		t.frameCount = 0
 		t.lastBPSTime = time.Now()
 	}
+}
+
+func (t *AVTrack) FixFPS() {
+	if dur := time.Since(t.lastBPSTime); dur > time.Second {
+		t.BPS = int(float64(t.bytesIn) / dur.Seconds())
+		t.bytesIn = 0
+		t.FPS = int(float64(t.frameCount) / dur.Seconds())
+		t.frameCount = 0
+		t.lastBPSTime = time.Now()
+	}
+}
+
+func (t *AVTrack) CheckIfNeedDropFrame(maxFPS int) (drop bool) {
+	return maxFPS > 0 && (t.FPS > maxFPS || t.frameCount > maxFPS)
 }
 
 func (t *AVTrack) Ready(err error) {

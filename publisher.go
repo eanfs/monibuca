@@ -145,8 +145,8 @@ type Publisher struct {
 	OnGetPosition          func() time.Time
 	PullProxy              *PullProxy
 	dumpFile               *os.File
-	MaxFPS                 float64
 	dropRate               float64 // 丢帧率，0-1之间
+	dropAfterTs            time.Duration
 }
 
 func (p *Publisher) SubscriberRange(yield func(sub *Subscriber) bool) {
@@ -341,44 +341,53 @@ func (p *Publisher) trackAdded() error {
 	return nil
 }
 
-func (p *Publisher) dropFrame(t *AVTrack, idr *util.Ring[AVFrame]) (drop bool) {
-	// Frame dropping logic based on MaxFPS
-	if p.MaxFPS > 0 && float64(t.FPS) > p.MaxFPS {
-		dropRatio := float64(t.FPS)/p.MaxFPS - 1 // How many frames to drop for each frame kept
-		p.dropRate = dropRatio / (dropRatio + 1) // 计算丢帧率
-		if p.Scale >= 8 {
-			// Only keep I-frames when Scale >= 8
-			if !t.Value.IDR {
-				// Drop all P-frames
-				return true
+func (p *Publisher) changeDropFrameLevel(newLevel int) {
+	p.Warn("change drop frame level", "from", p.VideoTrack.AVTrack.DropFrameLevel, "to", newLevel)
+	p.VideoTrack.AVTrack.DropFrameLevel = newLevel
+	p.VideoTrack.AVTrack.LastDropLevelChange = time.Now()
+}
+
+func (p *Publisher) dropFrame(t *AVTrack) (drop bool) {
+	needDropFrame := t.CheckIfNeedDropFrame(p.MaxFPS)
+	if needDropFrame {
+		dropRatio := float64(t.FPS)/float64(p.MaxFPS) - 1 // How many frames to drop for each frame kept
+		p.dropRate = dropRatio / (dropRatio + 1)          // 计算丢帧率
+		defer func() {
+			if time.Since(t.LastDropLevelChange) > time.Second && t.DropFrameLevel > 0 {
+				p.changeDropFrameLevel(t.DropFrameLevel + 1)
 			}
-			// Drop I-frames based on FPS ratio
-			if dropRatio > 1 && t.Value.IDR && t.Value.Sequence%uint32(dropRatio+1) != 0 {
-				return true
-			}
-		} else {
-			// Normal frame dropping strategy
-			if !t.Value.IDR {
-				// Drop P-frames based on position in GOP and FPS ratio
-				if idr != nil {
-					posInGOP := int(t.Value.Sequence - idr.Value.Sequence)
-					gopThreshold := int(float64(p.GOP) / (dropRatio + 1))
-					if posInGOP > gopThreshold {
-						return true
-					}
-				}
-			}
+		}()
+	}
+	// Enhanced frame dropping strategy based on DropFrameLevel
+	switch t.DropFrameLevel {
+	case 0:
+		if needDropFrame {
+			p.changeDropFrameLevel(1)
 		}
-	} else {
-		p.dropRate = 0
+	case 1: // Drop P-frame
+		if !t.Value.IDR {
+			return true
+		} else if !needDropFrame {
+			p.changeDropFrameLevel(0)
+		}
+	default:
+		if !needDropFrame {
+			p.changeDropFrameLevel(1)
+		} else {
+			return true
+		}
 	}
 	return
 }
 
 func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
+	t := p.VideoTrack.AVTrack
 	defer func() {
 		if err != nil {
 			data.Recycle()
+		}
+		if t != nil {
+			t.FixFPS()
 		}
 	}()
 	if err = p.Err(); err != nil {
@@ -390,7 +399,6 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	if !p.PubVideo {
 		return ErrMuted
 	}
-	t := p.VideoTrack.AVTrack
 	if t == nil {
 		t = NewAVTrack(data, p.Logger.With("track", "video"), &p.Publish, p.videoReady)
 		p.VideoTrack.Set(t)
@@ -421,9 +429,12 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	var idr *util.Ring[AVFrame]
 	if t.IDRingList.Len() > 0 {
 		idr = t.IDRingList.Back().Value
-		if p.dropFrame(t, idr) {
+		if p.dropFrame(t) {
+			p.dropAfterTs = t.LastTs
 			data.Recycle()
 			return nil
+		} else {
+			p.dropAfterTs = 0
 		}
 	}
 	if t.Value.IDR {
@@ -481,15 +492,18 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 		}
 	}
 	t.Step()
-
 	p.VideoTrack.speedControl(p.Speed, t.LastTs)
 	return
 }
 
 func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
+	t := p.AudioTrack.AVTrack
 	defer func() {
 		if err != nil {
 			data.Recycle()
+		}
+		if t != nil {
+			t.FixFPS()
 		}
 	}()
 	if err = p.Err(); err != nil {
@@ -502,17 +516,15 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 		return ErrMuted
 	}
 	// 根据丢帧率进行音频帧丢弃
-	if p.dropRate > 0 {
-		t := p.AudioTrack.AVTrack
+	if p.dropAfterTs > 0 {
 		if t != nil {
 			// 使用序列号进行平均丢帧
-			if t.Value.Sequence%uint32(1/p.dropRate) != 0 {
+			if t.LastTs > p.dropAfterTs {
 				data.Recycle()
 				return nil
 			}
 		}
 	}
-	t := p.AudioTrack.AVTrack
 	if t == nil {
 		t = NewAVTrack(data, p.Logger.With("track", "audio"), &p.Publish, p.audioReady)
 		p.AudioTrack.Set(t)
