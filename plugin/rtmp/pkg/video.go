@@ -108,7 +108,7 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 			var ctx H265Ctx
 			ctx.Enhanced = enhanced
 			ctx.Record = cloneFrame.Buffers[0][reader.Offset():]
-			if t.ICodecCtx != nil && bytes.Equal(t.ICodecCtx.(*codec.H265Ctx).Record, ctx.Record) {
+			if t.ICodecCtx != nil && bytes.Equal(t.ICodecCtx.(*H265Ctx).Record, ctx.Record) {
 				return ErrSkip
 			}
 			if _, err = ctx.RecordInfo.Unmarshal(ctx.Record); err == nil {
