@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/mcuadros/go-defaults"
@@ -55,7 +54,7 @@ type (
 		task.Manager[uint, *PullProxy]
 	}
 	PullProxyTask struct {
-		task.TickTask
+		task.AsyncTickTask
 		PullProxy *PullProxy
 		Plugin    *Plugin
 	}
@@ -64,9 +63,8 @@ type (
 	}
 	TCPPullProxy struct {
 		PullProxyTask
-		TCPAddr    *net.TCPAddr
-		URL        *url.URL
-		Connecting atomic.Bool
+		TCPAddr *net.TCPAddr
+		URL     *url.URL
 	}
 )
 
@@ -130,7 +128,6 @@ func (d *PullProxy) Update() {
 
 func (d *PullProxyTask) Dispose() {
 	d.PullProxy.ChangeStatus(PullProxyStatusOffline)
-	d.TickTask.Dispose()
 	d.Plugin.Server.Streams.Call(func() error {
 		if stream, ok := d.Plugin.Server.Streams.Get(d.PullProxy.GetStreamPath()); ok {
 			stream.Stop(task.ErrStopByUser)
@@ -204,20 +201,15 @@ func (d *TCPPullProxy) GetTickInterval() time.Duration {
 func (d *TCPPullProxy) Tick(any) {
 	switch d.PullProxy.Status {
 	case PullProxyStatusOffline:
-		if d.Connecting.CompareAndSwap(false, true) {
-			go func() {
-				defer d.Connecting.Store(false)
-				startTime := time.Now()
-				conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
-				if err != nil {
-					d.PullProxy.ChangeStatus(PullProxyStatusOffline)
-					return
-				}
-				conn.Close()
-				d.PullProxy.RTT = time.Since(startTime)
-				d.PullProxy.ChangeStatus(PullProxyStatusOnline)
-			}()
+		startTime := time.Now()
+		conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
+		if err != nil {
+			d.PullProxy.ChangeStatus(PullProxyStatusOffline)
+			return
 		}
+		conn.Close()
+		d.PullProxy.RTT = time.Since(startTime)
+		d.PullProxy.ChangeStatus(PullProxyStatusOnline)
 	}
 }
 

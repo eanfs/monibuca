@@ -220,9 +220,16 @@ func (mt *Job) run() {
 			mt.blocked = mt.children[taskIndex]
 			switch tt := mt.blocked.(type) {
 			case IChannelTask:
-				tt.Tick(rev.Interface())
 				if tt.IsStopped() {
+					switch ttt := tt.(type) {
+					case ITickTask:
+						ttt.GetTicker().Stop()
+					}
 					mt.onChildDispose(mt.blocked)
+					mt.children = slices.Delete(mt.children, taskIndex, taskIndex+1)
+					mt.cases = slices.Delete(mt.cases, chosen, chosen+1)
+				} else {
+					tt.Tick(rev.Interface())
 				}
 			}
 			if !ok {

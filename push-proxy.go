@@ -51,7 +51,7 @@ type (
 		task.Manager[uint, *PushProxy]
 	}
 	PushProxyTask struct {
-		task.TickTask
+		task.AsyncTickTask
 		PushProxy *PushProxy
 		Plugin    *Plugin
 	}
@@ -131,7 +131,6 @@ func (d *PushProxy) Update() {
 
 func (d *PushProxyTask) Dispose() {
 	d.PushProxy.ChangeStatus(PushProxyStatusOffline)
-	d.TickTask.Dispose()
 }
 
 func (d *PushProxyTask) Push() {

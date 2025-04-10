@@ -4,6 +4,12 @@ import (
 	"time"
 )
 
+type ITickTask interface {
+	IChannelTask
+	GetTickInterval() time.Duration
+	GetTicker() *time.Ticker
+}
+
 type ChannelTask struct {
 	Task
 	SignalChan any
@@ -25,16 +31,35 @@ type TickTask struct {
 	Ticker *time.Ticker
 }
 
+func (t *TickTask) GetTicker() *time.Ticker {
+	return t.Ticker
+}
+
 func (t *TickTask) GetTickInterval() time.Duration {
 	return time.Second
 }
 
 func (t *TickTask) Start() (err error) {
-	t.Ticker = time.NewTicker(t.handler.(interface{ GetTickInterval() time.Duration }).GetTickInterval())
+	t.Ticker = time.NewTicker(t.handler.(ITickTask).GetTickInterval())
 	t.SignalChan = t.Ticker.C
 	return
 }
 
-func (t *TickTask) Dispose() {
-	t.Ticker.Stop()
+type AsyncTickTask struct {
+	TickTask
+}
+
+func (t *AsyncTickTask) GetSignal() any {
+	return t.Task.GetSignal()
+}
+
+func (t *AsyncTickTask) Go() error {
+	for {
+		select {
+		case c := <-t.Ticker.C:
+			t.Tick(c)
+		case <-t.Done():
+			return nil
+		}
+	}
 }
