@@ -231,16 +231,17 @@ func (mt *Job) run() {
 				} else {
 					tt.Tick(rev.Interface())
 				}
-			}
-			if !ok {
-				if mt.onChildDispose(mt.blocked); mt.blocked.checkRetry(mt.blocked.StopReason()) {
-					if mt.blocked.reset(); mt.blocked.start() {
-						mt.cases[chosen].Chan = reflect.ValueOf(mt.blocked.GetSignal())
-						continue
+			default:
+				if !ok {
+					if mt.onChildDispose(mt.blocked); mt.blocked.checkRetry(mt.blocked.StopReason()) {
+						if mt.blocked.reset(); mt.blocked.start() {
+							mt.cases[chosen].Chan = reflect.ValueOf(mt.blocked.GetSignal())
+							continue
+						}
 					}
+					mt.children = slices.Delete(mt.children, taskIndex, taskIndex+1)
+					mt.cases = slices.Delete(mt.cases, chosen, chosen+1)
 				}
-				mt.children = slices.Delete(mt.children, taskIndex, taskIndex+1)
-				mt.cases = slices.Delete(mt.cases, chosen, chosen+1)
 			}
 		}
 		if !mt.handler.keepalive() && len(mt.children) == 0 {
