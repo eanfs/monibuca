@@ -54,6 +54,7 @@ func (t *AsyncTickTask) GetSignal() any {
 }
 
 func (t *AsyncTickTask) Go() error {
+	t.Tick(nil)
 	for {
 		select {
 		case c := <-t.Ticker.C:
