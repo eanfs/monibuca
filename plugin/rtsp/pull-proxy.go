@@ -17,7 +17,7 @@ type RTSPPullProxy struct {
 }
 
 func (d *RTSPPullProxy) Start() (err error) {
-	d.URL, err = url.Parse(d.PullProxy.URL)
+	d.URL, err = url.Parse(d.PullProxyConfig.URL)
 	if err != nil {
 		return
 	}
@@ -54,23 +54,23 @@ func (d *RTSPPullProxy) GetTickInterval() time.Duration {
 
 func (d *RTSPPullProxy) Tick(any) {
 	var err error
-	switch d.PullProxy.Status {
+	switch d.Status {
 	case m7s.PullProxyStatusOffline:
-		err = d.conn.Connect(d.PullProxy.URL)
+		err = d.conn.Connect(d.PullProxyConfig.URL)
 		if err != nil {
 			return
 		}
-		d.PullProxy.ChangeStatus(m7s.PullProxyStatusOnline)
+		d.ChangeStatus(m7s.PullProxyStatusOnline)
 	case m7s.PullProxyStatusOnline, m7s.PullProxyStatusPulling:
 		if d.conn.Conn == nil {
-			err = d.conn.Connect(d.PullProxy.URL)
+			err = d.conn.Connect(d.PullProxyConfig.URL)
 		} else {
 			t := time.Now()
 			err = d.conn.Options()
-			d.PullProxy.RTT = time.Since(t)
+			d.RTT = time.Since(t)
 		}
 		if err != nil {
-			d.PullProxy.ChangeStatus(m7s.PullProxyStatusOffline)
+			d.ChangeStatus(m7s.PullProxyStatusOffline)
 		}
 	}
 }

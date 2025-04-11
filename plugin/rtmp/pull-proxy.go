@@ -13,7 +13,7 @@ type RTMPPullProxy struct {
 }
 
 func (d *RTMPPullProxy) Start() (err error) {
-	d.URL, err = url.Parse(d.PullProxy.URL)
+	d.URL, err = url.Parse(d.PullProxyConfig.URL)
 	if err != nil {
 		return
 	}

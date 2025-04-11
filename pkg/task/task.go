@@ -77,6 +77,8 @@ type (
 		OnDispose(func())
 		GetState() TaskState
 		GetLevel() byte
+		WaitStopped() error
+		WaitStarted() error
 	}
 	IJob interface {
 		ITask
@@ -324,6 +326,9 @@ func (task *Task) start() bool {
 				task.ResetRetryCount()
 				if runHandler, ok := task.handler.(TaskBlock); ok {
 					task.state = TASK_STATE_RUNNING
+					if task.Logger != nil {
+						task.Debug("task run", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
+					}
 					err = runHandler.Run()
 					if err == nil {
 						err = ErrTaskComplete
@@ -334,6 +339,9 @@ func (task *Task) start() bool {
 		if err == nil {
 			if goHandler, ok := task.handler.(TaskGo); ok {
 				task.state = TASK_STATE_GOING
+				if task.Logger != nil {
+					task.Debug("task go", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
+				}
 				go task.run(goHandler.Go)
 			}
 			return true

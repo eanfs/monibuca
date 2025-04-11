@@ -89,7 +89,7 @@ type (
 		OnQUICConnect(quic.Connection) task.ITask
 	}
 	IPullProxyPlugin interface {
-		OnPullProxyAdd(pullProxy *PullProxy) any
+		OnPullProxyAdd(pullProxy *PullProxyConfig) any
 	}
 	IPushProxyPlugin interface {
 		OnPushProxyAdd(pushProxy *PushProxy) any

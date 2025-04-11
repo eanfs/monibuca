@@ -143,7 +143,7 @@ type Publisher struct {
 	GOP                    int
 	OnSeek                 func(time.Time)
 	OnGetPosition          func() time.Time
-	PullProxy              *PullProxy
+	PullProxyConfig        *PullProxyConfig
 	dumpFile               *os.File
 	dropRate               float64 // 丢帧率，0-1之间
 	dropAfterTs            time.Duration

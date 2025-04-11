@@ -63,7 +63,7 @@ type (
 		DisableAll    bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
-		PullProxy     []*PullProxy
+		PullProxy     []*PullProxyConfig
 		PushProxy     []*PushProxy
 		Admin         struct {
 			EnableLogin bool   `default:"false" desc:"启用登录机制"` //启用登录机制
@@ -281,7 +281,7 @@ func (s *Server) Start() (err error) {
 				return
 			}
 			// Auto-migrate models
-			if err = s.DB.AutoMigrate(&db.User{}, &PullProxy{}, &PushProxy{}, &StreamAliasDB{}); err != nil {
+			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxy{}, &StreamAliasDB{}); err != nil {
 				s.Error("failed to auto-migrate models", "error", err)
 				return
 			}
@@ -424,15 +424,15 @@ func (s *Server) Start() (err error) {
 
 func (s *Server) initPullProxies() {
 	// 1. First read all pull proxies from database
-	var pullProxies []*PullProxy
+	var pullProxies []*PullProxyConfig
 	s.DB.Find(&pullProxies)
 
 	// Create a map for quick lookup of existing proxies
-	existingPullProxies := make(map[uint]*PullProxy)
+	existingPullProxies := make(map[uint]*PullProxyConfig)
 	for _, proxy := range pullProxies {
 		existingPullProxies[proxy.ID] = proxy
+		proxy.Status = PullProxyStatusOffline
 		proxy.InitializeWithServer(s)
-		proxy.ChangeStatus(PullProxyStatusOffline)
 	}
 
 	// 2. Process and override with config data
@@ -457,7 +457,7 @@ func (s *Server) initPullProxies() {
 
 	// 3. Finally add all proxies to collections
 	for _, proxy := range pullProxies {
-		s.PullProxies.Add(proxy)
+		s.createPullProxy(proxy)
 	}
 }
 
@@ -506,7 +506,7 @@ func (s *Server) initPullProxiesWithoutDB() {
 	for _, proxy := range s.PullProxy {
 		if proxy.ID != 0 {
 			proxy.InitializeWithServer(s)
-			s.PullProxies.Add(proxy, proxy.Logger)
+			s.createPullProxy(proxy)
 		}
 	}
 }
@@ -598,8 +598,9 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 		plugin.OnSubscribe(streamPath, args)
 	}
 	for pullProxy := range s.PullProxies.Range {
-		if pullProxy.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath && !pullProxy.PullOnStart {
-			pullProxy.Handler.Pull()
+		conf := pullProxy.GetConfig()
+		if conf.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath && !conf.PullOnStart {
+			pullProxy.Pull()
 		}
 	}
 }

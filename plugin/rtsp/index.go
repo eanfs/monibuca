@@ -26,11 +26,10 @@ func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
 	return ret
 }
 
-func (p *RTSPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxy) any {
+func (p *RTSPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) any {
 	ret := &RTSPPullProxy{}
-	ret.PullProxy = pullProxy
+	ret.PullProxyConfig = pullProxy
 	ret.Plugin = &p.Plugin
-	ret.Logger = p.With("pullProxy", pullProxy.Name)
 	return ret
 }
 

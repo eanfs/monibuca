@@ -41,6 +41,7 @@ func (r *PresetRequest) GetKey() int {
 }
 
 type Channel struct {
+	PullProxyTask       *m7s.PullProxyTask
 	Device              *Device      // 所属设备
 	State               atomic.Int32 // 通道状态,0:空闲,1:正在invite,2:正在播放/对讲
 	GpsTime             time.Time    // gps时间
@@ -49,19 +50,10 @@ type Channel struct {
 	PresetReqs          util.Collection[int, *PresetRequest] // 预置位请求集合
 	*slog.Logger
 	gb28181.DeviceChannel
-	AbstractDevice *m7s.PullProxy
 }
 
 func (c *Channel) GetKey() string {
 	return c.DeviceID
-}
-
-func (c *Channel) Pull() {
-	pubConf := c.Device.plugin.GetCommonConf().Publish
-	pubConf.PubAudio = c.AbstractDevice.Audio
-	pubConf.DelayCloseTimeout = util.Conditional(c.AbstractDevice.StopOnIdle, time.Second*5, 0)
-	c.Info("into channel.Pull")
-	c.Device.plugin.Pull(c.AbstractDevice.GetStreamPath(), c.AbstractDevice.Pull, &pubConf)
 }
 
 func (c *Channel) GetDeviceID() string {

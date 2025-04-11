@@ -30,11 +30,15 @@ const (
 
 type (
 	IPullProxy interface {
+		task.ITask
+		GetStreamPath() string
+		GetConfig() *PullProxyConfig
+		ChangeStatus(status byte)
 		Pull()
+		GetKey() uint
 	}
-	PullProxy struct {
-		server                         *Server `gorm:"-:all"`
-		task.Work                      `gorm:"-:all" yaml:"-"`
+	PullProxyConfig struct {
+		server                         *Server        `gorm:"-:all"`
 		ID                             uint           `gorm:"primarykey"`
 		CreatedAt, UpdatedAt           time.Time      `yaml:"-"`
 		DeletedAt                      gorm.DeletedAt `yaml:"-"`
@@ -48,15 +52,14 @@ type (
 		Status                         byte
 		Description                    string
 		RTT                            time.Duration
-		Handler                        IPullProxy `gorm:"-:all" yaml:"-"`
 	}
 	PullProxyManager struct {
-		task.Manager[uint, *PullProxy]
+		task.Manager[uint, IPullProxy]
 	}
 	PullProxyTask struct {
+		*PullProxyConfig
 		task.AsyncTickTask
-		PullProxy *PullProxy
-		Plugin    *Plugin
+		Plugin *Plugin
 	}
 	HTTPPullProxy struct {
 		TCPPullProxy
@@ -68,38 +71,22 @@ type (
 	}
 )
 
-func (d *PullProxy) GetKey() uint {
+func (d *PullProxyConfig) GetKey() uint {
 	return d.ID
 }
 
-func (d *PullProxy) GetStreamPath() string {
+func (d *PullProxyConfig) GetConfig() *PullProxyConfig {
+	return d
+}
+
+func (d *PullProxyConfig) GetStreamPath() string {
 	if d.StreamPath == "" {
 		return fmt.Sprintf("pull/%s/%d", d.Type, d.ID)
 	}
 	return d.StreamPath
 }
 
-func (d *PullProxy) Start() (err error) {
-	for plugin := range d.server.Plugins.Range {
-		if pullPlugin, ok := plugin.handler.(IPullProxyPlugin); ok && strings.EqualFold(d.Type, plugin.Meta.Name) {
-			pullTask := pullPlugin.OnPullProxyAdd(d)
-			if pullTask == nil {
-				continue
-			}
-			if pullTask, ok := pullTask.(IPullProxy); ok {
-				d.Handler = pullTask
-			}
-			if t, ok := pullTask.(task.ITask); ok {
-				d.AddTask(t)
-			} else {
-				d.ChangeStatus(PullProxyStatusOnline)
-			}
-		}
-	}
-	return
-}
-
-func (d *PullProxy) ChangeStatus(status byte) {
+func (d *PullProxyTask) ChangeStatus(status byte) {
 	if d.Status == status {
 		return
 	}
@@ -110,34 +97,30 @@ func (d *PullProxy) ChangeStatus(status byte) {
 	switch status {
 	case PullProxyStatusOnline:
 		if d.PullOnStart && from == PullProxyStatusOffline {
-			d.Handler.Pull()
+			d.Pull()
 		}
 	}
 }
 
-func (d *PullProxy) Update() {
+func (d *PullProxyConfig) Update() {
 	if d.server.DB != nil {
 		d.server.DB.Omit("deleted_at").Save(d)
 	}
 }
 
 func (d *PullProxyTask) Dispose() {
-	d.PullProxy.ChangeStatus(PullProxyStatusOffline)
-	d.Plugin.Server.Streams.Call(func() error {
-		if stream, ok := d.Plugin.Server.Streams.Get(d.PullProxy.GetStreamPath()); ok {
-			stream.Stop(task.ErrStopByUser)
-		}
-		return nil
-	})
+	d.ChangeStatus(PullProxyStatusOffline)
+	if stream, ok := d.Plugin.Server.Streams.SafeGet(d.GetStreamPath()); ok {
+		stream.Stop(task.ErrStopByUser)
+	}
 }
 
-func (d *PullProxy) InitializeWithServer(s *Server) {
+func (d *PullProxyConfig) InitializeWithServer(s *Server) {
 	d.server = s
-	d.Logger = s.Logger.With("pullProxy", d.ID, "type", d.Type, "name", d.Name)
 	if d.Type == "" {
 		u, err := url.Parse(d.URL)
 		if err != nil {
-			d.Logger.Error("parse pull url failed", "error", err)
+			s.Error("parse pull url failed", "error", err)
 			return
 		}
 		switch u.Scheme {
@@ -159,13 +142,13 @@ func (d *PullProxy) InitializeWithServer(s *Server) {
 
 func (d *PullProxyTask) Pull() {
 	var pubConf = d.Plugin.config.Publish
-	pubConf.PubAudio = d.PullProxy.Audio
-	pubConf.DelayCloseTimeout = util.Conditional(d.PullProxy.StopOnIdle, time.Second*5, 0)
-	d.Plugin.handler.Pull(d.PullProxy.GetStreamPath(), d.PullProxy.Pull, &pubConf)
+	pubConf.PubAudio = d.Audio
+	pubConf.DelayCloseTimeout = util.Conditional(d.StopOnIdle, time.Second*5, 0)
+	d.Plugin.handler.Pull(d.GetStreamPath(), d.PullProxyConfig.Pull, &pubConf)
 }
 
 func (d *HTTPPullProxy) Start() (err error) {
-	d.URL, err = url.Parse(d.PullProxy.URL)
+	d.URL, err = url.Parse(d.PullProxyConfig.URL)
 	if err != nil {
 		return
 	}
@@ -194,30 +177,30 @@ func (d *TCPPullProxy) GetTickInterval() time.Duration {
 }
 
 func (d *TCPPullProxy) Tick(any) {
-	switch d.PullProxy.Status {
+	switch d.Status {
 	case PullProxyStatusOffline:
 		startTime := time.Now()
 		conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
 		if err != nil {
-			d.PullProxy.ChangeStatus(PullProxyStatusOffline)
+			d.ChangeStatus(PullProxyStatusOffline)
 			return
 		}
 		conn.Close()
-		d.PullProxy.RTT = time.Since(startTime)
-		d.PullProxy.ChangeStatus(PullProxyStatusOnline)
+		d.RTT = time.Since(startTime)
+		d.ChangeStatus(PullProxyStatusOnline)
 	}
 }
 
 func (p *Publisher) processPullProxyOnStart() {
 	s := p.Plugin.Server
-	if pullProxy, ok := s.PullProxies.Find(func(pullProxy *PullProxy) bool {
+	if pullProxy, ok := s.PullProxies.Find(func(pullProxy IPullProxy) bool {
 		return pullProxy.GetStreamPath() == p.StreamPath
 	}); ok {
-		p.PullProxy = pullProxy
-		if pullProxy.Status == PullProxyStatusOnline {
+		p.PullProxyConfig = pullProxy.GetConfig()
+		if p.PullProxyConfig.Status == PullProxyStatusOnline {
 			pullProxy.ChangeStatus(PullProxyStatusPulling)
-			if mp4Plugin, ok := s.Plugins.Get("MP4"); ok && pullProxy.FilePath != "" {
-				mp4Plugin.Record(p, pullProxy.Record, nil)
+			if mp4Plugin, ok := s.Plugins.Get("MP4"); ok && p.PullProxyConfig.FilePath != "" {
+				mp4Plugin.Record(p, p.PullProxyConfig.Record, nil)
 			}
 		}
 	}
@@ -225,30 +208,49 @@ func (p *Publisher) processPullProxyOnStart() {
 
 func (p *Publisher) processPullProxyOnDispose() {
 	s := p.Plugin.Server
-	if p.PullProxy != nil && p.PullProxy.Status == PullProxyStatusPulling && s.PullProxies.Has(p.PullProxy.GetKey()) {
-		p.PullProxy.ChangeStatus(PullProxyStatusOnline)
+	if p.PullProxyConfig != nil && p.PullProxyConfig.Status == PullProxyStatusPulling {
+		if pullproxy, ok := s.PullProxies.Get(p.PullProxyConfig.GetKey()); ok {
+			pullproxy.ChangeStatus(PullProxyStatusOnline)
+		}
 	}
+}
+
+func (s *Server) createPullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, err error) {
+	for plugin := range s.Plugins.Range {
+		if pullPlugin, ok := plugin.handler.(IPullProxyPlugin); ok && strings.EqualFold(conf.Type, plugin.Meta.Name) {
+			pullTask := pullPlugin.OnPullProxyAdd(conf)
+			if pullTask == nil {
+				continue
+			}
+			if pullTask, ok := pullTask.(IPullProxy); ok {
+				s.PullProxies.Add(pullTask, plugin.Logger.With("pullProxyId", conf.ID, "pullProxyType", conf.Type, "pullProxyName", conf.Name))
+				return pullTask, nil
+			}
+		}
+	}
+	return
 }
 
 func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res *pb.PullProxyListResponse, err error) {
 	res = &pb.PullProxyListResponse{}
 	for device := range s.PullProxies.SafeRange {
+		conf := device.GetConfig()
 		res.Data = append(res.Data, &pb.PullProxyInfo{
-			Name:           device.Name,
-			CreateTime:     timestamppb.New(device.CreatedAt),
-			UpdateTime:     timestamppb.New(device.UpdatedAt),
-			Type:           device.Type,
-			PullURL:        device.URL,
-			ParentID:       uint32(device.ParentID),
-			Status:         uint32(device.Status),
-			ID:             uint32(device.ID),
-			PullOnStart:    device.PullOnStart,
-			StopOnIdle:     device.StopOnIdle,
-			Audio:          device.Audio,
-			RecordPath:     device.Record.FilePath,
-			RecordFragment: durationpb.New(device.Record.Fragment),
-			Description:    device.Description,
-			Rtt:            uint32(device.RTT.Milliseconds()),
+			Name:           conf.Name,
+			CreateTime:     timestamppb.New(conf.CreatedAt),
+			UpdateTime:     timestamppb.New(conf.UpdatedAt),
+			Type:           conf.Type,
+			PullURL:        conf.URL,
+			ParentID:       uint32(conf.ParentID),
+			Status:         uint32(conf.Status),
+			ID:             uint32(conf.ID),
+			PullOnStart:    conf.PullOnStart,
+			StopOnIdle:     conf.StopOnIdle,
+			Audio:          conf.Audio,
+			RecordPath:     conf.Record.FilePath,
+			RecordFragment: durationpb.New(conf.Record.Fragment),
+			Description:    conf.Description,
+			Rtt:            uint32(conf.RTT.Milliseconds()),
 			StreamPath:     device.GetStreamPath(),
 		})
 	}
@@ -256,7 +258,7 @@ func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res 
 }
 
 func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
-	device := &PullProxy{
+	device := &PullProxyConfig{
 		server:      s,
 		Name:        req.Name,
 		Type:        req.Type,
@@ -302,7 +304,8 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	if req.StreamPath == "" {
 		device.StreamPath = device.GetStreamPath()
 	}
-	s.PullProxies.Add(device)
+	_, err = s.createPullProxy(device)
+
 	res = &pb.SuccessResponse{}
 	return
 }
@@ -312,7 +315,7 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		err = pkg.ErrNoDB
 		return
 	}
-	target := &PullProxy{
+	target := &PullProxyConfig{
 		server: s,
 	}
 	err = s.DB.First(target, req.ID).Error
@@ -354,24 +357,28 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
 	target.StreamPath = req.StreamPath
 	s.DB.Save(target)
-	var needStopOld *PullProxy
 	if device, ok := s.PullProxies.SafeGet(uint(req.ID)); ok {
-		if target.URL != device.URL || device.Audio != target.Audio || device.StreamPath != target.StreamPath || device.Record.FilePath != target.Record.FilePath || device.Record.Fragment != target.Record.Fragment {
+		conf := device.GetConfig()
+		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath || conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment {
 			device.Stop(task.ErrStopByUser)
-			needStopOld = device
+			device.WaitStopped()
+			_, err = s.createPullProxy(target)
+			if target.Status == PullProxyStatusPulling {
+				if pullJob, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
+					pullJob.Stop(task.ErrStopByUser)
+					pullJob.WaitStopped()
+				}
+				device.Pull()
+			}
 		} else {
-			device.Name = target.Name
-			device.PullOnStart = target.PullOnStart
-			device.StopOnIdle = target.StopOnIdle
-			device.Description = target.Description
+			conf.Name = target.Name
+			conf.PullOnStart = target.PullOnStart
+			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
+				device.Pull()
+			}
+			conf.StopOnIdle = target.StopOnIdle
+			conf.Description = target.Description
 		}
-	}
-	if needStopOld != nil {
-		if pullJob, ok := s.Pulls.SafeGet(req.StreamPath); ok {
-			pullJob.Stop(task.ErrStopByUser)
-			pullJob.WaitStopped()
-		}
-		s.PullProxies.Add(target).WaitStarted()
 	}
 	res = &pb.SuccessResponse{}
 	return
@@ -384,29 +391,29 @@ func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (re
 	}
 	res = &pb.SuccessResponse{}
 	if req.Id > 0 {
-		tx := s.DB.Delete(&PullProxy{
+		tx := s.DB.Delete(&PullProxyConfig{
 			ID: uint(req.Id),
 		})
 		err = tx.Error
 		if device, ok := s.PullProxies.SafeGet(uint(req.Id)); ok {
 			device.Stop(task.ErrStopByUser)
-			if pull, ok := device.server.Pulls.SafeGet(device.StreamPath); ok {
-				pull.Stop(task.ErrStopByUser)
-			}
+			// if pull, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
+			// 	pull.Stop(task.ErrStopByUser)
+			// }
 		}
 		return
 	} else if req.StreamPath != "" {
-		var deviceList []*PullProxy
+		var deviceList []*PullProxyConfig
 		s.DB.Find(&deviceList, "stream_path=?", req.StreamPath)
 		if len(deviceList) > 0 {
 			for _, device := range deviceList {
-				tx := s.DB.Delete(&PullProxy{}, device.ID)
+				tx := s.DB.Delete(&PullProxyConfig{}, device.ID)
 				err = tx.Error
 				if device, ok := s.PullProxies.SafeGet(uint(device.ID)); ok {
 					device.Stop(task.ErrStopByUser)
-					if pull, ok := device.server.Pulls.SafeGet(device.StreamPath); ok {
-						pull.Stop(task.ErrStopByUser)
-					}
+					// if pull, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
+					// 	pull.Stop(task.ErrStopByUser)
+					// }
 				}
 			}
 		}
