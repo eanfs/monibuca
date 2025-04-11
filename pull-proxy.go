@@ -218,14 +218,12 @@ func (p *Publisher) processPullProxyOnDispose() {
 func (s *Server) createPullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, err error) {
 	for plugin := range s.Plugins.Range {
 		if pullPlugin, ok := plugin.handler.(IPullProxyPlugin); ok && strings.EqualFold(conf.Type, plugin.Meta.Name) {
-			pullTask := pullPlugin.OnPullProxyAdd(conf)
-			if pullTask == nil {
+			pullProxy = pullPlugin.OnPullProxyAdd(conf)
+			if pullProxy == nil {
 				continue
 			}
-			if pullTask, ok := pullTask.(IPullProxy); ok {
-				s.PullProxies.Add(pullTask, plugin.Logger.With("pullProxyId", conf.ID, "pullProxyType", conf.Type, "pullProxyName", conf.Name))
-				return pullTask, nil
-			}
+			s.PullProxies.Add(pullProxy, plugin.Logger.With("pullProxyId", conf.ID, "pullProxyType", conf.Type, "pullProxyName", conf.Name))
+			return
 		}
 	}
 	return

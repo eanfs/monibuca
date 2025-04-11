@@ -136,6 +136,16 @@
           <input placeholder="单位：秒" type="text" id="videoBuffer" style="width: 50px" value="0">秒
           <span>缓存延迟(延迟超过会触发丢帧)：</span>
           <input placeholder="单位：秒" type="text" id="videoBufferDelay" style="width: 50px" value="5">秒
+          <span>播放倍速：</span>
+          <select id="playbackSpeed">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+            <option value="8">8x</option>
+            <option value="16">16x</option>
+            <option value="32">32x</option>
+          </select>
           <button id="replay">重播</button>
         </div>
       </div>
@@ -331,6 +341,7 @@
     var $replay = document.getElementById('replay');
     var $fps = document.querySelector('.fps-inner');
     var $protocol = document.getElementById('protocol');
+    var $playbackSpeed = document.getElementById('playbackSpeed');
     var showOperateBtns = true; // 是否显示按钮
     var forceNoOffscreen = true; //
     var jessibuca = null;
@@ -447,7 +458,7 @@
       });
       jessibuca.on('videoSEI', (value) => {
         console.warn(`videoSEI ts is ${value.ts}, data is ${value.data}`);
-      })
+      });
       jessibuca.on('stats', (stats) => {
         // console.log('stats', stats);
         $fps.textContent = `FPS: ${stats.fps} DFPS: ${stats.dfps}`;
@@ -549,6 +560,89 @@
         location.replace('https://local.monibuca.com:8443' + location.pathname + '?type=' + $protocol.value);
       else
         location.replace(location.origin + location.pathname + '?type=' + $protocol.value);
+    });
+
+    $playbackSpeed.addEventListener('change', function () {
+      if (jessibuca) {
+        const speed = parseFloat($playbackSpeed.value);
+        //jessibuca.setPlaybackRate(speed);
+        console.log('Playback speed set to:', speed);
+
+        // Extract streamPath from $playHref.value
+        const url = $playHref.value;
+        let streamPath = '';
+
+        if (url) {
+          // Parse the URL to extract the path
+          let parsedUrl;
+          if (url.startsWith('webrtc://')) {
+            // Handle webrtc URL format
+            const urlWithoutProtocol = url.replace('webrtc://', '');
+            const pathParts = urlWithoutProtocol.split('/');
+            pathParts.shift(); // Remove host part
+            streamPath = pathParts.join('/');
+            if (streamPath.includes('/play')) {
+              streamPath = streamPath.replace('/play', '');
+            }
+          } else if (url.startsWith('wt://')) {
+            // Handle webtransport URL format
+            const urlWithoutProtocol = url.replace('wt://', '');
+            const pathParts = urlWithoutProtocol.split('/');
+            pathParts.shift(); // Remove host part
+            streamPath = pathParts.join('/');
+            if (streamPath.includes('play')) {
+              streamPath = streamPath.replace('play', '');
+            }
+          } else {
+            // Handle standard URL format
+            try {
+              parsedUrl = new URL(url);
+              const pathSegments = parsedUrl.pathname.split('/');
+              // Remove first empty segment and the plugin name (first non-empty segment)
+              pathSegments.shift(); // Remove empty first segment
+              pathSegments.shift(); // Remove plugin name
+
+              // Join the remaining segments to form the streamPath
+              streamPath = pathSegments.join('/');
+
+              // Remove file extension if present
+              const extensionIndex = streamPath.lastIndexOf('.');
+              if (extensionIndex !== -1) {
+                streamPath = streamPath.substring(0, extensionIndex);
+              }
+            } catch (e) {
+              console.error('Failed to parse URL:', e);
+            }
+          }
+
+          if (streamPath) {
+            // Construct API endpoint
+            const currentUrl = window.location.origin;
+            const apiUrl = `${currentUrl}/api/stream/speed/${streamPath}`;
+
+            // Make POST request
+            fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ speed: speed })
+            })
+              .then(response => {
+                if (!response.ok) {
+                  throw new Error('Network response was not ok');
+                }
+                return response.json();
+              })
+              .then(data => {
+                console.log('Speed change API response:', data);
+              })
+              .catch(error => {
+                console.error('Error calling speed change API:', error);
+              });
+          }
+        }
+      }
     });
   </script>
 

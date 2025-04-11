@@ -45,7 +45,7 @@ func (p *HLSPlugin) RegisterHandler() map[string]http.HandlerFunc {
 	}
 }
 
-func (p *HLSPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) any {
+func (p *HLSPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
 	d := &m7s.HTTPPullProxy{}
 	d.PullProxyConfig = pullProxy
 	d.Plugin = &p.Plugin

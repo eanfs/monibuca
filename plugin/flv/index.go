@@ -97,7 +97,7 @@ func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = live.Run()
 }
 
-func (plugin *FLVPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) any {
+func (plugin *FLVPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
 	d := &m7s.HTTPPullProxy{}
 	d.PullProxyConfig = pullProxy
 	d.Plugin = &plugin.Plugin

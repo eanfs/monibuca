@@ -182,7 +182,7 @@ func (task *RTMPServer) Go() (err error) {
 	return
 }
 
-func (p *RTMPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) any {
+func (p *RTMPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
 	ret := &RTMPPullProxy{}
 	ret.PullProxyConfig = pullProxy
 	ret.Plugin = &p.Plugin
