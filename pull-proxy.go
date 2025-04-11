@@ -367,14 +367,8 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		if device, ok := s.PullProxies.Get(uint(req.ID)); ok {
 			if target.URL != device.URL || device.Audio != target.Audio || device.StreamPath != target.StreamPath || device.Record.FilePath != target.Record.FilePath || device.Record.Fragment != target.Record.Fragment {
 				device.Stop(task.ErrStopByUser)
-				if pull, ok := device.server.Pulls.Get(device.StreamPath); ok {
-					pull.Stop(task.ErrStopByUser)
-				}
 				needStopOld = device
 				return nil
-			}
-			if device.PullOnStart != target.PullOnStart && target.PullOnStart && device.Handler != nil && device.Status == PullProxyStatusOnline {
-				device.Handler.Pull()
 			}
 			device.Name = target.Name
 			device.PullOnStart = target.PullOnStart
@@ -384,8 +378,16 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		return nil
 	})
 	if needStopOld != nil {
-		needStopOld.WaitStopped()
-		s.PullProxies.Add(target)
+		s.PullProxies.Add(target).WaitStarted()
+		s.Pulls.Call(func() error {
+			if pullJob, ok := s.Pulls.Get(req.StreamPath); ok {
+				pullJob.Stop(task.ErrStopByUser)
+				target.Handler.Pull()
+			} else if target.PullOnStart {
+				target.Handler.Pull()
+			}
+			return nil
+		})
 	}
 	res = &pb.SuccessResponse{}
 	return
