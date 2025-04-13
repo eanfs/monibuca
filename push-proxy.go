@@ -28,11 +28,15 @@ const (
 
 type (
 	IPushProxy interface {
+		task.ITask
+		GetBase() *BasePushProxy
+		GetStreamPath() string
+		GetConfig() *PushProxyConfig
+		ChangeStatus(status byte)
 		Push()
+		GetKey() uint
 	}
-	PushProxy struct {
-		server               *Server `gorm:"-:all"`
-		task.Work            `gorm:"-:all" yaml:"-"`
+	PushProxyConfig struct {
 		ID                   uint           `gorm:"primarykey"`
 		CreatedAt, UpdatedAt time.Time      `yaml:"-"`
 		DeletedAt            gorm.DeletedAt `yaml:"-"`
@@ -45,76 +49,82 @@ type (
 		Status               byte
 		Description          string
 		RTT                  time.Duration
-		Handler              IPushProxy `gorm:"-:all" yaml:"-"`
 	}
+	PushProxyFactory = func() IPushProxy
 	PushProxyManager struct {
-		task.Manager[uint, *PushProxy]
+		task.Manager[uint, IPushProxy]
 	}
-	PushProxyTask struct {
-		task.AsyncTickTask
-		PushProxy *PushProxy
-		Plugin    *Plugin
+	BasePushProxy struct {
+		*PushProxyConfig
+		Plugin *Plugin
+	}
+	HTTPPushProxy struct {
+		TCPPushProxy
 	}
 	TCPPushProxy struct {
-		PushProxyTask
+		task.AsyncTickTask
+		BasePushProxy
 		TCPAddr *net.TCPAddr
 		URL     *url.URL
 	}
 )
 
-func (d *PushProxy) GetKey() uint {
+func (d *PushProxyConfig) GetKey() uint {
 	return d.ID
 }
 
-func (d *PushProxy) GetStreamPath() string {
+func (d *PushProxyConfig) GetConfig() *PushProxyConfig {
+	return d
+}
+
+func (d *PushProxyConfig) GetStreamPath() string {
 	if d.StreamPath == "" {
 		return fmt.Sprintf("push/%s/%d", d.Type, d.ID)
 	}
 	return d.StreamPath
 }
 
-func (d *PushProxy) Start() (err error) {
-	for plugin := range d.server.Plugins.Range {
-		if pushPlugin, ok := plugin.handler.(IPushProxyPlugin); ok && strings.EqualFold(d.Type, plugin.Meta.Name) {
-			pushTask := pushPlugin.OnPushProxyAdd(d)
-			if pushTask == nil {
-				continue
-			}
-			if pushTask, ok := pushTask.(IPushProxy); ok {
-				d.Handler = pushTask
-			}
-			if t, ok := pushTask.(task.ITask); ok {
-				if ticker, ok := t.(task.IChannelTask); ok {
-					t.OnStart(func() {
-						ticker.Tick(nil)
-					})
-				}
-				d.AddTask(t)
-			} else {
-				d.ChangeStatus(PushProxyStatusOnline)
-			}
+func (s *Server) createPushProxy(conf *PushProxyConfig) (pushProxy IPushProxy, err error) {
+	for plugin := range s.Plugins.Range {
+		if plugin.Meta.NewPushProxy != nil && strings.EqualFold(conf.Type, plugin.Meta.Name) {
+			pushProxy = plugin.Meta.NewPushProxy()
+			base := pushProxy.GetBase()
+			base.PushProxyConfig = conf
+			base.Plugin = plugin
+			s.PushProxies.Add(pushProxy, plugin.Logger.With("pushProxyId", conf.ID, "pushProxyType", conf.Type, "pushProxyName", conf.Name))
+			return
 		}
 	}
 	return
 }
 
-func (d *PushProxy) ChangeStatus(status byte) {
+func (b *BasePushProxy) GetBase() *BasePushProxy {
+	return b
+}
+
+func NewHTTPPushProxy() IPushProxy {
+	return &HTTPPushProxy{}
+}
+
+func (d *BasePushProxy) ChangeStatus(status byte) {
 	if d.Status == status {
 		return
 	}
 	from := d.Status
-	d.Info("device status changed", "from", from, "to", status)
+	d.Plugin.Info("device status changed", "from", from, "to", status)
 	d.Status = status
-	d.Update()
+	if d.Plugin.Server.DB != nil {
+		d.Plugin.Server.DB.Omit("deleted_at").Save(d)
+	}
 	switch status {
 	case PushProxyStatusOnline:
 		if from == PushProxyStatusOffline {
 			if d.PushOnStart {
-				d.Handler.Push()
+				d.Push()
 			} else {
-				d.server.Streams.Call(func() error {
-					if d.server.Streams.Has(d.GetStreamPath()) {
-						d.Handler.Push()
+				d.Plugin.Server.Streams.Call(func() error {
+					if d.Plugin.Server.Streams.Has(d.GetStreamPath()) {
+						d.Push()
 					}
 					return nil
 				})
@@ -123,20 +133,17 @@ func (d *PushProxy) ChangeStatus(status byte) {
 	}
 }
 
-func (d *PushProxy) Update() {
-	if d.server.DB != nil {
-		d.server.DB.Omit("deleted_at").Save(d)
+func (d *BasePushProxy) Dispose() {
+	d.ChangeStatus(PushProxyStatusOffline)
+	if stream, ok := d.Plugin.Server.Streams.SafeGet(d.GetStreamPath()); ok {
+		stream.Stop(task.ErrStopByUser)
 	}
 }
 
-func (d *PushProxyTask) Dispose() {
-	d.PushProxy.ChangeStatus(PushProxyStatusOffline)
-}
-
-func (d *PushProxyTask) Push() {
+func (d *BasePushProxy) Push() {
 	var subConf = d.Plugin.config.Subscribe
-	subConf.SubAudio = d.PushProxy.Audio
-	d.Plugin.handler.Push(d.PushProxy.GetStreamPath(), d.PushProxy.Push, &subConf)
+	subConf.SubAudio = d.Audio
+	d.Plugin.handler.Push(d.GetStreamPath(), d.PushProxyConfig.Push, &subConf)
 }
 
 func (d *TCPPushProxy) GetTickInterval() time.Duration {
@@ -147,23 +154,46 @@ func (d *TCPPushProxy) Tick(any) {
 	startTime := time.Now()
 	conn, err := net.DialTCP("tcp", nil, d.TCPAddr)
 	if err != nil {
-		d.PushProxy.ChangeStatus(PushProxyStatusOffline)
+		d.ChangeStatus(PushProxyStatusOffline)
 		return
 	}
 	conn.Close()
-	d.PushProxy.RTT = time.Since(startTime)
-	if d.PushProxy.Status == PushProxyStatusOffline {
-		d.PushProxy.ChangeStatus(PushProxyStatusOnline)
+	d.RTT = time.Since(startTime)
+	if d.Status == PushProxyStatusOffline {
+		d.ChangeStatus(PushProxyStatusOnline)
 	}
 }
 
-func (d *PushProxy) InitializeWithServer(s *Server) {
-	d.server = s
-	d.Logger = s.Logger.With("pushProxy", d.ID, "type", d.Type, "name", d.Name)
+func (d *HTTPPushProxy) Start() (err error) {
+	d.URL, err = url.Parse(d.PushProxyConfig.URL)
+	if err != nil {
+		return
+	}
+	if ips, err := net.LookupIP(d.URL.Hostname()); err != nil {
+		return err
+	} else if len(ips) == 0 {
+		return fmt.Errorf("no IP found for host: %s", d.URL.Hostname())
+	} else {
+		d.TCPAddr, err = net.ResolveTCPAddr("tcp", net.JoinHostPort(ips[0].String(), d.URL.Port()))
+		if err != nil {
+			return err
+		}
+		if d.TCPAddr.Port == 0 {
+			if d.URL.Scheme == "https" || d.URL.Scheme == "wss" {
+				d.TCPAddr.Port = 443
+			} else {
+				d.TCPAddr.Port = 80
+			}
+		}
+	}
+	return d.TCPPushProxy.Start()
+}
+
+func (d *PushProxyConfig) InitializeWithServer(s *Server) {
 	if d.Type == "" {
 		u, err := url.Parse(d.URL)
 		if err != nil {
-			d.Logger.Error("parse push url failed", "error", err)
+			s.Error("parse push url failed", "error", err)
 			return
 		}
 		switch u.Scheme {
@@ -187,19 +217,20 @@ func (s *Server) GetPushProxyList(ctx context.Context, req *emptypb.Empty) (res 
 	res = &pb.PushProxyListResponse{}
 	s.PushProxies.Call(func() error {
 		for device := range s.PushProxies.Range {
+			conf := device.GetConfig()
 			res.Data = append(res.Data, &pb.PushProxyInfo{
-				Name:        device.Name,
-				CreateTime:  timestamppb.New(device.CreatedAt),
-				UpdateTime:  timestamppb.New(device.UpdatedAt),
-				Type:        device.Type,
-				PushURL:     device.URL,
-				ParentID:    uint32(device.ParentID),
-				Status:      uint32(device.Status),
-				ID:          uint32(device.ID),
-				PushOnStart: device.PushOnStart,
-				Audio:       device.Audio,
-				Description: device.Description,
-				Rtt:         uint32(device.RTT.Milliseconds()),
+				Name:        conf.Name,
+				CreateTime:  timestamppb.New(conf.CreatedAt),
+				UpdateTime:  timestamppb.New(conf.UpdatedAt),
+				Type:        conf.Type,
+				PushURL:     conf.URL,
+				ParentID:    uint32(conf.ParentID),
+				Status:      uint32(conf.Status),
+				ID:          uint32(conf.ID),
+				PushOnStart: conf.PushOnStart,
+				Audio:       conf.Audio,
+				Description: conf.Description,
+				Rtt:         uint32(conf.RTT.Milliseconds()),
 				StreamPath:  device.GetStreamPath(),
 			})
 		}
@@ -209,8 +240,7 @@ func (s *Server) GetPushProxyList(ctx context.Context, req *emptypb.Empty) (res 
 }
 
 func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
-	device := &PushProxy{
-		server:      s,
+	device := &PushProxyConfig{
 		Name:        req.Name,
 		Type:        req.Type,
 		ParentID:    uint(req.ParentID),
@@ -250,7 +280,7 @@ func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *
 		return
 	}
 	s.DB.Create(device)
-	s.PushProxies.Add(device)
+	_, err = s.createPushProxy(device)
 	res = &pb.SuccessResponse{}
 	return
 }
@@ -260,9 +290,7 @@ func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (re
 		err = pkg.ErrNoDB
 		return
 	}
-	target := &PushProxy{
-		server: s,
-	}
+	target := &PushProxyConfig{}
 	err = s.DB.First(target, req.ID).Error
 	if err != nil {
 		return
@@ -299,27 +327,18 @@ func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (re
 	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
 	target.StreamPath = req.StreamPath
 	s.DB.Save(target)
-	var needStopOld *PushProxy
+
+	// Stop the old proxy if needed
 	s.PushProxies.Call(func() error {
 		if device, ok := s.PushProxies.Get(uint(req.ID)); ok {
-			if target.URL != device.URL || device.Audio != target.Audio || device.StreamPath != target.StreamPath {
-				device.Stop(task.ErrStopByUser)
-				needStopOld = device
-				return nil
-			}
-			if device.PushOnStart != target.PushOnStart && target.PushOnStart && device.Handler != nil && device.Status == PushProxyStatusOnline {
-				device.Handler.Push()
-			}
-			device.Name = target.Name
-			device.PushOnStart = target.PushOnStart
-			device.Description = target.Description
+			device.Stop(task.ErrStopByUser)
 		}
 		return nil
 	})
-	if needStopOld != nil {
-		needStopOld.WaitStopped()
-		s.PushProxies.Add(target)
-	}
+
+	// Create a new proxy with the updated config
+	_, err = s.createPushProxy(target)
+	res = &pb.SuccessResponse{}
 	res = &pb.SuccessResponse{}
 	return
 }
@@ -331,7 +350,7 @@ func (s *Server) RemovePushProxy(ctx context.Context, req *pb.RequestWithId) (re
 	}
 	res = &pb.SuccessResponse{}
 	if req.Id > 0 {
-		tx := s.DB.Delete(&PushProxy{
+		tx := s.DB.Delete(&PushProxyConfig{
 			ID: uint(req.Id),
 		})
 		err = tx.Error
@@ -343,7 +362,7 @@ func (s *Server) RemovePushProxy(ctx context.Context, req *pb.RequestWithId) (re
 		})
 		return
 	} else if req.StreamPath != "" {
-		var deviceList []*PushProxy
+		var deviceList []*PushProxyConfig
 		s.DB.Find(&deviceList, "stream_path=?", req.StreamPath)
 		if len(deviceList) > 0 {
 			for _, device := range deviceList {

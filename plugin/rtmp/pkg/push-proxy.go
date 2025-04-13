@@ -1,4 +1,4 @@
-package plugin_rtmp
+package rtmp
 
 import (
 	"fmt"
@@ -8,12 +8,16 @@ import (
 	"m7s.live/v5"
 )
 
+func NewPushProxy() m7s.IPushProxy {
+	return &RTMPPushProxy{}
+}
+
 type RTMPPushProxy struct {
 	m7s.TCPPushProxy
 }
 
 func (d *RTMPPushProxy) Start() (err error) {
-	d.URL, err = url.Parse(d.PushProxy.URL)
+	d.URL, err = url.Parse(d.PushProxyConfig.URL)
 	if err != nil {
 		return
 	}

@@ -1,4 +1,4 @@
-package plugin_rtmp
+package rtmp
 
 import (
 	"fmt"
@@ -10,6 +10,10 @@ import (
 
 type RTMPPullProxy struct {
 	m7s.TCPPullProxy
+}
+
+func NewPullProxy() m7s.IPullProxy {
+	return &RTMPPullProxy{}
 }
 
 func (d *RTMPPullProxy) Start() (err error) {

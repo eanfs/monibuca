@@ -16,7 +16,7 @@ import (
 	"m7s.live/v5/plugin/stress/pb"
 )
 
-func (r *StressPlugin) pull(count int, format, url string, puller m7s.Puller) (err error) {
+func (r *StressPlugin) pull(count int, format, url string, puller m7s.PullerFactory) (err error) {
 	if i := r.pullers.Length; count > i {
 		for j := i; j < count; j++ {
 			conf := config.Pull{URL: fmt.Sprintf(format, url, j)}
@@ -39,7 +39,7 @@ func (r *StressPlugin) pull(count int, format, url string, puller m7s.Puller) (e
 	return
 }
 
-func (r *StressPlugin) push(count int, streamPath, format, remoteHost string, pusher m7s.Pusher) (err error) {
+func (r *StressPlugin) push(count int, streamPath, format, remoteHost string, pusher m7s.PusherFactory) (err error) {
 	if i := r.pushers.Length; count > i {
 		for j := i; j < count; j++ {
 			p := pusher()

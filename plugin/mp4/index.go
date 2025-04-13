@@ -64,7 +64,14 @@ const defaultConfig m7s.DefaultYaml = `publish:
   speed: 1`
 
 // var exceptionChannel = make(chan *Exception)
-var _ = m7s.InstallPlugin[MP4Plugin](defaultConfig, &pb.Api_ServiceDesc, pb.RegisterApiHandler, pkg.NewPuller, pkg.NewRecorder)
+var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
+	DefaultYaml:         defaultConfig,
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+	NewPuller:           pkg.NewPuller,
+	NewRecorder:         pkg.NewRecorder,
+	NewPullProxy:        m7s.NewHTTPPullPorxy,
+})
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{

@@ -64,7 +64,7 @@ type (
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
 		PullProxy     []*PullProxyConfig
-		PushProxy     []*PushProxy
+		PushProxy     []*PushProxyConfig
 		Admin         struct {
 			EnableLogin bool   `default:"false" desc:"启用登录机制"` //启用登录机制
 			FilePath    string `default:"admin.zip" desc:"管理员界面文件路径"`
@@ -281,7 +281,7 @@ func (s *Server) Start() (err error) {
 				return
 			}
 			// Auto-migrate models
-			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxy{}, &StreamAliasDB{}); err != nil {
+			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}); err != nil {
 				s.Error("failed to auto-migrate models", "error", err)
 				return
 			}
@@ -403,12 +403,12 @@ func (s *Server) Start() (err error) {
 	s.Info("server started")
 	s.Post(func() error {
 		for plugin := range s.Plugins.Range {
-			if plugin.Meta.Puller != nil {
+			if plugin.Meta.NewPuller != nil {
 				for streamPath, conf := range plugin.config.Pull {
 					plugin.handler.Pull(streamPath, conf, nil)
 				}
 			}
-			if plugin.Meta.Transformer != nil {
+			if plugin.Meta.NewTransformer != nil {
 				for streamPath, _ := range plugin.config.Transform {
 					plugin.OnSubscribe(streamPath, url.Values{}) //按需转换
 					// transformer := plugin.Meta.Transformer()
@@ -463,15 +463,15 @@ func (s *Server) initPullProxies() {
 
 func (s *Server) initPushProxies() {
 	// 1. Read all push proxies from database
-	var pushProxies []*PushProxy
+	var pushProxies []*PushProxyConfig
 	s.DB.Find(&pushProxies)
 
 	// Create a map for quick lookup of existing proxies
-	existingPushProxies := make(map[uint]*PushProxy)
+	existingPushProxies := make(map[uint]*PushProxyConfig)
 	for _, proxy := range pushProxies {
 		existingPushProxies[proxy.ID] = proxy
+		proxy.Status = PushProxyStatusOffline
 		proxy.InitializeWithServer(s)
-		proxy.ChangeStatus(PushProxyStatusOffline)
 	}
 
 	// 2. Process and override with config data
@@ -497,7 +497,7 @@ func (s *Server) initPushProxies() {
 
 	// 3. Finally add all proxies to collections
 	for _, proxy := range pushProxies {
-		s.PushProxies.Add(proxy)
+		s.createPushProxy(proxy)
 	}
 }
 
@@ -516,7 +516,7 @@ func (s *Server) initPushProxiesWithoutDB() {
 	for _, proxy := range s.PushProxy {
 		if proxy.ID != 0 {
 			proxy.InitializeWithServer(s)
-			s.PushProxies.Add(proxy, proxy.Logger)
+			s.createPushProxy(proxy)
 		}
 	}
 }
@@ -587,8 +587,9 @@ func (s *Server) OnPublish(p *Publisher) {
 		plugin.OnPublish(p)
 	}
 	for pushProxy := range s.PushProxies.Range {
-		if pushProxy.Status == PushProxyStatusOnline && pushProxy.GetStreamPath() == p.StreamPath && !pushProxy.PushOnStart {
-			pushProxy.Handler.Push()
+		conf := pushProxy.GetConfig()
+		if conf.Status == PushProxyStatusOnline && pushProxy.GetStreamPath() == p.StreamPath && !conf.PushOnStart {
+			pushProxy.Push()
 		}
 	}
 }

@@ -26,8 +26,8 @@ type (
 		task.ITask
 		GetRecordJob() *RecordJob
 	}
-	Recorder  = func(config.Record) IRecorder
-	RecordJob struct {
+	RecorderFactory = func(config.Record) IRecorder
+	RecordJob       struct {
 		task.Job
 		StreamPath     string // 对应本地流
 		Plugin         *Plugin

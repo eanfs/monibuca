@@ -6,7 +6,11 @@ import (
 	transcode "m7s.live/v5/plugin/transcode/pkg"
 )
 
-var _ = m7s.InstallPlugin[TranscodePlugin](transcode.NewTransform, pb.RegisterApiHandler, &pb.Api_ServiceDesc)
+var _ = m7s.InstallPlugin[TranscodePlugin](m7s.PluginMeta{
+	NewTransformer:      transcode.NewTransform,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+	ServiceDesc:         &pb.Api_ServiceDesc,
+})
 
 type TranscodePlugin struct {
 	pb.UnimplementedApiServer

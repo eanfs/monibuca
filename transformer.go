@@ -16,8 +16,8 @@ type (
 		task.ITask
 		GetTransformJob() *TransformJob
 	}
-	Transformer  = func() ITransformer
-	TransformJob struct {
+	TransformerFactory = func() ITransformer
+	TransformJob       struct {
 		task.Job
 		StreamPath      string           // 对应本地流
 		Config          config.Transform // 对应目标流

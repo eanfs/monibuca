@@ -21,8 +21,16 @@ type RTMPPlugin struct {
 	C2        bool
 }
 
-var _ = m7s.InstallPlugin[RTMPPlugin](m7s.DefaultYaml(`tcp:
-  listenaddr: :1935`), &pb.Api_ServiceDesc, pb.RegisterApiHandler, NewPusher, NewPuller)
+var _ = m7s.InstallPlugin[RTMPPlugin](m7s.PluginMeta{
+	DefaultYaml: `tcp:
+  listenaddr: :1935`,
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+	NewPusher:           NewPusher,
+	NewPuller:           NewPuller,
+	NewPullProxy:        NewPullProxy,
+	NewPushProxy:        NewPushProxy,
+})
 
 type RTMPServer struct {
 	NetConnection
@@ -180,21 +188,6 @@ func (task *RTMPServer) Go() (err error) {
 		}
 	}
 	return
-}
-
-func (p *RTMPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
-	ret := &RTMPPullProxy{}
-	ret.PullProxyConfig = pullProxy
-	ret.Plugin = &p.Plugin
-	return ret
-}
-
-func (p *RTMPPlugin) OnPushProxyAdd(pushProxy *m7s.PushProxy) any {
-	ret := &RTMPPushProxy{}
-	ret.PushProxy = pushProxy
-	ret.Plugin = &p.Plugin
-	ret.Logger = p.With("pushProxy", pushProxy.Name)
-	return ret
 }
 
 func (p *RTMPPlugin) OnInit() (err error) {

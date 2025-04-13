@@ -14,7 +14,12 @@ import (
 	hls "m7s.live/v5/plugin/hls/pkg"
 )
 
-var _ = m7s.InstallPlugin[HLSPlugin](hls.NewTransform, hls.NewRecorder, hls.NewPuller)
+var _ = m7s.InstallPlugin[HLSPlugin](m7s.PluginMeta{
+	NewTransformer: hls.NewTransform,
+	NewRecorder:    hls.NewRecorder,
+	NewPuller:      hls.NewPuller,
+	NewPullProxy:   m7s.NewHTTPPullPorxy,
+})
 
 //go:embed hls.js
 var hls_js embed.FS
@@ -43,13 +48,6 @@ func (p *HLSPlugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"/vod/{streamPath...}": p.vod,
 	}
-}
-
-func (p *HLSPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
-	d := &m7s.HTTPPullProxy{}
-	d.PullProxyConfig = pullProxy
-	d.Plugin = &p.Plugin
-	return d
 }
 
 func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {

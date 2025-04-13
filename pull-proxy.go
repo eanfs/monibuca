@@ -31,6 +31,7 @@ const (
 type (
 	IPullProxy interface {
 		task.ITask
+		GetBase() *BasePullProxy
 		GetStreamPath() string
 		GetConfig() *PullProxyConfig
 		ChangeStatus(status byte)
@@ -38,7 +39,6 @@ type (
 		GetKey() uint
 	}
 	PullProxyConfig struct {
-		server                         *Server        `gorm:"-:all"`
 		ID                             uint           `gorm:"primarykey"`
 		CreatedAt, UpdatedAt           time.Time      `yaml:"-"`
 		DeletedAt                      gorm.DeletedAt `yaml:"-"`
@@ -53,23 +53,32 @@ type (
 		Description                    string
 		RTT                            time.Duration
 	}
+	PullProxyFactory = func() IPullProxy
 	PullProxyManager struct {
 		task.Manager[uint, IPullProxy]
 	}
-	PullProxyTask struct {
+	BasePullProxy struct {
 		*PullProxyConfig
-		task.AsyncTickTask
 		Plugin *Plugin
 	}
 	HTTPPullProxy struct {
 		TCPPullProxy
 	}
 	TCPPullProxy struct {
-		PullProxyTask
+		task.AsyncTickTask
+		BasePullProxy
 		TCPAddr *net.TCPAddr
 		URL     *url.URL
 	}
 )
+
+func (b *BasePullProxy) GetBase() *BasePullProxy {
+	return b
+}
+
+func NewHTTPPullPorxy() IPullProxy {
+	return &HTTPPullProxy{}
+}
 
 func (d *PullProxyConfig) GetKey() uint {
 	return d.ID
@@ -86,14 +95,16 @@ func (d *PullProxyConfig) GetStreamPath() string {
 	return d.StreamPath
 }
 
-func (d *PullProxyTask) ChangeStatus(status byte) {
+func (d *BasePullProxy) ChangeStatus(status byte) {
 	if d.Status == status {
 		return
 	}
 	from := d.Status
-	d.Info("device status changed", "from", from, "to", status)
+	d.Plugin.Info("device status changed", "from", from, "to", status)
 	d.Status = status
-	d.Update()
+	if d.Plugin.Server.DB != nil {
+		d.Plugin.Server.DB.Omit("deleted_at").Save(d)
+	}
 	switch status {
 	case PullProxyStatusOnline:
 		if d.PullOnStart && from == PullProxyStatusOffline {
@@ -102,13 +113,7 @@ func (d *PullProxyTask) ChangeStatus(status byte) {
 	}
 }
 
-func (d *PullProxyConfig) Update() {
-	if d.server.DB != nil {
-		d.server.DB.Omit("deleted_at").Save(d)
-	}
-}
-
-func (d *PullProxyTask) Dispose() {
+func (d *BasePullProxy) Dispose() {
 	d.ChangeStatus(PullProxyStatusOffline)
 	if stream, ok := d.Plugin.Server.Streams.SafeGet(d.GetStreamPath()); ok {
 		stream.Stop(task.ErrStopByUser)
@@ -116,7 +121,6 @@ func (d *PullProxyTask) Dispose() {
 }
 
 func (d *PullProxyConfig) InitializeWithServer(s *Server) {
-	d.server = s
 	if d.Type == "" {
 		u, err := url.Parse(d.URL)
 		if err != nil {
@@ -140,7 +144,7 @@ func (d *PullProxyConfig) InitializeWithServer(s *Server) {
 	}
 }
 
-func (d *PullProxyTask) Pull() {
+func (d *BasePullProxy) Pull() {
 	var pubConf = d.Plugin.config.Publish
 	pubConf.PubAudio = d.Audio
 	pubConf.DelayCloseTimeout = util.Conditional(d.StopOnIdle, time.Second*5, 0)
@@ -169,7 +173,7 @@ func (d *HTTPPullProxy) Start() (err error) {
 			}
 		}
 	}
-	return d.PullProxyTask.Start()
+	return d.TCPPullProxy.Start()
 }
 
 func (d *TCPPullProxy) GetTickInterval() time.Duration {
@@ -217,11 +221,11 @@ func (p *Publisher) processPullProxyOnDispose() {
 
 func (s *Server) createPullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, err error) {
 	for plugin := range s.Plugins.Range {
-		if pullPlugin, ok := plugin.handler.(IPullProxyPlugin); ok && strings.EqualFold(conf.Type, plugin.Meta.Name) {
-			pullProxy = pullPlugin.OnPullProxyAdd(conf)
-			if pullProxy == nil {
-				continue
-			}
+		if plugin.Meta.NewPullProxy != nil && strings.EqualFold(conf.Type, plugin.Meta.Name) {
+			pullProxy = plugin.Meta.NewPullProxy()
+			base := pullProxy.GetBase()
+			base.PullProxyConfig = conf
+			base.Plugin = plugin
 			s.PullProxies.Add(pullProxy, plugin.Logger.With("pullProxyId", conf.ID, "pullProxyType", conf.Type, "pullProxyName", conf.Name))
 			return
 		}
@@ -257,7 +261,6 @@ func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res 
 
 func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
 	device := &PullProxyConfig{
-		server:      s,
 		Name:        req.Name,
 		Type:        req.Type,
 		ParentID:    uint(req.ParentID),
@@ -313,9 +316,7 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		err = pkg.ErrNoDB
 		return
 	}
-	target := &PullProxyConfig{
-		server: s,
-	}
+	target := &PullProxyConfig{}
 	err = s.DB.First(target, req.ID).Error
 	if err != nil {
 		return

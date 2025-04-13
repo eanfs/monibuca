@@ -11,10 +11,14 @@ import (
 	. "m7s.live/v5/plugin/rtsp/pkg"
 )
 
-const defaultConfig = m7s.DefaultYaml(`tcp:
-  listenaddr: :554`)
-
-var _ = m7s.InstallPlugin[RTSPPlugin](defaultConfig, NewPuller, NewPusher)
+var _ = m7s.InstallPlugin[RTSPPlugin](m7s.PluginMeta{
+	DefaultYaml: `tcp:
+  listenaddr: :554`,
+	NewPuller:    NewPuller,
+	NewPusher:    NewPusher,
+	NewPullProxy: NewPullProxy,
+	NewPushProxy: NewPushProxy,
+})
 
 type RTSPPlugin struct {
 	m7s.Plugin
@@ -23,21 +27,6 @@ type RTSPPlugin struct {
 func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
 	ret := &RTSPServer{NetConnection: NewNetConnection(conn), conf: p}
 	ret.Logger = p.With("remote", conn.RemoteAddr().String())
-	return ret
-}
-
-func (p *RTSPPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
-	ret := &RTSPPullProxy{}
-	ret.PullProxyConfig = pullProxy
-	ret.Plugin = &p.Plugin
-	return ret
-}
-
-func (p *RTSPPlugin) OnPushProxyAdd(pushProxy *m7s.PushProxy) any {
-	ret := &RTSPPushProxy{}
-	ret.PushProxy = pushProxy
-	ret.Plugin = &p.Plugin
-	ret.Logger = p.With("pushProxy", pushProxy.Name)
 	return ret
 }
 

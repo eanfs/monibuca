@@ -43,13 +43,15 @@ type (
 		Name                string
 		Version             string //插件版本
 		Type                reflect.Type
-		defaultYaml         DefaultYaml //默认配置
+		DefaultYaml         DefaultYaml //默认配置
 		ServiceDesc         *grpc.ServiceDesc
 		RegisterGRPCHandler func(context.Context, *gatewayRuntime.ServeMux, *grpc.ClientConn) error
-		Puller              Puller
-		Pusher              Pusher
-		Recorder            Recorder
-		Transformer         Transformer
+		NewPuller           PullerFactory
+		NewPusher           PusherFactory
+		NewRecorder         RecorderFactory
+		NewTransformer      TransformerFactory
+		NewPullProxy        PullProxyFactory
+		NewPushProxy        PushProxyFactory
 		OnExit              OnExitHandler
 		OnAuthPub           AuthPublisher
 		OnAuthSub           AuthSubscriber
@@ -88,12 +90,6 @@ type (
 	IQUICPlugin interface {
 		OnQUICConnect(quic.Connection) task.ITask
 	}
-	IPullProxyPlugin interface {
-		OnPullProxyAdd(pullProxy *PullProxyConfig) IPullProxy
-	}
-	IPushProxyPlugin interface {
-		OnPushProxyAdd(pushProxy *PushProxy) any
-	}
 )
 
 var plugins []PluginMeta
@@ -121,9 +117,9 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 			p.Config.Get(name).ParseGlobal(s.Config.Get(name))
 		}
 	}
-	if plugin.defaultYaml != "" {
+	if plugin.DefaultYaml != "" {
 		var defaultConf map[string]any
-		if err := yaml.Unmarshal([]byte(plugin.defaultYaml), &defaultConf); err != nil {
+		if err := yaml.Unmarshal([]byte(plugin.DefaultYaml), &defaultConf); err != nil {
 			p.Error("parsing default config", "error", err)
 		} else {
 			p.Config.ParseDefaultYaml(defaultConf)
@@ -170,7 +166,7 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 			}
 		}
 	}
-	if p.DB != nil && p.Meta.Recorder != nil {
+	if p.DB != nil && p.Meta.NewRecorder != nil {
 		if err = p.DB.AutoMigrate(&RecordStream{}); err != nil {
 			p.disable(fmt.Sprintf("auto migrate record stream failed %v", err))
 			return
@@ -182,35 +178,40 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 
 // InstallPlugin 安装插件
 func InstallPlugin[C iPlugin](options ...any) error {
-	var c *C
-	t := reflect.TypeOf(c).Elem()
-	meta := PluginMeta{
-		Name: strings.TrimSuffix(t.Name(), "Plugin"),
-		Type: t,
+	var meta PluginMeta
+	for _, option := range options {
+		if m, ok := option.(PluginMeta); ok {
+			meta = m
+		}
 	}
-
+	var c *C
+	meta.Type = reflect.TypeOf(c).Elem()
+	if meta.Name == "" {
+		meta.Name = strings.TrimSuffix(meta.Type.Name(), "Plugin")
+	}
 	_, pluginFilePath, _, _ := runtime.Caller(1)
 	configDir := filepath.Dir(pluginFilePath)
-
-	if _, after, found := strings.Cut(configDir, "@"); found {
-		meta.Version = after
-	} else {
-		meta.Version = "dev"
+	if meta.Version == "" {
+		if _, after, found := strings.Cut(configDir, "@"); found {
+			meta.Version = after
+		} else {
+			meta.Version = "dev"
+		}
 	}
 	for _, option := range options {
 		switch v := option.(type) {
 		case OnExitHandler:
 			meta.OnExit = v
 		case DefaultYaml:
-			meta.defaultYaml = v
-		case Puller:
-			meta.Puller = v
-		case Pusher:
-			meta.Pusher = v
-		case Recorder:
-			meta.Recorder = v
-		case Transformer:
-			meta.Transformer = v
+			meta.DefaultYaml = v
+		case PullerFactory:
+			meta.NewPuller = v
+		case PusherFactory:
+			meta.NewPusher = v
+		case RecorderFactory:
+			meta.NewRecorder = v
+		case TransformerFactory:
+			meta.NewTransformer = v
 		case AuthPublisher:
 			meta.OnAuthPub = v
 		case AuthSubscriber:
@@ -449,14 +450,14 @@ func (p *Plugin) SendWebhook(hookType config.HookType, conf config.Webhook, data
 // TODO: use alias stream
 func (p *Plugin) OnPublish(pub *Publisher) {
 	onPublish := p.config.OnPub
-	if p.Meta.Pusher != nil {
+	if p.Meta.NewPusher != nil {
 		for r, pushConf := range onPublish.Push {
 			if pushConf.URL = r.Replace(pub.StreamPath, pushConf.URL); pushConf.URL != "" {
 				p.Push(pub.StreamPath, pushConf, nil)
 			}
 		}
 	}
-	if p.Meta.Recorder != nil {
+	if p.Meta.NewRecorder != nil {
 		for r, recConf := range onPublish.Record {
 			if recConf.FilePath = r.Replace(pub.StreamPath, recConf.FilePath); recConf.FilePath != "" {
 				p.Record(pub, recConf, nil)
@@ -468,7 +469,7 @@ func (p *Plugin) OnPublish(pub *Publisher) {
 	if owner != nil {
 		_, isTransformer = owner.(ITransformer)
 	}
-	if p.Meta.Transformer != nil && !isTransformer {
+	if p.Meta.NewTransformer != nil && !isTransformer {
 		for r, tranConf := range onPublish.Transform {
 			if group := r.FindStringSubmatch(pub.StreamPath); group != nil {
 				for j, to := range tranConf.Output {
@@ -513,7 +514,7 @@ func (p *Plugin) OnSubscribe(streamPath string, args url.Values) {
 	//		}
 	//	}
 	for reg, conf := range p.config.OnSub.Pull {
-		if p.Meta.Puller != nil && reg.MatchString(streamPath) {
+		if p.Meta.NewPuller != nil && reg.MatchString(streamPath) {
 			conf.Args = config.HTTPValues(args)
 			conf.URL = reg.Replace(streamPath, conf.URL)
 			p.handler.Pull(streamPath, conf, nil)
@@ -613,7 +614,7 @@ func (p *Plugin) Subscribe(ctx context.Context, streamPath string) (subscriber *
 }
 
 func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
-	puller := p.Meta.Puller(conf)
+	puller := p.Meta.NewPuller(conf)
 	if puller == nil {
 		return
 	}
@@ -621,19 +622,19 @@ func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publi
 }
 
 func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subscribe) {
-	pusher := p.Meta.Pusher()
+	pusher := p.Meta.NewPusher()
 	pusher.GetPushJob().Init(pusher, p, streamPath, conf, subConf)
 }
 
 func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subscribe) *RecordJob {
-	recorder := p.Meta.Recorder(conf)
+	recorder := p.Meta.NewRecorder(conf)
 	job := recorder.GetRecordJob().Init(recorder, p, pub.StreamPath, conf, subConf)
 	job.Depend(pub)
 	return job
 }
 
 func (p *Plugin) Transform(pub *Publisher, conf config.Transform) {
-	transformer := p.Meta.Transformer()
+	transformer := p.Meta.NewTransformer()
 	job := transformer.GetTransformJob().Init(transformer, p, pub, conf)
 	job.Depend(pub)
 }

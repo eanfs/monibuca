@@ -2,10 +2,12 @@ package plugin_gb28181pro
 
 import (
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
@@ -41,7 +43,7 @@ func (r *PresetRequest) GetKey() int {
 }
 
 type Channel struct {
-	PullProxyTask       *m7s.PullProxyTask
+	PullProxyTask       *PullProxy   // 拉流任务
 	Device              *Device      // 所属设备
 	State               atomic.Int32 // 通道状态,0:空闲,1:正在invite,2:正在播放/对讲
 	GpsTime             time.Time    // gps时间
@@ -58,4 +60,28 @@ func (c *Channel) GetKey() string {
 
 func (c *Channel) GetDeviceID() string {
 	return c.DeviceID
+}
+
+type PullProxy struct {
+	task.Task
+	m7s.BasePullProxy
+}
+
+func NewPullProxy() m7s.IPullProxy {
+	return &PullProxy{}
+}
+
+func (p *PullProxy) GetKey() uint {
+	return p.PullProxyConfig.ID
+}
+
+func (p *PullProxy) Start() error {
+	streamPaths := strings.Split(p.GetStreamPath(), "/")
+	deviceId, channelId := streamPaths[0], streamPaths[1]
+	if device, ok := p.Plugin.GetHandler().(*GB28181Plugin).devices.Get(deviceId); ok {
+		if _, ok := device.channels.Get(channelId); ok {
+			p.ChangeStatus(m7s.PullProxyStatusOnline)
+		}
+	}
+	return nil
 }

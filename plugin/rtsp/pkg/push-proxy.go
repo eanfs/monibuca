@@ -1,4 +1,4 @@
-package plugin_rtsp
+package rtsp
 
 import (
 	"fmt"
@@ -8,8 +8,11 @@ import (
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
-	. "m7s.live/v5/plugin/rtsp/pkg"
 )
+
+func NewPushProxy() m7s.IPushProxy {
+	return &RTSPPushProxy{}
+}
 
 type RTSPPushProxy struct {
 	m7s.TCPPushProxy
@@ -17,7 +20,8 @@ type RTSPPushProxy struct {
 }
 
 func (d *RTSPPushProxy) Start() (err error) {
-	d.URL, err = url.Parse(d.PushProxy.URL)
+	urlStr := d.PushProxyConfig.URL
+	d.URL, err = url.Parse(urlStr)
 	if err != nil {
 		return
 	}
@@ -39,24 +43,24 @@ func (d *RTSPPushProxy) Start() (err error) {
 		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
-	d.conn.Logger = d.Plugin.Logger
+	d.conn.Logger = d.Logger
 	return d.TCPPushProxy.Start()
 }
 
 func (d *RTSPPushProxy) Tick(any) {
-	switch d.PushProxy.Status {
+	switch d.Status {
 	case m7s.PushProxyStatusOffline:
-		err := d.conn.Connect(d.PushProxy.URL)
+		err := d.conn.Connect(d.URL.String())
 		if err != nil {
 			return
 		}
-		d.PushProxy.ChangeStatus(m7s.PushProxyStatusOnline)
+		d.ChangeStatus(m7s.PushProxyStatusOnline)
 	case m7s.PushProxyStatusOnline, m7s.PushProxyStatusPushing:
 		t := time.Now()
 		err := d.conn.Options()
-		d.PushProxy.RTT = time.Since(t)
+		d.RTT = time.Since(t)
 		if err != nil {
-			d.PushProxy.ChangeStatus(m7s.PushProxyStatusOffline)
+			d.ChangeStatus(m7s.PushProxyStatusOffline)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-package plugin_rtsp
+package rtsp
 
 import (
 	"fmt"
@@ -8,8 +8,11 @@ import (
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
-	. "m7s.live/v5/plugin/rtsp/pkg"
 )
+
+func NewPullProxy() m7s.IPullProxy {
+	return &RTSPPullProxy{}
+}
 
 type RTSPPullProxy struct {
 	m7s.TCPPullProxy
@@ -39,7 +42,7 @@ func (d *RTSPPullProxy) Start() (err error) {
 		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
-	d.conn.Logger = d.Plugin.Logger
+	d.conn.Logger = d.Logger
 	return d.TCPPullProxy.Start()
 }
 

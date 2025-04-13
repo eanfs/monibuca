@@ -33,7 +33,7 @@ type (
 		GetPullJob() *PullJob
 	}
 
-	Puller = func(config.Pull) IPuller
+	PullerFactory = func(config.Pull) IPuller
 
 	PullJob struct {
 		Connection

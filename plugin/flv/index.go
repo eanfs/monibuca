@@ -24,7 +24,14 @@ type FLVPlugin struct {
 const defaultConfig m7s.DefaultYaml = `publish:
   speed: 1`
 
-var _ = m7s.InstallPlugin[FLVPlugin](defaultConfig, NewPuller, NewRecorder, pb.RegisterApiServer, &pb.Api_ServiceDesc)
+var _ = m7s.InstallPlugin[FLVPlugin](m7s.PluginMeta{
+	DefaultYaml:         defaultConfig,
+	NewPuller:           NewPuller,
+	NewRecorder:         NewRecorder,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	NewPullProxy:        m7s.NewHTTPPullPorxy,
+})
 
 func (plugin *FLVPlugin) OnInit() (err error) {
 	_, port, _ := strings.Cut(plugin.GetCommonConf().HTTP.ListenAddr, ":")
@@ -95,11 +102,4 @@ func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err = live.Run()
-}
-
-func (plugin *FLVPlugin) OnPullProxyAdd(pullProxy *m7s.PullProxyConfig) m7s.IPullProxy {
-	d := &m7s.HTTPPullProxy{}
-	d.PullProxyConfig = pullProxy
-	d.Plugin = &plugin.Plugin
-	return d
 }

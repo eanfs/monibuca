@@ -42,7 +42,7 @@ type GB28181Plugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
 	Serial         string `default:"34020000002000000001" desc:"sip 服务 id"` //sip 服务器 id, 默认 34020000002000000001
-	Realm          string `default:"3402000000" desc:"sip 服务域"`            //sip 服务器域，默认 3402000000
+	Realm          string `default:"3402000000" desc:"sip 服务域"`             //sip 服务器域，默认 3402000000
 	Password       string
 	Sip            SipConfig
 	MediaPort      util.Range[uint16] `default:"10001-20000" desc:"媒体端口范围"` //媒体端口范围
@@ -59,11 +59,16 @@ type GB28181Plugin struct {
 	sipPorts       []int
 }
 
-var _ = m7s.InstallPlugin[GB28181Plugin](pb.RegisterApiHandler, &pb.Api_ServiceDesc, func(conf config.Pull) m7s.IPuller {
-	if util.Exist(conf.URL) {
-		return &gb28181.DumpPuller{}
-	}
-	return new(Dialog)
+var _ = m7s.InstallPlugin[GB28181Plugin](m7s.PluginMeta{
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	NewPuller: func(conf config.Pull) m7s.IPuller {
+		if util.Exist(conf.URL) {
+			return &gb28181.DumpPuller{}
+		}
+		return new(Dialog)
+	},
+	NewPullProxy: NewPullProxy,
 })
 
 func init() {
@@ -267,7 +272,7 @@ func (gb *GB28181Plugin) checkDeviceExpire() (err error) {
 				conf := absDevice.GetConfig()
 				return conf.Type == "gb28181" && conf.URL == fmt.Sprintf("%s/%s", device.DeviceID, c.DeviceID)
 			}); ok {
-				c.PullProxyTask = absDevice.(*m7s.PullProxyTask)
+				c.PullProxyTask = absDevice.(*PullProxy)
 				absDevice.ChangeStatus(m7s.PullProxyStatusOnline)
 			}
 		})
@@ -362,13 +367,6 @@ func (gb *GB28181Plugin) checkPlatform() {
 		// 添加到任务系统
 		gb.AddTask(platform)
 		gb.Info("平台初始化完成", "ID", platformModel.ID, "Name", platformModel.Name)
-	}
-}
-
-func (p *GB28181Plugin) OnPullProxyAdd(conf *m7s.PullProxyConfig) m7s.IPullProxy {
-	return &m7s.PullProxyTask{
-		PullProxyConfig: conf,
-		Plugin:          &p.Plugin,
 	}
 }
 
@@ -831,7 +829,7 @@ func (gb *GB28181Plugin) StoreDevice(deviceid string, req *sip.Request) (d *Devi
 				conf := absDevice.GetConfig()
 				return conf.Type == "gb28181" && conf.URL == fmt.Sprintf("%s/%s", d.DeviceID, c.DeviceID)
 			}); ok {
-				c.PullProxyTask = absDevice.(*m7s.PullProxyTask)
+				c.PullProxyTask = absDevice.(*PullProxy)
 				absDevice.ChangeStatus(m7s.PullProxyStatusOnline)
 			}
 		})
@@ -986,7 +984,7 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 			// 使用类似Java代码中queryOneWithPlatform的SQL查询
 			// 进行JOIN查询，查找平台ID和通道ID匹配的记录
 			query := `
-				SELECT 
+				SELECT
 					wdc.id as gb_id,
 					wdc.device_db_id as gb_device_db_id,
 					wdc.stream_push_id,
@@ -1027,14 +1025,14 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 					COALESCE(NULLIF(wpgc.custom_download_speed, ''), NULLIF(wdc.gb_download_speed, ''), NULLIF(wdc.download_speed, '')) as gb_download_speed,
 					COALESCE(NULLIF(wpgc.custom_svc_space_support_mod, ''), NULLIF(wdc.gb_svc_space_support_mod, ''), NULLIF(wdc.svc_space_support_mod, '')) as gb_svc_space_support_mod,
 					COALESCE(NULLIF(wpgc.custom_svc_time_support_mode, ''), NULLIF(wdc.gb_svc_time_support_mode, ''), NULLIF(wdc.svc_time_support_mode, '')) as gb_svc_time_support_mode
-				FROM 
+				FROM
 					channel_gb28181pro wdc
-				LEFT JOIN 
+				LEFT JOIN
 					platform_channel_gb28181pro wpgc ON wdc.id = wpgc.device_channel_id
-				WHERE 
-					wpgc.platform_id = ? AND 
+				WHERE
+					wpgc.platform_id = ? AND
 					COALESCE(NULLIF(wpgc.custom_device_id,''), NULLIF(wdc.gb_device_id,''), NULLIF(wdc.device_id,'')) = ?
-				ORDER BY 
+				ORDER BY
 					wdc.id
 			`
 

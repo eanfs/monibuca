@@ -14,7 +14,7 @@ type IPusher interface {
 	GetPushJob() *PushJob
 }
 
-type Pusher = func() IPusher
+type PusherFactory = func() IPusher
 
 type PushJob struct {
 	Connection
