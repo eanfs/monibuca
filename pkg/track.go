@@ -14,6 +14,11 @@ import (
 	"m7s.live/v5/pkg/util"
 )
 
+const threshold = 10 * time.Millisecond
+const DROP_FRAME_LEVEL_NODROP = 0
+const DROP_FRAME_LEVEL_DROP_P = 1
+const DROP_FRAME_LEVEL_DROP_ALL = 2
+
 type (
 	Track struct {
 		*slog.Logger
@@ -33,6 +38,20 @@ type (
 		BaseTs, LastTs, BeforeScaleChangedTs time.Duration
 		LastScale                            float64
 	}
+	SpeedController struct {
+		speed          float64
+		pausedTime     time.Duration
+		beginTime      time.Time
+		beginTimestamp time.Duration
+		Delta          time.Duration
+	}
+	DropController struct {
+		acceptFrameCount    int
+		accpetFPS           int
+		LastDropLevelChange time.Time
+		DropFrameLevel      int // 0: no drop, 1: drop P-frame, 2: drop all
+	}
+
 	AVTrack struct {
 		Track
 		*RingWriter
@@ -41,8 +60,8 @@ type (
 		SequenceFrame IAVFrame
 		WrapIndex     int
 		TsTamer
-		DropFrameLevel      int // 0: no drop, 1: drop P-frame, 2: drop all
-		LastDropLevelChange time.Time
+		SpeedController
+		DropController
 	}
 )
 
@@ -90,18 +109,56 @@ func (t *Track) AddBytesIn(n int) {
 	}
 }
 
-func (t *AVTrack) FixFPS() {
-	if dur := time.Since(t.lastBPSTime); dur > time.Second {
-		t.BPS = int(float64(t.bytesIn) / dur.Seconds())
-		t.bytesIn = 0
-		t.FPS = int(float64(t.frameCount) / dur.Seconds())
-		t.frameCount = 0
-		t.lastBPSTime = time.Now()
+func (t *AVTrack) AddBytesIn(n int) {
+	dur := time.Since(t.lastBPSTime)
+	t.Track.AddBytesIn(n)
+	if t.frameCount == 0 {
+		t.accpetFPS = int(float64(t.acceptFrameCount) / dur.Seconds())
+		t.acceptFrameCount = 0
 	}
 }
 
+func (t *AVTrack) AcceptFrame(data IAVFrame) {
+	t.acceptFrameCount++
+	t.Value.Wraps = append(t.Value.Wraps, data)
+}
+
+func (t *AVTrack) changeDropFrameLevel(newLevel int) {
+	t.Warn("change drop frame level", "from", t.DropFrameLevel, "to", newLevel)
+	t.DropFrameLevel = newLevel
+	t.LastDropLevelChange = time.Now()
+}
+
 func (t *AVTrack) CheckIfNeedDropFrame(maxFPS int) (drop bool) {
-	return maxFPS > 0 && (t.FPS > maxFPS || t.frameCount > maxFPS)
+	drop = maxFPS > 0 && (t.accpetFPS > maxFPS)
+	if drop {
+		defer func() {
+			if time.Since(t.LastDropLevelChange) > time.Second && t.DropFrameLevel > 0 {
+				t.changeDropFrameLevel(t.DropFrameLevel + 1)
+			}
+		}()
+	}
+	// Enhanced frame dropping strategy based on DropFrameLevel
+	switch t.DropFrameLevel {
+	case DROP_FRAME_LEVEL_NODROP:
+		if drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_DROP_P)
+		}
+	case DROP_FRAME_LEVEL_DROP_P: // Drop P-frame
+		if !t.Value.IDR {
+			return true
+		} else if !drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_NODROP)
+		}
+		return false
+	default:
+		if !drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_DROP_P)
+		} else {
+			return true
+		}
+	}
+	return
 }
 
 func (t *AVTrack) Ready(err error) {
@@ -150,7 +207,7 @@ func (t *TsTamer) Tame(ts time.Duration, fps int, scale float64) (result time.Du
 	result = max(1*time.Millisecond, t.BaseTs+ts)
 	if fps > 0 {
 		frameDur := float64(time.Second) / float64(fps)
-		if math.Abs(float64(result-t.LastTs)) > 10*frameDur { //时间戳突变
+		if math.Abs(float64(result-t.LastTs)) > 10*frameDur*scale { //时间戳突变
 			// t.Warn("timestamp mutation", "fps", t.FPS, "lastTs", uint32(t.LastTs/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "frameDur", time.Duration(frameDur))
 			result = t.LastTs + time.Duration(frameDur)
 			t.BaseTs = result - ts
@@ -163,4 +220,33 @@ func (t *TsTamer) Tame(ts time.Duration, fps int, scale float64) (result time.Du
 	}
 	result = t.BeforeScaleChangedTs + time.Duration(float64(result-t.BeforeScaleChangedTs)/scale)
 	return
+}
+
+func (t *AVTrack) SpeedControl(speed float64) {
+	t.speedControl(speed, t.LastTs)
+}
+
+func (t *AVTrack) AddPausedTime(d time.Duration) {
+	t.pausedTime += d
+}
+
+func (s *SpeedController) speedControl(speed float64, ts time.Duration) {
+	if speed != s.speed || s.beginTime.IsZero() {
+		s.speed = speed
+		s.beginTime = time.Now()
+		s.beginTimestamp = ts
+		s.pausedTime = 0
+	} else {
+		elapsed := time.Since(s.beginTime) - s.pausedTime
+		if speed == 0 {
+			s.Delta = ts - elapsed
+			return
+		}
+		should := time.Duration(float64(ts-s.beginTimestamp) / speed)
+		s.Delta = should - elapsed
+		// fmt.Println(speed, elapsed, should, s.Delta)
+		if s.Delta > threshold {
+			time.Sleep(min(s.Delta, time.Millisecond*500))
+		}
+	}
 }

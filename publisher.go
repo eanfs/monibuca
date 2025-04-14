@@ -36,40 +36,8 @@ const (
 	PublishTypeReplay    = "replay"
 )
 
-const threshold = 10 * time.Millisecond
-
-type SpeedControl struct {
-	speed          float64
-	pausedTime     time.Duration
-	beginTime      time.Time
-	beginTimestamp time.Duration
-	Delta          time.Duration
-}
-
-func (s *SpeedControl) speedControl(speed float64, ts time.Duration) {
-	if speed != s.speed || s.beginTime.IsZero() {
-		s.speed = speed
-		s.beginTime = time.Now()
-		s.beginTimestamp = ts
-		s.pausedTime = 0
-	} else {
-		elapsed := time.Since(s.beginTime) - s.pausedTime
-		if speed == 0 {
-			s.Delta = ts - elapsed
-			return
-		}
-		should := time.Duration(float64(ts-s.beginTimestamp) / speed)
-		s.Delta = should - elapsed
-		// fmt.Println(speed, elapsed, should, s.Delta)
-		if s.Delta > threshold {
-			time.Sleep(min(s.Delta, time.Millisecond*500))
-		}
-	}
-}
-
 type AVTracks struct {
 	*AVTrack
-	SpeedControl
 	util.Collection[reflect.Type, *AVTrack]
 	sync.RWMutex
 	baseTs time.Duration //from old publisher's lastTs
@@ -145,7 +113,6 @@ type Publisher struct {
 	OnGetPosition          func() time.Time
 	PullProxyConfig        *PullProxyConfig
 	dumpFile               *os.File
-	dropRate               float64 // 丢帧率，0-1之间
 	dropAfterTs            time.Duration
 }
 
@@ -317,18 +284,21 @@ func (p *Publisher) AddSubscriber(subscriber *Subscriber) {
 	}
 }
 
-func (p *Publisher) writeAV(t *AVTrack, data IAVFrame) {
+func (p *Publisher) fixTimestamp(t *AVTrack, data IAVFrame) {
 	frame := &t.Value
-	frame.Wraps = append(frame.Wraps, data)
 	ts := data.GetTimestamp()
 	frame.CTS = data.GetCTS()
-	bytesIn := frame.Wraps[0].GetSize()
+	bytesIn := data.GetSize()
 	t.AddBytesIn(bytesIn)
 	frame.Timestamp = t.Tame(ts, t.FPS, p.Scale)
+}
+
+func (p *Publisher) writeAV(t *AVTrack, data IAVFrame) {
+	t.AcceptFrame(data)
 	if p.Enabled(p, task.TraceLevel) {
+		frame := &t.Value
 		codec := t.FourCC().String()
-		data := frame.Wraps[0].String()
-		p.Trace("write", "seq", frame.Sequence, "baseTs", int32(t.BaseTs/time.Millisecond), "ts0", uint32(ts/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "codec", codec, "size", bytesIn, "data", data)
+		p.Trace("write", "seq", frame.Sequence, "baseTs", int32(t.BaseTs/time.Millisecond), "ts0", uint32(data.GetTimestamp()/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "codec", codec, "size", data.GetSize(), "data", data.String())
 	}
 }
 
@@ -341,53 +311,13 @@ func (p *Publisher) trackAdded() error {
 	return nil
 }
 
-func (p *Publisher) changeDropFrameLevel(newLevel int) {
-	p.Warn("change drop frame level", "from", p.VideoTrack.AVTrack.DropFrameLevel, "to", newLevel)
-	p.VideoTrack.AVTrack.DropFrameLevel = newLevel
-	p.VideoTrack.AVTrack.LastDropLevelChange = time.Now()
-}
-
-func (p *Publisher) dropFrame(t *AVTrack) (drop bool) {
-	needDropFrame := t.CheckIfNeedDropFrame(p.MaxFPS)
-	if needDropFrame {
-		dropRatio := float64(t.FPS)/float64(p.MaxFPS) - 1 // How many frames to drop for each frame kept
-		p.dropRate = dropRatio / (dropRatio + 1)          // 计算丢帧率
-		defer func() {
-			if time.Since(t.LastDropLevelChange) > time.Second && t.DropFrameLevel > 0 {
-				p.changeDropFrameLevel(t.DropFrameLevel + 1)
-			}
-		}()
-	}
-	// Enhanced frame dropping strategy based on DropFrameLevel
-	switch t.DropFrameLevel {
-	case 0:
-		if needDropFrame {
-			p.changeDropFrameLevel(1)
-		}
-	case 1: // Drop P-frame
-		if !t.Value.IDR {
-			return true
-		} else if !needDropFrame {
-			p.changeDropFrameLevel(0)
-		}
-	default:
-		if !needDropFrame {
-			p.changeDropFrameLevel(1)
-		} else {
-			return true
-		}
-	}
-	return
-}
-
 func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
-	t := p.VideoTrack.AVTrack
 	defer func() {
 		if err != nil {
 			data.Recycle()
-		}
-		if t != nil {
-			t.FixFPS()
+			if err == ErrSkip {
+				err = nil
+			}
 		}
 	}()
 	if err = p.Err(); err != nil {
@@ -399,15 +329,17 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	if !p.PubVideo {
 		return ErrMuted
 	}
+	t := p.VideoTrack.AVTrack
 	if t == nil {
 		t = NewAVTrack(data, p.Logger.With("track", "video"), &p.Publish, p.videoReady)
 		p.VideoTrack.Set(t)
 		p.Call(p.trackAdded)
 	}
+	p.fixTimestamp(t, data)
+	defer t.SpeedControl(p.Speed)
 	oldCodecCtx := t.ICodecCtx
 	err = data.Parse(t)
-	if err == ErrSkip {
-		data.Recycle()
+	if err != nil {
 		return nil
 	}
 	codecCtxChanged := oldCodecCtx != t.ICodecCtx
@@ -429,10 +361,9 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	var idr *util.Ring[AVFrame]
 	if t.IDRingList.Len() > 0 {
 		idr = t.IDRingList.Back().Value
-		if p.dropFrame(t) {
+		if t.CheckIfNeedDropFrame(p.MaxFPS) {
 			p.dropAfterTs = t.LastTs
-			data.Recycle()
-			return nil
+			return ErrSkip
 		} else {
 			p.dropAfterTs = 0
 		}
@@ -492,7 +423,6 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 		}
 	}
 	t.Step()
-	p.VideoTrack.speedControl(p.Speed, t.LastTs)
 	return
 }
 
@@ -501,9 +431,9 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 	defer func() {
 		if err != nil {
 			data.Recycle()
-		}
-		if t != nil {
-			t.FixFPS()
+			if err == ErrSkip {
+				err = nil
+			}
 		}
 	}()
 	if err = p.Err(); err != nil {
@@ -515,26 +445,27 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 	if !p.PubAudio {
 		return ErrMuted
 	}
-	// 根据丢帧率进行音频帧丢弃
-	if p.dropAfterTs > 0 {
-		if t != nil {
-			// 使用序列号进行平均丢帧
-			if t.LastTs > p.dropAfterTs {
-				data.Recycle()
-				return nil
-			}
-		}
-	}
+
 	if t == nil {
 		t = NewAVTrack(data, p.Logger.With("track", "audio"), &p.Publish, p.audioReady)
 		p.AudioTrack.Set(t)
 		p.Call(p.trackAdded)
 	}
+	p.fixTimestamp(t, data)
+	defer t.SpeedControl(p.Speed)
+	// 根据丢帧率进行音频帧丢弃
+	if p.dropAfterTs > 0 {
+		if t != nil {
+			// 使用序列号进行平均丢帧
+			if t.LastTs > p.dropAfterTs {
+				return ErrSkip
+			}
+		}
+	}
 	oldCodecCtx := t.ICodecCtx
 	err = data.Parse(t)
-	if err == ErrSkip {
-		data.Recycle()
-		return nil
+	if err != nil {
+		return
 	}
 	codecCtxChanged := oldCodecCtx != t.ICodecCtx
 	if t.ICodecCtx == nil {
@@ -584,7 +515,6 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 		}
 	}
 	t.Step()
-	p.AudioTrack.speedControl(p.Speed, t.LastTs)
 	return
 }
 
@@ -738,8 +668,12 @@ func (p *Publisher) Resume() {
 	}
 	p.Paused.Resolve()
 	p.Paused = nil
-	p.VideoTrack.pausedTime += time.Since(p.pauseTime)
-	p.AudioTrack.pausedTime += time.Since(p.pauseTime)
+	if p.HasVideoTrack() {
+		p.VideoTrack.AddPausedTime(time.Since(p.pauseTime))
+	}
+	if p.HasAudioTrack() {
+		p.AudioTrack.AddPausedTime(time.Since(p.pauseTime))
+	}
 }
 
 func (p *Publisher) Seek(ts time.Time) {
