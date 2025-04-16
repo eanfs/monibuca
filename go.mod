@@ -35,7 +35,7 @@ require (
 	github.com/pion/rtp v1.8.10
 	github.com/pion/sdp/v3 v3.0.9
 	github.com/pion/webrtc/v4 v4.0.7
-	github.com/quic-go/quic-go v0.43.1
+	github.com/quic-go/quic-go v0.50.1
 	github.com/rs/zerolog v1.33.0
 	github.com/samber/slog-common v0.17.1
 	github.com/shirou/gopsutil/v4 v4.24.8
@@ -106,6 +106,7 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/samber/lo v1.44.0 // indirect
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
@@ -140,7 +141,7 @@ require (
 	github.com/phsym/console-slog v0.3.1
 	github.com/prometheus/client_golang v1.20.4
 	github.com/quangngotan95/go-m3u8 v0.1.0
-	go.uber.org/mock v0.4.0 // indirect
+	go.uber.org/mock v0.5.0 // indirect
 	golang.org/x/crypto v0.29.0
 	golang.org/x/exp v0.0.0-20240716175740-e3f259677ff7
 	golang.org/x/mod v0.19.0 // indirect

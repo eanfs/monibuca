@@ -161,6 +161,9 @@ func (p *HTTPFilePuller) Start() (err error) {
 	if err = p.PullJob.Publish(); err != nil {
 		return
 	}
+	if p.ReadCloser != nil {
+		return
+	}
 	remoteURL := p.PullJob.RemoteURL
 	if strings.HasPrefix(remoteURL, "http") {
 		var res *http.Response
