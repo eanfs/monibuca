@@ -29,6 +29,7 @@ type (
 		moov         IBox
 		mdatOffset   uint64
 		mdatSize     uint64
+		StreamPath   string // Added to store the stream path
 	}
 )
 
@@ -52,6 +53,13 @@ func NewMuxer(flag Flag) *Muxer {
 		Flag:           flag,
 		fragDuration:   2000,
 	}
+}
+
+// NewMuxerWithStreamPath creates a new muxer with the specified stream path
+func NewMuxerWithStreamPath(flag Flag, streamPath string) *Muxer {
+	muxer := NewMuxer(flag)
+	muxer.StreamPath = streamPath
+	return muxer
 }
 
 func (m *Muxer) CreateFTYPBox() *FileTypeBox {
@@ -223,6 +231,14 @@ func (m *Muxer) MakeMoov() IBox {
 	if m.isDash() || m.isFragment() {
 		children = append(children, m.makeMvex())
 	}
+
+	// Add user data box with stream path if available
+	if m.StreamPath != "" {
+		streamPathBox := CreateStreamPathBox(m.StreamPath)
+		udta := CreateUserDataBox(streamPathBox)
+		children = append(children, udta)
+	}
+
 	m.moov = CreateContainerBox(TypeMOOV, children...)
 	return m.moov
 }

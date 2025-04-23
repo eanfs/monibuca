@@ -446,3 +446,8 @@ func (d *Demuxer) RangeSample(yield func(*Track, *Sample) bool) {
 		}
 	}
 }
+
+// GetMoovBox returns the Movie Box from the demuxer
+func (d *Demuxer) GetMoovBox() *MoovBox {
+	return d.moov
+}

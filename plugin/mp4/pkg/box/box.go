@@ -342,6 +342,8 @@ var (
 	TypeMETA = f("meta")
 	TypeAUXV = f("auxv")
 	TypeHINT = f("hint")
+	TypeUDTA = f("udta")
+	TypeM7SP = f("m7sp") // Custom box type for M7S StreamPath
 )
 
 //	aligned(8) class Box (unsigned int(32) boxtype, optional unsigned int(8)[16] extended_type) {

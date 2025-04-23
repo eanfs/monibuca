@@ -9,9 +9,9 @@ type (
 	MoovBox struct {
 		BaseBox
 		Tracks []*TrakBox
-		// UDTA   *UdtaBody
-		MVHD *MovieHeaderBox
-		MVEX *MovieExtendsBox
+		UDTA   *UserDataBox
+		MVHD   *MovieHeaderBox
+		MVEX   *MovieExtendsBox
 	}
 
 	EdtsBox struct {
@@ -25,6 +25,12 @@ func (m *MoovBox) WriteTo(w io.Writer) (n int64, err error) {
 	boxes = append(boxes, m.MVHD)
 	for _, track := range m.Tracks {
 		boxes = append(boxes, track)
+	}
+	if m.MVEX != nil {
+		boxes = append(boxes, m.MVEX)
+	}
+	if m.UDTA != nil {
+		boxes = append(boxes, m.UDTA)
 	}
 	return WriteTo(w, boxes...)
 }
@@ -43,6 +49,8 @@ func (m *MoovBox) Unmarshal(buf []byte) (IBox, error) {
 			m.MVHD = box
 		case *MovieExtendsBox:
 			m.MVEX = box
+		case *UserDataBox:
+			m.UDTA = box
 		}
 	}
 }

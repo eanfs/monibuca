@@ -56,6 +56,7 @@ type MP4Plugin struct {
 	RecordFileExpireDays     int           `desc:"录像自动删除的天数,0或未设置表示不自动删除"`
 	DiskMaxPercent           float64       `default:"90" desc:"硬盘使用百分之上限值，超上限后触发报警，并停止当前所有磁盘写入动作。"`
 	AutoOverWriteDiskPercent float64       `default:"0" desc:"自动覆盖功能磁盘占用上限值，超过上限时连续录像自动删除日有录像，事件录像自动删除非重要事件录像，删除规则为删除距离当日最久日期的连续录像或非重要事件录像。"`
+	AutoRecovery             bool          `default:"true" desc:"是否自动恢复"`
 	ExceptionPostUrl         string        `desc:"第三方异常上报地址"`
 	EventRecordFilePath      string        `desc:"事件录像存放地址"`
 }
@@ -80,15 +81,26 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 }
 
 func (p *MP4Plugin) OnInit() (err error) {
-	if p.DB != nil && p.AutoOverWriteDiskPercent > 0 {
+	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
-		var deleteRecordTask DeleteRecordTask
-		deleteRecordTask.DB = p.DB
-		deleteRecordTask.DiskMaxPercent = p.DiskMaxPercent
-		deleteRecordTask.AutoOverWriteDiskPercent = p.AutoOverWriteDiskPercent
-		deleteRecordTask.RecordFileExpireDays = p.RecordFileExpireDays
-		deleteRecordTask.plugin = p
-		p.AddTask(&deleteRecordTask)
+		if err != nil {
+			return
+		}
+		if p.AutoOverWriteDiskPercent > 0 {
+			var deleteRecordTask DeleteRecordTask
+			deleteRecordTask.DB = p.DB
+			deleteRecordTask.DiskMaxPercent = p.DiskMaxPercent
+			deleteRecordTask.AutoOverWriteDiskPercent = p.AutoOverWriteDiskPercent
+			deleteRecordTask.RecordFileExpireDays = p.RecordFileExpireDays
+			deleteRecordTask.plugin = p
+			p.AddTask(&deleteRecordTask)
+		}
+		if p.AutoRecovery {
+			var recoveryTask RecordRecoveryTask
+			recoveryTask.DB = p.DB
+			recoveryTask.plugin = p
+			p.AddTask(&recoveryTask)
+		}
 	}
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {

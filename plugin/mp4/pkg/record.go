@@ -203,9 +203,9 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	}
 	if recordJob.RecConf.Type == "fmp4" {
 		r.stream.Type = "fmp4"
-		r.muxer = NewMuxer(FLAG_FRAGMENT)
+		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.stream.StreamPath)
 	} else {
-		r.muxer = NewMuxer(0)
+		r.muxer = NewMuxerWithStreamPath(0, r.stream.StreamPath)
 	}
 	r.muxer.WriteInitSegment(r.file)
 	if sub.Publisher.HasAudioTrack() {
