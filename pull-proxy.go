@@ -372,11 +372,15 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		} else {
 			conf.Name = target.Name
 			conf.PullOnStart = target.PullOnStart
-			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
-				device.Pull()
-			}
 			conf.StopOnIdle = target.StopOnIdle
 			conf.Description = target.Description
+			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
+				device.Pull()
+			} else if target.Status == PullProxyStatusPulling {
+				if pullJob, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok && pullJob.Publisher != nil {
+					pullJob.Publisher.Publish.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
+				}
+			}
 		}
 	}
 	res = &pb.SuccessResponse{}
