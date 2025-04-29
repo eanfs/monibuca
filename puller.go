@@ -198,6 +198,7 @@ func (p *HTTPFilePuller) GetPullJob() *PullJob {
 
 func (p *HTTPFilePuller) Dispose() {
 	p.ReadCloser.Close()
+	p.ReadCloser = nil
 }
 
 func (p *RecordFilePuller) GetPullJob() *PullJob {

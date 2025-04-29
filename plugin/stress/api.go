@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mcuadros/go-defaults"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
 
@@ -23,6 +24,7 @@ func (r *StressPlugin) pull(count int, url string, puller m7s.PullerFactory) (er
 	if i := r.pullers.Length; count > i {
 		for j := i; j < count; j++ {
 			conf := config.Pull{}
+			defaults.SetDefaults(&conf)
 			if hasPlaceholder {
 				conf.URL = fmt.Sprintf(url, j)
 			} else {
@@ -51,7 +53,9 @@ func (r *StressPlugin) push(count int, streamPath, url string, pusher m7s.Pusher
 	if i := r.pushers.Length; count > i {
 		for j := i; j < count; j++ {
 			p := pusher()
-			ctx := p.GetPushJob().Init(p, &r.Plugin, streamPath, config.Push{URL: fmt.Sprintf(url, j)}, nil)
+			conf := config.Push{URL: fmt.Sprintf(url, j)}
+			defaults.SetDefaults(&conf)
+			ctx := p.GetPushJob().Init(p, &r.Plugin, streamPath, conf, nil)
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}

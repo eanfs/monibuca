@@ -30,6 +30,8 @@ func (avcc *RTMPVideo) GetCTS() time.Duration {
 func (avcc *RTMPVideo) filterH264(naluSizeLen int) {
 	reader := avcc.NewReader()
 	lenReader := reader.NewReader()
+	reader.Skip(5)
+	lenReader.Skip(5)
 	var afterFilter util.Memory
 	allocator := avcc.GetAllocator()
 	var hasBadNalu bool
