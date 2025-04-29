@@ -917,22 +917,28 @@ func (x *Channel) GetLatitude() string {
 }
 
 type Device struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeviceID      string                 `protobuf:"bytes,1,opt,name=DeviceID,proto3" json:"DeviceID,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=Name,proto3" json:"Name,omitempty"`
-	Manufacturer  string                 `protobuf:"bytes,3,opt,name=Manufacturer,proto3" json:"Manufacturer,omitempty"`
-	Model         string                 `protobuf:"bytes,4,opt,name=Model,proto3" json:"Model,omitempty"`
-	Longitude     string                 `protobuf:"bytes,5,opt,name=Longitude,proto3" json:"Longitude,omitempty"`
-	Latitude      string                 `protobuf:"bytes,6,opt,name=Latitude,proto3" json:"Latitude,omitempty"`
-	Status        string                 `protobuf:"bytes,7,opt,name=Status,proto3" json:"Status,omitempty"`
-	RegisterTime  *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=RegisterTime,proto3" json:"RegisterTime,omitempty"`
-	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=UpdateTime,proto3" json:"UpdateTime,omitempty"`
-	KeepAliveTime *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=KeepAliveTime,proto3" json:"KeepAliveTime,omitempty"`
-	ChannelCount  int32                  `protobuf:"varint,12,opt,name=ChannelCount,proto3" json:"ChannelCount,omitempty"`
-	Online        bool                   `protobuf:"varint,13,opt,name=Online,proto3" json:"Online,omitempty"`
-	Channels      []*Channel             `protobuf:"bytes,14,rep,name=Channels,proto3" json:"Channels,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DeviceID          string                 `protobuf:"bytes,1,opt,name=deviceID,proto3" json:"deviceID,omitempty"`
+	Name              string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Manufacturer      string                 `protobuf:"bytes,3,opt,name=manufacturer,proto3" json:"manufacturer,omitempty"`
+	Model             string                 `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
+	Longitude         string                 `protobuf:"bytes,5,opt,name=longitude,proto3" json:"longitude,omitempty"`
+	Latitude          string                 `protobuf:"bytes,6,opt,name=latitude,proto3" json:"latitude,omitempty"`
+	Status            string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	MediaIP           string                 `protobuf:"bytes,8,opt,name=mediaIP,proto3" json:"mediaIP,omitempty"`
+	RegisterTime      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=registerTime,proto3" json:"registerTime,omitempty"`
+	UpdateTime        *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=updateTime,proto3" json:"updateTime,omitempty"`
+	KeepAliveTime     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=keepAliveTime,proto3" json:"keepAliveTime,omitempty"`
+	ChannelCount      int32                  `protobuf:"varint,12,opt,name=channelCount,proto3" json:"channelCount,omitempty"`
+	Online            bool                   `protobuf:"varint,13,opt,name=online,proto3" json:"online,omitempty"`
+	Channels          []*Channel             `protobuf:"bytes,14,rep,name=channels,proto3" json:"channels,omitempty"`
+	SipIP             string                 `protobuf:"bytes,15,opt,name=sipIP,proto3" json:"sipIP,omitempty"`
+	StreamMode        string                 `protobuf:"bytes,16,opt,name=streamMode,proto3" json:"streamMode,omitempty"`
+	Password          string                 `protobuf:"bytes,17,opt,name=password,proto3" json:"password,omitempty"`
+	SubscribeCatalog  bool                   `protobuf:"varint,18,opt,name=subscribeCatalog,proto3" json:"subscribeCatalog,omitempty"`
+	SubscribePosition bool                   `protobuf:"varint,19,opt,name=subscribePosition,proto3" json:"subscribePosition,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Device) Reset() {
@@ -1014,6 +1020,13 @@ func (x *Device) GetStatus() string {
 	return ""
 }
 
+func (x *Device) GetMediaIP() string {
+	if x != nil {
+		return x.MediaIP
+	}
+	return ""
+}
+
 func (x *Device) GetRegisterTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.RegisterTime
@@ -1054,6 +1067,41 @@ func (x *Device) GetChannels() []*Channel {
 		return x.Channels
 	}
 	return nil
+}
+
+func (x *Device) GetSipIP() string {
+	if x != nil {
+		return x.SipIP
+	}
+	return ""
+}
+
+func (x *Device) GetStreamMode() string {
+	if x != nil {
+		return x.StreamMode
+	}
+	return ""
+}
+
+func (x *Device) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *Device) GetSubscribeCatalog() bool {
+	if x != nil {
+		return x.SubscribeCatalog
+	}
+	return false
+}
+
+func (x *Device) GetSubscribePosition() bool {
+	if x != nil {
+		return x.SubscribePosition
+	}
+	return false
 }
 
 type ResponseList struct {
@@ -6087,24 +6135,32 @@ const file_gb28181_proto_rawDesc = "" +
 	"\x06Status\x18\x10 \x01(\tR\x06Status\x124\n" +
 	"\aGpsTime\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\aGpsTime\x12\x1c\n" +
 	"\tLongitude\x18\x12 \x01(\tR\tLongitude\x12\x1a\n" +
-	"\bLatitude\x18\x13 \x01(\tR\bLatitude\"\xef\x03\n" +
+	"\bLatitude\x18\x13 \x01(\tR\bLatitude\"\xb5\x05\n" +
 	"\x06Device\x12\x1a\n" +
-	"\bDeviceID\x18\x01 \x01(\tR\bDeviceID\x12\x12\n" +
-	"\x04Name\x18\x02 \x01(\tR\x04Name\x12\"\n" +
-	"\fManufacturer\x18\x03 \x01(\tR\fManufacturer\x12\x14\n" +
-	"\x05Model\x18\x04 \x01(\tR\x05Model\x12\x1c\n" +
-	"\tLongitude\x18\x05 \x01(\tR\tLongitude\x12\x1a\n" +
-	"\bLatitude\x18\x06 \x01(\tR\bLatitude\x12\x16\n" +
-	"\x06Status\x18\a \x01(\tR\x06Status\x12>\n" +
-	"\fRegisterTime\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\fRegisterTime\x12:\n" +
+	"\bdeviceID\x18\x01 \x01(\tR\bdeviceID\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\"\n" +
+	"\fmanufacturer\x18\x03 \x01(\tR\fmanufacturer\x12\x14\n" +
+	"\x05model\x18\x04 \x01(\tR\x05model\x12\x1c\n" +
+	"\tlongitude\x18\x05 \x01(\tR\tlongitude\x12\x1a\n" +
+	"\blatitude\x18\x06 \x01(\tR\blatitude\x12\x16\n" +
+	"\x06status\x18\a \x01(\tR\x06status\x12\x18\n" +
+	"\amediaIP\x18\b \x01(\tR\amediaIP\x12>\n" +
+	"\fregisterTime\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\fregisterTime\x12:\n" +
 	"\n" +
-	"UpdateTime\x18\n" +
+	"updateTime\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"UpdateTime\x12@\n" +
-	"\rKeepAliveTime\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\rKeepAliveTime\x12\"\n" +
-	"\fChannelCount\x18\f \x01(\x05R\fChannelCount\x12\x16\n" +
-	"\x06Online\x18\r \x01(\bR\x06Online\x12/\n" +
-	"\bChannels\x18\x0e \x03(\v2\x13.gb28181pro.ChannelR\bChannels\"d\n" +
+	"updateTime\x12@\n" +
+	"\rkeepAliveTime\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\rkeepAliveTime\x12\"\n" +
+	"\fchannelCount\x18\f \x01(\x05R\fchannelCount\x12\x16\n" +
+	"\x06online\x18\r \x01(\bR\x06online\x12/\n" +
+	"\bchannels\x18\x0e \x03(\v2\x13.gb28181pro.ChannelR\bchannels\x12\x14\n" +
+	"\x05sipIP\x18\x0f \x01(\tR\x05sipIP\x12\x1e\n" +
+	"\n" +
+	"streamMode\x18\x10 \x01(\tR\n" +
+	"streamMode\x12\x1a\n" +
+	"\bpassword\x18\x11 \x01(\tR\bpassword\x12*\n" +
+	"\x10subscribeCatalog\x18\x12 \x01(\bR\x10subscribeCatalog\x12,\n" +
+	"\x11subscribePosition\x18\x13 \x01(\bR\x11subscribePosition\"d\n" +
 	"\fResponseList\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
@@ -6517,7 +6573,7 @@ const file_gb28181_proto_rawDesc = "" +
 	"streamPath\x12\x14\n" +
 	"\x05speed\x18\x02 \x01(\x01R\x05speed\"%\n" +
 	"\x13RemoveDeviceRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id2\xff=\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id2\x85>\n" +
 	"\x03api\x12]\n" +
 	"\x04List\x12\x1d.gb28181pro.GetDevicesRequest\x1a\x1b.gb28181pro.DevicesPageInfo\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/gb28181/api/list\x12n\n" +
 	"\tGetDevice\x12\x1c.gb28181pro.GetDeviceRequest\x1a\x1a.gb28181pro.DeviceResponse\"'\x82\xd3\xe4\x93\x02!\x12\x1f/gb28181/api/devices/{deviceId}\x12f\n" +
@@ -6529,10 +6585,10 @@ const file_gb28181_proto_rawDesc = "" +
 	"\fDeleteDevice\x12\x1f.gb28181pro.DeleteDeviceRequest\x1a .gb28181pro.DeleteDeviceResponse\".\x82\xd3\xe4\x93\x02(*&/gb28181/api/devices/{deviceId}/delete\x12\x94\x01\n" +
 	"\x0eGetSubChannels\x12!.gb28181pro.GetSubChannelsRequest\x1a\x1c.gb28181pro.ChannelsPageInfo\"A\x82\xd3\xe4\x93\x02;\x129/gb28181/api/sub_channels/{deviceId}/{channelId}/channels\x12n\n" +
 	"\vChangeAudio\x12\x1e.gb28181pro.ChangeAudioRequest\x1a\x18.gb28181pro.BaseResponse\"%\x82\xd3\xe4\x93\x02\x1f:\x01*\"\x1a/gb28181/api/channel/audio\x12\x90\x01\n" +
-	"!UpdateChannelStreamIdentification\x12\x13.gb28181pro.Channel\x1a\x18.gb28181pro.BaseResponse\"<\x82\xd3\xe4\x93\x026:\x01*\"1/gb28181/api/channel/stream/identification/update\x12\x85\x01\n" +
-	"\x0fUpdateTransport\x12\".gb28181pro.UpdateTransportRequest\x1a\x16.google.protobuf.Empty\"6\x82\xd3\xe4\x93\x020\"./gb28181/api/transport/{deviceId}/{streamMode}\x12[\n" +
-	"\tAddDevice\x12\x12.gb28181pro.Device\x1a\x16.google.protobuf.Empty\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/gb28181/api/device/add\x12a\n" +
-	"\fUpdateDevice\x12\x12.gb28181pro.Device\x1a\x16.google.protobuf.Empty\"%\x82\xd3\xe4\x93\x02\x1f:\x01*\"\x1a/gb28181/api/device/update\x12\x87\x01\n" +
+	"!UpdateChannelStreamIdentification\x12\x13.gb28181pro.Channel\x1a\x18.gb28181pro.BaseResponse\"<\x82\xd3\xe4\x93\x026:\x01*\"1/gb28181/api/channel/stream/identification/update\x12\x87\x01\n" +
+	"\x0fUpdateTransport\x12\".gb28181pro.UpdateTransportRequest\x1a\x18.gb28181pro.BaseResponse\"6\x82\xd3\xe4\x93\x020\"./gb28181/api/transport/{deviceId}/{streamMode}\x12]\n" +
+	"\tAddDevice\x12\x12.gb28181pro.Device\x1a\x18.gb28181pro.BaseResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/gb28181/api/device/add\x12c\n" +
+	"\fUpdateDevice\x12\x12.gb28181pro.Device\x1a\x18.gb28181pro.BaseResponse\"%\x82\xd3\xe4\x93\x02\x1f:\x01*\"\x1a/gb28181/api/device/update\x12\x87\x01\n" +
 	"\x0fGetDeviceStatus\x12\".gb28181pro.GetDeviceStatusRequest\x1a .gb28181pro.DeviceStatusResponse\".\x82\xd3\xe4\x93\x02(\x12&/gb28181/api/devices/{deviceId}/status\x12{\n" +
 	"\x0eGetDeviceAlarm\x12!.gb28181pro.GetDeviceAlarmRequest\x1a\x1f.gb28181pro.DeviceAlarmResponse\"%\x82\xd3\xe4\x93\x02\x1f\x12\x1d/gb28181/api/alarm/{deviceId}\x12v\n" +
 	"\rGetSyncStatus\x12 .gb28181pro.GetSyncStatusRequest\x1a\x16.gb28181pro.SyncStatus\"+\x82\xd3\xe4\x93\x02%\x12#/gb28181/api/{deviceId}/sync_status\x12\x8a\x01\n" +
@@ -6700,10 +6756,10 @@ var file_gb28181_proto_depIdxs = []int32{
 	12, // 0: gb28181pro.DevicesPageInfo.data:type_name -> gb28181pro.Device
 	11, // 1: gb28181pro.ChannelsPageInfo.list:type_name -> gb28181pro.Channel
 	87, // 2: gb28181pro.Channel.GpsTime:type_name -> google.protobuf.Timestamp
-	87, // 3: gb28181pro.Device.RegisterTime:type_name -> google.protobuf.Timestamp
-	87, // 4: gb28181pro.Device.UpdateTime:type_name -> google.protobuf.Timestamp
-	87, // 5: gb28181pro.Device.KeepAliveTime:type_name -> google.protobuf.Timestamp
-	11, // 6: gb28181pro.Device.Channels:type_name -> gb28181pro.Channel
+	87, // 3: gb28181pro.Device.registerTime:type_name -> google.protobuf.Timestamp
+	87, // 4: gb28181pro.Device.updateTime:type_name -> google.protobuf.Timestamp
+	87, // 5: gb28181pro.Device.keepAliveTime:type_name -> google.protobuf.Timestamp
+	11, // 6: gb28181pro.Device.channels:type_name -> gb28181pro.Channel
 	12, // 7: gb28181pro.ResponseList.data:type_name -> gb28181pro.Device
 	20, // 8: gb28181pro.DeviceAlarmResponse.data:type_name -> gb28181pro.AlarmInfo
 	85, // 9: gb28181pro.SubscribeInfoResponse.dialogState:type_name -> gb28181pro.SubscribeInfoResponse.DialogStateEntry
@@ -6799,9 +6855,9 @@ var file_gb28181_proto_depIdxs = []int32{
 	5,  // 99: gb28181pro.api.GetSubChannels:output_type -> gb28181pro.ChannelsPageInfo
 	0,  // 100: gb28181pro.api.ChangeAudio:output_type -> gb28181pro.BaseResponse
 	0,  // 101: gb28181pro.api.UpdateChannelStreamIdentification:output_type -> gb28181pro.BaseResponse
-	88, // 102: gb28181pro.api.UpdateTransport:output_type -> google.protobuf.Empty
-	88, // 103: gb28181pro.api.AddDevice:output_type -> google.protobuf.Empty
-	88, // 104: gb28181pro.api.UpdateDevice:output_type -> google.protobuf.Empty
+	0,  // 102: gb28181pro.api.UpdateTransport:output_type -> gb28181pro.BaseResponse
+	0,  // 103: gb28181pro.api.AddDevice:output_type -> gb28181pro.BaseResponse
+	0,  // 104: gb28181pro.api.UpdateDevice:output_type -> gb28181pro.BaseResponse
 	17, // 105: gb28181pro.api.GetDeviceStatus:output_type -> gb28181pro.DeviceStatusResponse
 	19, // 106: gb28181pro.api.GetDeviceAlarm:output_type -> gb28181pro.DeviceAlarmResponse
 	7,  // 107: gb28181pro.api.GetSyncStatus:output_type -> gb28181pro.SyncStatus

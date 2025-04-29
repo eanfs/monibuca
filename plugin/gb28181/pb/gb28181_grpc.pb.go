@@ -112,11 +112,11 @@ type ApiClient interface {
 	// 修改通道的码流类型
 	UpdateChannelStreamIdentification(ctx context.Context, in *Channel, opts ...grpc.CallOption) (*BaseResponse, error)
 	// 修改数据流传输模式
-	UpdateTransport(ctx context.Context, in *UpdateTransportRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UpdateTransport(ctx context.Context, in *UpdateTransportRequest, opts ...grpc.CallOption) (*BaseResponse, error)
 	// 添加设备信息
-	AddDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	AddDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*BaseResponse, error)
 	// 更新设备信息
-	UpdateDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UpdateDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*BaseResponse, error)
 	// 设备状态查询
 	GetDeviceStatus(ctx context.Context, in *GetDeviceStatusRequest, opts ...grpc.CallOption) (*DeviceStatusResponse, error)
 	// 设备报警查询
@@ -323,9 +323,9 @@ func (c *apiClient) UpdateChannelStreamIdentification(ctx context.Context, in *C
 	return out, nil
 }
 
-func (c *apiClient) UpdateTransport(ctx context.Context, in *UpdateTransportRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *apiClient) UpdateTransport(ctx context.Context, in *UpdateTransportRequest, opts ...grpc.CallOption) (*BaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(BaseResponse)
 	err := c.cc.Invoke(ctx, Api_UpdateTransport_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -333,9 +333,9 @@ func (c *apiClient) UpdateTransport(ctx context.Context, in *UpdateTransportRequ
 	return out, nil
 }
 
-func (c *apiClient) AddDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *apiClient) AddDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*BaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(BaseResponse)
 	err := c.cc.Invoke(ctx, Api_AddDevice_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -343,9 +343,9 @@ func (c *apiClient) AddDevice(ctx context.Context, in *Device, opts ...grpc.Call
 	return out, nil
 }
 
-func (c *apiClient) UpdateDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *apiClient) UpdateDevice(ctx context.Context, in *Device, opts ...grpc.CallOption) (*BaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(BaseResponse)
 	err := c.cc.Invoke(ctx, Api_UpdateDevice_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -906,11 +906,11 @@ type ApiServer interface {
 	// 修改通道的码流类型
 	UpdateChannelStreamIdentification(context.Context, *Channel) (*BaseResponse, error)
 	// 修改数据流传输模式
-	UpdateTransport(context.Context, *UpdateTransportRequest) (*emptypb.Empty, error)
+	UpdateTransport(context.Context, *UpdateTransportRequest) (*BaseResponse, error)
 	// 添加设备信息
-	AddDevice(context.Context, *Device) (*emptypb.Empty, error)
+	AddDevice(context.Context, *Device) (*BaseResponse, error)
 	// 更新设备信息
-	UpdateDevice(context.Context, *Device) (*emptypb.Empty, error)
+	UpdateDevice(context.Context, *Device) (*BaseResponse, error)
 	// 设备状态查询
 	GetDeviceStatus(context.Context, *GetDeviceStatusRequest) (*DeviceStatusResponse, error)
 	// 设备报警查询
@@ -1054,13 +1054,13 @@ func (UnimplementedApiServer) ChangeAudio(context.Context, *ChangeAudioRequest) 
 func (UnimplementedApiServer) UpdateChannelStreamIdentification(context.Context, *Channel) (*BaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateChannelStreamIdentification not implemented")
 }
-func (UnimplementedApiServer) UpdateTransport(context.Context, *UpdateTransportRequest) (*emptypb.Empty, error) {
+func (UnimplementedApiServer) UpdateTransport(context.Context, *UpdateTransportRequest) (*BaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateTransport not implemented")
 }
-func (UnimplementedApiServer) AddDevice(context.Context, *Device) (*emptypb.Empty, error) {
+func (UnimplementedApiServer) AddDevice(context.Context, *Device) (*BaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AddDevice not implemented")
 }
-func (UnimplementedApiServer) UpdateDevice(context.Context, *Device) (*emptypb.Empty, error) {
+func (UnimplementedApiServer) UpdateDevice(context.Context, *Device) (*BaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateDevice not implemented")
 }
 func (UnimplementedApiServer) GetDeviceStatus(context.Context, *GetDeviceStatusRequest) (*DeviceStatusResponse, error) {

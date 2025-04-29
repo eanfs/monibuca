@@ -79,14 +79,14 @@ service api {
   }
 
   // 修改数据流传输模式
-  rpc UpdateTransport (UpdateTransportRequest) returns (google.protobuf.Empty) {
+  rpc UpdateTransport (UpdateTransportRequest) returns (BaseResponse) {
     option (google.api.http) = {
       post: "/gb28181/api/transport/{deviceId}/{streamMode}"
     };
   }
 
   // 添加设备信息
-  rpc AddDevice (Device) returns (google.protobuf.Empty) {
+  rpc AddDevice (Device) returns (BaseResponse) {
     option (google.api.http) = {
       post: "/gb28181/api/device/add"
       body: "*"
@@ -94,7 +94,7 @@ service api {
   }
 
   // 更新设备信息
-  rpc UpdateDevice (Device) returns (google.protobuf.Empty) {
+  rpc UpdateDevice (Device) returns (BaseResponse) {
     option (google.api.http) = {
       post: "/gb28181/api/device/update"
       body: "*"
@@ -572,19 +572,25 @@ message Channel {
 }
 
 message Device {
-  string DeviceID = 1;
-  string Name = 2;
-  string Manufacturer = 3;
-  string Model = 4;
-  string Longitude = 5;
-  string Latitude = 6;
-  string Status = 7;
-  google.protobuf.Timestamp RegisterTime=9;
-  google.protobuf.Timestamp UpdateTime=10;
-  google.protobuf.Timestamp KeepAliveTime=11;
-  int32 ChannelCount = 12;
-  bool Online = 13;
-  repeated Channel Channels = 14;
+  string deviceID = 1;
+  string name = 2;
+  string manufacturer = 3;
+  string model = 4;
+  string longitude = 5;
+  string latitude = 6;
+  string status = 7;
+  string mediaIP = 8;
+  google.protobuf.Timestamp registerTime = 9;
+  google.protobuf.Timestamp updateTime = 10;
+  google.protobuf.Timestamp keepAliveTime = 11;
+  int32 channelCount = 12;
+  bool online = 13;
+  repeated Channel channels = 14;
+  string sipIP = 15;
+  string streamMode = 16;
+  string password = 17;
+  bool subscribeCatalog = 18;
+  bool subscribePosition = 19;
 }
 
 message ResponseList {

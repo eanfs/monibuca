@@ -119,6 +119,10 @@ func (gb *GB28181Plugin) List(ctx context.Context, req *pb.GetDevicesRequest) (*
 			KeepAliveTime: timestamppb.New(d.KeepaliveTime),
 			ChannelCount:  int32(d.ChannelCount),
 			Channels:      pbChannels,
+			MediaIP:       d.MediaIP,
+			SipIP:         d.SipIP,
+			Password:      d.Password,
+			StreamMode:    d.StreamMode,
 		})
 	}
 
@@ -198,6 +202,10 @@ func (gb *GB28181Plugin) GetDevice(ctx context.Context, req *pb.GetDeviceRequest
 			RegisterTime: timestamppb.New(d.RegisterTime),
 			UpdateTime:   timestamppb.New(d.UpdateTime),
 			Channels:     channels,
+			MediaIP:      d.MediaIP,
+			SipIP:        d.SipIP,
+			Password:     d.Password,
+			StreamMode:   d.StreamMode,
 		}
 		resp.Code = 0
 		resp.Message = "success"
@@ -305,6 +313,10 @@ func (gb *GB28181Plugin) GetDevices(ctx context.Context, req *pb.GetDevicesReque
 			UpdateTime:    timestamppb.New(d.UpdateTime),
 			KeepAliveTime: timestamppb.New(d.KeepaliveTime),
 			Channels:      pbChannels,
+			MediaIP:       d.MediaIP,
+			SipIP:         d.SipIP,
+			Password:      d.Password,
+			StreamMode:    d.StreamMode,
 		}
 		pbDevices = append(pbDevices, pbDevice)
 	}
@@ -484,6 +496,189 @@ func (gb *GB28181Plugin) SyncDevice(ctx context.Context, req *pb.SyncDeviceReque
 		}
 	}
 
+	return resp, nil
+}
+
+// UpdateDevice 实现更新设备信息
+func (gb *GB28181Plugin) UpdateDevice(ctx context.Context, req *pb.Device) (*pb.BaseResponse, error) {
+	resp := &pb.BaseResponse{}
+
+	// 检查数据库连接
+	if gb.DB == nil {
+		resp.Code = 500
+		resp.Message = "数据库未初始化"
+		return resp, nil
+	}
+
+	// 先从缓存中读取设备
+	if d, ok := gb.devices.Get(req.DeviceID); ok {
+		// 先停止设备任务
+		d.Stop(fmt.Errorf("device updated"))
+
+		// 更新基本字段
+		if req.Name != "" {
+			d.Name = req.Name
+		}
+		if req.Manufacturer != "" {
+			d.Manufacturer = req.Manufacturer
+		}
+		if req.Model != "" {
+			d.Model = req.Model
+		}
+		if req.Longitude != "" {
+			d.Longitude = req.Longitude
+		}
+		if req.Latitude != "" {
+			d.Latitude = req.Latitude
+		}
+
+		// 更新新增字段
+		if req.MediaIP != "" {
+			d.MediaIP = req.MediaIP
+		}
+		if req.SipIP != "" {
+			d.SipIP = req.SipIP
+
+			// 更新SIP相关字段
+			d.contactHDR = sip.ContactHeader{
+				Address: sip.Uri{
+					User: gb.Serial,
+					Host: d.SipIP,
+					Port: d.Port,
+				},
+			}
+		}
+		if req.StreamMode != "" {
+			d.StreamMode = req.StreamMode
+		}
+		if req.Password != "" {
+			d.Password = req.Password
+		}
+
+		// 更新订阅相关字段
+		if req.SubscribeCatalog {
+			d.SubscribeCatalog = 3600 // 默认订阅周期为3600秒
+		} else {
+			d.SubscribeCatalog = 0 // 不订阅
+		}
+
+		if req.SubscribePosition {
+			d.SubscribePosition = 3600 // 默认订阅周期为3600秒
+		} else {
+			d.SubscribePosition = 0 // 不订阅
+		}
+
+		d.UpdateTime = time.Now()
+
+		// 更新数据库中的设备信息
+		updates := map[string]interface{}{
+			"name":               d.Name,
+			"manufacturer":       d.Manufacturer,
+			"model":              d.Model,
+			"longitude":          d.Longitude,
+			"latitude":           d.Latitude,
+			"media_ip":           d.MediaIP,
+			"sip_ip":             d.SipIP,
+			"stream_mode":        d.StreamMode,
+			"password":           d.Password,
+			"subscribe_catalog":  d.SubscribeCatalog,
+			"subscribe_position": d.SubscribePosition,
+			"update_time":        d.UpdateTime,
+		}
+
+		if err := gb.DB.Model(&Device{}).Where("device_id = ?", req.DeviceID).Updates(updates).Error; err != nil {
+			resp.Code = 500
+			resp.Message = fmt.Sprintf("更新设备失败: %v", err)
+			return resp, nil
+		}
+
+		// 重新启动设备任务
+		gb.AddTask(d)
+
+		// 如果需要订阅目录，创建并启动目录订阅任务
+		if d.SubscribeCatalog > 0 && d.Online {
+			catalogSubTask := NewCatalogSubscribeTask(d)
+			d.AddTask(catalogSubTask)
+		}
+
+		// 如果需要订阅位置，创建并启动位置订阅任务
+		if d.SubscribePosition > 0 && d.Online {
+			positionSubTask := NewPositionSubscribeTask(d)
+			d.AddTask(positionSubTask)
+		}
+
+		resp.Code = 0
+		resp.Message = "设备更新成功"
+		return resp, nil
+	}
+
+	// 如果缓存中没有，则从数据库中查找设备
+	var device Device
+	if err := gb.DB.Where("device_id = ?", req.DeviceID).First(&device).Error; err != nil {
+		// 如果数据库中也没有找到设备，返回错误
+		resp.Code = 404
+		resp.Message = fmt.Sprintf("设备不存在: %v", err)
+		return resp, nil
+	}
+
+	// 如果数据库中找到了设备，直接更新数据库
+	updates := map[string]interface{}{}
+
+	// 更新基本字段
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.Manufacturer != "" {
+		updates["manufacturer"] = req.Manufacturer
+	}
+	if req.Model != "" {
+		updates["model"] = req.Model
+	}
+	if req.Longitude != "" {
+		updates["longitude"] = req.Longitude
+	}
+	if req.Latitude != "" {
+		updates["latitude"] = req.Latitude
+	}
+
+	// 更新新增字段
+	if req.MediaIP != "" {
+		updates["media_ip"] = req.MediaIP
+	}
+	if req.SipIP != "" {
+		updates["sip_ip"] = req.SipIP
+	}
+	if req.StreamMode != "" {
+		updates["stream_mode"] = req.StreamMode
+	}
+	if req.Password != "" {
+		updates["password"] = req.Password
+	}
+
+	// 更新订阅相关字段
+	if req.SubscribeCatalog {
+		updates["subscribe_catalog"] = 3600 // 默认订阅周期为3600秒
+	} else {
+		updates["subscribe_catalog"] = 0 // 不订阅
+	}
+
+	if req.SubscribePosition {
+		updates["subscribe_position"] = 3600 // 默认订阅周期为3600秒
+	} else {
+		updates["subscribe_position"] = 0 // 不订阅
+	}
+
+	updates["update_time"] = time.Now()
+
+	// 保存到数据库
+	if err := gb.DB.Model(&device).Updates(updates).Error; err != nil {
+		resp.Code = 500
+		resp.Message = fmt.Sprintf("更新设备失败: %v", err)
+		return resp, nil
+	}
+
+	resp.Code = 0
+	resp.Message = "设备更新成功"
 	return resp, nil
 }
 

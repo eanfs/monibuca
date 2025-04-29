@@ -52,8 +52,8 @@ type Device struct {
 	CreateTime            time.Time      // 创建时间
 	UpdateTime            time.Time      // 更新时间
 	Charset               string         // 字符集, 支持 UTF-8 与 GB2312
-	SubscribeCatalog      int            // 目录订阅周期，0为不订阅
-	SubscribePosition     int            // 移动设备位置订阅周期，0为不订阅
+	SubscribeCatalog      int            `gorm:"default:0"` // 目录订阅周期，0为不订阅
+	SubscribePosition     int            `gorm:"default:0"` // 移动设备位置订阅周期，0为不订阅
 	PositionInterval      int            // 移动设备位置信息上报时间间隔,单位:秒,默认值5
 	SubscribeAlarm        int            // 报警订阅周期，0为不订阅
 	SSRCCheck             bool           // 是否开启ssrc校验，默认关闭，开启可以防止串流
