@@ -116,9 +116,9 @@ func (gb *GB28181Plugin) initDatabase() error {
 			// 获取根组织信息
 			root := &gb28181.GroupsModel{}
 			if err := gb.DB.Where("pid = ? AND level = ?", 0, 0).First(root).Error; err != nil {
-				gb.Warn("根组织已存在但获取详情失败: %v", err)
+				gb.Warn("根组织已存在但获取详情失败", "error", err)
 			} else {
-				gb.Info("根组织已存在，ID:", root.ID)
+				gb.Info("根组织已存在", "id", root.ID)
 			}
 		}
 	} else {
@@ -177,7 +177,7 @@ func (gb *GB28181Plugin) OnInit() (err error) {
 		if gb.DB != nil {
 			err = gb.initDatabase()
 			if err != nil {
-				gb.Error("initDatabase error: %v", err)
+				gb.Error("initDatabase", "error", err)
 			}
 
 			// 检查设备过期状态
@@ -544,11 +544,11 @@ func (gb *GB28181Plugin) OnRegister(req *sip.Request, tx sip.ServerTransaction) 
 		}
 	} else {
 		if d, ok := gb.devices.Get(deviceid); ok && d.Online {
-			gb.Info("into recoverdevice ,deviceid is ", d.DeviceID)
+			gb.Info("into recoverdevice", "deviceId", d.DeviceID)
 			d.Status = DeviceOnlineStatus
 			gb.RecoverDevice(d, req)
 		} else {
-			gb.Info("into StoreDevice ,deviceid is ", from)
+			gb.Info("into StoreDevice", "deviceId", from)
 			gb.StoreDevice(deviceid, req)
 		}
 	}
@@ -558,7 +558,7 @@ func (gb *GB28181Plugin) OnMessage(req *sip.Request, tx sip.ServerTransaction) {
 	// 解析消息内容
 	temp := &gb28181.Message{}
 	err := gb28181.DecodeXML(temp, req.Body())
-	gb.Debug("onmessage debug, message is ", temp)
+	gb.Debug("onmessage debug", "message", temp)
 	if err != nil {
 		gb.Error("OnMessage", "error", err.Error())
 		response := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Request", nil)
@@ -710,7 +710,6 @@ func (gb *GB28181Plugin) RecoverDevice(d *Device, req *sip.Request) {
 		}
 		gb.DB.Save(d)
 	}
-	return
 }
 
 func (gb *GB28181Plugin) StoreDevice(deviceid string, req *sip.Request) (d *Device) {
@@ -953,7 +952,7 @@ func (gb *GB28181Plugin) OnBye(req *sip.Request, tx sip.ServerTransaction) {
 	}); ok {
 		err := tx.Respond(sip.NewResponseFromRequest(req, http.StatusOK, "OK", req.Body()))
 		if err != nil {
-			gb.Error("forwarddialog bye err", err)
+			gb.Error("forwarddialog bye", "error", err)
 		}
 		gb.Warn("OnBye", "forwardDialog.platformCallId", req.CallID().Value())
 		forwardDialog.Stop(task.ErrTaskComplete)
@@ -1016,12 +1015,12 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 				if channelFound, ok := deviceFound.channels.Get(channel.ChannelID); ok {
 					channelTmp = channelFound
 				} else {
-					gb.Error("OnInvite", "error", "channel not found memory,ChannelID is ", channel.ChannelID)
+					gb.Error("OnInvite", "channel not found memory,ChannelID is ", channel.ChannelID)
 					_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "SSRC Not Found", nil))
 					return
 				}
 			} else {
-				gb.Error("OnInvite", "error", "device not found memory,deviceID is ", channel.DeviceID)
+				gb.Error("OnInvite", "device not found memory,deviceID is ", channel.DeviceID)
 				_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "SSRC Not Found", nil))
 				return
 			}

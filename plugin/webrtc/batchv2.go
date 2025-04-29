@@ -344,7 +344,7 @@ func (wsh *WebSocketHandler) validateSDP(sdp string) bool {
 // handleGetStreamList 处理获取流列表信号
 func (wsh *WebSocketHandler) handleGetStreamList() {
 	// 获取所有可用的流列表
-	var streams []StreamInfo
+	var streams []StreamInfo = make([]StreamInfo, 0)
 
 	// 遍历所有流，检查是否有H.264视频编码
 	for publisher := range wsh.config.Server.Streams.SafeRange {

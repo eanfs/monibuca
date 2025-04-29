@@ -103,7 +103,7 @@ func (d *BasePullProxy) ChangeStatus(status byte) {
 	d.Plugin.Info("device status changed", "from", from, "to", status)
 	d.Status = status
 	if d.Plugin.Server.DB != nil {
-		d.Plugin.Server.DB.Omit("deleted_at").Save(d)
+		d.Plugin.Server.DB.Omit("deleted_at").Save(d.PullProxyConfig)
 	}
 	switch status {
 	case PullProxyStatusOnline:
