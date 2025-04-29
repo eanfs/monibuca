@@ -3,10 +3,12 @@ package rtsp
 import (
 	"errors"
 	"fmt"
-	"m7s.live/v5/pkg/util"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+
+	"m7s.live/v5/pkg/util"
 )
 
 type Stream struct {
@@ -25,7 +27,9 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 		return nil, err
 	}
 
-	if res.StatusCode == http.StatusUnauthorized {
+	switch res.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
 		switch c.auth.Method {
 		case util.AuthNone:
 			if c.auth.ReadNone(res) {
@@ -39,12 +43,34 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 		default:
 			return nil, errors.New("wrong user/pass")
 		}
-	}
+	case http.StatusFound, http.StatusMovedPermanently:
+		oldHost := ""
+		if req.URL != nil {
+			oldHost = req.URL.Host
+		}
 
-	if res.StatusCode != http.StatusOK {
-		return res, fmt.Errorf("wrong response on %s", req.Method)
-	}
+		req.URL, err = url.Parse(res.Header.Get("Location"))
+		if err != nil {
+			return nil, err
+		}
 
+		// 检查重定向后的 host 是否发生变化
+		if oldHost != "" && req.URL.Host != oldHost {
+			c.Info("Host changed after redirect", "oldHost", oldHost, "newHost", req.URL.Host)
+
+			// 断开当前连接并建立新连接
+			c.Dispose()
+
+			// 使用新的 URL 重新建立连接
+			if err = c.Connect(req.URL.String()); err != nil {
+				return nil, fmt.Errorf("failed to connect to new host: %w", err)
+			}
+		}
+
+		return c.Do(req)
+	default:
+		return res, fmt.Errorf("wrong response on %s statusCode: %d", req.Method, res.StatusCode)
+	}
 	return res, nil
 }
 
