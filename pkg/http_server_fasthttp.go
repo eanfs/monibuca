@@ -3,6 +3,7 @@
 package pkg
 
 import (
+	"crypto/tls"
 	"log/slog"
 
 	"github.com/valyala/fasthttp"
@@ -32,20 +33,11 @@ type ListenFastHTTPWork struct {
 
 // 主请求处理函数
 func (task *ListenFastHTTPWork) requestHandler(ctx *fasthttp.RequestCtx) {
-	// 适配到标准库处理
-	// fasthttpadaptor.ConvertRequest(ctx, req, false)
-	// 如果有 grpcMux，通过适配器转发
-	// if string(ctx.Request.Header.Peek("Accept")) == "text/event-stream" {
-	// 	ctx.SetContentType("text/event-stream")
-	// 	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	// 	ctx.Response.Header.Set("Connection", "keep-alive")
-	// 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
-	// 	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
-	// }
 	fasthttpadaptor.NewFastHTTPHandler(task.GetHandler())(ctx)
 }
 
 func (task *ListenFastHTTPWork) Start() (err error) {
+
 	// 配置 fasthttp 服务器
 	task.server = &fasthttp.Server{
 		Handler:      task.requestHandler,
@@ -79,11 +71,36 @@ type ListenFastHTTPSWork struct {
 }
 
 func (task *ListenFastHTTPSWork) Start() (err error) {
+	cer, _ := tls.X509KeyPair(config.LocalCert, config.LocalKey)
 	// 调用基类的 Start
 	if err = task.ListenFastHTTPWork.Start(); err != nil {
 		return err
 	}
-	return nil
+	task.server.TLSConfig = &tls.Config{
+		Certificates: []tls.Certificate{cer},
+		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			//tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			//tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			//tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			//tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		},
+	}
+	return
 }
 
 func (task *ListenFastHTTPSWork) Go() error {
