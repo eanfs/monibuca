@@ -320,12 +320,12 @@ func (p *Plugin) listen() (err error) {
 
 	if httpConf.ListenAddrTLS != "" && (httpConf.ListenAddrTLS != p.Server.config.HTTP.ListenAddrTLS) {
 		p.SetDescription("httpTLS", strings.TrimPrefix(httpConf.ListenAddrTLS, ":"))
-		p.AddDependTask(httpConf.CreateHTTPSWork(p.Logger))
+		p.AddDependTask(CreateHTTPSWork(httpConf, p.Logger))
 	}
 
 	if httpConf.ListenAddr != "" && (httpConf.ListenAddr != p.Server.config.HTTP.ListenAddr) {
 		p.SetDescription("http", strings.TrimPrefix(httpConf.ListenAddr, ":"))
-		p.AddDependTask(httpConf.CreateHTTPWork(p.Logger))
+		p.AddDependTask(CreateHTTPWork(httpConf, p.Logger))
 	}
 
 	if tcphandler, ok := p.handler.(ITCPPlugin); ok {

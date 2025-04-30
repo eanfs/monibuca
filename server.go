@@ -331,10 +331,10 @@ func (s *Server) Start() (err error) {
 	}
 
 	if httpConf.ListenAddrTLS != "" {
-		s.AddDependTask(httpConf.CreateHTTPSWork(s.Logger))
+		s.AddDependTask(pkg.CreateHTTPSWork(httpConf, s.Logger))
 	}
 	if httpConf.ListenAddr != "" {
-		s.AddDependTask(httpConf.CreateHTTPWork(s.Logger))
+		s.AddDependTask(pkg.CreateHTTPWork(httpConf, s.Logger))
 	}
 
 	var grpcServer *GRPCServer

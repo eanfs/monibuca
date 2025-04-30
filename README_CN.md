@@ -115,6 +115,7 @@ go run -tags sqlite main.go
 | postgres | 启用 PostgreSQL 存储 |
 | duckdb | 启用 DuckDB 存储 |
 | taskpanic | 抛出 panic（用于测试） |
+| fasthttp | 使用 fasthttp 服务器代替标准库 |
 
 <p align="right">(<a href="#readme-top">返回顶部</a>)</p>
 

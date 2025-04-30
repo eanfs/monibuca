@@ -112,6 +112,7 @@ The following build tags can be used to customize your build:
 | postgres | Enables the postgres DB |
 | duckdb | Enables the duckdb DB |
 | taskpanic | Throws panic, for testing |
+| fasthttp | Enables the fasthttp server instead of net/http |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

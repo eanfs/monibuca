@@ -150,16 +150,18 @@ func ReturnFetchValue[T any](fetch func() T, rw http.ResponseWriter, r *http.Req
 		tickDur = time.Second
 	}
 	if r.Header.Get("Accept") == "text/event-stream" {
-		sse := NewSSE(rw, r.Context())
-		tick := time.NewTicker(tickDur)
-		defer tick.Stop()
-		writer := Conditional(isYaml, sse.WriteYAML, sse.WriteJSON)
-		writer(fetch())
-		for range tick.C {
-			if writer(fetch()) != nil {
-				return
+		NewSSE(rw, r.Context(), func(sse *SSE) {
+			tick := time.NewTicker(tickDur)
+			defer tick.Stop()
+			writer := Conditional(isYaml, sse.WriteYAML, sse.WriteJSON)
+			err := writer(fetch())
+			for range tick.C {
+				if err = writer(fetch()); err != nil {
+					fmt.Println(err)
+					return
+				}
 			}
-		}
+		})
 	} else {
 		data := fetch()
 		rw.Header().Set("Content-Type", Conditional(isYaml, "text/yaml", "application/json"))

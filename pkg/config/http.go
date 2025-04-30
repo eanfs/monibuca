@@ -1,13 +1,9 @@
 package config
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"crypto/tls"
-	"log/slog"
 	"net/http"
 
-	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 
@@ -46,7 +42,7 @@ func (config *HTTP) GetHandler() http.Handler {
 	return config.mux
 }
 
-func (config *HTTP) CreateHttpMux() *http.ServeMux {
+func (config *HTTP) CreateHttpMux() http.Handler {
 	config.mux = http.NewServeMux()
 	return config.mux
 }
@@ -73,10 +69,10 @@ func (config *HTTP) Handle(path string, f http.Handler, last bool) {
 		config.mux = http.NewServeMux()
 	}
 	if config.CORS {
-		f = CORS(f)
+		f = util.CORS(f)
 	}
 	if config.UserName != "" && config.Password != "" {
-		f = BasicAuth(config.UserName, config.Password, f)
+		f = util.BasicAuth(config.UserName, config.Password, f)
 	}
 	for _, middleware := range config.middlewares {
 		f = middleware(path, f)
@@ -91,151 +87,3 @@ func (config *HTTP) GetHTTPConfig() *HTTP {
 // func (config *HTTP) Handler(r *http.Request) (h http.Handler, pattern string) {
 // 	return config.mux.Handler(r)
 // }
-
-func (config *HTTP) CreateHTTPWork(logger *slog.Logger) *ListenHTTPWork {
-	ret := &ListenHTTPWork{HTTP: config}
-	ret.Logger = logger.With("addr", config.ListenAddr)
-	return ret
-}
-
-func (config *HTTP) CreateHTTPSWork(logger *slog.Logger) *ListenHTTPSWork {
-	ret := &ListenHTTPSWork{ListenHTTPWork{HTTP: config}}
-	ret.Logger = logger.With("addr", config.ListenAddrTLS)
-	return ret
-}
-
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := w.Header()
-		header.Set("Access-Control-Allow-Credentials", "true")
-		header.Set("Cross-Origin-Resource-Policy", "cross-origin")
-		header.Set("Access-Control-Allow-Headers", "Content-Type,Access-Token,Authorization")
-		header.Set("Access-Control-Allow-Private-Network", "true")
-		origin := r.Header["Origin"]
-		if len(origin) == 0 {
-			header.Set("Access-Control-Allow-Origin", "*")
-		} else {
-			header.Set("Access-Control-Allow-Origin", origin[0])
-		}
-		if next != nil && r.Method != "OPTIONS" {
-			next.ServeHTTP(w, r)
-		}
-	})
-}
-
-func BasicAuth(u, p string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract the username and password from the request
-		// Authorization header. If no Authentication header is present
-		// or the header value is invalid, then the 'ok' return value
-		// will be false.
-		username, password, ok := r.BasicAuth()
-		if ok {
-			// Calculate SHA-256 hashes for the provided and expected
-			// usernames and passwords.
-			usernameHash := sha256.Sum256([]byte(username))
-			passwordHash := sha256.Sum256([]byte(password))
-			expectedUsernameHash := sha256.Sum256([]byte(u))
-			expectedPasswordHash := sha256.Sum256([]byte(p))
-
-			// 使用 subtle.ConstantTimeCompare() 进行校验
-			// the provided username and password hashes equal the
-			// expected username and password hashes. ConstantTimeCompare
-			// 如果值相等，则返回1，否则返回0。
-			// Importantly, we should to do the work to evaluate both the
-			// username and password before checking the return values to
-			// 避免泄露信息。
-			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
-			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
-
-			// If the username and password are correct, then call
-			// the next handler in the chain. Make sure to return
-			// afterwards, so that none of the code below is run.
-			if usernameMatch && passwordMatch {
-				if next != nil {
-					next.ServeHTTP(w, r)
-				}
-				return
-			}
-		}
-
-		// If the Authentication header is not present, is invalid, or the
-		// username or password is wrong, then set a WWW-Authenticate
-		// header to inform the client that we expect them to use basic
-		// authentication and send a 401 Unauthorized response.
-		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	})
-}
-
-type ListenHTTPWork struct {
-	task.Task
-	*HTTP
-	*http.Server
-}
-
-func (task *ListenHTTPWork) Start() (err error) {
-	task.Server = &http.Server{
-		Addr:         task.ListenAddr,
-		ReadTimeout:  task.HTTP.ReadTimeout,
-		WriteTimeout: task.HTTP.WriteTimeout,
-		IdleTimeout:  task.HTTP.IdleTimeout,
-		Handler:      task.GetHandler(),
-	}
-	return
-}
-
-func (task *ListenHTTPWork) Go() error {
-	task.Info("listen http")
-	return task.Server.ListenAndServe()
-}
-
-func (task *ListenHTTPWork) Dispose() {
-	task.Info("http server stop")
-	task.Server.Close()
-}
-
-type ListenHTTPSWork struct {
-	ListenHTTPWork
-}
-
-func (task *ListenHTTPSWork) Start() (err error) {
-	cer, _ := tls.X509KeyPair(LocalCert, LocalKey)
-	task.Server = &http.Server{
-		Addr:         task.HTTP.ListenAddrTLS,
-		ReadTimeout:  task.HTTP.ReadTimeout,
-		WriteTimeout: task.HTTP.WriteTimeout,
-		IdleTimeout:  task.HTTP.IdleTimeout,
-		Handler:      task.HTTP.GetHandler(),
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cer},
-			CipherSuites: []uint16{
-				tls.TLS_AES_128_GCM_SHA256,
-				tls.TLS_CHACHA20_POLY1305_SHA256,
-				tls.TLS_AES_256_GCM_SHA384,
-				//tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-				//tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-				//tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-				//tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-			},
-		},
-	}
-	return
-}
-
-func (task *ListenHTTPSWork) Go() error {
-	task.Info("listen https")
-	return task.Server.ListenAndServeTLS(task.HTTP.CertFile, task.HTTP.KeyFile)
-}

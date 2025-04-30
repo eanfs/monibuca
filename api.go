@@ -383,27 +383,24 @@ func (s *Server) api_VideoTrack_SSE(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	sse := util.NewSSE(rw, r.Context())
-	PlayBlock(suber, (func(frame *pkg.AVFrame) (err error))(nil), func(frame *pkg.AVFrame) (err error) {
-		var snap pb.TrackSnapShot
-		snap.Sequence = frame.Sequence
-		snap.Timestamp = uint32(frame.Timestamp / time.Millisecond)
-		snap.WriteTime = timestamppb.New(frame.WriteTime)
-		snap.Wrap = make([]*pb.Wrap, len(frame.Wraps))
-		snap.KeyFrame = frame.IDR
-		for i, wrap := range frame.Wraps {
-			snap.Wrap[i] = &pb.Wrap{
-				Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-				Size:      uint32(wrap.GetSize()),
-				Data:      wrap.String(),
+	util.NewSSE(rw, r.Context(), func(sse *util.SSE) {
+		PlayBlock(suber, (func(frame *pkg.AVFrame) (err error))(nil), func(frame *pkg.AVFrame) (err error) {
+			var snap pb.TrackSnapShot
+			snap.Sequence = frame.Sequence
+			snap.Timestamp = uint32(frame.Timestamp / time.Millisecond)
+			snap.WriteTime = timestamppb.New(frame.WriteTime)
+			snap.Wrap = make([]*pb.Wrap, len(frame.Wraps))
+			snap.KeyFrame = frame.IDR
+			for i, wrap := range frame.Wraps {
+				snap.Wrap[i] = &pb.Wrap{
+					Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+					Size:      uint32(wrap.GetSize()),
+					Data:      wrap.String(),
+				}
 			}
-		}
-		return sse.WriteJSON(&snap)
+			return sse.WriteJSON(&snap)
+		})
 	})
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
 }
 
 func (s *Server) api_AudioTrack_SSE(rw http.ResponseWriter, r *http.Request) {
@@ -419,27 +416,24 @@ func (s *Server) api_AudioTrack_SSE(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	sse := util.NewSSE(rw, r.Context())
-	PlayBlock(suber, func(frame *pkg.AVFrame) (err error) {
-		var snap pb.TrackSnapShot
-		snap.Sequence = frame.Sequence
-		snap.Timestamp = uint32(frame.Timestamp / time.Millisecond)
-		snap.WriteTime = timestamppb.New(frame.WriteTime)
-		snap.Wrap = make([]*pb.Wrap, len(frame.Wraps))
-		snap.KeyFrame = frame.IDR
-		for i, wrap := range frame.Wraps {
-			snap.Wrap[i] = &pb.Wrap{
-				Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-				Size:      uint32(wrap.GetSize()),
-				Data:      wrap.String(),
+	util.NewSSE(rw, r.Context(), func(sse *util.SSE) {
+		PlayBlock(suber, func(frame *pkg.AVFrame) (err error) {
+			var snap pb.TrackSnapShot
+			snap.Sequence = frame.Sequence
+			snap.Timestamp = uint32(frame.Timestamp / time.Millisecond)
+			snap.WriteTime = timestamppb.New(frame.WriteTime)
+			snap.Wrap = make([]*pb.Wrap, len(frame.Wraps))
+			snap.KeyFrame = frame.IDR
+			for i, wrap := range frame.Wraps {
+				snap.Wrap[i] = &pb.Wrap{
+					Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+					Size:      uint32(wrap.GetSize()),
+					Data:      wrap.String(),
+				}
 			}
-		}
-		return sse.WriteJSON(&snap)
-	}, (func(frame *pkg.AVFrame) (err error))(nil))
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
+			return sse.WriteJSON(&snap)
+		}, (func(frame *pkg.AVFrame) (err error))(nil))
+	})
 }
 
 func (s *Server) VideoTrackSnap(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.TrackSnapShotResponse, err error) {
