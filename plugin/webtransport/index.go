@@ -1,7 +1,9 @@
 package webtransport
 
 import (
+	"embed"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -12,7 +14,9 @@ import (
 )
 
 var (
-	_ = m7s.InstallPlugin[WebTransportPlugin]()
+	//go:embed web
+	web embed.FS
+	_   = m7s.InstallPlugin[WebTransportPlugin]()
 )
 
 type WebTransportPlugin struct {
@@ -23,6 +27,12 @@ type WebTransportPlugin struct {
 	AllowedOrigins []string `desc:"允许的来源域名列表"`
 }
 
+func (p *WebTransportPlugin) RegisterHandler() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"/test/{name}": p.testPage,
+	}
+}
+
 func (p *WebTransportPlugin) OnInit() (err error) {
 	// Create a new HTTP mux for WebTransport
 	mux := http.NewServeMux()
@@ -30,7 +40,6 @@ func (p *WebTransportPlugin) OnInit() (err error) {
 	// Register the WebTransport handlers
 	mux.HandleFunc("/webtransport/play/", p.handlePlay)
 	mux.HandleFunc("/webtransport/push/", p.handlePush)
-
 	// Start the WebTransport server
 	server := &Server{
 		Handler:        mux,
@@ -127,4 +136,36 @@ func (p *WebTransportPlugin) handlePush(w http.ResponseWriter, r *http.Request) 
 	job := flvPuller.GetPullJob().Init(&flvPuller, &p.Plugin, streamPath, config.Pull{}, &pubConf)
 	p.AddTask(job)
 	job.WaitStopped()
+}
+
+func (p *WebTransportPlugin) testPage(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	switch name {
+	case "screenshare":
+		name = "web/screenshare.html"
+	default:
+		name = "web/" + name
+	}
+	// Set appropriate MIME type based on file extension
+	if strings.HasSuffix(name, ".html") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	} else if strings.HasSuffix(name, ".js") {
+		w.Header().Set("Content-Type", "application/javascript")
+		// } else if strings.HasSuffix(name, ".css") {
+		// 	w.Header().Set("Content-Type", "text/css")
+		// } else if strings.HasSuffix(name, ".json") {
+		// 	w.Header().Set("Content-Type", "application/json")
+		// } else if strings.HasSuffix(name, ".png") {
+		// 	w.Header().Set("Content-Type", "image/png")
+		// } else if strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".jpeg") {
+		// 	w.Header().Set("Content-Type", "image/jpeg")
+		// } else if strings.HasSuffix(name, ".svg") {
+		// 	w.Header().Set("Content-Type", "image/svg+xml")
+	}
+	f, err := web.Open(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	io.Copy(w, f)
 }

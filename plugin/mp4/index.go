@@ -214,6 +214,12 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch a.ICodecCtx.FourCC() {
 		case codec.FourCC_MP4A:
 			codecID = box.MP4_CODEC_AAC
+		case codec.FourCC_ALAW:
+			codecID = box.MP4_CODEC_G711A
+		case codec.FourCC_ULAW:
+			codecID = box.MP4_CODEC_G711U
+		case codec.FourCC_OPUS:
+			codecID = box.MP4_CODEC_OPUS
 		}
 		audio = muxer.AddTrack(codecID)
 		audio.Timescale = 1000

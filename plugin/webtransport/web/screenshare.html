@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlvMuxer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      body {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .container {
+        background-color: white;
+        border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        padding: 2rem;
+        width: 90%;
+        max-width: 600px;
+        text-align: center;
+      }
+
+      h1 {
+        color: #333;
+        margin-bottom: 2rem;
+        font-size: 2rem;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 12px;
+        margin-bottom: 2rem;
+      }
+
+      .button {
+        border: none;
+        border-radius: 50px;
+        padding: 12px 24px;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-width: 130px;
+      }
+
+      .button:hover {
+        transform: translateY(-2px);
+      }
+
+      .button:active {
+        transform: translateY(0);
+      }
+
+      .start-button {
+        background-color: #4caf50;
+        color: white;
+      }
+
+      .stop-button {
+        background-color: #f44336;
+        color: white;
+      }
+
+      .pause-button {
+        background-color: #ffc107;
+        color: #333;
+      }
+
+      .resume-button {
+        background-color: #2196f3;
+        color: white;
+      }
+
+      .status {
+        font-size: 1.2rem;
+        color: #555;
+        margin-bottom: 1.5rem;
+      }
+
+      .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 10px;
+        background-color: #ccc;
+      }
+
+      .recording .status-indicator {
+        background-color: #f44336;
+        animation: blink 1.5s infinite;
+      }
+
+      .paused .status-indicator {
+        background-color: #ffc107;
+      }
+
+      .timer {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #333;
+        margin-bottom: 2rem;
+        font-family: monospace;
+      }
+
+      @keyframes blink {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+
+      .preview {
+        width: 100%;
+        max-width: 500px;
+        height: 280px;
+        background-color: #f0f0f0;
+        border-radius: 8px;
+        margin: 0 auto 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #777;
+        border: 1px solid #ddd;
+      }
+
+      @media (max-width: 640px) {
+        .controls {
+          flex-direction: column;
+          align-items: center;
+        }
+
+        .button {
+          width: 100%;
+        }
+
+        .preview {
+          height: 200px;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <h1>FlvMuxer</h1>
+
+      <div class="preview">Preview Area</div>
+
+      <div class="status">
+        <span class="status-indicator"></span>
+        <span class="status-text">Ready</span>
+      </div>
+
+      <div class="timer">00:00:00</div>
+
+      <div class="controls">
+        <button
+          class="button start-button"
+          type="button"
+          title="Start Recording"
+          onclick="startRecording()"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <circle cx="12" cy="12" r="4" fill="currentColor"></circle>
+          </svg>
+          Start Recording
+        </button>
+
+        <button
+          class="button stop-button"
+          type="button"
+          title="Stop Recording"
+          onclick="stopRecording()"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="6" y="6" width="12" height="12" fill="currentColor"></rect>
+          </svg>
+          Stop Recording
+        </button>
+
+        <button
+          class="button pause-button"
+          type="button"
+          title="Pause Recording"
+          onclick="pauseRecording()"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="6" y="5" width="4" height="14" fill="currentColor"></rect>
+            <rect x="14" y="5" width="4" height="14" fill="currentColor"></rect>
+          </svg>
+          Pause Recording
+        </button>
+
+        <button
+          class="button resume-button"
+          type="button"
+          title="Resume Recording"
+          onclick="resumeRecording()"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polygon points="5 3 19 12 5 21" fill="currentColor"></polygon>
+          </svg>
+          Resume Recording
+        </button>
+      </div>
+    </div>
+
+    <script src="./example.js"></script>
+  </body>
+</html>

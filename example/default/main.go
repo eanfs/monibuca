@@ -25,6 +25,7 @@ import (
 	_ "m7s.live/v5/plugin/stress"
 	_ "m7s.live/v5/plugin/transcode"
 	_ "m7s.live/v5/plugin/webrtc"
+	_ "m7s.live/v5/plugin/webtransport"
 )
 
 func main() {
