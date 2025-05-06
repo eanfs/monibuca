@@ -82,13 +82,17 @@ func (p *WebTransportPlugin) handlePlay(w http.ResponseWriter, r *http.Request) 
 	// Create a WebTransport subscriber
 	// Accept the WebTransport session
 	session.AcceptSession()
-
+	defer session.CloseSession()
 	// Create a Live FLV handler
 	live := &flv.Live{Subscriber: sub}
-
+	stream, err := session.AcceptStream()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	// Set up the FLV tag writer
 	live.WriteFlvTag = func(buffers net.Buffers) (err error) {
-		_, err = buffers.WriteTo(session)
+		_, err = buffers.WriteTo(stream)
 		return
 	}
 	live.Run()
@@ -104,15 +108,21 @@ func (p *WebTransportPlugin) handlePush(w http.ResponseWriter, r *http.Request) 
 
 	// Check if the request body is a WebTransport session
 	session, ok := r.Body.(*Session)
+
 	if !ok {
 		http.Error(w, "Not a WebTransport session", http.StatusBadRequest)
 		return
 	}
 	// Accept the WebTransport session
 	session.AcceptSession()
-
+	defer session.CloseSession()
+	stream, err := session.AcceptStream()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	var flvPuller flv.Puller
-	flvPuller.ReadCloser = session
+	flvPuller.ReadCloser = stream
 	var pubConf = p.GetCommonConf().Publish
 	job := flvPuller.GetPullJob().Init(&flvPuller, &p.Plugin, streamPath, config.Pull{}, &pubConf)
 	p.AddTask(job)
