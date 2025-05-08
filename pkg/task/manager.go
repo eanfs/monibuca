@@ -61,3 +61,16 @@ func (m *Manager[K, T]) SafeRange(f func(T) bool) {
 		m.Collection.Range(f)
 	}
 }
+
+// SafeFind 用于不同协程获取元素，防止并发请求
+func (m *Manager[K, T]) SafeFind(f func(T) bool) (item T, ok bool) {
+	if m.L == nil {
+		m.Call(func() error {
+			item, ok = m.Collection.Find(f)
+			return nil
+		})
+	} else {
+		item, ok = m.Collection.Find(f)
+	}
+	return
+}

@@ -6,10 +6,14 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	hls "m7s.live/v5/plugin/hls/pkg"
 )
@@ -46,7 +50,9 @@ func (p *HLSPlugin) OnInit() (err error) {
 
 func (p *HLSPlugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/vod/{streamPath...}": p.vod,
+		"/vod/{streamPath...}":              p.vod,
+		"/api/record/start/{streamPath...}": p.API_record_start,
+		"/api/record/stop/{id}":             p.API_record_stop,
 	}
 }
 
@@ -275,4 +281,57 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 	http.NotFound(w, r)
 		// }
 	}
+}
+
+func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) {
+	var recordExists bool
+	var filePath = "."
+	var fragment = time.Minute
+	query := r.URL.Query()
+	streamPath := r.PathValue("streamPath")
+	if streamPath == "" {
+		http.Error(w, "streamPath is required", http.StatusBadRequest)
+		return
+	}
+	if query.Get("fragment") != "" {
+		fragment, _ = time.ParseDuration(query.Get("fragment"))
+	}
+	if query.Get("filePath") != "" {
+		filePath = query.Get("filePath")
+	}
+	_, recordExists = conf.Server.Records.SafeFind(func(job *m7s.RecordJob) bool {
+		return job.StreamPath == streamPath && job.RecConf.FilePath == filePath
+	})
+	if recordExists {
+		http.Error(w, "record already exists", http.StatusBadRequest)
+		return
+	}
+	pub, ok := conf.Server.Streams.SafeGet(streamPath)
+	if !ok {
+		http.Error(w, "stream not found", http.StatusNotFound)
+		return
+	}
+	stream := pub
+	recordConf := config.Record{
+		Append:   false,
+		Fragment: fragment,
+		FilePath: filePath,
+	}
+	job := conf.Server.Record(stream, recordConf, nil)
+	util.ReturnValue(uint64(uintptr(unsafe.Pointer(job.GetTask()))), w, r)
+}
+
+func (conf *HLSPlugin) API_record_stop(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ptr, err := strconv.Atoi(id)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	t := task.FromPointer(uintptr(ptr))
+	if t == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	t.Stop(task.ErrStopByUser)
 }
