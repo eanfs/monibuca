@@ -37,6 +37,7 @@
     <li><a href="#monitoring">Monitoring</a></li>
     <li><a href="#plugin-development">Plugin Development</a></li>
     <li><a href="#arch">Architecture</a></li>
+    <li><a href="#third-party-plugins">Third-party Plugins</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
     <li><a href="#contact">Contact</a></li>
@@ -139,6 +140,12 @@ Monibuca's functionality can be extended through plugins. For information on cre
 ## Architecture
 
 For detailed architecture design documentation, please refer to the [Architecture Documentation](./doc/arch/index.md).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Third-party Plugins
+
+- https://github.com/cuteLittleDevil/m7s-jt1078
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

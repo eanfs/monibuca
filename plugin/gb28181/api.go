@@ -2845,3 +2845,50 @@ func (gb *GB28181Plugin) RemoveDevice(ctx context.Context, req *pb.RemoveDeviceR
 	resp.Message = "success"
 	return resp, nil
 }
+
+func (gb *GB28181Plugin) OpenRTPServer(ctx context.Context, req *pb.OpenRTPServerRequest) (*pb.OpenRTPServerResponse, error) {
+	resp := &pb.OpenRTPServerResponse{}
+	var pub *gb28181.PSPublisher
+	// 获取媒体信息
+	mediaPort := uint16(req.Port)
+	if mediaPort == 0 {
+		if req.Udp {
+			// TODO: udp sppport
+			resp.Code = 501
+			return resp, fmt.Errorf("udp not supported")
+		}
+		if gb.MediaPort.Valid() {
+			select {
+			case mediaPort = <-gb.tcpPorts:
+				defer func() {
+					if pub != nil {
+						pub.Receiver.OnDispose(func() {
+							gb.tcpPorts <- mediaPort
+						})
+					}
+				}()
+			default:
+				resp.Code = 500
+				resp.Message = "没有可用的媒体端口"
+				return resp, fmt.Errorf("没有可用的媒体端口")
+			}
+		} else {
+			mediaPort = gb.MediaPort[0]
+		}
+	}
+	publisher, err := gb.Publish(gb, req.StreamPath)
+	if err != nil {
+		resp.Code = 500
+		resp.Message = fmt.Sprintf("发布失败: %v", err)
+		return resp, err
+	}
+	pub = gb28181.NewPSPublisher(publisher)
+	pub.Receiver.ListenAddr = fmt.Sprintf(":%d", mediaPort)
+	pub.Receiver.StreamMode = "TCP-PASSIVE"
+	gb.AddTask(&pub.Receiver)
+	go pub.Demux()
+	resp.Code = 0
+	resp.Data = int32(mediaPort)
+	resp.Message = "success"
+	return resp, nil
+}

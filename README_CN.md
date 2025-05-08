@@ -145,6 +145,10 @@ Monibuca 支持通过插件扩展功能。查看[插件开发指南](./plugin/RE
 
 <p align="right">(<a href="#readme-top">返回顶部</a>)</p>
 
+## 第三方插件
+
+- - https://github.com/cuteLittleDevil/m7s-jt1078
+
 ## 贡献指南
 
 我们非常欢迎社区贡献，您的参与将使开源社区变得更加精彩！
