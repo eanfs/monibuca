@@ -258,6 +258,9 @@ func (r *Audio) Parse(t *AVTrack) (err error) {
 			t.ICodecCtx = ctx
 		}
 	}
+	if len(r.Packets) == 0 {
+		return ErrSkip
+	}
 	return
 }
 
@@ -284,6 +287,9 @@ func payloadLengthInfoDecode(buf []byte) (int, int, error) {
 }
 
 func (r *Audio) Demux(codexCtx codec.ICodecCtx) (any, error) {
+	if len(r.Packets) == 0 {
+		return nil, ErrSkip
+	}
 	var data AudioData
 	switch r.MimeType {
 	case "audio/MP4A-LATM":

@@ -1,7 +1,8 @@
 package plugin_hls
 
 import (
-	"embed"
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	_ "embed"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
@@ -25,11 +28,16 @@ var _ = m7s.InstallPlugin[HLSPlugin](m7s.PluginMeta{
 	NewPullProxy:   m7s.NewHTTPPullPorxy,
 })
 
-//go:embed hls.js
-var hls_js embed.FS
+//go:embed hls.js.zip
+var hls_js []byte
+var zipReader *zip.Reader
 
 type HLSPlugin struct {
 	m7s.Plugin
+}
+
+func init() {
+	zipReader, _ = zip.NewReader(bytes.NewReader(hls_js), int64(len(hls_js)))
 }
 
 func (p *HLSPlugin) OnInit() (err error) {
@@ -266,20 +274,7 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		f, err := hls_js.ReadFile("hls.js/" + fileName)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-		} else {
-			w.Write(f)
-		}
-		// if file, err := hls_js.Open(fileName); err == nil {
-		// 	defer file.Close()
-		// 	if info, err := file.Stat(); err == nil {
-		// 		http.ServeContent(w, r, fileName, info.ModTime(), file)
-		// 	}
-		// } else {
-		// 	http.NotFound(w, r)
-		// }
+		http.ServeFileFS(w, r, zipReader, strings.TrimPrefix(r.URL.Path, "/hls.js"))
 	}
 }
 

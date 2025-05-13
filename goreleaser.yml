@@ -11,7 +11,7 @@ builds:
     tags:
       - sqlite
     ldflags:
-      - -s -w -X main.version={{.Tag}}    
+      - -s -w -X m7s.live/v5.Version={{.Tag}}    
     goos:
       - linux
       - windows

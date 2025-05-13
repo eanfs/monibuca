@@ -167,6 +167,8 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 				if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
 					return
 				}
+			} else {
+				return
 			}
 			if sprop_donl, ok := ctx.Fmtp["sprop-max-don-diff"]; ok {
 				if sprop_donl != "0" {
@@ -366,6 +368,9 @@ func (r *Video) Mux(codecCtx codec.ICodecCtx, from *AVFrame) {
 }
 
 func (r *Video) Demux(ictx codec.ICodecCtx) (any, error) {
+	if len(r.Packets) == 0 {
+		return nil, ErrSkip
+	}
 	switch c := ictx.(type) {
 	case *H264Ctx:
 		var nalus Nalus

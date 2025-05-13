@@ -113,6 +113,7 @@ require (
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tetratelabs/wazero v1.8.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
@@ -125,6 +126,7 @@ require (
 	github.com/valyala/quicktemplate v1.8.0 // indirect
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/arch v0.8.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
@@ -140,6 +142,7 @@ require (
 	github.com/google/pprof v0.0.0-20240409012703-83162a5b38cd // indirect
 	github.com/gorilla/websocket v1.5.1
 	github.com/ianlancetaylor/demangle v0.0.0-20240912202439-0a2b6291aafd
+	github.com/mark3labs/mcp-go v0.27.0
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/phsym/console-slog v0.3.1
 	github.com/prometheus/client_golang v1.20.4

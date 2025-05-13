@@ -13,6 +13,7 @@ bin
 *.flv
 pullcf.yaml
 *.zip
+!plugin/hls/hls.js.zip
 __debug*
 .cursorrules
 example/default/*
