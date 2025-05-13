@@ -1,34 +1,17 @@
-# Compile Stage 
-FROM golang:1.23.2-bullseye AS builder
-
-
-LABEL stage=gobuilder
-
-# Env 
-ENV CGO_ENABLED 0
-ENV GOOS linux 
-ENV GOARCH amd64
-#ENV GOPROXY https://goproxy.cn,direct
-ENV HOME /monibuca 
-
-WORKDIR /
-
-RUN git clone --depth 1 https://github.com/langhuihui/monibuca
-
-# compile 
-WORKDIR /monibuca
-RUN go build -tags sqlite -o ./build/monibuca ./example/default/main.go
-
-RUN cp -r /monibuca/example/default/config.yaml /monibuca/build
-
 # Running Stage 
 FROM alpine:3.20
 
 WORKDIR /monibuca 
-COPY --from=builder /monibuca/build /monibuca/
-RUN cp -r ./config.yaml /etc/monibuca
+
+# Copy the pre-compiled binary from the build context
+# The GitHub Actions workflow prepares 'monibuca_linux' in the context root
+COPY monibuca_linux ./monibuca_linux
+
+# Copy the configuration file from the build context
+COPY example/default/config.yaml /etc/monibuca/config.yaml
+
 # Export necessary ports 
 EXPOSE 6000 8080 8443 1935 554 5060 9000-20000
 EXPOSE 5060/udp 44944/udp
 
-CMD [ "./monibuca", "-c", "/etc/monibuca/config.yaml" ]
+CMD [ "./monibuca_linux", "-c", "/etc/monibuca/config.yaml" ]
