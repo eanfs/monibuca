@@ -122,7 +122,11 @@ func (p *RecordReader) Run() (err error) {
 				// 	allocator.Free(sample.Data)
 				// 	return
 				// }
-				ts = int64(sample.Timestamp + uint32(tsOffset))
+				if int64(sample.Timestamp)+tsOffset < 0 {
+					ts = 0
+				} else {
+					ts = int64(sample.Timestamp + uint32(tsOffset))
+				}
 				realTime = stream.StartTime.Add(time.Duration(sample.Timestamp) * time.Millisecond)
 				if p.MaxTS > 0 && ts > p.MaxTS {
 					return
@@ -155,7 +159,7 @@ func (p *RecordReader) Run() (err error) {
 						util.PutBE(head[5:8], videoFrame.CTS) // cts
 					}
 					copy(head[1:], codec.FourCC_H265[:])
-					videoFrame.Append(head, sample.Data)
+					videoFrame.AppendOne(sample.Data)
 					// videoFrame.AddRecycleBytes(sample.Data)
 					err = publisher.WriteVideo(&videoFrame)
 				case box.MP4_CODEC_AAC:

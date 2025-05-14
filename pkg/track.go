@@ -168,9 +168,9 @@ func (t *AVTrack) Ready(err error) {
 		} else {
 			switch ctx := t.ICodecCtx.(type) {
 			case IVideoCodecCtx:
-				t.Info("ready", "info", t.ICodecCtx.GetInfo(), "width", ctx.Width(), "height", ctx.Height())
+				t.Info("ready", "codec", t.ICodecCtx.FourCC(), "info", t.ICodecCtx.GetInfo(), "width", ctx.Width(), "height", ctx.Height())
 			case IAudioCodecCtx:
-				t.Info("ready", "info", t.ICodecCtx.GetInfo(), "channels", ctx.GetChannels(), "sample_rate", ctx.GetSampleRate())
+				t.Info("ready", "codec", t.ICodecCtx.FourCC(), "info", t.ICodecCtx.GetInfo(), "channels", ctx.GetChannels(), "sample_rate", ctx.GetSampleRate())
 			}
 		}
 		t.ready.Fulfill(err)
