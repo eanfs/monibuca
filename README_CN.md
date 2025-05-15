@@ -8,11 +8,11 @@
 [![Issues][issues-shield]][issues-url]
 [![AGPL License][license-shield]][license-url]
 [![Go Reference](https://pkg.go.dev/badge/m7s.live/v5.svg)](https://pkg.go.dev/m7s.live/v5)
-
+<a href="https://hellogithub.com/repository/6d7916d851c2481f87568ffd9f1c21d9" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6d7916d851c2481f87568ffd9f1c21d9&claim_uid=riBYPOGenUf7kbc&theme=small" alt="Featured｜HelloGitHub" /></a>
 <br />
 <div align="center">
   <a href="https://monibuca.com">
-    <img src="https://monibuca.com/svg/logo.svg" alt="Logo" width="200">
+    <img src="https://monibuca.com/logo+.svg" alt="Logo" width="200">
   </a>
 
   <h1 align="center">Monibuca v5</h1>

@@ -10,6 +10,9 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
+<a href="https://m7s.live">
+    <img src="https://m7s.live/logo+.svg" alt="Logo" width="200">
+  </a>
   <h1 align="center">Monibuca v5</h1>
 
   <p align="center">
