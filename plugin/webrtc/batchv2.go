@@ -86,7 +86,9 @@ func (wsh *WebSocketHandler) Go() (err error) {
 	if !wsh.validateSDP(initialSignal.SDP) {
 		return wsh.sendError("Invalid SDP: missing ICE credentials")
 	}
-
+	if strings.Contains(strings.ToLower(wsh.SDP), "h265") {
+		wsh.SupportsH265 = true
+	}
 	// 设置远程描述
 	if err = wsh.SetRemoteDescription(SessionDescription{
 		Type: SDPTypeOffer,
@@ -171,7 +173,7 @@ func (wsh *WebSocketHandler) sendError(message string) error {
 
 // handlePublish 处理发布信号
 func (wsh *WebSocketHandler) handlePublish(signal Signal) {
-	if publisher, err := wsh.config.Publish(wsh.config.Context, signal.StreamPath); err == nil {
+	if publisher, err := wsh.config.Publish(wsh, signal.StreamPath); err == nil {
 		wsh.Publisher = publisher
 		wsh.Receive()
 
@@ -363,6 +365,17 @@ func (wsh *WebSocketHandler) handleGetStreamList() {
 						Height: uint32(ctx.Height()),
 						Fps:    uint32(publisher.VideoTrack.FPS),
 					})
+				case *codec.H265Ctx:
+					if wsh.SupportsH265 {
+						// 获取视频信息
+						streams = append(streams, StreamInfo{
+							Path:   publisher.StreamPath,
+							Codec:  "H265",
+							Width:  uint32(ctx.Width()),
+							Height: uint32(ctx.Height()),
+							Fps:    uint32(publisher.VideoTrack.FPS),
+						})
+					}
 				}
 			}
 		}

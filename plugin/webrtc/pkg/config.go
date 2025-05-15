@@ -91,6 +91,10 @@ func RegisterCodecs(m *MediaEngine) error {
 		// 	RTPCodecCapability: RTPCodecCapability{"video/rtx", 90000, 0, "apt=123", nil},
 		// 	PayloadType:        118,
 		// },
+		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeH265, 90000, 0, "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST", videoRTCPFeedback},
+			PayloadType:        49,
+		},
 	} {
 		if err := m.RegisterCodec(codec, RTPCodecTypeVideo); err != nil {
 			return err

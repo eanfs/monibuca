@@ -3,9 +3,8 @@ package webrtc
 import (
 	"errors"
 	"fmt"
-	"net"
-	"regexp"
-	"strings"
+	"net"     // Add this import
+	"strings" // Add this import
 	"time"
 
 	"github.com/pion/rtcp"
@@ -22,8 +21,9 @@ import (
 
 type Connection struct {
 	*PeerConnection
-	Publisher *m7s.Publisher
-	SDP       string
+	SupportsH265 bool // Add this field
+	Publisher    *m7s.Publisher
+	SDP          string
 }
 
 func (IO *Connection) GetOffer() (*SessionDescription, error) {
@@ -64,10 +64,12 @@ type MultipleConnection struct {
 func (IO *MultipleConnection) Start() (err error) {
 	if IO.Publisher != nil {
 		IO.Depend(IO.Publisher)
+		IO.Publisher.Depend(IO)
 		IO.Receive()
 	}
 	if IO.Subscriber != nil {
 		IO.Depend(IO.Subscriber)
+		IO.Subscriber.Depend(IO)
 		IO.Send()
 	}
 	IO.OnICECandidate(func(ice *ICECandidate) {
@@ -204,213 +206,23 @@ func (IO *MultipleConnection) Receive() {
 	})
 }
 
-// H264CodecParams represents the parameters for an H.264 codec
-type H264CodecParams struct {
-	ProfileLevelID        string
-	PacketizationMode     string
-	LevelAsymmetryAllowed string
-	SpropParameterSets    string
-	OtherParams           map[string]string
-}
-
-// parseH264Params parses H.264 codec parameters from an fmtp line
-func parseH264Params(fmtpLine string) H264CodecParams {
-	params := H264CodecParams{
-		OtherParams: make(map[string]string),
-	}
-
-	// Split the fmtp line into key-value pairs
-	kvPairs := strings.Split(fmtpLine, ";")
-	for _, kv := range kvPairs {
-		kv = strings.TrimSpace(kv)
-		if kv == "" {
-			continue
-		}
-
-		parts := strings.SplitN(kv, "=", 2)
-		key := strings.TrimSpace(parts[0])
-		var value string
-		if len(parts) > 1 {
-			value = strings.TrimSpace(parts[1])
-		}
-
-		switch key {
-		case "profile-level-id":
-			params.ProfileLevelID = value
-		case "packetization-mode":
-			params.PacketizationMode = value
-		case "level-asymmetry-allowed":
-			params.LevelAsymmetryAllowed = value
-		case "sprop-parameter-sets":
-			params.SpropParameterSets = value
-		default:
-			params.OtherParams[key] = value
-		}
-	}
-
-	return params
-}
-
-// extractH264CodecParams extracts all H.264 codec parameters from an SDP
-func extractH264CodecParams(sdp string) []H264CodecParams {
-	var result []H264CodecParams
-
-	// Find all fmtp lines for H.264 codecs
-	// First, find all a=rtpmap lines for H.264
-	rtpmapRegex := regexp.MustCompile(`a=rtpmap:(\d+) H264/\d+`)
-	rtpmapMatches := rtpmapRegex.FindAllStringSubmatch(sdp, -1)
-
-	for _, rtpmapMatch := range rtpmapMatches {
-		if len(rtpmapMatch) < 2 {
-			continue
-		}
-
-		// Get the payload type
-		payloadType := rtpmapMatch[1]
-
-		// Find the corresponding fmtp line
-		fmtpRegex := regexp.MustCompile(`a=fmtp:` + payloadType + ` ([^\r\n]+)`)
-		fmtpMatch := fmtpRegex.FindStringSubmatch(sdp)
-
-		if len(fmtpMatch) >= 2 {
-			// Parse the fmtp line
-			params := parseH264Params(fmtpMatch[1])
-			result = append(result, params)
-		}
-	}
-
-	return result
-}
-
-// findClosestProfileLevelID finds the closest matching profile-level-id
-func findClosestProfileLevelID(availableIDs []string, currentID string) string {
-	// If current ID is empty, return the first available one
-	if currentID == "" && len(availableIDs) > 0 {
-		return availableIDs[0]
-	}
-
-	// If current ID is in the available ones, use it
-	for _, id := range availableIDs {
-		if strings.EqualFold(id, currentID) {
-			return currentID
-		}
-	}
-
-	// Try to match the profile part (first two characters)
-	if len(currentID) >= 2 {
-		currentProfile := currentID[:2]
-		for _, id := range availableIDs {
-			if len(id) >= 2 && strings.EqualFold(id[:2], currentProfile) {
-				return id
-			}
-		}
-	}
-
-	// If no match found, return the first available one
-	if len(availableIDs) > 0 {
-		return availableIDs[0]
-	}
-
-	// Fallback to the current one
-	return currentID
-}
-
-// findBestMatchingH264Codec finds the best matching H.264 codec configuration
-func findBestMatchingH264Codec(sdp string, currentFmtpLine string) string {
-	// If no SDP or no current fmtp line, return the current one
-	if sdp == "" || currentFmtpLine == "" {
-		return currentFmtpLine
-	}
-
-	// Parse current parameters
-	currentParams := parseH264Params(currentFmtpLine)
-
-	// Extract all H.264 codec parameters from the SDP
-	availableParams := extractH264CodecParams(sdp)
-
-	// If no available parameters found, return the current one
-	if len(availableParams) == 0 {
-		return currentFmtpLine
-	}
-
-	// Extract all available profile-level-ids
-	var availableProfileLevelIDs []string
-	var packetizationModeMap = make(map[string]string)
-
-	for _, params := range availableParams {
-		if params.ProfileLevelID != "" {
-			availableProfileLevelIDs = append(availableProfileLevelIDs, params.ProfileLevelID)
-			// Store packetization mode for each profile-level-id
-			if params.PacketizationMode != "" {
-				packetizationModeMap[params.ProfileLevelID] = params.PacketizationMode
-			}
-		}
-	}
-
-	// Find the closest matching profile-level-id
-	closestProfileLevelID := findClosestProfileLevelID(availableProfileLevelIDs, currentParams.ProfileLevelID)
-
-	// Create result parameters
-	resultParams := H264CodecParams{
-		ProfileLevelID:        closestProfileLevelID,
-		SpropParameterSets:    currentParams.SpropParameterSets, // Always use original sprop-parameter-sets
-		LevelAsymmetryAllowed: "1",                              // Default to 1
-	}
-
-	// Use matching packetization mode if available
-	if mode, ok := packetizationModeMap[closestProfileLevelID]; ok {
-		resultParams.PacketizationMode = mode
-	} else if currentParams.PacketizationMode != "" {
-		resultParams.PacketizationMode = currentParams.PacketizationMode
-	} else {
-		resultParams.PacketizationMode = "1" // Default to 1
-	}
-
-	// Build and return the fmtp line
-	return buildFmtpLine(resultParams)
-}
-
-// buildFmtpLine builds an fmtp line from H.264 codec parameters
-func buildFmtpLine(params H264CodecParams) string {
-	var parts []string
-
-	// Add profile-level-id if present
-	if params.ProfileLevelID != "" {
-		parts = append(parts, "profile-level-id="+params.ProfileLevelID)
-	}
-
-	// Add packetization-mode if present
-	if params.PacketizationMode != "" {
-		parts = append(parts, "packetization-mode="+params.PacketizationMode)
-	}
-
-	// Add level-asymmetry-allowed if present
-	if params.LevelAsymmetryAllowed != "" {
-		parts = append(parts, "level-asymmetry-allowed="+params.LevelAsymmetryAllowed)
-	}
-
-	// Add sprop-parameter-sets if present
-	if params.SpropParameterSets != "" {
-		parts = append(parts, "sprop-parameter-sets="+params.SpropParameterSets)
-	}
-
-	// Add other parameters
-	for k, v := range params.OtherParams {
-		parts = append(parts, k+"="+v)
-	}
-
-	return strings.Join(parts, ";")
-}
-
 func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioSender, videoSender *RTPSender, err error) {
 	var useDC bool
 	var audioTLSRTP, videoTLSRTP *TrackLocalStaticRTP
 	vctx, actx := subscriber.Publisher.GetVideoCodecCtx(), subscriber.Publisher.GetAudioCodecCtx()
 	if IO.EnableDC {
-		if IO.EnableDC && vctx != nil && vctx.FourCC() == codec.FourCC_H265 {
-			useDC = true
-		}
-		if IO.EnableDC && actx != nil && actx.FourCC() == codec.FourCC_MP4A {
+		// If H265 is supported by the client, we do NOT use DataChannel for H265 video.
+		// DataChannel will be used for H265 video only if the client does NOT support H265 (potentially for transcoding or specific handling).
+		// Or if video is not H265 but DC is enabled for other codecs like MP4A audio.
+		if vctx != nil && vctx.FourCC() == codec.FourCC_H265 {
+			if !IO.SupportsH265 { // Client does not support H265, so use DC
+				useDC = true
+				IO.Info("Client does not support H265, using DataChannel for H265 video.")
+			} else {
+				// Client supports H265, so we will use RTP. useDC remains false.
+				IO.Info("Client supports H265, using RTP for H265 video.")
+			}
+		} else if actx != nil && actx.FourCC() == codec.FourCC_MP4A { // For MP4A audio, use DC if enabled
 			useDC = true
 		}
 	}
@@ -429,19 +241,6 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 				return
 			}
 		}
-
-		// // For H.264, adjust codec parameters based on SDP
-		// if rcc.MimeType == MimeTypeH264 && IO.SDP != "" {
-		// 	// Find best matching codec configuration
-		// 	originalFmtpLine := rcc.SDPFmtpLine
-		// 	bestMatchingFmtpLine := findBestMatchingH264Codec(IO.SDP, rcc.SDPFmtpLine)
-
-		// 	// Update the codec parameters if a better match was found
-		// 	if bestMatchingFmtpLine != originalFmtpLine {
-		// 		rcc.SDPFmtpLine = bestMatchingFmtpLine
-		// 		IO.Info("Adjusted H.264 codec parameters", "from", originalFmtpLine, "to", bestMatchingFmtpLine)
-		// 	}
-		// }
 
 		videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), subscriber.StreamPath)
 		if err != nil {
@@ -470,7 +269,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 			}
 		}()
 	}
-	if actx != nil && !useDC {
+	if actx != nil && !useDC && actx.FourCC() != codec.FourCC_MP4A {
 		audioCodec := actx.FourCC()
 		var rcc RTPCodecParameters
 		if ctx, ok := actx.(mrtp.IRTPCtx); ok {
@@ -485,6 +284,26 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 				return
 			}
 		}
+
+		// Transform SDPFmtpLine for WebRTC compatibility (primarily for video codecs, but general logic)
+		mimeTypeLower := strings.ToLower(rcc.RTPCodecCapability.MimeType)
+		if strings.Contains(mimeTypeLower, "h264") || strings.Contains(mimeTypeLower, "h265") { // This condition will likely not match for typical audio codecs
+			originalFmtpLine := rcc.RTPCodecCapability.SDPFmtpLine
+			parts := strings.Split(originalFmtpLine, ";")
+			var newParts []string
+			for _, part := range parts {
+				trimmedPart := strings.TrimSpace(part)
+				if !strings.HasPrefix(trimmedPart, "sprop-parameter-sets=") {
+					newParts = append(newParts, trimmedPart)
+				}
+			}
+			transformedFmtpLine := strings.Join(newParts, ";")
+			if transformedFmtpLine != originalFmtpLine {
+				rcc.RTPCodecCapability.SDPFmtpLine = transformedFmtpLine
+				IO.Info("Adjusted SDPFmtpLine for WebRTC (audio track context)", "codec", rcc.RTPCodecCapability.MimeType, "from", originalFmtpLine, "to", transformedFmtpLine)
+			}
+		}
+
 		audioTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, audioCodec.String(), subscriber.StreamPath)
 		if err != nil {
 			return
@@ -589,18 +408,6 @@ func (r *RemoteStream) Start() (err error) {
 			return
 		}
 	}
-	// // For H.264, adjust codec parameters based on SDP
-	// if rcc.MimeType == MimeTypeH264 && r.pc.SDP != "" {
-	// 	// Find best matching codec configuration
-	// 	originalFmtpLine := rcc.SDPFmtpLine
-	// 	bestMatchingFmtpLine := findBestMatchingH264Codec(r.pc.SDP, rcc.SDPFmtpLine)
-
-	// 	// Update the codec parameters if a better match was found
-	// 	if bestMatchingFmtpLine != originalFmtpLine {
-	// 		rcc.SDPFmtpLine = bestMatchingFmtpLine
-	// 		r.Info("Adjusted H.264 codec parameters", "from", originalFmtpLine, "to", bestMatchingFmtpLine)
-	// 	}
-	// }
 
 	r.videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), r.suber.StreamPath)
 	if err != nil {

@@ -167,8 +167,6 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 				if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
 					return
 				}
-			} else {
-				return
 			}
 			if sprop_donl, ok := ctx.Fmtp["sprop-max-don-diff"]; ok {
 				if sprop_donl != "0" {

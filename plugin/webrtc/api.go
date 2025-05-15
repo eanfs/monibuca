@@ -85,6 +85,10 @@ func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SDP = string(bytes)
+	// Check if client supports H265
+	if strings.Contains(strings.ToLower(conn.SDP), "h265") {
+		conn.SupportsH265 = true
+	}
 	if conn.PeerConnection, err = conf.api.NewPeerConnection(Configuration{
 		ICEServers: conf.ICEServers,
 	}); err != nil {
@@ -93,7 +97,7 @@ func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
 	if rawQuery != "" {
 		streamPath += "?" + rawQuery
 	}
-	if conn.Subscriber, err = conf.Subscribe(conn.Context, streamPath); err != nil {
+	if conn.Subscriber, err = conf.Subscribe(conf.Context, streamPath); err != nil {
 		return
 	}
 	conn.Subscriber.RemoteAddr = r.RemoteAddr
