@@ -112,6 +112,20 @@ func (p *HTTPReader) Run() (err error) {
 			audioFrame.AppendOne([]byte{0xaf, 0x01})
 			audioFrame.AddRecycleBytes(sample.Data)
 			err = publisher.WriteAudio(&audioFrame)
+		case box.MP4_CODEC_G711A:
+			var audioFrame rtmp.RTMPAudio
+			audioFrame.SetAllocator(allocator)
+			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
+			audioFrame.AppendOne([]byte{0x72})
+			audioFrame.AddRecycleBytes(sample.Data)
+			err = publisher.WriteAudio(&audioFrame)
+		case box.MP4_CODEC_G711U:
+			var audioFrame rtmp.RTMPAudio
+			audioFrame.SetAllocator(allocator)
+			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
+			audioFrame.AppendOne([]byte{0x82})
+			audioFrame.AddRecycleBytes(sample.Data)
+			err = publisher.WriteAudio(&audioFrame)
 		}
 	}
 	return
