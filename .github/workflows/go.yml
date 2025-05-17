@@ -83,10 +83,8 @@ jobs:
     - name: docker build amd64
       if: success() && startsWith(github.ref, 'refs/tags/')
       run:  |
-        rm -f m7s monibuca_linux ffmpeg admin.zip # Clean up any previous state
-        curl -L https://download.m7s.live/bin/ffmpeg-x86_64-linux -o ffmpeg
+        rm -f m7s monibuca_linux admin.zip
         curl -L https://download.m7s.live/bin/admin.zip -o admin.zip
-        chmod +x ffmpeg
         tar -zxvf bin/m7s_v5_linux_amd64.tar.gz
         mv m7s monibuca_linux
         docker login -u langhuihui -p ${{ secrets.DOCKER_PASSWORD }}
@@ -94,13 +92,11 @@ jobs:
     - name: docker build arm64
       if: success() && startsWith(github.ref, 'refs/tags/')
       run:  |
-        rm -f m7s monibuca_linux ffmpeg admin.zip # Clean up from amd64 build
-        curl -L https://download.m7s.live/bin/ffmpeg-aarch64-linux -o ffmpeg
+        rm -f m7s monibuca_linux admin.zip
         curl -L https://download.m7s.live/bin/admin.zip -o admin.zip
-        chmod +x ffmpeg
         tar -zxvf bin/m7s_v5_linux_arm64.tar.gz
-        mv m7s monibuca_linux # Dockerfile expects this name
-        docker login -u langhuihui -p ${{ secrets.DOCKER_PASSWORD }} # Repeated login for consistency
+        mv m7s monibuca_linux
+        docker login -u langhuihui -p ${{ secrets.DOCKER_PASSWORD }}
         docker buildx build --platform linux/arm64 -t langhuihui/monibuca:v5-arm64 --push .
     - name: docker push amd64 version tag
       if: success() && !contains(env.version, 'beta')
