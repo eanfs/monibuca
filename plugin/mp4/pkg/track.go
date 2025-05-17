@@ -366,6 +366,7 @@ func (track *Track) makeStblTable() {
 	track.STSC = CreateSTSCBox(stsc)
 	track.STCO = CreateSTCOBox(stco)
 	track.STSZ = CreateSTSZBox(sampleSize, entrySizelist)
+	track.STSZ.SampleCount = uint32(len(track.Samplelist))
 }
 
 // func (track *Track) makeSidxBox(totalSidxSize uint32, refsize uint32) []byte {
