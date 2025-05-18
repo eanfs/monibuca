@@ -155,11 +155,12 @@ func (nc *NetConnection) readChunk() (msg *Chunk, err error) {
 	if err = nc.readChunkType(&chunk.ChunkHeader, ChunkType); err != nil {
 		return nil, errors.New("get chunk type error :" + err.Error())
 	}
+
 	msgLen := int(chunk.MessageLength)
 	if msgLen == 0 {
 		return nil, nil
 	}
-	var bufSize = 0
+	var bufSize int
 	if unRead := msgLen - chunk.bufLen; unRead < nc.ReadChunkSize {
 		bufSize = unRead
 	} else {
@@ -170,6 +171,15 @@ func (nc *NetConnection) readChunk() (msg *Chunk, err error) {
 		chunk.AVData.RecyclableMemory = util.RecyclableMemory{}
 		chunk.AVData.SetAllocator(nc.mediaDataPool.GetAllocator())
 		chunk.AVData.NextN(msgLen)
+		var delta = chunk.Timestamp
+		if delta > 0xffffff {
+			delta -= 0xffffff
+		}
+		if ChunkType == 0 {
+			chunk.ExtendTimestamp = chunk.Timestamp
+		} else {
+			chunk.ExtendTimestamp += delta
+		}
 	}
 	buffer := chunk.AVData.Buffers[0]
 	err = nc.ReadRange(bufSize, func(buf []byte) {
@@ -226,9 +236,7 @@ func (nc *NetConnection) readChunkStreamID(csid uint32) (chunkStreamID uint32, e
 }
 
 func (nc *NetConnection) readChunkType(h *ChunkHeader, chunkType byte) (err error) {
-	if chunkType == 3 {
-		// 3个字节的时间戳
-	} else {
+	if chunkType != 3 {
 		// Timestamp 3 bytes
 		if h.Timestamp, err = nc.ReadBE32(3); err != nil {
 			return err
@@ -251,27 +259,12 @@ func (nc *NetConnection) readChunkType(h *ChunkHeader, chunkType byte) (err erro
 			}
 		}
 	}
-
 	// ExtendTimestamp 4 bytes
 	if h.Timestamp >= 0xffffff { // 对于type 0的chunk,绝对时间戳在这里表示,如果时间戳值大于等于0xffffff(16777215),该值必须是0xffffff,且时间戳扩展字段必须发送,其他情况没有要求
 		if h.Timestamp, err = nc.ReadBE32(4); err != nil {
 			return err
 		}
-		switch chunkType {
-		case 0:
-			h.ExtendTimestamp = h.Timestamp
-		case 1, 2:
-			h.ExtendTimestamp += (h.Timestamp - 0xffffff)
-		}
-	} else {
-		switch chunkType {
-		case 0:
-			h.ExtendTimestamp = h.Timestamp
-		case 1, 2:
-			h.ExtendTimestamp += h.Timestamp
-		}
 	}
-
 	return nil
 }
 
