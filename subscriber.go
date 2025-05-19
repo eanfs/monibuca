@@ -103,7 +103,11 @@ func (s *Subscriber) waitingPublish() bool {
 
 func (s *Subscriber) Start() (err error) {
 	server := s.Plugin.Server
-	server.Subscribers.Add(s)
+	defer func() {
+		if err == nil {
+			server.Subscribers.Add(s)
+		}
+	}()
 	s.Info("subscribe")
 	hasInvited, done := s.processAliasOnStart()
 	if done {
@@ -111,6 +115,9 @@ func (s *Subscriber) Start() (err error) {
 	}
 
 	if publisher, ok := server.Streams.Get(s.StreamPath); ok {
+		if s.MaxCount > 0 && publisher.Subscribers.Length >= s.MaxCount {
+			return ErrSubscribeMaxCount
+		}
 		publisher.AddSubscriber(s)
 	} else {
 		server.Waiting.Wait(s)

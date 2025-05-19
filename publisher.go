@@ -145,6 +145,9 @@ func (p *Publisher) Start() (err error) {
 			return ErrStreamExist
 		}
 	}
+	if p.MaxCount > 0 && s.Streams.Length >= p.MaxCount {
+		return ErrPublishMaxCount
+	}
 	s.Streams.Set(p)
 	p.Info("publish")
 	p.processPullProxyOnStart()
