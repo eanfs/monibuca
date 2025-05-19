@@ -1,14 +1,13 @@
 # Running Stage 
-FROM alpine:3.20
+FROM linuxserver/ffmpeg:latest
 
 WORKDIR /monibuca 
 
-# Install ffmpeg
-RUN apk add --no-cache ffmpeg
-
 # Copy the pre-compiled binary from the build context
 # The GitHub Actions workflow prepares 'monibuca_linux' in the context root
+
 COPY monibuca_linux ./monibuca_linux
+
 COPY admin.zip ./admin.zip
 
 # Copy the configuration file from the build context
