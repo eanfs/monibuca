@@ -1,6 +1,6 @@
 #!/bin/sh
 # 获取最新的 tag
-LATEST_TAG=$(git describe --tags --abbrev=0)
+LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
 
 if [ -z "$LATEST_TAG" ]; then
   echo "没有找到任何 tag."

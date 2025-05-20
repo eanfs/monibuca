@@ -406,7 +406,7 @@ func (t *WebHookTask) Start() error {
 	return nil
 }
 
-func (t *WebHookTask) Run() error {
+func (t *WebHookTask) Go() error {
 	req, err := http.NewRequest(t.conf.Method, t.conf.URL, bytes.NewBuffer(t.jsonData))
 	if err != nil {
 		return err
