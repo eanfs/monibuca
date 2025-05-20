@@ -80,21 +80,20 @@ jobs:
         AWS_S3_BUCKET: monibuca
         SOURCE_DIR: 'bin'
         DEST_DIR: ${{ env.dest }}
-    - name: docker build amd64
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: docker build
       if: success() && startsWith(github.ref, 'refs/tags/')
       run:  |
         curl -L https://download.m7s.live/bin/admin.zip -o admin.zip
         tar -zxvf bin/m7s_v5_linux_amd64.tar.gz
-        mv m7s monibuca_linux
-        docker login -u langhuihui -p ${{ secrets.DOCKER_PASSWORD }}
-        docker buildx build --platform linux/amd64 -t langhuihui/monibuca:v5 --push .
-    - name: docker build arm64
-      if: success() && startsWith(github.ref, 'refs/tags/')
-      run:  |
+        mv m7s monibuca_amd64
         tar -zxvf bin/m7s_v5_linux_arm64.tar.gz
-        mv -f m7s monibuca_linux
+        mv m7s monibuca_arm64
         docker login -u langhuihui -p ${{ secrets.DOCKER_PASSWORD }}
-        docker buildx build --platform linux/arm64 -t langhuihui/monibuca:v5 --push .
+        docker buildx build --platform linux/amd64,linux/arm64 -t langhuihui/monibuca:v5 --push .
     - name: docker push version tag
       if: success() && !contains(env.version, 'beta')
       run:  |
