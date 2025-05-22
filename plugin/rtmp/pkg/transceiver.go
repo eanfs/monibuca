@@ -53,7 +53,7 @@ func (av *Sender) SendFrame(frame *RTMPData) (err error) {
 	// 后面开始,就是直接发送音视频数据,那么直接发送,不需要完整的块(Chunk Basic Header(1) + Chunk Message Header(7))
 	// 当Chunk Type为0时(即Chunk12),
 	if av.lastAbs == 0 {
-		av.SetTimestamp(frame.Timestamp)
+		av.SetTimestamp(1)
 		err = av.sendChunk(frame.Memory.Buffers, &av.ChunkHeader, RTMP_CHUNK_HEAD_12)
 	} else {
 		av.SetTimestamp(frame.Timestamp - av.lastAbs)

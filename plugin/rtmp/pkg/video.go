@@ -185,15 +185,15 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 				return
 			}
 		} else {
-			switch ctx := t.ICodecCtx.(type) {
-			case *codec.H264Ctx:
-				avcc.filterH264(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
-			case *H265Ctx:
-				avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
-			}
-			if avcc.Size <= 5 {
-				return ErrSkip
-			}
+			// switch ctx := t.ICodecCtx.(type) {
+			// case *codec.H264Ctx:
+			// 	avcc.filterH264(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
+			// case *H265Ctx:
+			// 	avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
+			// }
+			// if avcc.Size <= 5 {
+			// 	return ErrSkip
+			// }
 		}
 	}
 	return
