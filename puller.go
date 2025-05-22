@@ -122,6 +122,33 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 		"maxRetry":   conf.MaxRetry,
 	})
 	puller.SetRetry(conf.MaxRetry, conf.RetryInterval)
+
+	if sender := plugin.getHookSender(config.HookOnPullStart); sender != nil {
+		puller.OnStart(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnPullStart,
+				"streamPath": streamPath,
+				"url":        conf.URL,
+				"args":       conf.Args,
+				"pluginName": plugin.Meta.Name,
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnPullStart, webhookData)
+		})
+	}
+
+	if sender := plugin.getHookSender(config.HookOnPullEnd); sender != nil {
+		puller.OnDispose(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnPullEnd,
+				"streamPath": streamPath,
+				"reason":     puller.StopReason().Error(),
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnPullEnd, webhookData)
+		})
+	}
+
 	plugin.Server.Pulls.Add(p, plugin.Logger.With("pullURL", conf.URL, "streamPath", streamPath))
 	return p
 }

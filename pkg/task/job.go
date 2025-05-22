@@ -32,14 +32,15 @@ func GetNextTaskID() uint32 {
 // Job include tasks
 type Job struct {
 	Task
-	cases                 []reflect.SelectCase
-	addSub                chan ITask
-	children              []ITask
-	lazyRun               sync.Once
-	eventLoopLock         sync.Mutex
-	childrenDisposed      chan struct{}
-	childDisposeListeners []func(ITask)
-	blocked               ITask
+	cases                       []reflect.SelectCase
+	addSub                      chan ITask
+	children                    []ITask
+	lazyRun                     sync.Once
+	eventLoopLock               sync.Mutex
+	childrenDisposed            chan struct{}
+	descendantsDisposeListeners []func(ITask)
+	descendantsStartListeners   []func(ITask)
+	blocked                     ITask
 }
 
 func (*Job) GetTaskType() TaskType {
@@ -68,12 +69,12 @@ func (mt *Job) waitChildrenDispose() {
 	}
 }
 
-func (mt *Job) OnChildDispose(listener func(ITask)) {
-	mt.childDisposeListeners = append(mt.childDisposeListeners, listener)
+func (mt *Job) OnDescendantsDispose(listener func(ITask)) {
+	mt.descendantsDisposeListeners = append(mt.descendantsDisposeListeners, listener)
 }
 
 func (mt *Job) onDescendantsDispose(descendants ITask) {
-	for _, listener := range mt.childDisposeListeners {
+	for _, listener := range mt.descendantsDisposeListeners {
 		listener(descendants)
 	}
 	if mt.parent != nil {
@@ -82,11 +83,28 @@ func (mt *Job) onDescendantsDispose(descendants ITask) {
 }
 
 func (mt *Job) onChildDispose(child ITask) {
-	if child.getParent() == mt {
-		if child.GetTaskType() != TASK_TYPE_CALL || child.GetOwnerType() != "CallBack" {
-			mt.onDescendantsDispose(child)
-		}
-		child.dispose()
+	if child.GetTaskType() != TASK_TYPE_CALL || child.GetOwnerType() != "CallBack" {
+		mt.onDescendantsDispose(child)
+	}
+	child.dispose()
+}
+
+func (mt *Job) OnDescendantsStart(listener func(ITask)) {
+	mt.descendantsStartListeners = append(mt.descendantsStartListeners, listener)
+}
+
+func (mt *Job) onDescendantsStart(descendants ITask) {
+	for _, listener := range mt.descendantsStartListeners {
+		listener(descendants)
+	}
+	if mt.parent != nil {
+		mt.parent.onDescendantsStart(descendants)
+	}
+}
+
+func (mt *Job) onChildStart(child ITask) {
+	if child.GetTaskType() != TASK_TYPE_CALL || child.GetOwnerType() != "CallBack" {
+		mt.onDescendantsStart(child)
 	}
 }
 
@@ -211,9 +229,10 @@ func (mt *Job) run() {
 			if rev.IsNil() {
 				return
 			}
-			if mt.blocked = rev.Interface().(ITask); mt.blocked.getParent() != mt || mt.blocked.start() {
+			if mt.blocked = rev.Interface().(ITask); mt.blocked.start() {
 				mt.children = append(mt.children, mt.blocked)
 				mt.cases = append(mt.cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(mt.blocked.GetSignal())})
+				mt.onChildStart(mt.blocked)
 			}
 		} else {
 			taskIndex := chosen - 1
@@ -236,6 +255,7 @@ func (mt *Job) run() {
 					if mt.onChildDispose(mt.blocked); mt.blocked.checkRetry(mt.blocked.StopReason()) {
 						if mt.blocked.reset(); mt.blocked.start() {
 							mt.cases[chosen].Chan = reflect.ValueOf(mt.blocked.GetSignal())
+							mt.onChildStart(mt.blocked)
 							continue
 						}
 					}

@@ -3,11 +3,12 @@ package rtmp
 import (
 	"crypto/tls"
 	"errors"
-	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	"net"
 	"net/url"
 	"strings"
+
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/task"
 
 	"m7s.live/v5"
 )
@@ -53,7 +54,7 @@ func (c *Client) Start() (err error) {
 		return err
 	}
 	c.Init(conn)
-	c.Logger = c.Logger.With("local", conn.LocalAddr().String())
+	c.SetDescription("local", conn.LocalAddr().String())
 	c.Info("connect")
 	c.WriteChunkSize = c.chunkSize
 	c.AppName = strings.Join(ps[1:len(ps)-1], "/")

@@ -8,3 +8,8 @@ mp4:
   enable: true
   pull:
     live/test: /Users/dexter/Movies/test.mp4
+rtmp:
+  enable: true
+
+debug:
+  enable: true

@@ -371,20 +371,17 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		err = pkg.ErrRecordExists
 		return
 	}
-	p.Server.Streams.Call(func() error {
-		if stream, ok := p.Server.Streams.Get(req.StreamPath); ok {
-			recordConf := config.Record{
-				Append:   false,
-				Fragment: fragment,
-				FilePath: filePath,
-			}
-			job := p.Record(stream, recordConf, nil)
-			res.Data = uint64(uintptr(unsafe.Pointer(job.GetTask())))
-		} else {
-			err = pkg.ErrNotFound
+	if stream, ok := p.Server.Streams.SafeGet(req.StreamPath); ok {
+		recordConf := config.Record{
+			Append:   false,
+			Fragment: fragment,
+			FilePath: filePath,
 		}
-		return nil
-	})
+		job := p.Record(stream, recordConf, nil)
+		res.Data = uint64(uintptr(unsafe.Pointer(job.GetTask())))
+	} else {
+		err = pkg.ErrNotFound
+	}
 	return
 }
 
@@ -432,28 +429,25 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 		return nil
 	})
 	if tmpJob == nil { //为空表示没有正在进行的录制，也就是没有自动录像，则进行正常的事件录像
-		p.Server.Streams.Call(func() error {
-			if stream, ok := p.Server.Streams.Get(req.StreamPath); ok {
-				recordConf := config.Record{
-					Append:   false,
-					Fragment: 0,
-					FilePath: filepath.Join(p.EventRecordFilePath, stream.StreamPath, time.Now().Local().Format("2006-01-02-15-04-05")),
-				}
-				//recordJob := recorder.GetRecordJob()
-				var subconfig config.Subscribe
-				defaults.SetDefaults(&subconfig)
-				subconfig.BufferTime = beforeDuration
-				recordJob := p.Record(stream, recordConf, &subconfig)
-				recordJob.EventId = req.EventId
-				recordJob.EventLevel = req.EventLevel
-				recordJob.EventName = req.EventName
-				recordJob.EventDesc = req.EventDesc
-				recordJob.AfterDuration = afterDuration
-				recordJob.BeforeDuration = beforeDuration
-				recordJob.Mode = m7s.RecordModeEvent
+		if stream, ok := p.Server.Streams.SafeGet(req.StreamPath); ok {
+			recordConf := config.Record{
+				Append:   false,
+				Fragment: 0,
+				FilePath: filepath.Join(p.EventRecordFilePath, stream.StreamPath, time.Now().Local().Format("2006-01-02-15-04-05")),
 			}
-			return nil
-		})
+			//recordJob := recorder.GetRecordJob()
+			var subconfig config.Subscribe
+			defaults.SetDefaults(&subconfig)
+			subconfig.BufferTime = beforeDuration
+			recordJob := p.Record(stream, recordConf, &subconfig)
+			recordJob.EventId = req.EventId
+			recordJob.EventLevel = req.EventLevel
+			recordJob.EventName = req.EventName
+			recordJob.EventDesc = req.EventDesc
+			recordJob.AfterDuration = afterDuration
+			recordJob.BeforeDuration = beforeDuration
+			recordJob.Mode = m7s.RecordModeEvent
+		}
 	} else {
 		if tmpJob.AfterDuration != 0 { //当前有事件录像正在录制，则更新该录像的结束时间
 			tmpJob.AfterDuration = time.Duration(tmpJob.Subscriber.VideoReader.AbsTime)*time.Millisecond + afterDuration

@@ -103,6 +103,32 @@ func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, 
 		"fragment":   conf.Fragment,
 	})
 	recorder.SetRetry(-1, time.Second)
+	if sender := plugin.getHookSender(config.HookOnRecordStart); sender != nil {
+		recorder.OnStart(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnRecordStart,
+				"streamPath": streamPath,
+				"filePath":   conf.FilePath,
+				"pluginName": plugin.Meta.Name,
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnRecordStart, webhookData)
+		})
+	}
+
+	if sender := plugin.getHookSender(config.HookOnRecordEnd); sender != nil {
+		recorder.OnDispose(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnRecordEnd,
+				"streamPath": streamPath,
+				"filePath":   conf.FilePath,
+				"reason":     recorder.StopReason().Error(),
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnRecordEnd, webhookData)
+		})
+	}
+
 	plugin.Server.Records.Add(p, plugin.Logger.With("filePath", conf.FilePath, "streamPath", streamPath))
 	return p
 }

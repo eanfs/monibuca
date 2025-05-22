@@ -53,7 +53,6 @@ type (
 	ITask     interface {
 		context.Context
 		keepalive() bool
-		getParent() *Job
 		GetParent() ITask
 		GetTask() *Task
 		GetTaskID() uint32
@@ -85,7 +84,8 @@ type (
 		getJob() *Job
 		AddTask(ITask, ...any) *Task
 		RangeSubTask(func(yield ITask) bool)
-		OnChildDispose(func(ITask))
+		OnDescendantsDispose(func(ITask))
+		OnDescendantsStart(func(ITask))
 		Blocked() ITask
 		Call(func() error, ...any)
 		Post(func() error, ...any) *Task
@@ -176,10 +176,6 @@ func (task *Task) GetTask() *Task {
 
 func (task *Task) GetTaskPointer() uintptr {
 	return uintptr(unsafe.Pointer(task))
-}
-
-func (task *Task) getParent() *Job {
-	return task.parent
 }
 
 func (task *Task) GetKey() uint32 {
@@ -433,6 +429,10 @@ func (task *Task) dispose() {
 
 func (task *Task) ResetRetryCount() {
 	task.retry.RetryCount = 0
+}
+
+func (task *Task) GetRetryCount() int {
+	return task.retry.RetryCount
 }
 
 func (task *Task) run(handler func() error) {

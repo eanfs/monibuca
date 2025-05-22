@@ -142,6 +142,26 @@ func Test_Hooks(t *testing.T) {
 	root.AddTask(&task).WaitStopped()
 }
 
+type startFailTask struct {
+	Task
+}
+
+func (task *startFailTask) Start() error {
+	return errors.New("start failed")
+}
+
+func (task *startFailTask) Dispose() {
+	task.Logger.Info("Dispose")
+}
+
+func Test_StartFail(t *testing.T) {
+	var task startFailTask
+	root.AddTask(&task)
+	if err := task.WaitStarted(); err == nil {
+		t.Errorf("expected start to fail")
+	}
+}
+
 //
 //type DemoTask struct {
 //	Task

@@ -79,7 +79,7 @@ func (s *Server) DisabledPlugins(ctx context.Context, _ *emptypb.Empty) (res *pb
 
 // /api/stream/annexb/{streamPath}
 func (s *Server) api_Stream_AnnexB_(rw http.ResponseWriter, r *http.Request) {
-	publisher, ok := s.Streams.Get(r.PathValue("streamPath"))
+	publisher, ok := s.Streams.SafeGet(r.PathValue("streamPath"))
 	if !ok || publisher.VideoTrack.AVTrack == nil {
 		http.Error(rw, pkg.ErrNotFound.Error(), http.StatusNotFound)
 		return
@@ -195,18 +195,15 @@ func (s *Server) StreamInfo(ctx context.Context, req *pb.StreamSnapRequest) (res
 		}
 		return nil
 	})
-	s.Streams.Call(func() error {
-		if pub, ok := s.Streams.Get(req.StreamPath); ok {
-			res, err = s.getStreamInfo(pub)
-			if err != nil {
-				return err
-			}
-			res.Data.Recording = recordings
-		} else {
-			err = pkg.ErrNotFound
+	if pub, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		res, err = s.getStreamInfo(pub)
+		if err != nil {
+			return
 		}
-		return nil
-	})
+		res.Data.Recording = recordings
+	} else {
+		err = pkg.ErrNotFound
+	}
 	return
 }
 
@@ -324,50 +321,47 @@ func (s *Server) GetSubscribers(context.Context, *pb.SubscribersRequest) (res *p
 	return
 }
 func (s *Server) AudioTrackSnap(_ context.Context, req *pb.StreamSnapRequest) (res *pb.TrackSnapShotResponse, err error) {
-	s.Streams.Call(func() error {
-		if pub, ok := s.Streams.Get(req.StreamPath); ok && pub.HasAudioTrack() {
-			data := &pb.TrackSnapShotData{}
-			if pub.AudioTrack.Allocator != nil {
-				for _, memlist := range pub.AudioTrack.Allocator.GetChildren() {
-					var list []*pb.MemoryBlock
-					for _, block := range memlist.GetBlocks() {
-						list = append(list, &pb.MemoryBlock{
-							S: uint32(block.Start),
-							E: uint32(block.End),
-						})
-					}
-					data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
+	if pub, ok := s.Streams.SafeGet(req.StreamPath); ok && pub.HasAudioTrack() {
+		data := &pb.TrackSnapShotData{}
+		if pub.AudioTrack.Allocator != nil {
+			for _, memlist := range pub.AudioTrack.Allocator.GetChildren() {
+				var list []*pb.MemoryBlock
+				for _, block := range memlist.GetBlocks() {
+					list = append(list, &pb.MemoryBlock{
+						S: uint32(block.Start),
+						E: uint32(block.End),
+					})
 				}
+				data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
 			}
-			pub.AudioTrack.Ring.Do(func(v *pkg.AVFrame) {
-				if len(v.Wraps) > 0 {
-					var snap pb.TrackSnapShot
-					snap.Sequence = v.Sequence
-					snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
-					snap.WriteTime = timestamppb.New(v.WriteTime)
-					snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
-					snap.KeyFrame = v.IDR
-					data.RingDataSize += uint32(v.Wraps[0].GetSize())
-					for i, wrap := range v.Wraps {
-						snap.Wrap[i] = &pb.Wrap{
-							Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-							Size:      uint32(wrap.GetSize()),
-							Data:      wrap.String(),
-						}
-					}
-					data.Ring = append(data.Ring, &snap)
-				}
-			})
-			res = &pb.TrackSnapShotResponse{
-				Code:    0,
-				Message: "success",
-				Data:    data,
-			}
-		} else {
-			err = pkg.ErrNotFound
 		}
-		return nil
-	})
+		pub.AudioTrack.Ring.Do(func(v *pkg.AVFrame) {
+			if len(v.Wraps) > 0 {
+				var snap pb.TrackSnapShot
+				snap.Sequence = v.Sequence
+				snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
+				snap.WriteTime = timestamppb.New(v.WriteTime)
+				snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
+				snap.KeyFrame = v.IDR
+				data.RingDataSize += uint32(v.Wraps[0].GetSize())
+				for i, wrap := range v.Wraps {
+					snap.Wrap[i] = &pb.Wrap{
+						Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+						Size:      uint32(wrap.GetSize()),
+						Data:      wrap.String(),
+					}
+				}
+				data.Ring = append(data.Ring, &snap)
+			}
+		})
+		res = &pb.TrackSnapShotResponse{
+			Code:    0,
+			Message: "success",
+			Data:    data,
+		}
+	} else {
+		err = pkg.ErrNotFound
+	}
 	return
 }
 func (s *Server) api_VideoTrack_SSE(rw http.ResponseWriter, r *http.Request) {
@@ -437,50 +431,47 @@ func (s *Server) api_AudioTrack_SSE(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) VideoTrackSnap(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.TrackSnapShotResponse, err error) {
-	s.Streams.Call(func() error {
-		if pub, ok := s.Streams.Get(req.StreamPath); ok && pub.HasVideoTrack() {
-			data := &pb.TrackSnapShotData{}
-			if pub.VideoTrack.Allocator != nil {
-				for _, memlist := range pub.VideoTrack.Allocator.GetChildren() {
-					var list []*pb.MemoryBlock
-					for _, block := range memlist.GetBlocks() {
-						list = append(list, &pb.MemoryBlock{
-							S: uint32(block.Start),
-							E: uint32(block.End),
-						})
-					}
-					data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
+	if pub, ok := s.Streams.SafeGet(req.StreamPath); ok && pub.HasVideoTrack() {
+		data := &pb.TrackSnapShotData{}
+		if pub.VideoTrack.Allocator != nil {
+			for _, memlist := range pub.VideoTrack.Allocator.GetChildren() {
+				var list []*pb.MemoryBlock
+				for _, block := range memlist.GetBlocks() {
+					list = append(list, &pb.MemoryBlock{
+						S: uint32(block.Start),
+						E: uint32(block.End),
+					})
 				}
+				data.Memory = append(data.Memory, &pb.MemoryBlockGroup{List: list, Size: uint32(memlist.Size)})
 			}
-			pub.VideoTrack.Ring.Do(func(v *pkg.AVFrame) {
-				if len(v.Wraps) > 0 {
-					var snap pb.TrackSnapShot
-					snap.Sequence = v.Sequence
-					snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
-					snap.WriteTime = timestamppb.New(v.WriteTime)
-					snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
-					snap.KeyFrame = v.IDR
-					data.RingDataSize += uint32(v.Wraps[0].GetSize())
-					for i, wrap := range v.Wraps {
-						snap.Wrap[i] = &pb.Wrap{
-							Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
-							Size:      uint32(wrap.GetSize()),
-							Data:      wrap.String(),
-						}
-					}
-					data.Ring = append(data.Ring, &snap)
-				}
-			})
-			res = &pb.TrackSnapShotResponse{
-				Code:    0,
-				Message: "success",
-				Data:    data,
-			}
-		} else {
-			err = pkg.ErrNotFound
 		}
-		return nil
-	})
+		pub.VideoTrack.Ring.Do(func(v *pkg.AVFrame) {
+			if len(v.Wraps) > 0 {
+				var snap pb.TrackSnapShot
+				snap.Sequence = v.Sequence
+				snap.Timestamp = uint32(v.Timestamp / time.Millisecond)
+				snap.WriteTime = timestamppb.New(v.WriteTime)
+				snap.Wrap = make([]*pb.Wrap, len(v.Wraps))
+				snap.KeyFrame = v.IDR
+				data.RingDataSize += uint32(v.Wraps[0].GetSize())
+				for i, wrap := range v.Wraps {
+					snap.Wrap[i] = &pb.Wrap{
+						Timestamp: uint32(wrap.GetTimestamp() / time.Millisecond),
+						Size:      uint32(wrap.GetSize()),
+						Data:      wrap.String(),
+					}
+				}
+				data.Ring = append(data.Ring, &snap)
+			}
+		})
+		res = &pb.TrackSnapShotResponse{
+			Code:    0,
+			Message: "success",
+			Data:    data,
+		}
+	} else {
+		err = pkg.ErrNotFound
+	}
 	return
 }
 
@@ -500,7 +491,7 @@ func (s *Server) Shutdown(ctx context.Context, req *pb.RequestWithId) (res *pb.S
 func (s *Server) ChangeSubscribe(ctx context.Context, req *pb.ChangeSubscribeRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
 		if subscriber, ok := s.Subscribers.Get(req.Id); ok {
-			if pub, ok := s.Streams.Get(req.StreamPath); ok {
+			if pub, ok := s.Streams.SafeGet(req.StreamPath); ok {
 				subscriber.Publisher.RemoveSubscriber(subscriber)
 				subscriber.StreamPath = req.StreamPath
 				pub.AddSubscriber(subscriber)
@@ -527,7 +518,7 @@ func (s *Server) StopSubscribe(ctx context.Context, req *pb.RequestWithId) (res 
 
 func (s *Server) PauseStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
-		if s, ok := s.Streams.Get(req.StreamPath); ok {
+		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 			s.Pause()
 		}
 		return nil
@@ -537,7 +528,7 @@ func (s *Server) PauseStream(ctx context.Context, req *pb.StreamSnapRequest) (re
 
 func (s *Server) ResumeStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
-		if s, ok := s.Streams.Get(req.StreamPath); ok {
+		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 			s.Resume()
 		}
 		return nil
@@ -547,7 +538,7 @@ func (s *Server) ResumeStream(ctx context.Context, req *pb.StreamSnapRequest) (r
 
 func (s *Server) SetStreamSpeed(ctx context.Context, req *pb.SetStreamSpeedRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
-		if s, ok := s.Streams.Get(req.StreamPath); ok {
+		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 			s.Speed = float64(req.Speed)
 			s.Scale = float64(req.Speed)
 			s.Info("set stream speed", "speed", req.Speed)
@@ -559,7 +550,7 @@ func (s *Server) SetStreamSpeed(ctx context.Context, req *pb.SetStreamSpeedReque
 
 func (s *Server) SeekStream(ctx context.Context, req *pb.SeekStreamRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
-		if s, ok := s.Streams.Get(req.StreamPath); ok {
+		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 			s.Seek(time.Unix(int64(req.TimeStamp), 0))
 		}
 		return nil
@@ -569,7 +560,7 @@ func (s *Server) SeekStream(ctx context.Context, req *pb.SeekStreamRequest) (res
 
 func (s *Server) StopPublish(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
-		if s, ok := s.Streams.Get(req.StreamPath); ok {
+		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 			s.Stop(task.ErrStopByUser)
 		}
 		return nil
@@ -632,24 +623,18 @@ func (s *Server) Api_Summary_SSE(rw http.ResponseWriter, r *http.Request) {
 func (s *Server) Api_Stream_Position_SSE(rw http.ResponseWriter, r *http.Request) {
 	streamPath := r.URL.Query().Get("streamPath")
 	util.ReturnFetchValue(func() (t time.Time) {
-		s.Streams.Call(func() error {
-			if pub, ok := s.Streams.Get(streamPath); ok {
-				t = pub.GetPosition()
-			}
-			return nil
-		})
+		if pub, ok := s.Streams.SafeGet(streamPath); ok {
+			t = pub.GetPosition()
+		}
 		return
 	}, rw, r)
 }
 
 // func (s *Server) Api_Vod_Position(rw http.ResponseWriter, r *http.Request) {
 // 	streamPath := r.URL.Query().Get("streamPath")
-// 	s.Streams.Call(func() error {
-// 		if pub, ok := s.Streams.Get(streamPath); ok {
-// 			t = pub.GetPosition()
-// 		}
-// 		return nil
-// 	})
+// 	if pub, ok := s.Streams.SafeGet(streamPath); ok {
+// 		t = pub.GetPosition()
+// 	}
 // }
 
 func (s *Server) Summary(context.Context, *emptypb.Empty) (res *pb.SummaryResponse, err error) {

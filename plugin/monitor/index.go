@@ -2,13 +2,14 @@ package plugin_monitor
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
+	"time"
+
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/monitor/pb"
 	monitor "m7s.live/v5/plugin/monitor/pkg"
-	"os"
-	"strings"
-	"time"
 )
 
 var _ = m7s.InstallPlugin[MonitorPlugin](&pb.Api_ServiceDesc, pb.RegisterApiHandler)
@@ -65,7 +66,7 @@ func (cfg *MonitorPlugin) OnInit() (err error) {
 		cfg.Plugin.Server.OnBeforeDispose(func() {
 			cfg.saveTask(cfg.Plugin.Server)
 		})
-		cfg.Plugin.Server.OnChildDispose(cfg.saveTask)
+		cfg.Plugin.Server.OnDescendantsDispose(cfg.saveTask)
 	}
 	return
 }

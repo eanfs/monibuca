@@ -105,6 +105,28 @@ func (p *TransformJob) Init(transformer ITransformer, plugin *Plugin, pub *Publi
 		"conf":       conf,
 	})
 	transformer.SetRetry(-1, time.Second*2)
+	if sender := plugin.getHookSender(config.HookOnTransformStart); sender != nil {
+		transformer.OnStart(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnTransformStart,
+				"streamPath": pub.StreamPath,
+				"pluginName": plugin.Meta.Name,
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnTransformStart, webhookData)
+		})
+	}
+	if sender := plugin.getHookSender(config.HookOnTransformEnd); sender != nil {
+		transformer.OnDispose(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnTransformEnd,
+				"streamPath": pub.StreamPath,
+				"reason":     transformer.StopReason().Error(),
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnTransformEnd, webhookData)
+		})
+	}
 	plugin.Server.Transforms.AddTask(p, plugin.Logger.With("streamPath", pub.StreamPath))
 	return p
 }

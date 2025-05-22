@@ -16,11 +16,19 @@ const (
 	RelayModeRelay = "relay"
 	RelayModeMix   = "mix"
 
-	HookOnPublish         HookType = "publish"
-	HookOnSubscribe       HookType = "subscribe"
-	HookOnPublishEnd      HookType = "publish_end"
-	HookOnSubscribeEnd    HookType = "subscribe_end"
 	HookOnServerKeepAlive HookType = "server_keep_alive"
+	HookOnPublishStart    HookType = "publish_start"
+	HookOnPublishEnd      HookType = "publish_end"
+	HookOnSubscribeStart  HookType = "subscribe_start"
+	HookOnSubscribeEnd    HookType = "subscribe_end"
+	HookOnPullStart       HookType = "pull_start"
+	HookOnPullEnd         HookType = "pull_end"
+	HookOnPushStart       HookType = "push_start"
+	HookOnPushEnd         HookType = "push_end"
+	HookOnRecordStart     HookType = "record_start"
+	HookOnRecordEnd       HookType = "record_end"
+	HookOnTransformStart  HookType = "transform_start"
+	HookOnTransformEnd    HookType = "transform_end"
 )
 
 type (
@@ -99,13 +107,13 @@ type (
 		Transform map[Regexp]Transform
 	}
 	Webhook struct {
-		URL            string            `yaml:"url" json:"url"`                                  // Webhook 地址
-		Method         string            `yaml:"method" json:"method" default:"POST"`             // HTTP 方法
-		Headers        map[string]string `yaml:"headers" json:"headers"`                          // 自定义请求头
-		TimeoutSeconds int               `yaml:"timeout" json:"timeout" default:"5"`              // 超时时间(秒)
-		RetryTimes     int               `yaml:"retry" json:"retry" default:"3"`                  // 重试次数
-		RetryInterval  time.Duration     `yaml:"retryInterval" json:"retryInterval" default:"1s"` // 重试间隔
-		Interval       int               `yaml:"interval" json:"interval" default:"60"`           // 保活间隔(秒)
+		URL            string            // Webhook 地址
+		Method         string            `default:"POST"` // HTTP 方法
+		Headers        map[string]string // 自定义请求头
+		TimeoutSeconds int               `default:"5"`  // 超时时间(秒)
+		RetryTimes     int               `default:"3"`  // 重试次数
+		RetryInterval  time.Duration     `default:"1s"` // 重试间隔
+		Interval       int               `default:"60"` // 保活间隔(秒)
 	}
 	Common struct {
 		PublicIP   string

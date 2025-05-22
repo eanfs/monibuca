@@ -2,6 +2,7 @@ package m7s
 
 import (
 	"net/http"
+	"time"
 
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/task"
@@ -43,6 +44,30 @@ func (p *PushJob) Init(pusher IPusher, plugin *Plugin, streamPath string, conf c
 		"maxRetry":   conf.MaxRetry,
 	})
 	pusher.SetRetry(conf.MaxRetry, conf.RetryInterval)
+	if sender := plugin.getHookSender(config.HookOnPushStart); sender != nil {
+		pusher.OnStart(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnPullStart,
+				"streamPath": streamPath,
+				"url":        conf.URL,
+				"pluginName": plugin.Meta.Name,
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnPullStart, webhookData)
+		})
+	}
+
+	if sender := plugin.getHookSender(config.HookOnPushEnd); sender != nil {
+		pusher.OnDispose(func() {
+			webhookData := map[string]interface{}{
+				"event":      config.HookOnPullEnd,
+				"streamPath": streamPath,
+				"reason":     pusher.StopReason().Error(),
+				"timestamp":  time.Now().Unix(),
+			}
+			sender(config.HookOnPullEnd, webhookData)
+		})
+	}
 	plugin.Server.Pushs.Add(p, plugin.Logger.With("pushURL", conf.URL, "streamPath", streamPath))
 	return p
 }
