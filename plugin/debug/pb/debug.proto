@@ -26,6 +26,12 @@ service api {
       get: "/debug/api/cpu"
     };
   }
+
+  rpc StartTcpDump (TcpDumpRequest) returns (TcpDumpResponse) {
+    option (google.api.http) = {
+      post: "/debug/api/tcpdump"
+    };
+  }
 }
 
 // CPU分析请求参数
@@ -132,4 +138,19 @@ message RuntimeStats {
   uint64 gc_count = 2;            // 垃圾回收次数
   uint64 gc_pause_time_ns = 3;    // 垃圾回收暂停时间（纳秒）
   uint64 blocking_time_ns = 4;    // 阻塞时间（纳秒）
+}
+
+// TCP Dump请求参数
+message TcpDumpRequest {
+  string interface = 1;       // 网络接口 (例如: "eth0", "any"). 如果为空，可能由服务端决定默认值.
+  string filter = 2;          // BPF 过滤表达式 (例如: "port 80", "host 1.2.3.4 and tcp").
+  uint32 duration = 3;        // 抓包持续时间（秒）.
+  string extra_args = 4;      // 额外的 tcpdump 参数 (例如: "-n -X -c 100").
+}
+
+// TCP Dump响应数据
+message TcpDumpResponse {
+  uint32 code = 1;            // 状态码 (0 表示成功)
+  string message = 2;         // 状态消息
+  string data = 3;            // tcpdump 的文本输出内容
 }

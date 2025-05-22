@@ -50,8 +50,25 @@ func (avcc *RTMPVideo) filterH264(naluSizeLen int) {
 			naluBuffer = append(naluBuffer, b)
 		})
 		badType := codec.ParseH264NALUType(naluBuffer[0][0])
+		// 替换之前打印 badType 的逻辑，解码并打印 SliceType
+		if badType == 5 { // NALU type for Coded slice of a non-IDR picture or Coded slice of an IDR picture
+			naluData := bytes.Join(naluBuffer, nil) // bytes 包已导入
+			if len(naluData) > 0 {
+				// h264parser 包已导入 as "github.com/deepch/vdk/codec/h264parser"
+				// ParseSliceHeaderFromNALU 返回的第一个值就是 SliceType
+				sliceType, err := h264parser.ParseSliceHeaderFromNALU(naluData)
+				if err == nil {
+					println("Decoded SliceType:", sliceType.String())
+				} else {
+					println("Error parsing H.264 slice header:", err.Error())
+				}
+			} else {
+				println("NALU data is empty, cannot parse H.264 slice header.")
+			}
+		}
+
 		switch badType {
-		case 5, 6, 1:
+		case 5, 6, 7, 8, 1, 2, 3, 4:
 			afterFilter.Append(lenBuffer...)
 			afterFilter.Append(naluBuffer...)
 		default:

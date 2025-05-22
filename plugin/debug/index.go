@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/exec" // 新增导入
 	"runtime"
 	runtimePPROF "runtime/pprof"
 	"sort"
@@ -193,7 +194,7 @@ func (p *DebugPlugin) GetHeap(ctx context.Context, empty *emptypb.Empty) (*pb.He
 		obj.Size += size
 		totalSize += size
 
-		// 构建引���关系
+		// 构建引用关系
 		for i := 1; i < len(sample.Location); i++ {
 			loc := sample.Location[i]
 			if len(loc.Line) == 0 || loc.Line[0].Function == nil {
@@ -441,5 +442,46 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	}
 	return &pb.HeapGraphResponse{
 		Data: dot,
+	}, nil
+}
+
+func (p *DebugPlugin) StartTcpDump(ctx context.Context, req *pb.TcpDumpRequest) (*pb.TcpDumpResponse, error) {
+	args := []string{}
+	if req.Interface != "" {
+		args = append(args, "-i", req.Interface)
+	}
+	if req.Duration > 0 {
+		args = append(args, "-G", fmt.Sprintf("%d", req.Duration), "-W", "1")
+	}
+	if req.Filter != "" {
+		args = append(args, req.Filter)
+	}
+	if req.ExtraArgs != "" {
+		args = append(args, strings.Fields(req.ExtraArgs)...)
+	}
+
+	cmd := exec.CommandContext(ctx, "tcpdump", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// 如果 tcpdump 因为超时而退出，这通常不是一个错误，而是预期的行为
+		if exitErr, ok := err.(*exec.ExitError); ok && strings.Contains(string(exitErr.Stderr), "timeout") {
+			return &pb.TcpDumpResponse{
+				Code:    0,
+				Message: "tcpdump completed with timeout as expected.",
+				Data:    string(output),
+			}, nil
+		}
+		return &pb.TcpDumpResponse{
+			Code:    1,
+			Message: fmt.Sprintf("failed to run tcpdump: %v. Output: %s", err, string(output)),
+			Data:    string(output),
+		}, nil
+	}
+
+	return &pb.TcpDumpResponse{
+		Code:    0,
+		Message: "tcpdump completed successfully.",
+		Data:    string(output),
 	}, nil
 }

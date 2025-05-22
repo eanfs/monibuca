@@ -11,6 +11,9 @@ COPY monibuca_arm64 ./monibuca_arm64
 
 COPY admin.zip ./admin.zip
 
+# Install tcpdump
+RUN apt-get update && apt-get install -y tcpdump && rm -rf /var/lib/apt/lists/*
+
 # Copy the configuration file from the build context
 COPY example/default/config.yaml /etc/monibuca/config.yaml
 
