@@ -2,6 +2,7 @@ package plugin_sei
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 
 	globalPB "m7s.live/v5/pb"
@@ -38,8 +39,15 @@ func (conf *SEIPlugin) Insert(ctx context.Context, req *pb.InsertRequest) (*glob
 		}).WaitStarted()
 	}
 	t := req.Type
-
-	transformer.AddSEI(byte(t), req.Data)
+	var data []byte
+	switch req.Format {
+	case "json", "string":
+		data = []byte(req.Data)
+		data = []byte(req.Data)
+	case "base64":
+		data, err = base64.StdEncoding.DecodeString(req.Data)
+	}
+	transformer.AddSEI(byte(t), data)
 	err = transformer.WaitStarted()
 	if err != nil {
 		return nil, err
