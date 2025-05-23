@@ -395,18 +395,9 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 						// 如果回调返回错误，检查是否是丢弃错误
 						needToFree = (err != pkg.ErrDiscard)
 					}
-					continue
 				}
 			} else if onRTCP != nil { // 奇数通道，RTCP数据
-				err := onRTCP(channelID, buf)
-				if err == nil {
-					// 如果回调返回nil，表示内存被接管
-					needToFree = false
-				} else {
-					// 如果回调返回错误，检查是否是丢弃错误
-					needToFree = (err != pkg.ErrDiscard)
-				}
-				continue
+				onRTCP(channelID, buf) // 处理RTCP数据,及时释放内存
 			}
 
 			// 如果需要释放内存，则释放
