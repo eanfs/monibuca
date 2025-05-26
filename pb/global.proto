@@ -683,7 +683,7 @@ message RecordFile {
 message ResponseList {
   int32 code = 1;
   string message = 2;
-  uint32 totalCount = 3;
+  uint32 total = 3;
   uint32 pageNum = 4;
   uint32 pageSize = 5;
   repeated RecordFile data = 6;
