@@ -447,7 +447,7 @@ func (r *Receiver) Receive() (err error) {
 		},
 	}
 	return r.NetConnection.Receive(false, func(channelID byte, buf []byte) error {
-		if r.Publisher.Paused != nil {
+		if r.Publisher != nil && r.Publisher.Paused != nil {
 			r.Stream.Pause()
 			r.Publisher.Paused.Await()
 			r.Stream.Play()
@@ -470,6 +470,9 @@ func (r *Receiver) Receive() (err error) {
 			if _, err = r.NetConnection.Write(rtcp); err != nil {
 				return err
 			}
+		}
+		if r.Publisher == nil {
+			return pkg.ErrMuted
 		}
 		switch int(channelID) {
 		case r.AudioChannelID:
@@ -561,8 +564,6 @@ func (r *Receiver) Receive() (err error) {
 				videoFrame.SetAllocator(r.MemoryAllocator)
 				return pkg.ErrDiscard
 			}
-		default:
-
 		}
 		return pkg.ErrUnsupportCodec
 	}, func(channelID byte, buf []byte) error {

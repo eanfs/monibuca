@@ -73,7 +73,8 @@ type (
 		RetryInterval time.Duration `default:"5s" desc:"重试间隔"`                    // 重试间隔
 		Proxy         string        `desc:"代理地址"`                                 // 代理地址
 		Header        HTTPValues
-		Args          HTTPValues `gorm:"-:all"` // 拉流参数
+		Args          HTTPValues `gorm:"-:all"`              // 拉流参数
+		TestMode      int        `desc:"测试模式,0:关闭,1:只拉流不发布"` // 测试模式
 	}
 	Push struct {
 		URL           string        `desc:"推送地址"`                    // 推送地址

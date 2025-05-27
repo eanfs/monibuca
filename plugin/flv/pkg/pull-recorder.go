@@ -9,6 +9,7 @@ import (
 	"time"
 
 	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
@@ -47,6 +48,9 @@ func (p *RecordReader) Dispose() {
 func (p *RecordReader) Run() (err error) {
 	pullJob := &p.PullJob
 	publisher := pullJob.Publisher
+	if publisher == nil {
+		return pkg.ErrDisabled
+	}
 	allocator := util.NewScalableMemoryAllocator(1 << 10)
 	var tagHeader [11]byte
 	var ts int64
@@ -57,9 +61,12 @@ func (p *RecordReader) Run() (err error) {
 	defer func() {
 		allocator.Recycle()
 	}()
-	publisher.OnGetPosition = func() time.Time {
-		return realTime
+	if publisher != nil {
+		publisher.OnGetPosition = func() time.Time {
+			return realTime
+		}
 	}
+
 	for loop := 0; loop < p.Loop; loop++ {
 	nextStream:
 		for i, stream := range p.Streams {
@@ -85,14 +92,14 @@ func (p *RecordReader) Run() (err error) {
 			err = head.NewReader().ReadByteTo(&flvHead[0], &flvHead[1], &flvHead[2], &version, &flag)
 			hasAudio := (flag & 0x04) != 0
 			hasVideo := (flag & 0x01) != 0
+			if err != nil {
+				return
+			}
 			if !hasAudio {
 				publisher.NoAudio()
 			}
 			if !hasVideo {
 				publisher.NoVideo()
-			}
-			if err != nil {
-				return
 			}
 			if flvHead != [3]byte{'F', 'L', 'V'} {
 				return errors.New("not flv file")
@@ -194,7 +201,7 @@ func (p *RecordReader) Run() (err error) {
 							}
 						}
 					} else {
-						publisher.Info("script", name, obj)
+						p.Info("script", name, obj)
 					}
 				default:
 					err = fmt.Errorf("unknown tag type: %d", t)

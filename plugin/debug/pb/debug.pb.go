@@ -1078,9 +1078,7 @@ func (x *TcpDumpRequest) GetExtraArgs() string {
 // TCP Dump响应数据
 type TcpDumpResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`      // 状态码 (0 表示成功)
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"` // 状态消息
-	Data          string                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`       // tcpdump 的文本输出内容
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1115,25 +1113,11 @@ func (*TcpDumpResponse) Descriptor() ([]byte, []int) {
 	return file_debug_proto_rawDescGZIP(), []int{15}
 }
 
-func (x *TcpDumpResponse) GetCode() uint32 {
-	if x != nil {
-		return x.Code
-	}
-	return 0
-}
-
-func (x *TcpDumpResponse) GetMessage() string {
-	if x != nil {
-		return x.Message
-	}
-	return ""
-}
-
-func (x *TcpDumpResponse) GetData() string {
+func (x *TcpDumpResponse) GetData() []byte {
 	if x != nil {
 		return x.Data
 	}
-	return ""
+	return nil
 }
 
 var File_debug_proto protoreflect.FileDescriptor
@@ -1230,17 +1214,15 @@ const file_debug_proto_rawDesc = "" +
 	"\x06filter\x18\x02 \x01(\tR\x06filter\x12\x1a\n" +
 	"\bduration\x18\x03 \x01(\rR\bduration\x12\x1d\n" +
 	"\n" +
-	"extra_args\x18\x04 \x01(\tR\textraArgs\"S\n" +
+	"extra_args\x18\x04 \x01(\tR\textraArgs\"%\n" +
 	"\x0fTcpDumpResponse\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\tR\x04data2\xb4\x03\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data2\xb6\x03\n" +
 	"\x03api\x12O\n" +
 	"\aGetHeap\x12\x16.google.protobuf.Empty\x1a\x13.debug.HeapResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/debug/api/heap\x12_\n" +
 	"\fGetHeapGraph\x12\x16.google.protobuf.Empty\x1a\x18.debug.HeapGraphResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/debug/api/heap/graph\x12W\n" +
 	"\vGetCpuGraph\x12\x11.debug.CpuRequest\x1a\x17.debug.CpuGraphResponse\"\x1c\x82\xd3\xe4\x93\x02\x16\x12\x14/debug/api/cpu/graph\x12G\n" +
-	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpu\x12Y\n" +
-	"\fStartTcpDump\x12\x15.debug.TcpDumpRequest\x1a\x16.debug.TcpDumpResponse\"\x1a\x82\xd3\xe4\x93\x02\x14\"\x12/debug/api/tcpdumpB\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
+	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpu\x12[\n" +
+	"\fStartTcpDump\x12\x15.debug.TcpDumpRequest\x1a\x16.debug.TcpDumpResponse\"\x1a\x82\xd3\xe4\x93\x02\x14\x12\x12/debug/api/tcpdump0\x01B\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
 
 var (
 	file_debug_proto_rawDescOnce sync.Once

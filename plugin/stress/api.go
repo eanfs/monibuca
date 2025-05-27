@@ -19,12 +19,13 @@ import (
 	"m7s.live/v5/plugin/stress/pb"
 )
 
-func (r *StressPlugin) pull(count int, url string, puller m7s.PullerFactory) (err error) {
+func (r *StressPlugin) pull(count int, url string, testMode int32, puller m7s.PullerFactory) (err error) {
 	hasPlaceholder := strings.Contains(url, "%d")
 	if i := r.pullers.Length; count > i {
 		for j := i; j < count; j++ {
 			conf := config.Pull{}
 			defaults.SetDefaults(&conf)
+			conf.TestMode = int(testMode)
 			if hasPlaceholder {
 				conf.URL = fmt.Sprintf(url, j)
 			} else {
@@ -100,7 +101,7 @@ func (r *StressPlugin) StartPull(ctx context.Context, req *pb.PullRequest) (res 
 	default:
 		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
 	}
-	return &gpb.SuccessResponse{}, r.pull(int(req.PullCount), req.RemoteURL, puller)
+	return &gpb.SuccessResponse{}, r.pull(int(req.PullCount), req.RemoteURL, req.TestMode, puller)
 }
 
 func (r *StressPlugin) StopPush(ctx context.Context, req *emptypb.Empty) (res *gpb.SuccessResponse, err error) {

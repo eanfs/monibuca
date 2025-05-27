@@ -51,4 +51,5 @@ message PullRequest {
   string remoteURL = 1;
   string protocol = 2;
   int32  pullCount = 3;
+  int32 testMode = 4; // 0: pull, 1: pull without publish
 }

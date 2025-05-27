@@ -15,7 +15,7 @@ import (
 
 func (c *Client) Start() (err error) {
 	var addr string
-	if c.direction == DIRECTION_PULL {
+	if c.direction == DIRECTION_PULL && c.pullCtx.TestMode == 0 {
 		addr = c.pullCtx.Connection.RemoteURL
 		err = c.pullCtx.Publish()
 		if err != nil {
@@ -158,7 +158,9 @@ func (c *Client) Run() (err error) {
 						if len(args) > 0 {
 							m.StreamName += "?" + args.Encode()
 						}
-						c.Receivers[response.StreamId] = c.pullCtx.Publisher
+						if c.pullCtx.Publisher != nil {
+							c.Receivers[response.StreamId] = c.pullCtx.Publisher
+						}
 						err = c.SendMessage(RTMP_MSG_AMF0_COMMAND, m)
 						// if response, ok := msg.MsgData.(*ResponsePlayMessage); ok {
 						// 	if response.Object["code"] == "NetStream.Play.Start" {

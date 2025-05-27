@@ -6,6 +6,7 @@ import (
 	"time"
 
 	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
@@ -39,6 +40,9 @@ func NewPuller(conf config.Pull) m7s.IPuller {
 func (p *RecordReader) Run() (err error) {
 	pullJob := &p.PullJob
 	publisher := pullJob.Publisher
+	if publisher == nil {
+		return pkg.ErrDisabled
+	}
 	// allocator := util.NewScalableMemoryAllocator(1 << 10)
 	var ts, tsOffset int64
 	var realTime time.Time

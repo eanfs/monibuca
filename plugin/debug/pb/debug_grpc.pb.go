@@ -35,7 +35,7 @@ type ApiClient interface {
 	GetHeapGraph(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HeapGraphResponse, error)
 	GetCpuGraph(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuGraphResponse, error)
 	GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuResponse, error)
-	StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (*TcpDumpResponse, error)
+	StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TcpDumpResponse], error)
 }
 
 type apiClient struct {
@@ -86,15 +86,24 @@ func (c *apiClient) GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.Cal
 	return out, nil
 }
 
-func (c *apiClient) StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (*TcpDumpResponse, error) {
+func (c *apiClient) StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TcpDumpResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TcpDumpResponse)
-	err := c.cc.Invoke(ctx, Api_StartTcpDump_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Api_ServiceDesc.Streams[0], Api_StartTcpDump_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[TcpDumpRequest, TcpDumpResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Api_StartTcpDumpClient = grpc.ServerStreamingClient[TcpDumpResponse]
 
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
@@ -104,7 +113,7 @@ type ApiServer interface {
 	GetHeapGraph(context.Context, *emptypb.Empty) (*HeapGraphResponse, error)
 	GetCpuGraph(context.Context, *CpuRequest) (*CpuGraphResponse, error)
 	GetCpu(context.Context, *CpuRequest) (*CpuResponse, error)
-	StartTcpDump(context.Context, *TcpDumpRequest) (*TcpDumpResponse, error)
+	StartTcpDump(*TcpDumpRequest, grpc.ServerStreamingServer[TcpDumpResponse]) error
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -127,8 +136,8 @@ func (UnimplementedApiServer) GetCpuGraph(context.Context, *CpuRequest) (*CpuGra
 func (UnimplementedApiServer) GetCpu(context.Context, *CpuRequest) (*CpuResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCpu not implemented")
 }
-func (UnimplementedApiServer) StartTcpDump(context.Context, *TcpDumpRequest) (*TcpDumpResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StartTcpDump not implemented")
+func (UnimplementedApiServer) StartTcpDump(*TcpDumpRequest, grpc.ServerStreamingServer[TcpDumpResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method StartTcpDump not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 func (UnimplementedApiServer) testEmbeddedByValue()             {}
@@ -223,23 +232,16 @@ func _Api_GetCpu_Handler(srv interface{}, ctx context.Context, dec func(interfac
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Api_StartTcpDump_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TcpDumpRequest)
-	if err := dec(in); err != nil {
-		return nil, err
+func _Api_StartTcpDump_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(TcpDumpRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
 	}
-	if interceptor == nil {
-		return srv.(ApiServer).StartTcpDump(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Api_StartTcpDump_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ApiServer).StartTcpDump(ctx, req.(*TcpDumpRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+	return srv.(ApiServer).StartTcpDump(m, &grpc.GenericServerStream[TcpDumpRequest, TcpDumpResponse]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Api_StartTcpDumpServer = grpc.ServerStreamingServer[TcpDumpResponse]
 
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -264,11 +266,13 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetCpu",
 			Handler:    _Api_GetCpu_Handler,
 		},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "StartTcpDump",
-			Handler:    _Api_StartTcpDump_Handler,
+			StreamName:    "StartTcpDump",
+			Handler:       _Api_StartTcpDump_Handler,
+			ServerStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "debug.proto",
 }

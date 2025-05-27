@@ -27,9 +27,9 @@ service api {
     };
   }
 
-  rpc StartTcpDump (TcpDumpRequest) returns (TcpDumpResponse) {
+  rpc StartTcpDump (TcpDumpRequest) returns (stream TcpDumpResponse) {
     option (google.api.http) = {
-      post: "/debug/api/tcpdump"
+      get: "/debug/api/tcpdump"
     };
   }
 }
@@ -150,7 +150,5 @@ message TcpDumpRequest {
 
 // TCP Dump响应数据
 message TcpDumpResponse {
-  uint32 code = 1;            // 状态码 (0 表示成功)
-  string message = 2;         // 状态消息
-  string data = 3;            // tcpdump 的文本输出内容
+  bytes data = 1;            
 }

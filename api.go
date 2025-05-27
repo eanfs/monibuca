@@ -808,9 +808,9 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 		return
 	}
 	resp = &pb.ResponseList{
-		TotalCount: uint32(totalCount),
-		PageNum:    req.PageNum,
-		PageSize:   req.PageSize,
+		Total:    uint32(totalCount),
+		PageNum:  req.PageNum,
+		PageSize: req.PageSize,
 	}
 	for _, recordFile := range result {
 		resp.Data = append(resp.Data, &pb.RecordFile{

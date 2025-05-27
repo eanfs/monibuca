@@ -18,6 +18,7 @@ import (
 	myproc "github.com/cloudwego/goref/pkg/proc"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"m7s.live/v5"
 	"m7s.live/v5/plugin/debug/pb"
@@ -445,7 +446,7 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	}, nil
 }
 
-func (p *DebugPlugin) StartTcpDump(ctx context.Context, req *pb.TcpDumpRequest) (*pb.TcpDumpResponse, error) {
+func (p *DebugPlugin) StartTcpDump(req *pb.TcpDumpRequest, stream grpc.ServerStreamingServer[pb.TcpDumpResponse]) error {
 	args := []string{}
 	if req.Interface != "" {
 		args = append(args, "-i", req.Interface)
@@ -459,29 +460,17 @@ func (p *DebugPlugin) StartTcpDump(ctx context.Context, req *pb.TcpDumpRequest) 
 	if req.ExtraArgs != "" {
 		args = append(args, strings.Fields(req.ExtraArgs)...)
 	}
-
-	cmd := exec.CommandContext(ctx, "tcpdump", args...)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// 如果 tcpdump 因为超时而退出，这通常不是一个错误，而是预期的行为
-		if exitErr, ok := err.(*exec.ExitError); ok && strings.Contains(string(exitErr.Stderr), "timeout") {
-			return &pb.TcpDumpResponse{
-				Code:    0,
-				Message: "tcpdump completed with timeout as expected.",
-				Data:    string(output),
-			}, nil
+	cmd := exec.CommandContext(p, "tcpdump", args...)
+	stdout, _ := cmd.StdoutPipe()
+	var buf [2048]byte
+	for {
+		stdout.Read(buf[:])
+		if len(buf) == 0 {
+			break
 		}
-		return &pb.TcpDumpResponse{
-			Code:    1,
-			Message: fmt.Sprintf("failed to run tcpdump: %v. Output: %s", err, string(output)),
-			Data:    string(output),
-		}, nil
+		stream.Send(&pb.TcpDumpResponse{
+			Data: buf[:],
+		})
 	}
-
-	return &pb.TcpDumpResponse{
-		Code:    0,
-		Message: "tcpdump completed successfully.",
-		Data:    string(output),
-	}, nil
+	return cmd.Run()
 }

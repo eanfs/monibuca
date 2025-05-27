@@ -2,6 +2,7 @@ package flv
 
 import (
 	"errors"
+	"io"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
@@ -15,6 +16,10 @@ type Puller struct {
 func (p *Puller) Run() (err error) {
 	reader := util.NewBufReader(p.ReadCloser)
 	publisher := p.PullJob.Publisher
+	if publisher == nil {
+		io.Copy(io.Discard, p.ReadCloser)
+		return
+	}
 	var hasAudio, hasVideo bool
 	var absTS uint32
 	var head util.Memory

@@ -20,6 +20,10 @@ type HTTPReader struct {
 func (p *HTTPReader) Run() (err error) {
 	pullJob := &p.PullJob
 	publisher := pullJob.Publisher
+	if publisher == nil {
+		io.Copy(io.Discard, p.ReadCloser)
+		return
+	}
 	allocator := util.NewScalableMemoryAllocator(1 << 10)
 	var demuxer *Demuxer
 	defer allocator.Recycle()
@@ -36,12 +40,12 @@ func (p *HTTPReader) Run() (err error) {
 	}
 	publisher.OnSeek = func(seekTime time.Time) {
 		p.Stop(errors.New("seek"))
-		pullJob.Args.Set(util.StartKey, seekTime.Local().Format(util.LocalTimeFormat))
+		pullJob.Connection.Args.Set(util.StartKey, seekTime.Local().Format(util.LocalTimeFormat))
 		newHTTPReader := &HTTPReader{}
 		pullJob.AddTask(newHTTPReader)
 	}
-	if pullJob.Args.Get(util.StartKey) != "" {
-		seekTime, _ := time.Parse(util.LocalTimeFormat, pullJob.Args.Get(util.StartKey))
+	if pullJob.Connection.Args.Get(util.StartKey) != "" {
+		seekTime, _ := time.Parse(util.LocalTimeFormat, pullJob.Connection.Args.Get(util.StartKey))
 		demuxer.SeekTime(uint64(seekTime.UnixMilli()))
 	}
 	for _, track := range demuxer.Tracks {

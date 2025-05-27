@@ -25,7 +25,6 @@ type (
 		Args       url.Values
 		RemoteURL  string // 远程服务器地址（用于推拉）
 		HTTPClient *http.Client
-		Header     http.Header
 	}
 
 	IPuller interface {
@@ -37,10 +36,10 @@ type (
 
 	PullJob struct {
 		Connection
+		*config.Pull
 		Publisher     *Publisher
 		PublishConfig config.Publish
 		puller        IPuller
-		conf          *config.Pull
 	}
 
 	HTTPFilePuller struct {
@@ -66,11 +65,10 @@ type (
 	}
 )
 
-func (conn *Connection) Init(plugin *Plugin, streamPath string, href string, proxyConf string, header http.Header) {
+func (conn *Connection) Init(plugin *Plugin, streamPath string, href string, proxyConf string) {
 	conn.RemoteURL = href
 	conn.StreamPath = streamPath
 	conn.Plugin = plugin
-	conn.Header = header
 	conn.HTTPClient = http.DefaultClient
 	if proxyConf != "" {
 		proxy, err := url.Parse(proxyConf)
@@ -93,8 +91,8 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 		p.PublishConfig = *pubConf
 	}
 	p.PublishConfig.PubType = PublishTypePull
-	p.Args = url.Values(conf.Args.DeepClone())
-	p.conf = &conf
+	p.Connection.Args = url.Values(conf.Args.DeepClone())
+	p.Pull = &conf
 	remoteURL := conf.URL
 	u, err := url.Parse(remoteURL)
 	if err == nil {
@@ -102,17 +100,17 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 			// file
 			remoteURL = u.Path
 		}
-		if p.Args == nil {
-			p.Args = u.Query()
+		if p.Connection.Args == nil {
+			p.Connection.Args = u.Query()
 		} else {
 			for k, v := range u.Query() {
 				for _, vv := range v {
-					p.Args.Add(k, vv)
+					p.Connection.Args.Add(k, vv)
 				}
 			}
 		}
 	}
-	p.Connection.Init(plugin, streamPath, remoteURL, conf.Proxy, http.Header(conf.Header))
+	p.Connection.Init(plugin, streamPath, remoteURL, conf.Proxy)
 	p.puller = puller
 	p.SetDescriptions(task.Description{
 		"plugin":     plugin.Meta.Name,
@@ -159,13 +157,13 @@ func (p *PullJob) GetKey() string {
 
 func (p *PullJob) Publish() (err error) {
 	streamPath := p.StreamPath
-	if len(p.Args) > 0 {
-		streamPath += "?" + p.Args.Encode()
+	if len(p.Connection.Args) > 0 {
+		streamPath += "?" + p.Connection.Args.Encode()
 	}
 	p.Publisher, err = p.Plugin.PublishWithConfig(p.puller.GetTask().Context, streamPath, p.PublishConfig)
 	if err == nil {
 		p.Publisher.OnDispose(func() {
-			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) || p.conf.MaxRetry == 0 {
+			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) || p.MaxRetry == 0 {
 				p.Stop(p.Publisher.StopReason())
 			} else {
 				p.puller.Stop(p.Publisher.StopReason())
@@ -185,8 +183,10 @@ func (p *PullJob) Start() (err error) {
 }
 
 func (p *HTTPFilePuller) Start() (err error) {
-	if err = p.PullJob.Publish(); err != nil {
-		return
+	if p.PullJob.TestMode == 0 {
+		if err = p.PullJob.Publish(); err != nil {
+			return
+		}
 	}
 	if p.ReadCloser != nil {
 		return
@@ -260,30 +260,34 @@ func (p *RecordFilePuller) Start() (err error) {
 		return pkg.ErrNoDB
 	}
 	p.PullJob.PublishConfig.PubType = PublishTypeVod
-	if err = p.PullJob.Publish(); err != nil {
-		return
+	if p.PullJob.TestMode == 0 {
+		if err = p.PullJob.Publish(); err != nil {
+			return
+		}
 	}
-	if p.PullStartTime, p.PullEndTime, err = util.TimeRangeQueryParse(p.PullJob.Args); err != nil {
+	if p.PullStartTime, p.PullEndTime, err = util.TimeRangeQueryParse(p.PullJob.Connection.Args); err != nil {
 		return
 	}
 	p.seekChan = make(chan time.Time, 1)
-	loop := p.PullJob.Args.Get(util.LoopKey)
+	loop := p.PullJob.Connection.Args.Get(util.LoopKey)
 	p.Loop, err = strconv.Atoi(loop)
 	if err != nil || p.Loop < 0 {
 		p.Loop = math.MaxInt32
 	}
 	publisher := p.PullJob.Publisher
-	publisher.OnSeek = func(seekTime time.Time) {
-		// p.PullStartTime = seekTime
-		// p.SetRetry(1, 0)
-		// if util.UnixTimeReg.MatchString(p.PullJob.Args.Get(util.EndKey)) {
-		// 	p.PullJob.Args.Set(util.StartKey, strconv.FormatInt(seekTime.Unix(), 10))
-		// } else {
-		// 	p.PullJob.Args.Set(util.StartKey, seekTime.Local().Format(util.LocalTimeFormat))
-		// }
-		select {
-		case p.seekChan <- seekTime:
-		default:
+	if publisher != nil {
+		publisher.OnSeek = func(seekTime time.Time) {
+			// p.PullStartTime = seekTime
+			// p.SetRetry(1, 0)
+			// if util.UnixTimeReg.MatchString(p.PullJob.Args.Get(util.EndKey)) {
+			// 	p.PullJob.Args.Set(util.StartKey, strconv.FormatInt(seekTime.Unix(), 10))
+			// } else {
+			// 	p.PullJob.Args.Set(util.StartKey, seekTime.Local().Format(util.LocalTimeFormat))
+			// }
+			select {
+			case p.seekChan <- seekTime:
+			default:
+			}
 		}
 	}
 	return p.queryRecordStreams(p.PullStartTime, p.PullEndTime)

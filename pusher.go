@@ -1,7 +1,6 @@
 package m7s
 
 import (
-	"net/http"
 	"time"
 
 	"m7s.live/v5/pkg"
@@ -29,7 +28,7 @@ func (p *PushJob) GetKey() string {
 }
 
 func (p *PushJob) Init(pusher IPusher, plugin *Plugin, streamPath string, conf config.Push, subConf *config.Subscribe) *PushJob {
-	p.Connection.Init(plugin, streamPath, conf.URL, conf.Proxy, http.Header(conf.Header))
+	p.Connection.Init(plugin, streamPath, conf.URL, conf.Proxy)
 	p.pusher = pusher
 	if subConf == nil {
 		p.SubConf = plugin.config.Subscribe
