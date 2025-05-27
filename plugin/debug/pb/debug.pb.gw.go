@@ -140,34 +140,6 @@ func local_request_Api_GetCpu_0(ctx context.Context, marshaler runtime.Marshaler
 
 }
 
-var (
-	filter_Api_StartTcpDump_0 = &utilities.DoubleArray{Encoding: map[string]int{}, Base: []int(nil), Check: []int(nil)}
-)
-
-func request_Api_StartTcpDump_0(ctx context.Context, marshaler runtime.Marshaler, client ApiClient, req *http.Request, pathParams map[string]string) (Api_StartTcpDumpClient, runtime.ServerMetadata, error) {
-	var protoReq TcpDumpRequest
-	var metadata runtime.ServerMetadata
-
-	if err := req.ParseForm(); err != nil {
-		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_Api_StartTcpDump_0); err != nil {
-		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-
-	stream, err := client.StartTcpDump(ctx, &protoReq)
-	if err != nil {
-		return nil, metadata, err
-	}
-	header, err := stream.Header()
-	if err != nil {
-		return nil, metadata, err
-	}
-	metadata.HeaderMD = header
-	return stream, metadata, nil
-
-}
-
 // RegisterApiHandlerServer registers the http handlers for service Api to "mux".
 // UnaryRPC     :call ApiServer directly.
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
@@ -272,13 +244,6 @@ func RegisterApiHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 
 		forward_Api_GetCpu_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
-	})
-
-	mux.Handle("GET", pattern_Api_StartTcpDump_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
-		err := status.Error(codes.Unimplemented, "streaming calls are not yet supported in the in-process transport")
-		_, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
-		return
 	})
 
 	return nil
@@ -410,28 +375,6 @@ func RegisterApiHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 
 	})
 
-	mux.Handle("GET", pattern_Api_StartTcpDump_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
-		ctx, cancel := context.WithCancel(req.Context())
-		defer cancel()
-		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		var err error
-		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/debug.Api/StartTcpDump", runtime.WithHTTPPathPattern("/debug/api/tcpdump"))
-		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
-			return
-		}
-		resp, md, err := request_Api_StartTcpDump_0(annotatedContext, inboundMarshaler, client, req, pathParams)
-		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
-		if err != nil {
-			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
-			return
-		}
-
-		forward_Api_StartTcpDump_0(annotatedContext, mux, outboundMarshaler, w, req, func() (proto.Message, error) { return resp.Recv() }, mux.GetForwardResponseOptions()...)
-
-	})
-
 	return nil
 }
 
@@ -443,8 +386,6 @@ var (
 	pattern_Api_GetCpuGraph_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"debug", "api", "cpu", "graph"}, ""))
 
 	pattern_Api_GetCpu_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"debug", "api", "cpu"}, ""))
-
-	pattern_Api_StartTcpDump_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"debug", "api", "tcpdump"}, ""))
 )
 
 var (
@@ -455,6 +396,4 @@ var (
 	forward_Api_GetCpuGraph_0 = runtime.ForwardResponseMessage
 
 	forward_Api_GetCpu_0 = runtime.ForwardResponseMessage
-
-	forward_Api_StartTcpDump_0 = runtime.ForwardResponseStream
 )

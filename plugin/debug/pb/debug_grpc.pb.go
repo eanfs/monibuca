@@ -24,7 +24,6 @@ const (
 	Api_GetHeapGraph_FullMethodName = "/debug.api/GetHeapGraph"
 	Api_GetCpuGraph_FullMethodName  = "/debug.api/GetCpuGraph"
 	Api_GetCpu_FullMethodName       = "/debug.api/GetCpu"
-	Api_StartTcpDump_FullMethodName = "/debug.api/StartTcpDump"
 )
 
 // ApiClient is the client API for Api service.
@@ -35,7 +34,6 @@ type ApiClient interface {
 	GetHeapGraph(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HeapGraphResponse, error)
 	GetCpuGraph(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuGraphResponse, error)
 	GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuResponse, error)
-	StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TcpDumpResponse], error)
 }
 
 type apiClient struct {
@@ -86,25 +84,6 @@ func (c *apiClient) GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.Cal
 	return out, nil
 }
 
-func (c *apiClient) StartTcpDump(ctx context.Context, in *TcpDumpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TcpDumpResponse], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Api_ServiceDesc.Streams[0], Api_StartTcpDump_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[TcpDumpRequest, TcpDumpResponse]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Api_StartTcpDumpClient = grpc.ServerStreamingClient[TcpDumpResponse]
-
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility.
@@ -113,7 +92,6 @@ type ApiServer interface {
 	GetHeapGraph(context.Context, *emptypb.Empty) (*HeapGraphResponse, error)
 	GetCpuGraph(context.Context, *CpuRequest) (*CpuGraphResponse, error)
 	GetCpu(context.Context, *CpuRequest) (*CpuResponse, error)
-	StartTcpDump(*TcpDumpRequest, grpc.ServerStreamingServer[TcpDumpResponse]) error
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -135,9 +113,6 @@ func (UnimplementedApiServer) GetCpuGraph(context.Context, *CpuRequest) (*CpuGra
 }
 func (UnimplementedApiServer) GetCpu(context.Context, *CpuRequest) (*CpuResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCpu not implemented")
-}
-func (UnimplementedApiServer) StartTcpDump(*TcpDumpRequest, grpc.ServerStreamingServer[TcpDumpResponse]) error {
-	return status.Errorf(codes.Unimplemented, "method StartTcpDump not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 func (UnimplementedApiServer) testEmbeddedByValue()             {}
@@ -232,17 +207,6 @@ func _Api_GetCpu_Handler(srv interface{}, ctx context.Context, dec func(interfac
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Api_StartTcpDump_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(TcpDumpRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(ApiServer).StartTcpDump(m, &grpc.GenericServerStream[TcpDumpRequest, TcpDumpResponse]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Api_StartTcpDumpServer = grpc.ServerStreamingServer[TcpDumpResponse]
-
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -267,12 +231,6 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Api_GetCpu_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "StartTcpDump",
-			Handler:       _Api_StartTcpDump_Handler,
-			ServerStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "debug.proto",
 }

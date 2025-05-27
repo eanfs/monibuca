@@ -35,11 +35,17 @@ service api {
   }
 }
 
-message CountResponse {
+message CountResponseData  {
   uint32 pushCount = 1;
   uint32 pullCount = 2;
-
 }
+
+message CountResponse {
+  uint32 code = 1;
+  string message = 2;
+  CountResponseData data = 3;
+}
+
 message PushRequest {
   string streamPath = 1;
   string protocol = 2;

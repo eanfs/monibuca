@@ -156,6 +156,9 @@ func (p *PullJob) GetKey() string {
 }
 
 func (p *PullJob) Publish() (err error) {
+	if p.TestMode > 0 {
+		return nil
+	}
 	streamPath := p.StreamPath
 	if len(p.Connection.Args) > 0 {
 		streamPath += "?" + p.Connection.Args.Encode()
@@ -183,10 +186,8 @@ func (p *PullJob) Start() (err error) {
 }
 
 func (p *HTTPFilePuller) Start() (err error) {
-	if p.PullJob.TestMode == 0 {
-		if err = p.PullJob.Publish(); err != nil {
-			return
-		}
+	if err = p.PullJob.Publish(); err != nil {
+		return
 	}
 	if p.ReadCloser != nil {
 		return
@@ -260,10 +261,8 @@ func (p *RecordFilePuller) Start() (err error) {
 		return pkg.ErrNoDB
 	}
 	p.PullJob.PublishConfig.PubType = PublishTypeVod
-	if p.PullJob.TestMode == 0 {
-		if err = p.PullJob.Publish(); err != nil {
-			return
-		}
+	if err = p.PullJob.Publish(); err != nil {
+		return
 	}
 	if p.PullStartTime, p.PullEndTime, err = util.TimeRangeQueryParse(p.PullJob.Connection.Args); err != nil {
 		return

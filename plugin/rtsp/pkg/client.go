@@ -59,11 +59,9 @@ func (c *Client) Run() (err error) {
 		return
 	}
 	if c.direction == DIRECTION_PULL {
-		if c.pullCtx.TestMode == 0 {
-			err = c.pullCtx.Publish()
-			if err != nil {
-				return
-			}
+		err = c.pullCtx.Publish()
+		if err != nil {
+			return
 		}
 		var medias []*Media
 		if medias, err = c.Describe(); err != nil {

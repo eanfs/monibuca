@@ -16,6 +16,7 @@ import (
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 	rtsp "m7s.live/v5/plugin/rtsp/pkg"
+	srt "m7s.live/v5/plugin/srt/pkg"
 	"m7s.live/v5/plugin/stress/pb"
 )
 
@@ -81,6 +82,8 @@ func (r *StressPlugin) StartPush(ctx context.Context, req *pb.PushRequest) (res 
 		pusher = rtmp.NewPusher
 	case "rtsp":
 		pusher = rtsp.NewPusher
+	case "srt":
+		pusher = srt.NewPusher
 	default:
 		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
 	}
@@ -94,6 +97,8 @@ func (r *StressPlugin) StartPull(ctx context.Context, req *pb.PullRequest) (res 
 		puller = rtmp.NewPuller
 	case "rtsp":
 		puller = rtsp.NewPuller
+	case "srt":
+		puller = srt.NewPuller
 	case "flv":
 		puller = flv.NewPuller
 	case "mp4":
@@ -122,7 +127,9 @@ func (r *StressPlugin) StopPull(ctx context.Context, req *emptypb.Empty) (res *g
 
 func (r *StressPlugin) GetCount(ctx context.Context, req *emptypb.Empty) (res *pb.CountResponse, err error) {
 	return &pb.CountResponse{
-		PullCount: uint32(r.pullers.Length),
-		PushCount: uint32(r.pushers.Length),
+		Data: &pb.CountResponseData{
+			PullCount: uint32(r.pullers.Length),
+			PushCount: uint32(r.pushers.Length),
+		},
 	}, nil
 }

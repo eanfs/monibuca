@@ -1006,120 +1006,6 @@ func (x *RuntimeStats) GetBlockingTimeNs() uint64 {
 	return 0
 }
 
-// TCP Dump请求参数
-type TcpDumpRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Interface     string                 `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`                  // 网络接口 (例如: "eth0", "any"). 如果为空，可能由服务端决定默认值.
-	Filter        string                 `protobuf:"bytes,2,opt,name=filter,proto3" json:"filter,omitempty"`                        // BPF 过滤表达式 (例如: "port 80", "host 1.2.3.4 and tcp").
-	Duration      uint32                 `protobuf:"varint,3,opt,name=duration,proto3" json:"duration,omitempty"`                   // 抓包持续时间（秒）.
-	ExtraArgs     string                 `protobuf:"bytes,4,opt,name=extra_args,json=extraArgs,proto3" json:"extra_args,omitempty"` // 额外的 tcpdump 参数 (例如: "-n -X -c 100").
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TcpDumpRequest) Reset() {
-	*x = TcpDumpRequest{}
-	mi := &file_debug_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TcpDumpRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TcpDumpRequest) ProtoMessage() {}
-
-func (x *TcpDumpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TcpDumpRequest.ProtoReflect.Descriptor instead.
-func (*TcpDumpRequest) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *TcpDumpRequest) GetInterface() string {
-	if x != nil {
-		return x.Interface
-	}
-	return ""
-}
-
-func (x *TcpDumpRequest) GetFilter() string {
-	if x != nil {
-		return x.Filter
-	}
-	return ""
-}
-
-func (x *TcpDumpRequest) GetDuration() uint32 {
-	if x != nil {
-		return x.Duration
-	}
-	return 0
-}
-
-func (x *TcpDumpRequest) GetExtraArgs() string {
-	if x != nil {
-		return x.ExtraArgs
-	}
-	return ""
-}
-
-// TCP Dump响应数据
-type TcpDumpResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TcpDumpResponse) Reset() {
-	*x = TcpDumpResponse{}
-	mi := &file_debug_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TcpDumpResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TcpDumpResponse) ProtoMessage() {}
-
-func (x *TcpDumpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TcpDumpResponse.ProtoReflect.Descriptor instead.
-func (*TcpDumpResponse) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *TcpDumpResponse) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
 var File_debug_proto protoreflect.FileDescriptor
 
 const file_debug_proto_rawDesc = "" +
@@ -1208,21 +1094,12 @@ const file_debug_proto_rawDesc = "" +
 	"\x0fgc_cpu_fraction\x18\x01 \x01(\x01R\rgcCpuFraction\x12\x19\n" +
 	"\bgc_count\x18\x02 \x01(\x04R\agcCount\x12'\n" +
 	"\x10gc_pause_time_ns\x18\x03 \x01(\x04R\rgcPauseTimeNs\x12(\n" +
-	"\x10blocking_time_ns\x18\x04 \x01(\x04R\x0eblockingTimeNs\"\x81\x01\n" +
-	"\x0eTcpDumpRequest\x12\x1c\n" +
-	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06filter\x18\x02 \x01(\tR\x06filter\x12\x1a\n" +
-	"\bduration\x18\x03 \x01(\rR\bduration\x12\x1d\n" +
-	"\n" +
-	"extra_args\x18\x04 \x01(\tR\textraArgs\"%\n" +
-	"\x0fTcpDumpResponse\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data2\xb6\x03\n" +
+	"\x10blocking_time_ns\x18\x04 \x01(\x04R\x0eblockingTimeNs2\xd9\x02\n" +
 	"\x03api\x12O\n" +
 	"\aGetHeap\x12\x16.google.protobuf.Empty\x1a\x13.debug.HeapResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/debug/api/heap\x12_\n" +
 	"\fGetHeapGraph\x12\x16.google.protobuf.Empty\x1a\x18.debug.HeapGraphResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/debug/api/heap/graph\x12W\n" +
 	"\vGetCpuGraph\x12\x11.debug.CpuRequest\x1a\x17.debug.CpuGraphResponse\"\x1c\x82\xd3\xe4\x93\x02\x16\x12\x14/debug/api/cpu/graph\x12G\n" +
-	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpu\x12[\n" +
-	"\fStartTcpDump\x12\x15.debug.TcpDumpRequest\x1a\x16.debug.TcpDumpResponse\"\x1a\x82\xd3\xe4\x93\x02\x14\x12\x12/debug/api/tcpdump0\x01B\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
+	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpuB\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
 
 var (
 	file_debug_proto_rawDescOnce sync.Once
@@ -1236,7 +1113,7 @@ func file_debug_proto_rawDescGZIP() []byte {
 	return file_debug_proto_rawDescData
 }
 
-var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_debug_proto_goTypes = []any{
 	(*CpuRequest)(nil),        // 0: debug.CpuRequest
 	(*HeapObject)(nil),        // 1: debug.HeapObject
@@ -1252,9 +1129,7 @@ var file_debug_proto_goTypes = []any{
 	(*GoroutineProfile)(nil),  // 11: debug.GoroutineProfile
 	(*SystemCall)(nil),        // 12: debug.SystemCall
 	(*RuntimeStats)(nil),      // 13: debug.RuntimeStats
-	(*TcpDumpRequest)(nil),    // 14: debug.TcpDumpRequest
-	(*TcpDumpResponse)(nil),   // 15: debug.TcpDumpResponse
-	(*emptypb.Empty)(nil),     // 16: google.protobuf.Empty
+	(*emptypb.Empty)(nil),     // 14: google.protobuf.Empty
 }
 var file_debug_proto_depIdxs = []int32{
 	2,  // 0: debug.HeapData.stats:type_name -> debug.HeapStats
@@ -1266,18 +1141,16 @@ var file_debug_proto_depIdxs = []int32{
 	11, // 6: debug.CpuData.goroutines:type_name -> debug.GoroutineProfile
 	12, // 7: debug.CpuData.system_calls:type_name -> debug.SystemCall
 	13, // 8: debug.CpuData.runtime_stats:type_name -> debug.RuntimeStats
-	16, // 9: debug.api.GetHeap:input_type -> google.protobuf.Empty
-	16, // 10: debug.api.GetHeapGraph:input_type -> google.protobuf.Empty
+	14, // 9: debug.api.GetHeap:input_type -> google.protobuf.Empty
+	14, // 10: debug.api.GetHeapGraph:input_type -> google.protobuf.Empty
 	0,  // 11: debug.api.GetCpuGraph:input_type -> debug.CpuRequest
 	0,  // 12: debug.api.GetCpu:input_type -> debug.CpuRequest
-	14, // 13: debug.api.StartTcpDump:input_type -> debug.TcpDumpRequest
-	5,  // 14: debug.api.GetHeap:output_type -> debug.HeapResponse
-	6,  // 15: debug.api.GetHeapGraph:output_type -> debug.HeapGraphResponse
-	7,  // 16: debug.api.GetCpuGraph:output_type -> debug.CpuGraphResponse
-	8,  // 17: debug.api.GetCpu:output_type -> debug.CpuResponse
-	15, // 18: debug.api.StartTcpDump:output_type -> debug.TcpDumpResponse
-	14, // [14:19] is the sub-list for method output_type
-	9,  // [9:14] is the sub-list for method input_type
+	5,  // 13: debug.api.GetHeap:output_type -> debug.HeapResponse
+	6,  // 14: debug.api.GetHeapGraph:output_type -> debug.HeapGraphResponse
+	7,  // 15: debug.api.GetCpuGraph:output_type -> debug.CpuGraphResponse
+	8,  // 16: debug.api.GetCpu:output_type -> debug.CpuResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -1294,7 +1167,7 @@ func file_debug_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_debug_proto_rawDesc), len(file_debug_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -24,7 +24,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type CountResponse struct {
+type CountResponseData struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PushCount     uint32                 `protobuf:"varint,1,opt,name=pushCount,proto3" json:"pushCount,omitempty"`
 	PullCount     uint32                 `protobuf:"varint,2,opt,name=pullCount,proto3" json:"pullCount,omitempty"`
@@ -32,9 +32,62 @@ type CountResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *CountResponseData) Reset() {
+	*x = CountResponseData{}
+	mi := &file_stress_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountResponseData) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountResponseData) ProtoMessage() {}
+
+func (x *CountResponseData) ProtoReflect() protoreflect.Message {
+	mi := &file_stress_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountResponseData.ProtoReflect.Descriptor instead.
+func (*CountResponseData) Descriptor() ([]byte, []int) {
+	return file_stress_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *CountResponseData) GetPushCount() uint32 {
+	if x != nil {
+		return x.PushCount
+	}
+	return 0
+}
+
+func (x *CountResponseData) GetPullCount() uint32 {
+	if x != nil {
+		return x.PullCount
+	}
+	return 0
+}
+
+type CountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Data          *CountResponseData     `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
 func (x *CountResponse) Reset() {
 	*x = CountResponse{}
-	mi := &file_stress_proto_msgTypes[0]
+	mi := &file_stress_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -46,7 +99,7 @@ func (x *CountResponse) String() string {
 func (*CountResponse) ProtoMessage() {}
 
 func (x *CountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_stress_proto_msgTypes[0]
+	mi := &file_stress_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -59,21 +112,28 @@ func (x *CountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CountResponse.ProtoReflect.Descriptor instead.
 func (*CountResponse) Descriptor() ([]byte, []int) {
-	return file_stress_proto_rawDescGZIP(), []int{0}
+	return file_stress_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *CountResponse) GetPushCount() uint32 {
+func (x *CountResponse) GetCode() uint32 {
 	if x != nil {
-		return x.PushCount
+		return x.Code
 	}
 	return 0
 }
 
-func (x *CountResponse) GetPullCount() uint32 {
+func (x *CountResponse) GetMessage() string {
 	if x != nil {
-		return x.PullCount
+		return x.Message
 	}
-	return 0
+	return ""
+}
+
+func (x *CountResponse) GetData() *CountResponseData {
+	if x != nil {
+		return x.Data
+	}
+	return nil
 }
 
 type PushRequest struct {
@@ -88,7 +148,7 @@ type PushRequest struct {
 
 func (x *PushRequest) Reset() {
 	*x = PushRequest{}
-	mi := &file_stress_proto_msgTypes[1]
+	mi := &file_stress_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -100,7 +160,7 @@ func (x *PushRequest) String() string {
 func (*PushRequest) ProtoMessage() {}
 
 func (x *PushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_stress_proto_msgTypes[1]
+	mi := &file_stress_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -113,7 +173,7 @@ func (x *PushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushRequest.ProtoReflect.Descriptor instead.
 func (*PushRequest) Descriptor() ([]byte, []int) {
-	return file_stress_proto_rawDescGZIP(), []int{1}
+	return file_stress_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PushRequest) GetStreamPath() string {
@@ -156,7 +216,7 @@ type PullRequest struct {
 
 func (x *PullRequest) Reset() {
 	*x = PullRequest{}
-	mi := &file_stress_proto_msgTypes[2]
+	mi := &file_stress_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -168,7 +228,7 @@ func (x *PullRequest) String() string {
 func (*PullRequest) ProtoMessage() {}
 
 func (x *PullRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_stress_proto_msgTypes[2]
+	mi := &file_stress_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -181,7 +241,7 @@ func (x *PullRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullRequest.ProtoReflect.Descriptor instead.
 func (*PullRequest) Descriptor() ([]byte, []int) {
-	return file_stress_proto_rawDescGZIP(), []int{2}
+	return file_stress_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PullRequest) GetRemoteURL() string {
@@ -216,10 +276,14 @@ var File_stress_proto protoreflect.FileDescriptor
 
 const file_stress_proto_rawDesc = "" +
 	"\n" +
-	"\fstress.proto\x12\x06stress\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\fglobal.proto\"K\n" +
-	"\rCountResponse\x12\x1c\n" +
+	"\fstress.proto\x12\x06stress\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\fglobal.proto\"O\n" +
+	"\x11CountResponseData\x12\x1c\n" +
 	"\tpushCount\x18\x01 \x01(\rR\tpushCount\x12\x1c\n" +
-	"\tpullCount\x18\x02 \x01(\rR\tpullCount\"\x85\x01\n" +
+	"\tpullCount\x18\x02 \x01(\rR\tpullCount\"l\n" +
+	"\rCountResponse\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12-\n" +
+	"\x04data\x18\x03 \x01(\v2\x19.stress.CountResponseDataR\x04data\"\x85\x01\n" +
 	"\vPushRequest\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x01 \x01(\tR\n" +
@@ -251,30 +315,32 @@ func file_stress_proto_rawDescGZIP() []byte {
 	return file_stress_proto_rawDescData
 }
 
-var file_stress_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_stress_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_stress_proto_goTypes = []any{
-	(*CountResponse)(nil),      // 0: stress.CountResponse
-	(*PushRequest)(nil),        // 1: stress.PushRequest
-	(*PullRequest)(nil),        // 2: stress.PullRequest
-	(*emptypb.Empty)(nil),      // 3: google.protobuf.Empty
-	(*pb.SuccessResponse)(nil), // 4: global.SuccessResponse
+	(*CountResponseData)(nil),  // 0: stress.CountResponseData
+	(*CountResponse)(nil),      // 1: stress.CountResponse
+	(*PushRequest)(nil),        // 2: stress.PushRequest
+	(*PullRequest)(nil),        // 3: stress.PullRequest
+	(*emptypb.Empty)(nil),      // 4: google.protobuf.Empty
+	(*pb.SuccessResponse)(nil), // 5: global.SuccessResponse
 }
 var file_stress_proto_depIdxs = []int32{
-	1, // 0: stress.api.StartPush:input_type -> stress.PushRequest
-	2, // 1: stress.api.StartPull:input_type -> stress.PullRequest
-	3, // 2: stress.api.GetCount:input_type -> google.protobuf.Empty
-	3, // 3: stress.api.StopPush:input_type -> google.protobuf.Empty
-	3, // 4: stress.api.StopPull:input_type -> google.protobuf.Empty
-	4, // 5: stress.api.StartPush:output_type -> global.SuccessResponse
-	4, // 6: stress.api.StartPull:output_type -> global.SuccessResponse
-	0, // 7: stress.api.GetCount:output_type -> stress.CountResponse
-	4, // 8: stress.api.StopPush:output_type -> global.SuccessResponse
-	4, // 9: stress.api.StopPull:output_type -> global.SuccessResponse
-	5, // [5:10] is the sub-list for method output_type
-	0, // [0:5] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: stress.CountResponse.data:type_name -> stress.CountResponseData
+	2, // 1: stress.api.StartPush:input_type -> stress.PushRequest
+	3, // 2: stress.api.StartPull:input_type -> stress.PullRequest
+	4, // 3: stress.api.GetCount:input_type -> google.protobuf.Empty
+	4, // 4: stress.api.StopPush:input_type -> google.protobuf.Empty
+	4, // 5: stress.api.StopPull:input_type -> google.protobuf.Empty
+	5, // 6: stress.api.StartPush:output_type -> global.SuccessResponse
+	5, // 7: stress.api.StartPull:output_type -> global.SuccessResponse
+	1, // 8: stress.api.GetCount:output_type -> stress.CountResponse
+	5, // 9: stress.api.StopPush:output_type -> global.SuccessResponse
+	5, // 10: stress.api.StopPull:output_type -> global.SuccessResponse
+	6, // [6:11] is the sub-list for method output_type
+	1, // [1:6] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_stress_proto_init() }
@@ -288,7 +354,7 @@ func file_stress_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_stress_proto_rawDesc), len(file_stress_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

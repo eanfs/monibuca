@@ -11,6 +11,7 @@ import (
 	"runtime"
 	runtimePPROF "runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,6 @@ import (
 	myproc "github.com/cloudwego/goref/pkg/proc"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
-	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"m7s.live/v5"
 	"m7s.live/v5/plugin/debug/pb"
@@ -446,31 +446,41 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	}, nil
 }
 
-func (p *DebugPlugin) StartTcpDump(req *pb.TcpDumpRequest, stream grpc.ServerStreamingServer[pb.TcpDumpResponse]) error {
-	args := []string{}
-	if req.Interface != "" {
-		args = append(args, "-i", req.Interface)
+func (p *DebugPlugin) API_TcpDump(rw http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	args := []string{"-W", "1"}
+	if query.Get("interface") != "" {
+		args = append(args, "-i", query.Get("interface"))
 	}
-	if req.Duration > 0 {
-		args = append(args, "-G", fmt.Sprintf("%d", req.Duration), "-W", "1")
+	if query.Get("filter") != "" {
+		args = append(args, query.Get("filter"))
 	}
-	if req.Filter != "" {
-		args = append(args, req.Filter)
+	if query.Get("extra_args") != "" {
+		args = append(args, strings.Fields(query.Get("extra_args"))...)
 	}
-	if req.ExtraArgs != "" {
-		args = append(args, strings.Fields(req.ExtraArgs)...)
+	if query.Get("duration") == "" {
+		http.Error(rw, "duration is required", http.StatusBadRequest)
+		return
 	}
+	rw.Header().Set("Content-Type", "text/plain")
+	rw.Header().Set("Cache-Control", "no-cache")
+	rw.Header().Set("Content-Disposition", "attachment; filename=tcpdump.txt")
 	cmd := exec.CommandContext(p, "tcpdump", args...)
-	stdout, _ := cmd.StdoutPipe()
-	var buf [2048]byte
-	for {
-		stdout.Read(buf[:])
-		if len(buf) == 0 {
-			break
-		}
-		stream.Send(&pb.TcpDumpResponse{
-			Data: buf[:],
-		})
+	p.Info("starting tcpdump", "args", strings.Join(cmd.Args, " "))
+	cmd.Stdout = rw
+	cmd.Stderr = os.Stderr // 将错误输出重定向到标准错误
+	err := cmd.Start()
+	if err != nil {
+		http.Error(rw, fmt.Sprintf("failed to start tcpdump: %v", err), http.StatusInternalServerError)
+		return
 	}
-	return cmd.Run()
+	duration, err := strconv.Atoi(query.Get("duration"))
+	if err != nil {
+		http.Error(rw, "invalid duration", http.StatusBadRequest)
+		return
+	}
+	<-time.After(time.Duration(duration) * time.Second)
+	if err := cmd.Process.Kill(); err != nil {
+		p.Error("failed to kill tcpdump process", "error", err)
+	}
 }

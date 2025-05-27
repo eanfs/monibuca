@@ -15,7 +15,7 @@ import (
 
 func (c *Client) Start() (err error) {
 	var addr string
-	if c.direction == DIRECTION_PULL && c.pullCtx.TestMode == 0 {
+	if c.direction == DIRECTION_PULL {
 		addr = c.pullCtx.Connection.RemoteURL
 		err = c.pullCtx.Publish()
 		if err != nil {
@@ -29,7 +29,7 @@ func (c *Client) Start() (err error) {
 		return
 	}
 	ps := strings.Split(c.u.Path, "/")
-	if len(ps) < 3 {
+	if len(ps) < 2 {
 		return errors.New("illegal rtmp url")
 	}
 	isRtmps := c.u.Scheme == "rtmps"
