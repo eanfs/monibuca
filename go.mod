@@ -6,6 +6,7 @@ require (
 	github.com/IOTechSystems/onvif v1.2.0
 	github.com/VictoriaMetrics/VictoriaMetrics v1.102.0
 	github.com/asavie/xdp v0.3.3
+	github.com/aws/aws-sdk-go v1.55.7
 	github.com/beevik/etree v1.4.1
 	github.com/bluenviron/gohlslib v1.4.0
 	github.com/c0deltin/duckdb-driver v0.1.0
@@ -84,6 +85,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -142,7 +144,6 @@ require (
 	github.com/google/pprof v0.0.0-20240409012703-83162a5b38cd // indirect
 	github.com/gorilla/websocket v1.5.1
 	github.com/ianlancetaylor/demangle v0.0.0-20240912202439-0a2b6291aafd
-	github.com/mark3labs/mcp-go v0.27.0
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/phsym/console-slog v0.3.1
 	github.com/prometheus/client_golang v1.20.4

@@ -1,0 +1,96 @@
+syntax = "proto3";
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "global.proto";
+package s3;
+option go_package="m7s.live/v5/plugin/s3/pb";
+
+service api {
+  rpc Upload (UploadRequest) returns (UploadResponse) {
+    option (google.api.http) = {
+      post: "/s3/api/upload"
+      body: "*"
+    };
+  }
+  rpc List (ListRequest) returns (ListResponse) {
+    option (google.api.http) = {
+      get: "/s3/api/list"
+    };
+  }
+  rpc Delete (DeleteRequest) returns (global.SuccessResponse) {
+    option (google.api.http) = {
+      delete: "/s3/api/delete/{key=**}"
+    };
+  }
+  rpc CheckConnection (google.protobuf.Empty) returns (ConnectionResponse) {
+    option (google.api.http) = {
+      get: "/s3/api/connection"
+    };
+  }
+}
+
+message UploadRequest {
+  string filename = 1;     // File name
+  bytes content = 2;       // File content
+  string content_type = 3; // MIME type
+  string bucket = 4;       // Bucket name (optional, uses default if empty)
+}
+
+message UploadResponse {
+  uint32 code = 1;
+  string message = 2;
+  UploadData data = 3;
+}
+
+message UploadData {
+  string key = 1;      // S3 object key
+  string url = 2;      // Public URL
+  int64 size = 3;      // File size in bytes
+  string etag = 4;     // ETag from S3
+}
+
+message ListRequest {
+  string prefix = 1;     // Prefix filter
+  int32 max_keys = 2;    // Maximum number of keys to return
+  string marker = 3;     // Pagination marker
+  string bucket = 4;     // Bucket name (optional, uses default if empty)
+}
+
+message ListResponse {
+  uint32 code = 1;
+  string message = 2;
+  ListData data = 3;
+}
+
+message ListData {
+  repeated S3Object objects = 1;
+  bool is_truncated = 2;         // Whether there are more results
+  string next_marker = 3;        // Next pagination marker
+}
+
+message S3Object {
+  string key = 1;              // Object key
+  int64 size = 2;              // Object size in bytes
+  string last_modified = 3;    // Last modified timestamp
+  string etag = 4;             // ETag
+  string storage_class = 5;    // Storage class
+}
+
+message DeleteRequest {
+  string key = 1;       // Object key to delete
+  string bucket = 2;    // Bucket name (optional, uses default if empty)
+}
+
+message ConnectionResponse {
+  uint32 code = 1;
+  string message = 2;
+  ConnectionData data = 3;
+}
+
+message ConnectionData {
+  bool connected = 1;      // Whether connection is successful
+  string endpoint = 2;     // S3 endpoint
+  string region = 3;       // AWS region
+  bool use_ssl = 4;        // Whether SSL is enabled
+  string bucket = 5;       // Default bucket name
+}
