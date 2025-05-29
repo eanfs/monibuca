@@ -152,7 +152,7 @@ func (d *Demuxer) Demux() (err error) {
 						switch entry.Type() {
 						case TypeAVC1:
 							track.Cid = MP4_CODEC_H264
-						case TypeHVC1:
+						case TypeHVC1, TypeHEV1:
 							track.Cid = MP4_CODEC_H265
 						}
 						track.Width = uint32(entry.Width)
@@ -393,8 +393,8 @@ func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 				whichTrack = track
 				whichTracki = i
 			} else {
-				dts1 := minTsSample.Timestamp * uint32(d.moov.MVHD.Timescale) / uint32(whichTrack.Timescale)
-				dts2 := track.Samplelist[idx].Timestamp * uint32(d.moov.MVHD.Timescale) / uint32(track.Timescale)
+				dts1 := uint64(minTsSample.Timestamp) * uint64(d.moov.MVHD.Timescale) / uint64(whichTrack.Timescale)
+				dts2 := uint64(track.Samplelist[idx].Timestamp) * uint64(d.moov.MVHD.Timescale) / uint64(track.Timescale)
 				if dts1 > dts2 {
 					minTsSample = track.Samplelist[idx]
 					whichTrack = track

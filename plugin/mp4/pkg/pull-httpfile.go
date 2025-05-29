@@ -67,70 +67,92 @@ func (p *HTTPReader) Run() (err error) {
 			err = publisher.WriteAudio(&sequence)
 		}
 	}
+
+	// 计算最大时间戳用于累计偏移
+	var maxTimestamp uint64
 	for track, sample := range demuxer.ReadSample {
-		if p.IsStopped() {
-			break
+		timestamp := uint64(sample.Timestamp) * 1000 / uint64(track.Timescale)
+		if timestamp > maxTimestamp {
+			maxTimestamp = timestamp
 		}
-		if _, err = demuxer.reader.Seek(sample.Offset, io.SeekStart); err != nil {
-			return
-		}
-		sample.Data = allocator.Malloc(sample.Size)
-		if _, err = io.ReadFull(demuxer.reader, sample.Data); err != nil {
-			allocator.Free(sample.Data)
-			return
-		}
-		switch track.Cid {
-		case box.MP4_CODEC_H264:
-			var videoFrame rtmp.RTMPVideo
-			videoFrame.SetAllocator(allocator)
-			videoFrame.CTS = sample.CTS
-			videoFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
-			videoFrame.AppendOne([]byte{util.Conditional[byte](sample.KeyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
-			videoFrame.AddRecycleBytes(sample.Data)
-			err = publisher.WriteVideo(&videoFrame)
-		case box.MP4_CODEC_H265:
-			var videoFrame rtmp.RTMPVideo
-			videoFrame.SetAllocator(allocator)
-			videoFrame.CTS = uint32(sample.CTS)
-			videoFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
-			var head []byte
-			var b0 byte = 0b1010_0000
-			if sample.KeyFrame {
-				b0 = 0b1001_0000
+	}
+	var timestampOffset uint64
+	loop := p.PullJob.Loop
+	for {
+		demuxer.ReadSampleIdx = make([]uint32, len(demuxer.Tracks))
+		for track, sample := range demuxer.ReadSample {
+			if p.IsStopped() {
+				return
 			}
-			if videoFrame.CTS == 0 {
-				head = videoFrame.NextN(5)
-				head[0] = b0 | rtmp.PacketTypeCodedFramesX
-			} else {
-				head = videoFrame.NextN(8)
-				head[0] = b0 | rtmp.PacketTypeCodedFrames
-				util.PutBE(head[5:8], videoFrame.CTS) // cts
+			if _, err = demuxer.reader.Seek(sample.Offset, io.SeekStart); err != nil {
+				return
 			}
-			copy(head[1:], codec.FourCC_H265[:])
-			videoFrame.AddRecycleBytes(sample.Data)
-			err = publisher.WriteVideo(&videoFrame)
-		case box.MP4_CODEC_AAC:
-			var audioFrame rtmp.RTMPAudio
-			audioFrame.SetAllocator(allocator)
-			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
-			audioFrame.AppendOne([]byte{0xaf, 0x01})
-			audioFrame.AddRecycleBytes(sample.Data)
-			err = publisher.WriteAudio(&audioFrame)
-		case box.MP4_CODEC_G711A:
-			var audioFrame rtmp.RTMPAudio
-			audioFrame.SetAllocator(allocator)
-			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
-			audioFrame.AppendOne([]byte{0x72})
-			audioFrame.AddRecycleBytes(sample.Data)
-			err = publisher.WriteAudio(&audioFrame)
-		case box.MP4_CODEC_G711U:
-			var audioFrame rtmp.RTMPAudio
-			audioFrame.SetAllocator(allocator)
-			audioFrame.Timestamp = sample.Timestamp * 1000 / track.Timescale
-			audioFrame.AppendOne([]byte{0x82})
-			audioFrame.AddRecycleBytes(sample.Data)
-			err = publisher.WriteAudio(&audioFrame)
+			sample.Data = allocator.Malloc(sample.Size)
+			if _, err = io.ReadFull(demuxer.reader, sample.Data); err != nil {
+				allocator.Free(sample.Data)
+				return
+			}
+			switch track.Cid {
+			case box.MP4_CODEC_H264:
+				var videoFrame rtmp.RTMPVideo
+				videoFrame.SetAllocator(allocator)
+				videoFrame.CTS = sample.CTS
+				videoFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
+				videoFrame.AppendOne([]byte{util.Conditional[byte](sample.KeyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
+				videoFrame.AddRecycleBytes(sample.Data)
+				err = publisher.WriteVideo(&videoFrame)
+			case box.MP4_CODEC_H265:
+				var videoFrame rtmp.RTMPVideo
+				videoFrame.SetAllocator(allocator)
+				videoFrame.CTS = uint32(sample.CTS)
+				videoFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
+				var head []byte
+				var b0 byte = 0b1010_0000
+				if sample.KeyFrame {
+					b0 = 0b1001_0000
+				}
+				if videoFrame.CTS == 0 {
+					head = videoFrame.NextN(5)
+					head[0] = b0 | rtmp.PacketTypeCodedFramesX
+				} else {
+					head = videoFrame.NextN(8)
+					head[0] = b0 | rtmp.PacketTypeCodedFrames
+					util.PutBE(head[5:8], videoFrame.CTS) // cts
+				}
+				copy(head[1:], codec.FourCC_H265[:])
+				videoFrame.AddRecycleBytes(sample.Data)
+				err = publisher.WriteVideo(&videoFrame)
+			case box.MP4_CODEC_AAC:
+				var audioFrame rtmp.RTMPAudio
+				audioFrame.SetAllocator(allocator)
+				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
+				audioFrame.AppendOne([]byte{0xaf, 0x01})
+				audioFrame.AddRecycleBytes(sample.Data)
+				err = publisher.WriteAudio(&audioFrame)
+			case box.MP4_CODEC_G711A:
+				var audioFrame rtmp.RTMPAudio
+				audioFrame.SetAllocator(allocator)
+				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
+				audioFrame.AppendOne([]byte{0x72})
+				audioFrame.AddRecycleBytes(sample.Data)
+				err = publisher.WriteAudio(&audioFrame)
+			case box.MP4_CODEC_G711U:
+				var audioFrame rtmp.RTMPAudio
+				audioFrame.SetAllocator(allocator)
+				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
+				audioFrame.AppendOne([]byte{0x82})
+				audioFrame.AddRecycleBytes(sample.Data)
+				err = publisher.WriteAudio(&audioFrame)
+			}
 		}
+		if loop >= 0 {
+			loop--
+			if loop == -1 {
+				break
+			}
+		}
+		// 每次循环后累计时间戳偏移，确保下次循环的时间戳是递增的
+		timestampOffset += maxTimestamp + 1
 	}
 	return
 }

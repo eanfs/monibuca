@@ -69,6 +69,7 @@ type (
 	HTTPValues map[string][]string
 	Pull       struct {
 		URL           string        `desc:"拉流地址"`
+		Loop          int           `desc:"拉流循环次数,-1:无限循环"`                       // 拉流循环次数，-1 表示无限循环
 		MaxRetry      int           `default:"-1" desc:"断开后自动重试次数,0:不重试,-1:无限重试"` // 断开后自动重拉,0 表示不自动重拉，-1 表示无限重拉，高于0 的数代表最大重拉次数
 		RetryInterval time.Duration `default:"5s" desc:"重试间隔"`                    // 重试间隔
 		Proxy         string        `desc:"代理地址"`                                 // 代理地址
