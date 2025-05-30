@@ -2,13 +2,14 @@ package pkg
 
 import (
 	"fmt"
+	"io"
+	"time"
+
 	"github.com/deepch/vdk/codec/aacparser"
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/codec/h265parser"
-	"io"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
-	"time"
 )
 
 var _ IAVFrame = (*RawAudio)(nil)
@@ -104,6 +105,8 @@ type H26xFrame struct {
 }
 
 func (h *H26xFrame) Parse(track *AVTrack) (err error) {
+	var hasVideoFrame bool
+
 	switch h.FourCC {
 	case codec.FourCC_H264:
 		var ctx *codec.H264Ctx
@@ -127,6 +130,9 @@ func (h *H26xFrame) Parse(track *AVTrack) (err error) {
 				}
 			case codec.NALU_IDR_Picture:
 				track.Value.IDR = true
+				hasVideoFrame = true
+			case codec.NALU_Non_IDR_Picture:
+				hasVideoFrame = true
 			}
 		}
 	case codec.FourCC_H265:
@@ -155,9 +161,18 @@ func (h *H26xFrame) Parse(track *AVTrack) (err error) {
 				h265parser.NAL_UNIT_CODED_SLICE_IDR_N_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_CRA:
 				track.Value.IDR = true
+				hasVideoFrame = true
+			case 0, 1, 2, 3, 4, 5, 6, 7, 8, 9:
+				hasVideoFrame = true
 			}
 		}
 	}
+
+	// Return ErrSkip if no video frames are present (only metadata NALUs)
+	if !hasVideoFrame {
+		return ErrSkip
+	}
+
 	return
 }
 
