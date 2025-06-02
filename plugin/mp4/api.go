@@ -249,12 +249,13 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		}
 		if i == 0 {
 			startTimestamp := startTime.Sub(stream.StartTime).Milliseconds()
-			var startSample *box.Sample
-			if startSample, err = demuxer.SeekTime(uint64(startTimestamp)); err != nil {
-				tsOffset = 0
-				continue
+			if startTimestamp > 0 {
+				var startSample *box.Sample
+				if startSample, err = demuxer.SeekTime(uint64(startTimestamp)); err != nil {
+					continue
+				}
+				tsOffset = -int64(startSample.Timestamp)
 			}
-			tsOffset = -int64(startSample.Timestamp)
 		}
 		var part *ContentPart
 		for track, sample := range demuxer.RangeSample {
