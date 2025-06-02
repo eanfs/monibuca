@@ -1,6 +1,7 @@
 package plugin_mp4
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,24 +16,22 @@ import (
 
 // RecordRecoveryTask 从录像文件中恢复数据库记录的任务
 type RecordRecoveryTask struct {
-	task.TickTask
+	task.Task
 	DB     *gorm.DB
 	plugin *MP4Plugin
 }
 
-// GetTickInterval 设置任务执行间隔
-func (t *RecordRecoveryTask) GetTickInterval() time.Duration {
-	return 24 * time.Hour // 默认每天执行一次
+// RecoveryStats 恢复统计信息
+type RecoveryStats struct {
+	TotalFiles   int
+	SuccessCount int
+	FailureCount int
+	SkippedCount int
+	Errors       []error
 }
 
-// Tick 执行任务
-func (t *RecordRecoveryTask) Tick(any) {
-	t.Info("Starting record recovery task")
-	t.recoverRecordsFromFiles()
-}
-
-// recoverRecordsFromFiles 从文件系统中恢复录像记录
-func (t *RecordRecoveryTask) recoverRecordsFromFiles() {
+// Start 从文件系统中恢复录像记录
+func (t *RecordRecoveryTask) Start() error {
 	// 获取所有录像目录
 	var recordDirs []string
 	if len(t.plugin.GetCommonConf().OnPub.Record) > 0 {
@@ -46,20 +45,60 @@ func (t *RecordRecoveryTask) recoverRecordsFromFiles() {
 		recordDirs = append(recordDirs, dirPath)
 	}
 
-	// 遍历所有录像目录
-	for _, dir := range recordDirs {
-		t.scanDirectory(dir)
+	if len(recordDirs) == 0 {
+		t.Info("No record directories configured, skipping recovery")
+		return nil
 	}
+
+	stats := &RecoveryStats{}
+
+	// 遍历所有录像目录，收集所有错误而不是在第一个错误时停止
+	for _, dir := range recordDirs {
+		dirStats, err := t.scanDirectory(dir)
+		if dirStats != nil {
+			stats.TotalFiles += dirStats.TotalFiles
+			stats.SuccessCount += dirStats.SuccessCount
+			stats.FailureCount += dirStats.FailureCount
+			stats.SkippedCount += dirStats.SkippedCount
+			stats.Errors = append(stats.Errors, dirStats.Errors...)
+		}
+
+		if err != nil {
+			stats.Errors = append(stats.Errors, fmt.Errorf("failed to scan directory %s: %w", dir, err))
+		}
+	}
+
+	// 记录统计信息
+	t.Info("Recovery completed",
+		"totalFiles", stats.TotalFiles,
+		"success", stats.SuccessCount,
+		"failed", stats.FailureCount,
+		"skipped", stats.SkippedCount,
+		"errors", len(stats.Errors))
+
+	// 如果有错误，返回一个汇总错误
+	if len(stats.Errors) > 0 {
+		var errorMsgs []string
+		for _, err := range stats.Errors {
+			errorMsgs = append(errorMsgs, err.Error())
+		}
+		return fmt.Errorf("recovery completed with %d errors: %s", len(stats.Errors), strings.Join(errorMsgs, "; "))
+	}
+
+	return nil
 }
 
 // scanDirectory 扫描目录中的MP4文件
-func (t *RecordRecoveryTask) scanDirectory(dir string) {
+func (t *RecordRecoveryTask) scanDirectory(dir string) (*RecoveryStats, error) {
 	t.Info("Scanning directory for MP4 files", "directory", dir)
+
+	stats := &RecoveryStats{}
 
 	// 递归遍历目录
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			t.Error("Error accessing path", "path", path, "error", err)
+			stats.Errors = append(stats.Errors, fmt.Errorf("failed to access path %s: %w", path, err))
 			return nil // 继续遍历
 		}
 
@@ -73,33 +112,50 @@ func (t *RecordRecoveryTask) scanDirectory(dir string) {
 			return nil
 		}
 
+		stats.TotalFiles++
+
 		// 检查文件是否已经有记录
 		var count int64
-		t.DB.Model(&m7s.RecordStream{}).Where("file_path = ?", path).Count(&count)
+		if err := t.DB.Model(&m7s.RecordStream{}).Where("file_path = ?", path).Count(&count).Error; err != nil {
+			t.Error("Failed to check existing record", "file", path, "error", err)
+			stats.FailureCount++
+			stats.Errors = append(stats.Errors, fmt.Errorf("failed to check existing record for %s: %w", path, err))
+			return nil
+		}
+
 		if count > 0 {
 			// 已有记录，跳过
+			stats.SkippedCount++
 			return nil
 		}
 
 		// 解析MP4文件并创建记录
-		t.recoverRecordFromFile(path)
+		if err := t.recoverRecordFromFile(path); err != nil {
+			stats.FailureCount++
+			stats.Errors = append(stats.Errors, fmt.Errorf("failed to recover record from %s: %w", path, err))
+		} else {
+			stats.SuccessCount++
+		}
 		return nil
 	})
 
 	if err != nil {
 		t.Error("Error walking directory", "directory", dir, "error", err)
+		return stats, fmt.Errorf("failed to walk directory %s: %w", dir, err)
 	}
+
+	return stats, nil
 }
 
 // recoverRecordFromFile 从MP4文件中恢复记录
-func (t *RecordRecoveryTask) recoverRecordFromFile(filePath string) {
+func (t *RecordRecoveryTask) recoverRecordFromFile(filePath string) error {
 	t.Info("Recovering record from file", "file", filePath)
 
 	// 打开文件
 	file, err := os.Open(filePath)
 	if err != nil {
 		t.Error("Failed to open MP4 file", "file", filePath, "error", err)
-		return
+		return fmt.Errorf("failed to open MP4 file %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -108,14 +164,14 @@ func (t *RecordRecoveryTask) recoverRecordFromFile(filePath string) {
 	err = demuxer.Demux()
 	if err != nil {
 		t.Error("Failed to demux MP4 file", "file", filePath, "error", err)
-		return
+		return fmt.Errorf("failed to demux MP4 file %s: %w", filePath, err)
 	}
 
 	// 提取文件信息
 	fileInfo, err := file.Stat()
 	if err != nil {
 		t.Error("Failed to get file info", "file", filePath, "error", err)
-		return
+		return fmt.Errorf("failed to get file info for %s: %w", filePath, err)
 	}
 
 	// 尝试从MP4文件中提取流路径，如果没有则从文件名和路径推断
@@ -151,10 +207,11 @@ func (t *RecordRecoveryTask) recoverRecordFromFile(filePath string) {
 	err = t.DB.Create(&record).Error
 	if err != nil {
 		t.Error("Failed to save record to database", "file", filePath, "error", err)
-		return
+		return fmt.Errorf("failed to save record to database for %s: %w", filePath, err)
 	}
 
 	t.Info("Successfully recovered record", "file", filePath, "streamPath", streamPath)
+	return nil
 }
 
 // extractStreamPathFromMP4 从MP4文件中提取流路径
