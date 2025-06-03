@@ -41,5 +41,11 @@ func (h265 *H265Ctx) GetRecord() []byte {
 }
 
 func (h265 *H265Ctx) String() string {
-	return fmt.Sprintf("hvc1.%02X%02X%02X", h265.RecordInfo.AVCProfileIndication, h265.RecordInfo.ProfileCompatibility, h265.RecordInfo.AVCLevelIndication)
+	// 根据 HEVC 标准格式：hvc1.profile.compatibility.level.constraints
+	profile := h265.RecordInfo.AVCProfileIndication
+	compatibility := h265.RecordInfo.ProfileCompatibility
+	level := h265.RecordInfo.AVCLevelIndication
+
+	// 简单实现，使用可用字段模拟 HEVC 格式
+	return fmt.Sprintf("hvc1.%d.%X.L%d.00", profile, compatibility, level)
 }

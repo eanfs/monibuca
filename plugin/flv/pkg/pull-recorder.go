@@ -61,10 +61,8 @@ func (p *RecordReader) Run() (err error) {
 	defer func() {
 		allocator.Recycle()
 	}()
-	if publisher != nil {
-		publisher.OnGetPosition = func() time.Time {
-			return realTime
-		}
+	publisher.OnGetPosition = func() time.Time {
+		return realTime
 	}
 
 	for loop := 0; loop < p.Loop; loop++ {
