@@ -208,6 +208,9 @@ func (config *Config) ParseUserFile(conf map[string]any) {
 	}
 	config.File = conf
 	for k, v := range conf {
+		k = strings.ReplaceAll(k, "-", "")
+		k = strings.ReplaceAll(k, "_", "")
+		k = strings.ToLower(k)
 		if config.Has(k) {
 			if prop := config.Get(k); prop.props != nil {
 				if v != nil {

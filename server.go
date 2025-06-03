@@ -252,6 +252,15 @@ func (s *Server) Start() (err error) {
 			s.Error("parsing yml", "error", err)
 		}
 	}
+	for key, value := range cg {
+		if strings.Contains(key, "-") {
+			key = strings.ReplaceAll(key, "-", "")
+			cg[key] = value
+		} else if strings.Contains(key, "_") {
+			key = strings.ReplaceAll(key, "_", "")
+			cg[key] = value
+		}
+	}
 	s.Config.Parse(&s.config, "GLOBAL")
 	s.Config.Parse(&s.ServerConfig, "GLOBAL")
 	if cg != nil {
