@@ -220,7 +220,7 @@ func (gb *GB28181Plugin) checkDeviceExpire() (err error) {
 			device.eventChan = make(chan any, 10)
 
 			// 设置Logger
-			device.Logger = gb.With("deviceid", device.DeviceId)
+			device.Logger = gb.Logger.With("deviceid", device.DeviceId)
 
 			// 初始化通道集合
 			device.channels.L = new(sync.RWMutex)

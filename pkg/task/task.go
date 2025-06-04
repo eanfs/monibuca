@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -117,7 +118,7 @@ type (
 		ID          uint32
 		StartTime   time.Time
 		StartReason string
-		*slog.Logger
+		Logger      *slog.Logger
 		context.Context
 		context.CancelCauseFunc
 		handler                                                            ITask
@@ -198,7 +199,11 @@ func (task *Task) WaitStopped() (err error) {
 }
 
 func (task *Task) Trace(msg string, fields ...any) {
-	task.Log(task.Context, TraceLevel, msg, fields...)
+	if task.Logger == nil {
+		slog.Default().Log(task.Context, TraceLevel, msg, fields...)
+		return
+	}
+	task.Logger.Log(task.Context, TraceLevel, msg, fields...)
 }
 
 func (task *Task) IsStopped() bool {
@@ -225,8 +230,9 @@ func (task *Task) Stop(err error) {
 		panic("task stop with nil error")
 	}
 	if task.CancelCauseFunc != nil {
-		if tt := task.handler.GetTaskType(); task.Logger != nil && tt != TASK_TYPE_CALL {
-			task.Debug("task stop", "reason", err, "elapsed", time.Since(task.StartTime), "taskId", task.ID, "taskType", tt, "ownerType", task.GetOwnerType())
+		if tt := task.handler.GetTaskType(); tt != TASK_TYPE_CALL {
+			_, file, line, _ := runtime.Caller(1)
+			task.Debug("task stop", "caller", fmt.Sprintf("%s:%d", strings.TrimPrefix(file, sourceFilePathPrefix), line), "reason", err, "elapsed", time.Since(task.StartTime), "taskId", task.ID, "taskType", tt, "ownerType", task.GetOwnerType())
 		}
 		task.CancelCauseFunc(err)
 	}
@@ -264,12 +270,10 @@ func (task *Task) checkRetry(err error) bool {
 	if task.retry.MaxRetry < 0 || task.retry.RetryCount < task.retry.MaxRetry {
 		task.retry.RetryCount++
 		task.SetDescription("retryCount", task.retry.RetryCount)
-		if task.Logger != nil {
-			if task.retry.MaxRetry < 0 {
-				task.Warn(fmt.Sprintf("retry %d/∞", task.retry.RetryCount), "taskId", task.ID)
-			} else {
-				task.Warn(fmt.Sprintf("retry %d/%d", task.retry.RetryCount, task.retry.MaxRetry), "taskId", task.ID)
-			}
+		if task.retry.MaxRetry < 0 {
+			task.Warn(fmt.Sprintf("retry %d/∞", task.retry.RetryCount), "taskId", task.ID)
+		} else {
+			task.Warn(fmt.Sprintf("retry %d/%d", task.retry.RetryCount, task.retry.MaxRetry), "taskId", task.ID)
 		}
 		if delta := time.Since(task.StartTime); delta < task.retry.RetryInterval {
 			time.Sleep(task.retry.RetryInterval - delta)
@@ -277,9 +281,7 @@ func (task *Task) checkRetry(err error) bool {
 		return true
 	} else {
 		if task.retry.MaxRetry > 0 {
-			if task.Logger != nil {
-				task.Warn(fmt.Sprintf("max retry %d failed", task.retry.MaxRetry))
-			}
+			task.Warn(fmt.Sprintf("max retry %d failed", task.retry.MaxRetry))
 			return false
 		}
 	}
@@ -292,15 +294,13 @@ func (task *Task) start() bool {
 		defer func() {
 			if r := recover(); r != nil {
 				err = errors.New(fmt.Sprint(r))
-				if task.Logger != nil {
-					task.Error("panic", "error", err, "stack", string(debug.Stack()))
-				}
+				task.Error("panic", "error", err, "stack", string(debug.Stack()))
 			}
 		}()
 	}
 	for {
 		task.StartTime = time.Now()
-		if tt := task.handler.GetTaskType(); task.Logger != nil && tt != TASK_TYPE_CALL {
+		if tt := task.handler.GetTaskType(); tt != TASK_TYPE_CALL {
 			task.Debug("task start", "taskId", task.ID, "taskType", tt, "ownerType", task.GetOwnerType(), "reason", task.StartReason)
 		}
 		task.state = TASK_STATE_STARTING
@@ -322,9 +322,7 @@ func (task *Task) start() bool {
 				task.ResetRetryCount()
 				if runHandler, ok := task.handler.(TaskBlock); ok {
 					task.state = TASK_STATE_RUNNING
-					if task.Logger != nil {
-						task.Debug("task run", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
-					}
+					task.Debug("task run", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
 					err = runHandler.Run()
 					if err == nil {
 						err = ErrTaskComplete
@@ -335,9 +333,7 @@ func (task *Task) start() bool {
 		if err == nil {
 			if goHandler, ok := task.handler.(TaskGo); ok {
 				task.state = TASK_STATE_GOING
-				if task.Logger != nil {
-					task.Debug("task go", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
-				}
+				task.Debug("task go", "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType())
 				go task.run(goHandler.Go)
 			}
 			return true
@@ -384,19 +380,17 @@ func (task *Task) SetDescriptions(value Description) {
 func (task *Task) dispose() {
 	taskType, ownerType := task.handler.GetTaskType(), task.GetOwnerType()
 	if task.state < TASK_STATE_STARTED {
-		if task.Logger != nil && taskType != TASK_TYPE_CALL {
+		if taskType != TASK_TYPE_CALL {
 			task.Debug("task dispose canceled", "taskId", task.ID, "taskType", taskType, "ownerType", ownerType, "state", task.state)
 		}
 		return
 	}
 	reason := task.StopReason()
 	task.state = TASK_STATE_DISPOSING
-	if task.Logger != nil {
-		if taskType != TASK_TYPE_CALL {
-			yargs := []any{"reason", reason, "taskId", task.ID, "taskType", taskType, "ownerType", ownerType}
-			task.Debug("task dispose", yargs...)
-			defer task.Debug("task disposed", yargs...)
-		}
+	if taskType != TASK_TYPE_CALL {
+		yargs := []any{"reason", reason, "taskId", task.ID, "taskType", taskType, "ownerType", ownerType}
+		task.Debug("task dispose", yargs...)
+		defer task.Debug("task disposed", yargs...)
 	}
 	befores := len(task.beforeDisposeListeners)
 	for i, listener := range task.beforeDisposeListeners {
@@ -441,9 +435,7 @@ func (task *Task) run(handler func() error) {
 		if !ThrowPanic {
 			if r := recover(); r != nil {
 				err = errors.New(fmt.Sprint(r))
-				if task.Logger != nil {
-					task.Error("panic", "error", err, "stack", string(debug.Stack()))
-				}
+				task.Error("panic", "error", err, "stack", string(debug.Stack()))
 			}
 		}
 		if err == nil {
@@ -453,4 +445,40 @@ func (task *Task) run(handler func() error) {
 		}
 	}()
 	err = handler()
+}
+
+func (task *Task) Debug(msg string, args ...any) {
+	if task.Logger == nil {
+		slog.Default().Debug(msg, args...)
+		return
+	}
+	task.Logger.Debug(msg, args...)
+}
+
+func (task *Task) Info(msg string, args ...any) {
+	if task.Logger == nil {
+		slog.Default().Info(msg, args...)
+		return
+	}
+	task.Logger.Info(msg, args...)
+}
+
+func (task *Task) Warn(msg string, args ...any) {
+	if task.Logger == nil {
+		slog.Default().Warn(msg, args...)
+		return
+	}
+	task.Logger.Warn(msg, args...)
+}
+
+func (task *Task) Error(msg string, args ...any) {
+	if task.Logger == nil {
+		slog.Default().Error(msg, args...)
+		return
+	}
+	task.Logger.Error(msg, args...)
+}
+
+func (task *Task) TraceEnabled() bool {
+	return task.Logger.Enabled(task.Context, TraceLevel)
 }

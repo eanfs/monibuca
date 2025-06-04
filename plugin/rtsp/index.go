@@ -29,7 +29,7 @@ type RTSPPlugin struct {
 
 func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
 	ret := &RTSPServer{NetConnection: NewNetConnection(conn), conf: p}
-	ret.Logger = p.With("remote", conn.RemoteAddr().String())
+	ret.Logger = p.Logger.With("remote", conn.RemoteAddr().String())
 	return ret
 }
 

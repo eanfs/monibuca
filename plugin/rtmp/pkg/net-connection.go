@@ -5,6 +5,7 @@ import (
 	"net"
 	"runtime"
 	"sync/atomic"
+	"time"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/task"
@@ -128,6 +129,7 @@ func (nc *NetConnection) ResponseCreateStream(tid uint64, streamID uint32) error
 // }
 
 func (nc *NetConnection) readChunk() (msg *Chunk, err error) {
+	nc.SetReadDeadline(time.Now().Add(time.Second * 5)) // 设置读取超时时间为5秒
 	head, err := nc.ReadByte()
 	if err != nil {
 		return nil, err
@@ -313,6 +315,9 @@ func (nc *NetConnection) RecvMessage() (msg *Chunk, err error) {
 				}
 			}
 		}
+		if nc.IsStopped() {
+			err = nc.StopReason()
+		}
 	}
 	return
 }
@@ -344,6 +349,7 @@ func (nc *NetConnection) SendMessage(t byte, msg RtmpMessage) (err error) {
 	if sid, ok := msg.(HaveStreamID); ok {
 		head.MessageStreamID = sid.GetStreamID()
 	}
+	nc.SetWriteDeadline(time.Now().Add(time.Second * 5)) // 设置写入超时时间为5秒
 	return nc.sendChunk(net.Buffers{nc.tmpBuf}, head, RTMP_CHUNK_HEAD_12)
 }
 

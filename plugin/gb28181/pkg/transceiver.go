@@ -148,7 +148,7 @@ func (p *Receiver) ReadRTP(rtp util.Buffer) (err error) {
 		return
 	}
 	if lastSeq == 0 || p.SequenceNumber == lastSeq+1 {
-		if p.Enabled(p, task.TraceLevel) {
+		if p.TraceEnabled() {
 			p.Trace("rtp", "len", rtp.Len(), "seq", p.SequenceNumber, "payloadType", p.PayloadType, "ssrc", p.SSRC)
 		}
 		copyData := make([]byte, len(p.Payload))

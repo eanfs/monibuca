@@ -154,17 +154,17 @@ func (avcc *RTMPVideo) Parse(t *AVTrack) (err error) {
 			err = parseSequence()
 			return
 		case PacketTypeCodedFrames:
-			switch ctx := t.ICodecCtx.(type) {
+			switch t.ICodecCtx.(type) {
 			case *H265Ctx:
 				if avcc.CTS, err = reader.ReadBE(3); err != nil {
 					return err
 				}
-				avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
+				// avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
 			case *AV1Ctx:
 				// return avcc.parseAV1(reader)
 			}
 		case PacketTypeCodedFramesX:
-			avcc.filterH265(int(t.ICodecCtx.(*H265Ctx).RecordInfo.LengthSizeMinusOne) + 1)
+			// avcc.filterH265(int(t.ICodecCtx.(*H265Ctx).RecordInfo.LengthSizeMinusOne) + 1)
 		}
 	} else {
 		b0, err = reader.ReadByte() //sequence frame flag

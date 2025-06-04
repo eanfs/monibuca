@@ -3,6 +3,7 @@ package plugin_stress
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mcuadros/go-defaults"
@@ -37,15 +38,18 @@ func (r *StressPlugin) pull(count int, url string, testMode int32, puller m7s.Pu
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
-			r.pullers.AddUnique(ctx)
-			ctx.OnDispose(func() {
-				r.pullers.Remove(ctx)
-			})
+			if r.pullers.AddUnique(ctx) {
+				ctx.OnDispose(func() {
+					r.pullers.Remove(ctx)
+				})
+			} else {
+				ctx.Stop(task.ErrExist)
+			}
 		}
 	} else if count < i {
+		clone := slices.Clone(r.pullers.Items)
 		for j := i; j > count; j-- {
-			r.pullers.Items[j-1].Stop(task.ErrStopByUser)
-			r.pullers.Remove(r.pullers.Items[j-1])
+			clone[j-1].Stop(task.ErrStopByUser)
 		}
 	}
 	return
@@ -61,15 +65,18 @@ func (r *StressPlugin) push(count int, streamPath, url string, pusher m7s.Pusher
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
-			r.pushers.AddUnique(ctx)
-			ctx.OnDispose(func() {
-				r.pushers.Remove(ctx)
-			})
+			if r.pushers.AddUnique(ctx) {
+				ctx.OnDispose(func() {
+					r.pushers.Remove(ctx)
+				})
+			} else {
+				ctx.Stop(task.ErrExist)
+			}
 		}
 	} else if count < i {
+		clone := slices.Clone(r.pushers.Items)
 		for j := i; j > count; j-- {
-			r.pushers.Items[j-1].Stop(task.ErrStopByUser)
-			r.pushers.Remove(r.pushers.Items[j-1])
+			clone[j-1].Stop(task.ErrStopByUser)
 		}
 	}
 	return
@@ -110,18 +117,16 @@ func (r *StressPlugin) StartPull(ctx context.Context, req *pb.PullRequest) (res 
 }
 
 func (r *StressPlugin) StopPush(ctx context.Context, req *emptypb.Empty) (res *gpb.SuccessResponse, err error) {
-	for pusher := range r.pushers.Range {
+	for _, pusher := range slices.Clone(r.pushers.Items) {
 		pusher.Stop(task.ErrStopByUser)
 	}
-	r.pushers.Clear()
 	return &gpb.SuccessResponse{}, nil
 }
 
 func (r *StressPlugin) StopPull(ctx context.Context, req *emptypb.Empty) (res *gpb.SuccessResponse, err error) {
-	for puller := range r.pullers.Range {
+	for _, puller := range slices.Clone(r.pullers.Items) {
 		puller.Stop(task.ErrStopByUser)
 	}
-	r.pullers.Clear()
 	return &gpb.SuccessResponse{}, nil
 }
 

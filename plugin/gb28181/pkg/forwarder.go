@@ -22,9 +22,7 @@ package gb28181
 
 import (
 	"fmt"
-	"log/slog"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,8 +59,7 @@ type RTPForwarder struct {
 	SendInterval time.Duration // 发送间隔，可用于限流
 	lastSendTime time.Time     // 上次发送时间
 	stopChan     chan struct{} // 停止信号通道
-	*slog.Logger
-	StreamMode string // 数据流传输模式（UDP:udp传输/TCP-ACTIVE：tcp主动模式/TCP-PASSIVE：tcp被动模式）
+	StreamMode   string        // 数据流传输模式（UDP:udp传输/TCP-ACTIVE：tcp主动模式/TCP-PASSIVE：tcp被动模式）
 }
 
 // NewRTPForwarder 创建一个新的RTP转发器
@@ -71,7 +68,6 @@ func NewRTPForwarder() *RTPForwarder {
 		FeedChan:     make(chan []byte, 2000), // 增加缓冲区大小，减少丢包风险
 		SendInterval: time.Millisecond * 0,    // 默认不限制发送间隔，最大速度转发
 		stopChan:     make(chan struct{}),
-		Logger:       slog.New(slog.NewTextHandler(os.Stdout, nil)),
 	}
 
 	ret.bufferPool = sync.Pool{
@@ -90,7 +86,7 @@ func (p *RTPForwarder) ReadRTP(rtpBuf util.Buffer) (err error) {
 		return
 	}
 
-	if p.Enabled(p, task.TraceLevel) {
+	if p.TraceEnabled() {
 		p.Trace("rtp", "len", rtpBuf.Len(), "seq", p.SequenceNumber, "payloadType", p.PayloadType, "ssrc", p.SSRC)
 	}
 
@@ -347,7 +343,7 @@ func (p *RTPForwarder) Demux() {
 		}
 		p.lastSendTime = time.Now()
 
-		if p.Enabled(p, task.TraceLevel) && p.ForwardCount%1000 == 0 {
+		if p.TraceEnabled() && p.ForwardCount%1000 == 0 {
 			p.Trace("forward rtp packet", "count", p.ForwardCount, "TCP", p.TCP, "TCPActive", p.TCPActive)
 		}
 	}

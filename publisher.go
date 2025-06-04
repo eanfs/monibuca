@@ -298,7 +298,7 @@ func (p *Publisher) fixTimestamp(t *AVTrack, data IAVFrame) {
 
 func (p *Publisher) writeAV(t *AVTrack, data IAVFrame) {
 	t.AcceptFrame(data)
-	if p.Enabled(p, task.TraceLevel) {
+	if p.TraceEnabled() {
 		frame := &t.Value
 		codec := t.FourCC().String()
 		p.Trace("write", "seq", frame.Sequence, "baseTs", int32(t.BaseTs/time.Millisecond), "ts0", uint32(data.GetTimestamp()/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "codec", codec, "size", data.GetSize(), "data", data.String())

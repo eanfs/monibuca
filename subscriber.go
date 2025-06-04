@@ -299,7 +299,7 @@ func (handler *SubscribeHandler[A, V]) sendAudioFrame() (err error) {
 	} else if handler.awi > 0 && len(handler.audioFrame.Wraps) > handler.awi-1 {
 		frame := handler.audioFrame.Wraps[handler.awi-1]
 		frameSize := frame.GetSize()
-		if handler.s.Enabled(handler.s, task.TraceLevel) {
+		if handler.s.TraceEnabled() {
 			handler.s.Trace("send audio frame", "seq", handler.audioFrame.Sequence, "data", frame.String(), "size", frameSize)
 		}
 		if audioFrame, ok := frame.(A); ok {
@@ -344,7 +344,7 @@ func (handler *SubscribeHandler[A, V]) sendVideoFrame() (err error) {
 	if handler.vwi > 0 && len(handler.videoFrame.Wraps) > handler.vwi-1 {
 		frame := handler.videoFrame.Wraps[handler.vwi-1]
 		frameSize := frame.GetSize()
-		if handler.s.Enabled(handler.s, task.TraceLevel) {
+		if handler.s.TraceEnabled() {
 			handler.s.Trace("send video frame", "seq", handler.videoFrame.Sequence, "data", frame.String(), "size", frameSize)
 		}
 		if videoFrame, ok := frame.(V); ok {

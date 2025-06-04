@@ -107,6 +107,7 @@ type (
 		lastSummaryTime   time.Time
 		lastSummary       *pb.SummaryResponse
 		conf              any
+		configFilePath    string
 		configFileContent []byte
 		disabledPlugins   []*Plugin
 		prometheusDesc    prometheusDesc
@@ -237,6 +238,7 @@ func (s *Server) Start() (err error) {
 		if _, err = os.Stat(v); err != nil {
 			v = filepath.Join(ExecDir, v)
 		}
+		s.configFilePath = v
 		if configYaml, err = os.ReadFile(v); err != nil {
 			s.Warn("read config file failed", "error", err.Error())
 		} else {

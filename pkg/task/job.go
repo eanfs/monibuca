@@ -56,6 +56,7 @@ func (mt *Job) Blocked() ITask {
 }
 
 func (mt *Job) waitChildrenDispose() {
+	blocked := mt.blocked
 	defer func() {
 		// 忽略由于在任务关闭过程中可能存在竞态条件，当父任务关闭时子任务可能已经被释放。
 		if err := recover(); err != nil {
@@ -64,7 +65,7 @@ func (mt *Job) waitChildrenDispose() {
 		mt.addSub <- nil
 		<-mt.childrenDisposed
 	}()
-	if blocked := mt.blocked; blocked != nil {
+	if blocked != nil {
 		blocked.Stop(mt.StopReason())
 	}
 }
@@ -181,9 +182,7 @@ func (mt *Job) AddTask(t ITask, opt ...any) (task *Task) {
 		return
 	}
 	if len(mt.addSub) > 10 {
-		if mt.Logger != nil {
-			mt.Warn("task wait list too many", "count", len(mt.addSub), "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType(), "parent", mt.GetOwnerType())
-		}
+		mt.Warn("task wait list too many", "count", len(mt.addSub), "taskId", task.ID, "taskType", task.GetTaskType(), "ownerType", task.GetOwnerType(), "parent", mt.GetOwnerType())
 	}
 	mt.addSub <- t
 	return
@@ -206,9 +205,7 @@ func (mt *Job) run() {
 	defer func() {
 		err := recover()
 		if err != nil {
-			if mt.Logger != nil {
-				mt.Logger.Error("job panic", "err", err, "stack", string(debug.Stack()))
-			}
+			mt.Error("job panic", "err", err, "stack", string(debug.Stack()))
 			if !ThrowPanic {
 				mt.Stop(errors.Join(err.(error), ErrPanic))
 			} else {
@@ -227,6 +224,7 @@ func (mt *Job) run() {
 		mt.blocked = nil
 		if chosen, rev, ok := reflect.Select(mt.cases); chosen == 0 {
 			if rev.IsNil() {
+				mt.Debug("job addSub channel closed, exiting", "taskId", mt.GetTaskID())
 				return
 			}
 			if mt.blocked = rev.Interface().(ITask); mt.blocked.start() {

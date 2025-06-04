@@ -3,6 +3,12 @@ package plugin_gb28181pro
 import (
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"strconv"
+	"sync"
+	"time"
+
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	myip "github.com/husanpao/ip"
@@ -12,11 +18,6 @@ import (
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
-	"net"
-	"os"
-	"strconv"
-	"sync"
-	"time"
 )
 
 type DeviceRegisterQueueTask struct {
@@ -257,7 +258,7 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 			if sourceIPParse.IsPrivate() { // 源IP是内网IP
 				myWanIP = myLanIP // 使用内网IP作为外网IP
 			}
-		} else {                           // 目标地址是IP
+		} else { // 目标地址是IP
 			if sourceIPParse.IsPrivate() { // 源IP是内网IP
 				myLanIP, myWanIP = myIP, myIP // 使用目标IP作为内外网IP
 			}
@@ -364,7 +365,7 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 			if sourceIPParse.IsPrivate() { // 源IP是内网IP
 				myWanIP = myLanIP // 使用内网IP作为外网IP
 			}
-		} else {                           // 目标地址是IP
+		} else { // 目标地址是IP
 			if sourceIPParse.IsPrivate() { // 源IP是内网IP
 				myLanIP, myWanIP = myIP, myIP // 使用目标IP作为内外网IP
 			}
@@ -419,7 +420,7 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 	d.plugin = task.gb
 	d.LocalPort = myPort
 
-	d.Logger = task.gb.With("deviceid", deviceid)
+	d.Logger = task.gb.Logger.With("deviceid", deviceid)
 	d.fromHDR.Params.Add("tag", sip.GenerateTagN(16))
 	d.client, _ = sipgo.NewClient(task.gb.ua, sipgo.WithClientLogger(zerolog.New(os.Stdout)), sipgo.WithClientHostname(d.SipIp))
 	d.channels.L = new(sync.RWMutex)

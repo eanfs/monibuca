@@ -40,7 +40,7 @@ type RTMPServer struct {
 func (p *RTMPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
 	ret := &RTMPServer{conf: p}
 	ret.Init(conn)
-	ret.Logger = p.With("remote", conn.RemoteAddr().String())
+	ret.Logger = p.Logger.With("remote", conn.RemoteAddr().String())
 	return ret
 }
 

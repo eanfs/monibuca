@@ -46,7 +46,7 @@ func (task *RTSPServer) Go() (err error) {
 
 		if task.URL == nil {
 			task.URL = req.URL
-			task.Logger = task.With("url", task.URL.String())
+			task.Logger = task.Logger.With("url", task.URL.String())
 			task.UserAgent = req.Header.Get("User-Agent")
 			task.Info("connect", "userAgent", task.UserAgent)
 		}

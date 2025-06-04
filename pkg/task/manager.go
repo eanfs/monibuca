@@ -24,15 +24,11 @@ func (m *Manager[K, T]) Add(ctx T, opt ...any) *Task {
 			ctx.Stop(ErrExist)
 			return
 		}
-		if m.Logger != nil {
-			m.Logger.Debug("add", "key", ctx.GetKey(), "count", m.Length)
-		}
+		m.Debug("add", "key", ctx.GetKey(), "count", m.Length)
 	})
 	ctx.OnDispose(func() {
 		m.Remove(ctx)
-		if m.Logger != nil {
-			m.Logger.Debug("remove", "key", ctx.GetKey(), "count", m.Length)
-		}
+		m.Debug("remove", "key", ctx.GetKey(), "count", m.Length)
 	})
 	return m.AddTask(ctx, opt...)
 }

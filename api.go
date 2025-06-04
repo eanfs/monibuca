@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -718,7 +717,7 @@ func (s *Server) GetConfigFile(_ context.Context, req *emptypb.Empty) (res *pb.G
 func (s *Server) UpdateConfigFile(_ context.Context, req *pb.UpdateConfigFileRequest) (res *pb.SuccessResponse, err error) {
 	if s.configFileContent != nil {
 		s.configFileContent = []byte(req.Content)
-		os.WriteFile(filepath.Join(ExecDir, s.conf.(string)), s.configFileContent, 0644)
+		os.WriteFile(s.configFilePath, s.configFileContent, 0644)
 		res = &pb.SuccessResponse{}
 	} else {
 		err = pkg.ErrNotFound
