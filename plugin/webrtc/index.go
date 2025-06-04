@@ -61,6 +61,7 @@ func (p *WebRTCPlugin) OnInit() (err error) {
 			p.ICEServers[i].UnmarshalJSON(b)
 		}
 	}
+
 	p.s.LoggerFactory = p
 	RegisterCodecs(&p.m)
 	if p.EnableOpus {
@@ -112,6 +113,7 @@ func (p *WebRTCPlugin) OnInit() (err error) {
 		p.Info("webrtc start listen", "port", tcpport)
 		p.s.SetICETCPMux(NewICETCPMux(nil, tcpl, 4096))
 		p.s.SetNetworkTypes([]NetworkType{NetworkTypeTCP4, NetworkTypeTCP6})
+		p.s.DisableSRTPReplayProtection(true)
 	case UDPRangePort:
 		p.s.SetEphemeralUDPPortRange(uint16(v[0]), uint16(v[1]))
 		p.SetDescription("udp", fmt.Sprintf("%d-%d", v[0], v[1]))
