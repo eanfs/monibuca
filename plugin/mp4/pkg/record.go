@@ -269,6 +269,7 @@ func (r *Recorder) Run() (err error) {
 	}
 
 	return m7s.PlayBlock(sub, func(audio *pkg.RawAudio) error {
+		r.stream.Duration = sub.AudioReader.AbsTime
 		if sub.VideoReader == nil {
 			if recordJob.AfterDuration != 0 {
 				err := checkEventRecordStop(sub.VideoReader.AbsTime)
@@ -313,6 +314,7 @@ func (r *Recorder) Run() (err error) {
 			Timestamp: uint32(dts),
 		})
 	}, func(video *rtmp.RTMPVideo) error {
+		r.stream.Duration = sub.VideoReader.AbsTime
 		if sub.VideoReader.Value.IDR {
 			if recordJob.AfterDuration != 0 {
 				err := checkEventRecordStop(sub.VideoReader.AbsTime)

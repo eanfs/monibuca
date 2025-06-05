@@ -104,9 +104,8 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 					playlist.Init()
 
 					for _, record := range records {
-						duration := record.EndTime.Sub(record.StartTime).Seconds()
 						playlist.WriteInf(hls.PlaylistInf{
-							Duration: duration,
+							Duration: float64(record.Duration) / 1000,
 							URL:      fmt.Sprintf("/mp4/download/%s.fmp4?id=%d", streamPath, record.ID),
 							Title:    record.StartTime.Format(time.RFC3339),
 						})
@@ -128,9 +127,8 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 					playlist.Init()
 
 					for _, record := range records {
-						duration := record.EndTime.Sub(record.StartTime).Seconds()
 						playlist.WriteInf(hls.PlaylistInf{
-							Duration: duration,
+							Duration: float64(record.Duration) / 1000,
 							URL:      record.FilePath,
 						})
 					}
