@@ -2468,12 +2468,9 @@ func (gb *GB28181Plugin) PlaybackPause(ctx context.Context, req *pb.PlaybackPaus
 		resp.Message = fmt.Sprintf("发送暂停请求失败: %v", err)
 		return resp, nil
 	}
-	gb.Server.Streams.Call(func() error {
-		if s, ok := gb.Server.Streams.Get(req.StreamPath); ok {
-			s.Pause()
-		}
-		return nil
-	})
+	if s, ok := gb.Server.Streams.SafeGet(req.StreamPath); ok {
+		s.Pause()
+	}
 	gb.Info("暂停回放",
 		"streampath", req.StreamPath)
 
@@ -2522,12 +2519,9 @@ func (gb *GB28181Plugin) PlaybackResume(ctx context.Context, req *pb.PlaybackRes
 		resp.Message = fmt.Sprintf("发送恢复请求失败: %v", err)
 		return resp, nil
 	}
-	gb.Server.Streams.Call(func() error {
-		if s, ok := gb.Server.Streams.Get(req.StreamPath); ok {
-			s.Resume()
-		}
-		return nil
-	})
+	if s, ok := gb.Server.Streams.SafeGet(req.StreamPath); ok {
+		s.Resume()
+	}
 	gb.Info("恢复回放",
 		"streampath", req.StreamPath)
 
@@ -2595,14 +2589,11 @@ func (gb *GB28181Plugin) PlaybackSpeed(ctx context.Context, req *pb.PlaybackSpee
 	// 发送请求
 	_, err := dialog.session.TransactionRequest(ctx, request)
 
-	gb.Server.Streams.Call(func() error {
-		if s, ok := gb.Server.Streams.Get(req.StreamPath); ok {
-			s.Speed = float64(req.Speed)
-			s.Scale = float64(req.Speed)
-			s.Info("set stream speed", "speed", req.Speed)
-		}
-		return nil
-	})
+	if s, ok := gb.Server.Streams.SafeGet(req.StreamPath); ok {
+		s.Speed = float64(req.Speed)
+		s.Scale = float64(req.Speed)
+		s.Info("set stream speed", "speed", req.Speed)
+	}
 	if err != nil {
 		resp.Code = 500
 		resp.Message = fmt.Sprintf("发送倍速请求失败: %v", err)

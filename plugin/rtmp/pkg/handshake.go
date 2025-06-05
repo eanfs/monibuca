@@ -79,10 +79,10 @@ func (nc *NetConnection) Handshake(checkC2 bool) (err error) {
 	if len(C1) != C1S1_SIZE {
 		return errors.New("C1 Error")
 	}
-	var ts int
-	util.GetBE(C1[4:8], &ts)
+	var zero int
+	util.GetBE(C1[4:8], &zero)
 
-	if ts == 0 {
+	if zero == 0 {
 		return nc.simple_handshake(C1, checkC2)
 	}
 
@@ -92,12 +92,26 @@ func (nc *NetConnection) Handshake(checkC2 bool) (err error) {
 func (nc *NetConnection) ClientHandshake() (err error) {
 	C0C1 := nc.mediaDataPool.NextN(C1S1_SIZE + 1)
 	defer nc.mediaDataPool.Recycle()
+
+	// 构造 C0
 	C0C1[0] = RTMP_HANDSHAKE_VERSION
+
+	// 构造 C1 使用简单握手格式
+	C1 := C0C1[1:]
+	// Time (4 bytes): 当前时间戳
+	util.PutBE(C1[0:4], time.Now().Unix()&0xFFFFFFFF)
+	// Zero (4 bytes): 必须为 0，确保使用简单握手
+	util.PutBE(C1[4:8], 0)
+	// Random data (1528 bytes): 填充随机数据
+	for i := 8; i < C1S1_SIZE; i++ {
+		C1[i] = byte(rand.Int() % 256)
+	}
+
 	if _, err = nc.Write(C0C1); err == nil {
 		// read S0 S1
 		if _, err = io.ReadFull(nc.Conn, C0C1); err == nil {
 			if C0C1[0] != RTMP_HANDSHAKE_VERSION {
-				err = errors.New("S1 C1 Error")
+				err = errors.New("S0 Error")
 				// C2
 			} else if _, err = nc.Write(C0C1[1:]); err == nil {
 				_, err = io.ReadFull(nc.Conn, C0C1[1:]) // S2
@@ -222,13 +236,7 @@ func clientScheme(C1 []byte, schem int) (scheme int, challenge []byte, digest []
 		return 0, nil, nil, false, err
 	}
 
-	// ok
-	if bytes.Compare(digest, tmp_Hash) == 0 {
-		ok = true
-	} else {
-		ok = false
-	}
-
+	ok = bytes.Equal(digest, tmp_Hash)
 	// challenge scheme
 	challenge = C1[key_offset : key_offset+C1S1_KEY_DATA_SIZE]
 	scheme = schem

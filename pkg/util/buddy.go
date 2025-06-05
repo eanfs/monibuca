@@ -2,33 +2,55 @@ package util
 
 import (
 	"errors"
+	"sync"
+	"unsafe"
 )
 
 type Buddy struct {
-	size     int
-	longests []int
+	size       int
+	longests   [BuddySize>>(MinPowerOf2-1) - 1]int
+	memoryPool [BuddySize]byte
+	poolStart  int64
+	lock       sync.Mutex // 保护 longests 数组的并发访问
 }
 
 var (
 	InValidParameterErr = errors.New("buddy: invalid parameter")
 	NotFoundErr         = errors.New("buddy: can't find block")
+	buddyPool           = sync.Pool{
+		New: func() interface{} {
+			return NewBuddy()
+		},
+	}
 )
+
+// GetBuddy 从池中获取一个 Buddy 实例
+func GetBuddy() *Buddy {
+	buddy := buddyPool.Get().(*Buddy)
+	return buddy
+}
+
+// PutBuddy 将 Buddy 实例放回池中
+func PutBuddy(b *Buddy) {
+	buddyPool.Put(b)
+}
 
 // NewBuddy creates a buddy instance.
 // If the parameter isn't valid, return the nil and error as well
-func NewBuddy(size int) *Buddy {
-	if !isPowerOf2(size) {
-		size = fixSize(size)
+func NewBuddy() *Buddy {
+	size := BuddySize >> MinPowerOf2
+	ret := &Buddy{
+		size: size,
 	}
-	nodeCount := 2*size - 1
-	longests := make([]int, nodeCount)
-	for nodeSize, i := 2*size, 0; i < nodeCount; i++ {
+	for nodeSize, i := 2*size, 0; i < len(ret.longests); i++ {
 		if isPowerOf2(i + 1) {
 			nodeSize /= 2
 		}
-		longests[i] = nodeSize
+		ret.longests[i] = nodeSize
 	}
-	return &Buddy{size, longests}
+	ret.poolStart = int64(uintptr(unsafe.Pointer(&ret.memoryPool[0])))
+
+	return ret
 }
 
 // Alloc find a unused block according to the size
@@ -42,6 +64,8 @@ func (b *Buddy) Alloc(size int) (offset int, err error) {
 	if !isPowerOf2(size) {
 		size = fixSize(size)
 	}
+	b.lock.Lock()
+	defer b.lock.Unlock()
 	if size > b.longests[0] {
 		err = NotFoundErr
 		return
@@ -70,6 +94,8 @@ func (b *Buddy) Free(offset int) error {
 	if offset < 0 || offset >= b.size {
 		return InValidParameterErr
 	}
+	b.lock.Lock()
+	defer b.lock.Unlock()
 	nodeSize := 1
 	index := offset + b.size - 1
 	for ; b.longests[index] != 0; index = parent(index) {

@@ -180,19 +180,17 @@ func (s *Server) getStreamInfo(pub *Publisher) (res *pb.StreamInfoResponse, err 
 
 func (s *Server) StreamInfo(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.StreamInfoResponse, err error) {
 	var recordings []*pb.RecordingDetail
-	s.Records.Call(func() error {
-		for record := range s.Records.Range {
-			if record.StreamPath == req.StreamPath {
-				recordings = append(recordings, &pb.RecordingDetail{
-					FilePath:   record.RecConf.FilePath,
-					Mode:       record.Mode,
-					Fragment:   durationpb.New(record.RecConf.Fragment),
-					Append:     record.RecConf.Append,
-					PluginName: record.Plugin.Meta.Name,
-				})
-			}
+	s.Records.SafeRange(func(record *RecordJob) bool {
+		if record.StreamPath == req.StreamPath {
+			recordings = append(recordings, &pb.RecordingDetail{
+				FilePath:   record.RecConf.FilePath,
+				Mode:       record.Mode,
+				Fragment:   durationpb.New(record.RecConf.Fragment),
+				Append:     record.RecConf.Append,
+				PluginName: record.Plugin.Meta.Name,
+			})
 		}
-		return nil
+		return true
 	})
 	if pub, ok := s.Streams.SafeGet(req.StreamPath); ok {
 		res, err = s.getStreamInfo(pub)
@@ -260,17 +258,15 @@ func (s *Server) RestartTask(ctx context.Context, req *pb.RequestWithId64) (resp
 }
 
 func (s *Server) GetRecording(ctx context.Context, req *emptypb.Empty) (resp *pb.RecordingListResponse, err error) {
-	s.Records.Call(func() error {
-		resp = &pb.RecordingListResponse{}
-		for record := range s.Records.Range {
-			resp.Data = append(resp.Data, &pb.Recording{
-				StreamPath: record.StreamPath,
-				StartTime:  timestamppb.New(record.StartTime),
-				Type:       reflect.TypeOf(record.recorder).String(),
-				Pointer:    uint64(record.GetTaskPointer()),
-			})
-		}
-		return nil
+	resp = &pb.RecordingListResponse{}
+	s.Records.SafeRange(func(record *RecordJob) bool {
+		resp.Data = append(resp.Data, &pb.Recording{
+			StreamPath: record.StreamPath,
+			StartTime:  timestamppb.New(record.StartTime),
+			Type:       reflect.TypeOf(record.recorder).String(),
+			Pointer:    uint64(record.GetTaskPointer()),
+		})
+		return true
 	})
 	return
 }
@@ -490,7 +486,7 @@ func (s *Server) Shutdown(ctx context.Context, req *pb.RequestWithId) (res *pb.S
 func (s *Server) ChangeSubscribe(ctx context.Context, req *pb.ChangeSubscribeRequest) (res *pb.SuccessResponse, err error) {
 	s.Streams.Call(func() error {
 		if subscriber, ok := s.Subscribers.Get(req.Id); ok {
-			if pub, ok := s.Streams.SafeGet(req.StreamPath); ok {
+			if pub, ok := s.Streams.Get(req.StreamPath); ok {
 				subscriber.Publisher.RemoveSubscriber(subscriber)
 				subscriber.StreamPath = req.StreamPath
 				pub.AddSubscriber(subscriber)
@@ -516,54 +512,39 @@ func (s *Server) StopSubscribe(ctx context.Context, req *pb.RequestWithId) (res 
 }
 
 func (s *Server) PauseStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
-	s.Streams.Call(func() error {
-		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
-			s.Pause()
-		}
-		return nil
-	})
+	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		s.Pause()
+	}
 	return &pb.SuccessResponse{}, err
 }
 
 func (s *Server) ResumeStream(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
-	s.Streams.Call(func() error {
-		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
-			s.Resume()
-		}
-		return nil
-	})
+	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		s.Resume()
+	}
 	return &pb.SuccessResponse{}, err
 }
 
 func (s *Server) SetStreamSpeed(ctx context.Context, req *pb.SetStreamSpeedRequest) (res *pb.SuccessResponse, err error) {
-	s.Streams.Call(func() error {
-		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
-			s.Speed = float64(req.Speed)
-			s.Scale = float64(req.Speed)
-			s.Info("set stream speed", "speed", req.Speed)
-		}
-		return nil
-	})
+	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		s.Speed = float64(req.Speed)
+		s.Scale = float64(req.Speed)
+		s.Info("set stream speed", "speed", req.Speed)
+	}
 	return &pb.SuccessResponse{}, err
 }
 
 func (s *Server) SeekStream(ctx context.Context, req *pb.SeekStreamRequest) (res *pb.SuccessResponse, err error) {
-	s.Streams.Call(func() error {
-		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
-			s.Seek(time.Unix(int64(req.TimeStamp), 0))
-		}
-		return nil
-	})
+	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		s.Seek(time.Unix(int64(req.TimeStamp), 0))
+	}
 	return &pb.SuccessResponse{}, err
 }
 
 func (s *Server) StopPublish(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SuccessResponse, err error) {
-	s.Streams.Call(func() error {
-		if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
-			s.Stop(task.ErrStopByUser)
-		}
-		return nil
-	})
+	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
+		s.Stop(task.ErrStopByUser)
+	}
 	return &pb.SuccessResponse{}, err
 }
 

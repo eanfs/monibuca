@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/process"
+	"m7s.live/v5/pkg/task"
 )
 
 //go:embed static/*
@@ -40,8 +41,17 @@ type consumer struct {
 }
 
 type server struct {
+	task.TickTask
 	consumers      []consumer
 	consumersMutex sync.RWMutex
+	data           DataStorage
+	lastPause      uint32
+	dataMutex      sync.RWMutex
+	lastConsumerID uint
+	upgrader       websocket.Upgrader
+	prevSysTime    float64
+	prevUserTime   float64
+	myProcess      *process.Process
 }
 
 type SimplePair struct {
@@ -75,99 +85,91 @@ const (
 	maxCount int = 86400
 )
 
-var (
-	data           DataStorage
-	lastPause      uint32
-	mutex          sync.RWMutex
-	lastConsumerID uint
-	s              server
-	upgrader       = websocket.Upgrader{
+func (s *server) Start() error {
+	var err error
+	s.myProcess, err = process.NewProcess(int32(os.Getpid()))
+	if err != nil {
+		log.Printf("Failed to get process: %v", err)
+	}
+	// 初始化 WebSocket upgrader
+	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
-	prevSysTime  float64
-	prevUserTime float64
-	myProcess    *process.Process
-)
-
-func init() {
-
-	myProcess, _ = process.NewProcess(int32(os.Getpid()))
-
 	// preallocate arrays in data, helps save on reallocations caused by append()
 	// when maxCount is large
-	data.BytesAllocated = make([]SimplePair, 0, maxCount)
-	data.GcPauses = make([]SimplePair, 0, maxCount)
-	data.CPUUsage = make([]CPUPair, 0, maxCount)
-	data.Pprof = make([]PprofPair, 0, maxCount)
-
-	go s.gatherData()
+	s.data.BytesAllocated = make([]SimplePair, 0, maxCount)
+	s.data.GcPauses = make([]SimplePair, 0, maxCount)
+	s.data.CPUUsage = make([]CPUPair, 0, maxCount)
+	s.data.Pprof = make([]PprofPair, 0, maxCount)
+	return s.TickTask.Start()
 }
 
-func (s *server) gatherData() {
-	timer := time.Tick(time.Second)
+func (s *server) GetTickInterval() time.Duration {
+	return time.Second
+}
 
-	for now := range timer {
-		nowUnix := now.Unix()
+func (s *server) Tick(any) {
+	now := time.Now()
+	nowUnix := now.Unix()
 
-		var ms runtime.MemStats
-		runtime.ReadMemStats(&ms)
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
 
-		u := update{
-			Ts:           nowUnix * 1000,
-			Block:        pprof.Lookup("block").Count(),
-			Goroutine:    pprof.Lookup("goroutine").Count(),
-			Heap:         pprof.Lookup("heap").Count(),
-			Mutex:        pprof.Lookup("mutex").Count(),
-			Threadcreate: pprof.Lookup("threadcreate").Count(),
-		}
-		data.Pprof = append(data.Pprof, PprofPair{
-			uint64(nowUnix) * 1000,
-			u.Block,
-			u.Goroutine,
-			u.Heap,
-			u.Mutex,
-			u.Threadcreate,
-		})
-
-		cpuTimes, err := myProcess.Times()
-		if err != nil {
-			cpuTimes = &cpu.TimesStat{}
-		}
-
-		if prevUserTime != 0 {
-			u.CPUUser = cpuTimes.User - prevUserTime
-			u.CPUSys = cpuTimes.System - prevSysTime
-			data.CPUUsage = append(data.CPUUsage, CPUPair{uint64(nowUnix) * 1000, u.CPUUser, u.CPUSys})
-		}
-
-		prevUserTime = cpuTimes.User
-		prevSysTime = cpuTimes.System
-
-		mutex.Lock()
-
-		bytesAllocated := ms.Alloc
-		u.BytesAllocated = bytesAllocated
-		data.BytesAllocated = append(data.BytesAllocated, SimplePair{uint64(nowUnix) * 1000, bytesAllocated})
-		if lastPause == 0 || lastPause != ms.NumGC {
-			gcPause := ms.PauseNs[(ms.NumGC+255)%256]
-			u.GcPause = gcPause
-			data.GcPauses = append(data.GcPauses, SimplePair{uint64(nowUnix) * 1000, gcPause})
-			lastPause = ms.NumGC
-		}
-
-		if len(data.BytesAllocated) > maxCount {
-			data.BytesAllocated = data.BytesAllocated[len(data.BytesAllocated)-maxCount:]
-		}
-
-		if len(data.GcPauses) > maxCount {
-			data.GcPauses = data.GcPauses[len(data.GcPauses)-maxCount:]
-		}
-
-		mutex.Unlock()
-
-		s.sendToConsumers(u)
+	u := update{
+		Ts:           nowUnix * 1000,
+		Block:        pprof.Lookup("block").Count(),
+		Goroutine:    pprof.Lookup("goroutine").Count(),
+		Heap:         pprof.Lookup("heap").Count(),
+		Mutex:        pprof.Lookup("mutex").Count(),
+		Threadcreate: pprof.Lookup("threadcreate").Count(),
 	}
+	s.data.Pprof = append(s.data.Pprof, PprofPair{
+		uint64(nowUnix) * 1000,
+		u.Block,
+		u.Goroutine,
+		u.Heap,
+		u.Mutex,
+		u.Threadcreate,
+	})
+
+	cpuTimes, err := s.myProcess.Times()
+	if err != nil {
+		cpuTimes = &cpu.TimesStat{}
+	}
+
+	if s.prevUserTime != 0 {
+		u.CPUUser = cpuTimes.User - s.prevUserTime
+		u.CPUSys = cpuTimes.System - s.prevSysTime
+		s.data.CPUUsage = append(s.data.CPUUsage, CPUPair{uint64(nowUnix) * 1000, u.CPUUser, u.CPUSys})
+	}
+
+	s.prevUserTime = cpuTimes.User
+	s.prevSysTime = cpuTimes.System
+
+	s.dataMutex.Lock()
+
+	bytesAllocated := ms.Alloc
+	u.BytesAllocated = bytesAllocated
+	s.data.BytesAllocated = append(s.data.BytesAllocated, SimplePair{uint64(nowUnix) * 1000, bytesAllocated})
+	if s.lastPause == 0 || s.lastPause != ms.NumGC {
+		gcPause := ms.PauseNs[(ms.NumGC+255)%256]
+		u.GcPause = gcPause
+		s.data.GcPauses = append(s.data.GcPauses, SimplePair{uint64(nowUnix) * 1000, gcPause})
+		s.lastPause = ms.NumGC
+	}
+
+	if len(s.data.BytesAllocated) > maxCount {
+		s.data.BytesAllocated = s.data.BytesAllocated[len(s.data.BytesAllocated)-maxCount:]
+	}
+
+	if len(s.data.GcPauses) > maxCount {
+		s.data.GcPauses = s.data.GcPauses[len(s.data.GcPauses)-maxCount:]
+	}
+
+	s.dataMutex.Unlock()
+
+	s.sendToConsumers(u)
 }
 
 func (s *server) sendToConsumers(u update) {
@@ -203,10 +205,10 @@ func (s *server) addConsumer() consumer {
 	s.consumersMutex.Lock()
 	defer s.consumersMutex.Unlock()
 
-	lastConsumerID++
+	s.lastConsumerID++
 
 	c := consumer{
-		id: lastConsumerID,
+		id: s.lastConsumerID,
 		c:  make(chan update),
 	}
 
@@ -221,7 +223,7 @@ func (s *server) dataFeedHandler(w http.ResponseWriter, r *http.Request) {
 		lastPong time.Time
 	)
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
@@ -268,9 +270,9 @@ func (s *server) dataFeedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func dataHandler(w http.ResponseWriter, r *http.Request) {
-	mutex.RLock()
-	defer mutex.RUnlock()
+func (s *server) dataHandler(w http.ResponseWriter, r *http.Request) {
+	s.dataMutex.RLock()
+	defer s.dataMutex.RUnlock()
 
 	if e := r.ParseForm(); e != nil {
 		log.Print("error parsing form")
@@ -284,7 +286,7 @@ func dataHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	encoder := json.NewEncoder(w)
-	encoder.Encode(data)
+	encoder.Encode(s.data)
 
 	fmt.Fprint(w, ")")
 }

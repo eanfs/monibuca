@@ -458,11 +458,8 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		filePath = req.FilePath
 	}
 	res = &mp4pb.ResponseStartRecord{}
-	p.Server.Records.Call(func() error {
-		_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-			return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
-		})
-		return nil
+	_, recordExists = p.Server.Records.SafeFind(func(job *m7s.RecordJob) bool {
+		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
 	})
 	if recordExists {
 		err = pkg.ErrRecordExists
@@ -485,19 +482,16 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (res *mp4pb.ResponseStopRecord, err error) {
 	res = &mp4pb.ResponseStopRecord{}
 	var recordJob *m7s.RecordJob
-	p.Server.Records.Call(func() error {
-		recordJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-			return job.StreamPath == req.StreamPath
-		})
-		if recordJob != nil {
-			t := recordJob.GetTask()
-			if t != nil {
-				res.Data = uint64(uintptr(unsafe.Pointer(t)))
-				t.Stop(task.ErrStopByUser)
-			}
-		}
-		return nil
+	recordJob, _ = p.Server.Records.SafeFind(func(job *m7s.RecordJob) bool {
+		return job.StreamPath == req.StreamPath
 	})
+	if recordJob != nil {
+		t := recordJob.GetTask()
+		if t != nil {
+			res.Data = uint64(uintptr(unsafe.Pointer(t)))
+			t.Stop(task.ErrStopByUser)
+		}
+	}
 	return
 }
 
@@ -519,11 +513,8 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 	}
 	//recorder := p.Meta.Recorder(config.Record{})
 	var tmpJob *m7s.RecordJob
-	p.Server.Records.Call(func() error {
-		tmpJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-			return job.StreamPath == req.StreamPath
-		})
-		return nil
+	tmpJob, _ = p.Server.Records.SafeFind(func(job *m7s.RecordJob) bool {
+		return job.StreamPath == req.StreamPath
 	})
 	if tmpJob == nil { //为空表示没有正在进行的录制，也就是没有自动录像，则进行正常的事件录像
 		if stream, ok := p.Server.Streams.SafeGet(req.StreamPath); ok {

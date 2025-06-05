@@ -34,13 +34,13 @@ type DebugPlugin struct {
 	m7s.Plugin
 	ProfileDuration time.Duration `default:"10s" desc:"profile持续时间"`
 	Profile         string        `desc:"采集profile存储文件"`
-	ChartPeriod     time.Duration `default:"1s" desc:"图表更新周期"`
 	Grfout          string        `default:"grf.out" desc:"grf输出文件"`
-
+	EnableChart     bool          `default:"true" desc:"是否启用图表功能"`
 	// 添加缓存字段
 	cpuProfileData *profile.Profile // 缓存 CPU Profile 数据
 	cpuProfileOnce sync.Once        // 确保只采集一次
 	cpuProfileLock sync.Mutex       // 保护缓存数据
+	chartServer    server
 }
 
 type WriteToFile struct {
@@ -72,6 +72,9 @@ func (p *DebugPlugin) OnInit() error {
 			p.Info("cpu profile done")
 		}()
 	}
+	if p.EnableChart {
+		p.AddTask(&p.chartServer)
+	}
 	return nil
 }
 
@@ -100,11 +103,11 @@ func (p *DebugPlugin) Charts_(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *DebugPlugin) Charts_data(w http.ResponseWriter, r *http.Request) {
-	dataHandler(w, r)
+	p.chartServer.dataHandler(w, r)
 }
 
 func (p *DebugPlugin) Charts_datafeed(w http.ResponseWriter, r *http.Request) {
-	s.dataFeedHandler(w, r)
+	p.chartServer.dataFeedHandler(w, r)
 }
 
 func (p *DebugPlugin) Grf(w http.ResponseWriter, r *http.Request) {

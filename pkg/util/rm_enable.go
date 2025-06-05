@@ -3,11 +3,9 @@
 package util
 
 import (
-	"container/list"
 	"fmt"
 	"io"
 	"slices"
-	"sync"
 	"unsafe"
 )
 
@@ -58,53 +56,59 @@ func (r *RecyclableMemory) Recycle() {
 	}
 }
 
-var (
-	memoryPool [BuddySize]byte
-	buddy      = NewBuddy(BuddySize >> MinPowerOf2)
-	lock       sync.Mutex
-	poolStart  = int64(uintptr(unsafe.Pointer(&memoryPool[0])))
-	blockPool  = list.New()
-	//EnableCheckSize bool = false
-)
-
 type MemoryAllocator struct {
 	allocator *Allocator
 	start     int64
 	memory    []byte
 	Size      int
+	buddy     *Buddy
+}
+
+// createMemoryAllocator 创建并初始化 MemoryAllocator
+func createMemoryAllocator(size int, buddy *Buddy, offset int) *MemoryAllocator {
+	ret := &MemoryAllocator{
+		allocator: NewAllocator(size),
+		buddy:     buddy,
+		Size:      size,
+		memory:    buddy.memoryPool[offset : offset+size],
+		start:     buddy.poolStart + int64(offset),
+	}
+	ret.allocator.Init(size)
+	return ret
 }
 
 func GetMemoryAllocator(size int) (ret *MemoryAllocator) {
-	lock.Lock()
-	offset, err := buddy.Alloc(size >> MinPowerOf2)
-	if blockPool.Len() > 0 {
-		ret = blockPool.Remove(blockPool.Front()).(*MemoryAllocator)
-	} else {
-		ret = &MemoryAllocator{
-			allocator: NewAllocator(size),
+	if size < BuddySize {
+		requiredSize := size >> MinPowerOf2
+		// 循环尝试从池中获取可用的 buddy
+		for {
+			buddy := GetBuddy()
+			offset, err := buddy.Alloc(requiredSize)
+			PutBuddy(buddy)
+			if err == nil {
+				// 分配成功，使用这个 buddy
+				return createMemoryAllocator(size, buddy, offset<<MinPowerOf2)
+			}
 		}
 	}
-	lock.Unlock()
-	ret.Size = size
-	ret.allocator.Init(size)
-	if err != nil {
-		ret.memory = make([]byte, size)
-		ret.start = int64(uintptr(unsafe.Pointer(&ret.memory[0])))
-		return
+	// 池中的 buddy 都无法分配或大小不够，使用系统内存
+	memory := make([]byte, size)
+	start := int64(uintptr(unsafe.Pointer(&memory[0])))
+	return &MemoryAllocator{
+		allocator: NewAllocator(size),
+		Size:      size,
+		memory:    memory,
+		start:     start,
 	}
-	offset = offset << MinPowerOf2
-	ret.memory = memoryPool[offset : offset+size]
-	ret.start = poolStart + int64(offset)
-	return
 }
 
 func (ma *MemoryAllocator) Recycle() {
 	ma.allocator.Recycle()
-	lock.Lock()
-	blockPool.PushBack(ma)
-	_ = buddy.Free(int((poolStart - ma.start) >> MinPowerOf2))
+	if ma.buddy != nil {
+		_ = ma.buddy.Free(int((ma.buddy.poolStart - ma.start) >> MinPowerOf2))
+		ma.buddy = nil
+	}
 	ma.memory = nil
-	lock.Unlock()
 }
 
 func (ma *MemoryAllocator) Find(size int) (memory []byte) {
