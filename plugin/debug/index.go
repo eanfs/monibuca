@@ -75,6 +75,7 @@ func (p *DebugPlugin) OnInit() error {
 	if p.EnableChart {
 		p.AddTask(&p.chartServer)
 	}
+
 	return nil
 }
 
