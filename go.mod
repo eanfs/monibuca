@@ -99,7 +99,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.13 // indirect
 	github.com/tklauser/numcpus v0.7.0 // indirect
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2 // indirect
-	github.com/yapingcat/gomedia v0.0.0-20240106100545-1b855b02fa0d // indirect
+	github.com/yapingcat/gomedia v0.0.0-20240601043430-920523f8e5c7 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
@@ -124,4 +124,4 @@ require (
 
 )
 
-// replace github.com/eanfs/plugin-record/v4 => ../monibuca-plugin/plugin-record
+replace github.com/eanfs/plugin-record/v4 => ../monibuca-plugin/plugin-record

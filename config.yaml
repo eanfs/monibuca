@@ -89,11 +89,13 @@ gb28181:
   loglevel: info
 record:
   subscribe: # 参考全局配置格式
+  exceptionposturl: "http://192.168.15.168:8441/web/vidu/callback/recording" # 录制异常回调地址
+  recordfileexpiredays: 2 # 录制文件过期时间，单位天，默认7天
   storage: 
     endpoint: storage.xiding.tech
     accesskey: xidinguser
     secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
-    bucket: vidu-media-bucket  
+    bucket: vidu-media-bucket
   flv:
     ext: .flv
     path: record/flv
@@ -124,15 +126,15 @@ hook:
   baseurl: "" # url前缀
   header: {} # 自定义HTTP请求头
   urllist: 
-    "*": "http://172.16.5.193:8442" # 任意时间均会发送请求
-    startup: "http://172.16.5.193:8442" # m7s启动时发送请求
-    publish: "http://172.16.5.193:8442/publish" # 发布时发送请求
-    subscribe: "http://172.16.5.193:8442/subscribe" # 订阅时发送请求
-    unsubscribe: "http://172.16.5.193:8442/unsubscribe" # 取消订阅时发送请求
-    streamClose: "http://172.16.5.193:8442/streamClose" # 流关闭时发送请求
-    keepalive: "http://172.16.5.193:8442/keepalive" # 心跳时发送请求
+    "*": "/web/meida/callback" # 任意时间均会发送请求
+    startup: "" # m7s启动时发送请求
+    publish: "/web/meida/callback/publish" # 发布时发送请求
+    subscribe: "/subscribe" # 订阅时发送请求
+    unsubscribe: "/unsubscribe" # 取消订阅时发送请求
+    streamClose: "/streamClose" # 流关闭时发送请求
+    keepalive: "/keepalive" # 心跳时发送请求
    # url列表
-  requestlist: {} # 请求列表
+  requestlist: {}
   extra: {} # 额外自定义传输数据
 webrtc:
   iceservers: 
