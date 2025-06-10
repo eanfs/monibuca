@@ -551,32 +551,26 @@ func (s *Server) StopPublish(ctx context.Context, req *pb.StreamSnapRequest) (re
 // /api/stream/list
 func (s *Server) StreamList(_ context.Context, req *pb.StreamListRequest) (res *pb.StreamListResponse, err error) {
 	recordingMap := make(map[string][]*pb.RecordingDetail)
-	s.Records.Call(func() error {
-		for record := range s.Records.Range {
-			recordingMap[record.StreamPath] = append(recordingMap[record.StreamPath], &pb.RecordingDetail{
-				FilePath:   record.RecConf.FilePath,
-				Mode:       record.Mode,
-				Fragment:   durationpb.New(record.RecConf.Fragment),
-				Append:     record.RecConf.Append,
-				PluginName: record.Plugin.Meta.Name,
-				Pointer:    uint64(record.GetTaskPointer()),
-			})
+	for record := range s.Records.SafeRange {
+		recordingMap[record.StreamPath] = append(recordingMap[record.StreamPath], &pb.RecordingDetail{
+			FilePath:   record.RecConf.FilePath,
+			Mode:       record.Mode,
+			Fragment:   durationpb.New(record.RecConf.Fragment),
+			Append:     record.RecConf.Append,
+			PluginName: record.Plugin.Meta.Name,
+			Pointer:    uint64(record.GetTaskPointer()),
+		})
+	}
+	var streams []*pb.StreamInfo
+	for publisher := range s.Streams.SafeRange {
+		info, err := s.getStreamInfo(publisher)
+		if err != nil {
+			continue
 		}
-		return nil
-	})
-	s.Streams.Call(func() error {
-		var streams []*pb.StreamInfo
-		for publisher := range s.Streams.Range {
-			info, err := s.getStreamInfo(publisher)
-			if err != nil {
-				continue
-			}
-			info.Data.Recording = recordingMap[info.Data.Path]
-			streams = append(streams, info.Data)
-		}
-		res = &pb.StreamListResponse{Data: streams, Total: int32(s.Streams.Length), PageNum: req.PageNum, PageSize: req.PageSize}
-		return nil
-	})
+		info.Data.Recording = recordingMap[info.Data.Path]
+		streams = append(streams, info.Data)
+	}
+	res = &pb.StreamListResponse{Data: streams, Total: int32(s.Streams.Length), PageNum: req.PageNum, PageSize: req.PageSize}
 	return
 }
 

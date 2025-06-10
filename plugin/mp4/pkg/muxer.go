@@ -29,7 +29,8 @@ type (
 		moov         IBox
 		mdatOffset   uint64
 		mdatSize     uint64
-		StreamPath   string // Added to store the stream path
+		StreamPath   string    // Added to store the stream path
+		Metadata     *Metadata // 添加元数据支持
 	}
 )
 
@@ -52,6 +53,7 @@ func NewMuxer(flag Flag) *Muxer {
 		Tracks:         make(map[uint32]*Track),
 		Flag:           flag,
 		fragDuration:   2000,
+		Metadata:       &Metadata{Custom: make(map[string]string)},
 	}
 }
 
@@ -59,6 +61,8 @@ func NewMuxer(flag Flag) *Muxer {
 func NewMuxerWithStreamPath(flag Flag, streamPath string) *Muxer {
 	muxer := NewMuxer(flag)
 	muxer.StreamPath = streamPath
+	muxer.Metadata.Producer = "M7S Live"
+	muxer.Metadata.Album = streamPath
 	return muxer
 }
 
@@ -232,10 +236,10 @@ func (m *Muxer) MakeMoov() IBox {
 		children = append(children, m.makeMvex())
 	}
 
-	// Add user data box with stream path if available
-	if m.StreamPath != "" {
-		streamPathBox := CreateStreamPathBox(m.StreamPath)
-		udta := CreateUserDataBox(streamPathBox)
+	// Add user data box with metadata if available
+	metadataEntries := CreateMetadataEntries(m.Metadata)
+	if len(metadataEntries) > 0 {
+		udta := CreateUserDataBox(metadataEntries...)
 		children = append(children, udta)
 	}
 
@@ -364,4 +368,83 @@ func (m *Muxer) WriteTrailer(file *os.File) (err error) {
 // SetFragmentDuration sets the target duration for each fragment in milliseconds
 func (m *Muxer) SetFragmentDuration(duration uint32) {
 	m.fragDuration = duration
+}
+
+// SetMetadata sets the metadata for the MP4 file
+func (m *Muxer) SetMetadata(metadata *Metadata) {
+	m.Metadata = metadata
+	if metadata.Custom == nil {
+		metadata.Custom = make(map[string]string)
+	}
+}
+
+// SetTitle sets the title metadata
+func (m *Muxer) SetTitle(title string) {
+	m.Metadata.Title = title
+}
+
+// SetArtist sets the artist/author metadata
+func (m *Muxer) SetArtist(artist string) {
+	m.Metadata.Artist = artist
+}
+
+// SetAlbum sets the album metadata
+func (m *Muxer) SetAlbum(album string) {
+	m.Metadata.Album = album
+}
+
+// SetComment sets the comment/description metadata
+func (m *Muxer) SetComment(comment string) {
+	m.Metadata.Comment = comment
+}
+
+// SetGenre sets the genre metadata
+func (m *Muxer) SetGenre(genre string) {
+	m.Metadata.Genre = genre
+}
+
+// SetCopyright sets the copyright metadata
+func (m *Muxer) SetCopyright(copyright string) {
+	m.Metadata.Copyright = copyright
+}
+
+// SetEncoder sets the encoder metadata
+func (m *Muxer) SetEncoder(encoder string) {
+	m.Metadata.Encoder = encoder
+}
+
+// SetDate sets the date metadata (format: YYYY-MM-DD)
+func (m *Muxer) SetDate(date string) {
+	m.Metadata.Date = date
+}
+
+// SetCurrentDate sets the date metadata to current date
+func (m *Muxer) SetCurrentDate() {
+	m.Metadata.Date = GetCurrentDateString()
+}
+
+// AddCustomMetadata adds custom key-value metadata
+func (m *Muxer) AddCustomMetadata(key, value string) {
+	if m.Metadata.Custom == nil {
+		m.Metadata.Custom = make(map[string]string)
+	}
+	m.Metadata.Custom[key] = value
+}
+
+// SetKeywords sets the keywords metadata
+func (m *Muxer) SetKeywords(keywords string) {
+	m.Metadata.Keywords = keywords
+}
+
+// SetLocation sets the location metadata
+func (m *Muxer) SetLocation(location string) {
+	m.Metadata.Location = location
+}
+
+// SetRating sets the rating metadata (0-5)
+func (m *Muxer) SetRating(rating uint8) {
+	if rating > 5 {
+		rating = 5
+	}
+	m.Metadata.Rating = rating
 }

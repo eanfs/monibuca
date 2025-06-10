@@ -12,12 +12,6 @@ type UserDataBox struct {
 	Entries []IBox
 }
 
-// Custom metadata box for storing stream path
-type StreamPathBox struct {
-	FullBox
-	StreamPath string
-}
-
 // Create a new User Data Box
 func CreateUserDataBox(entries ...IBox) *UserDataBox {
 	size := uint32(BasicBoxLen)
@@ -30,21 +24,6 @@ func CreateUserDataBox(entries ...IBox) *UserDataBox {
 			size: size,
 		},
 		Entries: entries,
-	}
-}
-
-// Create a new StreamPath Box
-func CreateStreamPathBox(streamPath string) *StreamPathBox {
-	return &StreamPathBox{
-		FullBox: FullBox{
-			BaseBox: BaseBox{
-				typ:  TypeM7SP, // Custom box type for M7S StreamPath
-				size: uint32(FullBoxLen + len(streamPath)),
-			},
-			Version: 0,
-			Flags:   [3]byte{0, 0, 0},
-		},
-		StreamPath: streamPath,
 	}
 }
 
@@ -69,19 +48,6 @@ func (box *UserDataBox) Unmarshal(buf []byte) (IBox, error) {
 	return box, nil
 }
 
-// WriteTo writes the StreamPathBox to the given writer
-func (box *StreamPathBox) WriteTo(w io.Writer) (n int64, err error) {
-	nn, err := w.Write([]byte(box.StreamPath))
-	return int64(nn), err
-}
-
-// Unmarshal parses the given buffer into a StreamPathBox
-func (box *StreamPathBox) Unmarshal(buf []byte) (IBox, error) {
-	box.StreamPath = string(buf)
-	return box, nil
-}
-
 func init() {
 	RegisterBox[*UserDataBox](TypeUDTA)
-	RegisterBox[*StreamPathBox](TypeM7SP)
 }

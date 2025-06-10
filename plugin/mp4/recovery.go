@@ -220,8 +220,8 @@ func extractStreamPathFromMP4(demuxer *mp4.Demuxer) string {
 	moov := demuxer.GetMoovBox()
 	if moov != nil && moov.UDTA != nil {
 		for _, entry := range moov.UDTA.Entries {
-			if streamPathBox, ok := entry.(*box.StreamPathBox); ok {
-				return streamPathBox.StreamPath
+			if entry.Type() == box.TypeALB {
+				return entry.(*box.TextDataBox).Text
 			}
 		}
 	}

@@ -37,9 +37,27 @@
 | | | | | | sbgp | | sample-to-group |
 | | | | | | sgpd | | sample group description |
 | | | | | | subs | | sub-sample information |
+| | | udta | | | | | user-data (track level)<br>轨道级别的用户数据容器 |
+| | | | cprt | | | | copyright etc.<br>版权信息 |
+| | | | titl | | | | title<br>标题 |
+| | | | auth | | | | author<br>作者 |
 | | mvex | | | | | | movie extends box |
 | | | mehd | | | | | movie extends header box |
 | | | trex | | | | ✓ | track extends defaults |
+| | udta | | | | | | user-data (movie level)<br>电影级别的用户数据容器 |
+| | | cprt | | | | | copyright etc.<br>版权信息 |
+| | | titl | | | | | title<br>标题 |
+| | | auth | | | | | author<br>作者 |
+| | | albm | | | | | album<br>专辑 |
+| | | yrrc | | | | | year<br>年份 |
+| | | rtng | | | | | rating<br>评级 |
+| | | clsf | | | | | classification<br>分类 |
+| | | kywd | | | | | keywords<br>关键词 |
+| | | loci | | | | | location information<br>位置信息 |
+| | | dscp | | | | | description<br>描述 |
+| | | perf | | | | | performer<br>表演者 |
+| | | gnre | | | | | genre<br>类型 |
+| | | meta | | | | | metadata atom<br>元数据原子 |
 | | ipmc | | | | | | IPMP Control Box |
 | moof | | | | | | | movie fragment |
 | | mfhd | | | | | ✓ | movie fragment header |
@@ -54,8 +72,10 @@
 | mdat | | | | | | | media data container |
 | free | | | | | | | free space |
 | skip | | | | | | | free space |
-| | udta | | | | | | user-data |
-| | | cprt | | | | | copyright etc. |
+| udta | | | | | | | user-data (file level)<br>文件级别的用户数据容器 |
+| | cprt | | | | | | copyright etc.<br>版权信息 |
+| | titl | | | | | | title<br>标题 |
+| | auth | | | | | | author<br>作者 |
 | meta | | | | | | | metadata |
 | | hdlr | | | | | ✓ | handler, declares the metadata (handler) type |
 | | dinf | | | | | | data information box, container |

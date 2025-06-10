@@ -343,7 +343,25 @@ var (
 	TypeAUXV = f("auxv")
 	TypeHINT = f("hint")
 	TypeUDTA = f("udta")
-	TypeM7SP = f("m7sp") // Custom box type for M7S StreamPath
+
+	// Common metadata box types
+	TypeTITL      = f("©nam") // Title
+	TypeART       = f("©ART") // Artist/Author
+	TypeALB       = f("©alb") // Album
+	TypeDAY       = f("©day") // Date/Year
+	TypeCMT       = f("©cmt") // Comment/Description
+	TypeGEN       = f("©gen") // Genre
+	TypeCPRT      = f("cprt") // Copyright
+	TypeENCO      = f("©too") // Encoder/Tool
+	TypeWRT       = f("©wrt") // Writer/Composer
+	TypePRD       = f("©prd") // Producer
+	TypePRF       = f("©prf") // Performer
+	TypeGRP       = f("©grp") // Grouping
+	TypeLYR       = f("©lyr") // Lyrics
+	TypeKEYW      = f("keyw") // Keywords
+	TypeLOCI      = f("loci") // Location Information
+	TypeRTNG      = f("rtng") // Rating
+	TypeMETA_CUST = f("----") // Custom metadata (iTunes-style)
 )
 
 //	aligned(8) class Box (unsigned int(32) boxtype, optional unsigned int(8)[16] extended_type) {

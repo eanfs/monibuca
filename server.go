@@ -582,12 +582,9 @@ func (s *Server) Dispose() {
 
 func (s *Server) GetPublisher(streamPath string) (publisher *Publisher, err error) {
 	var ok bool
-	s.Streams.Call(func() error {
-		publisher, ok = s.Streams.Get(streamPath)
-		return nil
-	})
+	publisher, ok = s.Streams.SafeGet(streamPath)
 	if !ok {
-		err = fmt.Errorf("src stream not found")
+		err = pkg.ErrNotFound
 		return
 	}
 	return
