@@ -241,7 +241,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 				return
 			}
 		}
-
+		rcc.RTCPFeedback = videoRTCPFeedback
 		videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), subscriber.StreamPath)
 		if err != nil {
 			return

@@ -4,6 +4,8 @@ import (
 	. "github.com/pion/webrtc/v4"
 )
 
+var videoRTCPFeedback = []RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}, {"nack", ""}, {"nack", "pli"}, {"transport-cc", ""}}
+
 func RegisterCodecs(m *MediaEngine) error {
 	for _, codec := range []RTPCodecParameters{
 		{
@@ -19,7 +21,6 @@ func RegisterCodecs(m *MediaEngine) error {
 			return err
 		}
 	}
-	videoRTCPFeedback := []RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}, {"nack", ""}, {"nack", "pli"}, {"transport-cc", ""}}
 	for _, codec := range []RTPCodecParameters{
 		// {
 		// 	RTPCodecCapability: RTPCodecCapability{"video/rtx", 90000, 0, "apt=96", nil},
@@ -96,8 +97,16 @@ func RegisterCodecs(m *MediaEngine) error {
 			PayloadType:        49,
 		},
 		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeH265, 90000, 0, "level-id=186;profile-id=1;tier-flag=0;tx-mode=SRST", videoRTCPFeedback},
+			PayloadType:        50,
+		},
+		{
 			RTPCodecCapability: RTPCodecCapability{MimeTypeH265, 90000, 0, "level-id=180;profile-id=2;tier-flag=0;tx-mode=SRST", videoRTCPFeedback},
 			PayloadType:        51,
+		},
+		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeH265, 90000, 0, "level-id=186;profile-id=2;tier-flag=0;tx-mode=SRST", videoRTCPFeedback},
+			PayloadType:        52,
 		},
 	} {
 		if err := m.RegisterCodec(codec, RTPCodecTypeVideo); err != nil {

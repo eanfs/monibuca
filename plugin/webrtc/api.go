@@ -97,6 +97,10 @@ func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
 	if rawQuery != "" {
 		streamPath += "?" + rawQuery
 	}
+	if err = conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if conn.Subscriber, err = conf.Subscribe(conf.Context, streamPath); err != nil {
 		return
 	}
@@ -106,10 +110,7 @@ func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err = conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	
 	if sdp, err := conn.GetAnswer(); err == nil {
 		w.Write([]byte(sdp.SDP))
 	} else {
