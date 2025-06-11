@@ -133,24 +133,9 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 	finalConfig, _ := yaml.Marshal(p.Config.GetMap())
 	p.Logger.Handler().(*MultiLogHandler).SetLevel(ParseLevel(p.config.LogLevel))
 	p.Debug("config", "detail", string(finalConfig))
-	if s.DisableAll {
-		p.Disabled = true
-	}
-	if userConfig["enable"] == false {
-		p.Disabled = true
-	} else if userConfig["enable"] == true {
-		p.Disabled = false
-	}
-	if p.Disabled {
+	if userConfig["enable"] == false || (s.DisableAll && userConfig["enable"] != true) {
 		p.disable("config")
-		p.Warn("plugin disabled")
 		return
-	} else {
-		var handlers map[string]http.HandlerFunc
-		if v, ok := instance.(IRegisterHandler); ok {
-			handlers = v.RegisterHandler()
-		}
-		p.registerHandler(handlers)
 	}
 	p.Info("init", "version", plugin.Version)
 	var err error
@@ -172,7 +157,16 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 			return
 		}
 	}
-	s.AddTask(instance)
+	if err := s.AddTask(instance).WaitStarted(); err != nil {
+		p.disable(s.StopReason().Error())
+		return
+	}
+	var handlers map[string]http.HandlerFunc
+	if v, ok := instance.(IRegisterHandler); ok {
+		handlers = v.RegisterHandler()
+	}
+	p.registerHandler(handlers)
+	s.Plugins.Add(p)
 	return
 }
 
@@ -277,11 +271,19 @@ func (p *Plugin) GetPublicIP(netcardIP string) string {
 func (p *Plugin) disable(reason string) {
 	p.Disabled = true
 	p.SetDescription("disableReason", reason)
+	p.Warn("plugin disabled")
 	p.Server.disabledPlugins = append(p.Server.disabledPlugins, p)
 }
 
 func (p *Plugin) Start() (err error) {
 	s := p.Server
+
+	if err = p.listen(); err != nil {
+		return
+	}
+	if err = p.handler.OnInit(); err != nil {
+		return
+	}
 	if p.Meta.ServiceDesc != nil && s.grpcServer != nil {
 		s.grpcServer.RegisterService(p.Meta.ServiceDesc, p.handler)
 		if p.Meta.RegisterGRPCHandler != nil {
@@ -292,15 +294,6 @@ func (p *Plugin) Start() (err error) {
 				p.Info("grpc handler registered")
 			}
 		}
-	}
-	s.Plugins.Add(p)
-	if err = p.listen(); err != nil {
-		p.disable(fmt.Sprintf("listen %v", err))
-		return
-	}
-	if err = p.handler.OnInit(); err != nil {
-		p.disable(fmt.Sprintf("init %v", err))
-		return
 	}
 	if p.config.Hook != nil {
 		if hook, ok := p.config.Hook[config.HookOnServerKeepAlive]; ok && hook.Interval > 0 {

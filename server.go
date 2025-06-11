@@ -427,7 +427,14 @@ func (s *Server) Start() (err error) {
 				}
 			}
 		}
-		s.initDB()
+		if s.DB != nil {
+			s.initPullProxies()
+			s.initPushProxies()
+			s.initStreamAlias()
+		} else {
+			s.initPullProxiesWithoutDB()
+			s.initPushProxiesWithoutDB()
+		}
 		return nil
 	}, "serverStart")
 	return
@@ -529,18 +536,6 @@ func (s *Server) initPushProxiesWithoutDB() {
 			proxy.InitializeWithServer(s)
 			s.createPushProxy(proxy)
 		}
-	}
-}
-
-func (s *Server) initDB() {
-	if s.DB != nil {
-
-		s.initPullProxies()
-		s.initPushProxies()
-		s.initStreamAlias()
-	} else {
-		s.initPullProxiesWithoutDB()
-		s.initPushProxiesWithoutDB()
 	}
 }
 
