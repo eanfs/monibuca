@@ -6,7 +6,15 @@ import (
 
 var videoRTCPFeedback = []RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}, {"nack", ""}, {"nack", "pli"}, {"transport-cc", ""}}
 
-func RegisterCodecs(m *MediaEngine) error {
+type CodecWithType struct {
+	Codec RTPCodecParameters
+	Type  RTPCodecType
+}
+
+func GetDefaultCodecs() ([]CodecWithType, error) {
+	var codecs []CodecWithType
+
+	// 音频编解码器
 	for _, codec := range []RTPCodecParameters{
 		{
 			RTPCodecCapability: RTPCodecCapability{MimeTypePCMU, 8000, 0, "", nil},
@@ -16,11 +24,15 @@ func RegisterCodecs(m *MediaEngine) error {
 			RTPCodecCapability: RTPCodecCapability{MimeTypePCMA, 8000, 0, "", nil},
 			PayloadType:        8,
 		},
+		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeOpus, 48000, 2, "minptime=10;useinbandfec=1", nil},
+			PayloadType:        111,
+		},
 	} {
-		if err := m.RegisterCodec(codec, RTPCodecTypeAudio); err != nil {
-			return err
-		}
+		codecs = append(codecs, CodecWithType{Codec: codec, Type: RTPCodecTypeAudio})
 	}
+
+	// 视频编解码器
 	for _, codec := range []RTPCodecParameters{
 		// {
 		// 	RTPCodecCapability: RTPCodecCapability{"video/rtx", 90000, 0, "apt=96", nil},
@@ -108,10 +120,16 @@ func RegisterCodecs(m *MediaEngine) error {
 			RTPCodecCapability: RTPCodecCapability{MimeTypeH265, 90000, 0, "level-id=186;profile-id=2;tier-flag=0;tx-mode=SRST", videoRTCPFeedback},
 			PayloadType:        52,
 		},
+		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeVP9, 90000, 0, "", nil},
+			PayloadType:        100,
+		},
+		{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeAV1, 90000, 0, "profile=2;level-idx=8;tier=1", nil},
+			PayloadType:        45,
+		},
 	} {
-		if err := m.RegisterCodec(codec, RTPCodecTypeVideo); err != nil {
-			return err
-		}
+		codecs = append(codecs, CodecWithType{Codec: codec, Type: RTPCodecTypeVideo})
 	}
-	return nil
+	return codecs, nil
 }
