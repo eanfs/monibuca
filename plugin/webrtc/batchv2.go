@@ -2,6 +2,7 @@ package plugin_webrtc
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -92,6 +93,30 @@ func (wsh *WebSocketHandler) Go() (err error) {
 	}); err != nil {
 		return
 	}
+
+	wsh.OnICECandidate(func(ice *ICECandidate) {
+		if ice != nil {
+			wsh.Info(ice.ToJSON().Candidate)
+		}
+	})
+	// 监听ICE连接状态变化
+	wsh.OnICEConnectionStateChange(func(state ICEConnectionState) {
+		wsh.Debug("ICE connection state changed", "state", state.String())
+		if state == ICEConnectionStateFailed {
+			wsh.Error("ICE connection failed")
+		}
+	})
+
+	wsh.OnConnectionStateChange(func(state PeerConnectionState) {
+		wsh.Info("Connection State has changed:" + state.String())
+		switch state {
+		case PeerConnectionStateConnected:
+
+		case PeerConnectionStateDisconnected, PeerConnectionStateFailed, PeerConnectionStateClosed:
+			wsh.Stop(errors.New("connection state:" + state.String()))
+		}
+	})
+
 	// 创建并发送应答
 	if answer, err := wsh.GetAnswer(); err == nil {
 		wsh.sendAnswer(answer.SDP)

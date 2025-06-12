@@ -452,32 +452,6 @@ type SingleConnection struct {
 	Connection
 }
 
-func (c *SingleConnection) Start() (err error) {
-	c.OnICECandidate(func(ice *ICECandidate) {
-		if ice != nil {
-			c.Info(ice.ToJSON().Candidate)
-		}
-	})
-	// 监听ICE连接状态变化
-	c.OnICEConnectionStateChange(func(state ICEConnectionState) {
-		c.Debug("ICE connection state changed", "state", state.String())
-		if state == ICEConnectionStateFailed {
-			c.Error("ICE connection failed")
-		}
-	})
-
-	c.OnConnectionStateChange(func(state PeerConnectionState) {
-		c.Info("Connection State has changed:" + state.String())
-		switch state {
-		case PeerConnectionStateConnected:
-
-		case PeerConnectionStateDisconnected, PeerConnectionStateFailed, PeerConnectionStateClosed:
-			c.Stop(errors.New("connection state:" + state.String()))
-		}
-	})
-	return
-}
-
 func (c *SingleConnection) Receive() {
 	c.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
 		c.Info("OnTrack", "kind", track.Kind().String(), "payloadType", uint8(track.Codec().PayloadType))
