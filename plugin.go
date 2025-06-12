@@ -158,7 +158,7 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 		}
 	}
 	if err := s.AddTask(instance).WaitStarted(); err != nil {
-		p.disable(s.StopReason().Error())
+		p.disable(instance.StopReason().Error())
 		return
 	}
 	var handlers map[string]http.HandlerFunc
