@@ -44,8 +44,8 @@ type (
 	}
 	RecordStream struct {
 		ID         uint      `gorm:"primarykey"`
-		StartTime  time.Time `gorm:"type:datetime;default:NULL"`
-		EndTime    time.Time `gorm:"type:datetime;default:NULL"`
+		StartTime  time.Time `gorm:"default:NULL"`
+		EndTime    time.Time `gorm:"default:NULL"`
 		Duration   uint32    `gorm:"comment:录像时长;default:0"`
 		Filename   string    `json:"fileName" desc:"文件名" gorm:"type:varchar(255);comment:文件名"`
 		Type       string    `json:"type" desc:"录像文件类型" gorm:"type:varchar(255);comment:录像文件类型,flv,mp4,raw,fmp4,hls"`
