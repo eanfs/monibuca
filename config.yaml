@@ -6,7 +6,7 @@
 global:
   disableall: false # 是否禁用所有插件
   loglang: zh # 日志语言，可选值：zh,en
-  loglevel: info # 日志级别，可选值：debug,info,warn,error,panic,fatal
+  loglevel: debug # 日志级别，可选值：debug,info,warn,error,panic,fatal
   http:
     listenaddr: :8080 # 网关地址，用于访问API
     listenaddrtls: :8443 # 用于HTTPS方式访问API的端口配置
@@ -23,7 +23,7 @@ global:
     pubvideo: true # 是否发布视频流
     kickexist: false # 剔出已经存在的发布者，用于顶替原有发布者
     insertsei: false # 是否启用插入SEI功能
-    publishtimeout: 120s # 发布流默认过期时间，超过该时间发布者没有恢复流将被删除
+    publishtimeout: 180s # 发布流默认过期时间，超过该时间发布者没有恢复流将被删除
     idletimeout: 0 # 发布者空闲超时时间，超过该时间发布者没有任何操作将被删除，0为关闭该功能
     delayclosetimeout: 0 # 自动关闭触发后延迟的时间(期间内如果有新的订阅则取消触发关闭)，0为关闭该功能，保持连接。
     waitclosetimeout: 0 # 发布者断开后等待时间，超过该时间发布者没有恢复流将被删除，0为关闭该功能，由订阅者决定是否删除
@@ -43,7 +43,7 @@ global:
     submode: 0 # 订阅模式，0为跳帧追赶模式，1为不追赶（多用于录制），2为时光回溯模式
     syncmode: 0 # 音视频同步模式，0 为按照时间戳同步，1 为按照写入时间同步
     iframeonly: false # 只订阅关键帧
-    waittimeout: 120s # 等待发布者的超时时间，用于订阅尚未发布的流
+    waittimeout: 180s # 等待发布者的超时时间，用于订阅尚未发布的流
     writebuffersize: 0 # 订阅者写缓存大小，用于减少io次数，但可能影响实时性
     key: "" # 订阅者鉴权秘钥
     secretargname: secret # 订阅者鉴权参数名
@@ -89,10 +89,10 @@ gb28181:
   loglevel: info
 record:
   subscribe: # 参考全局配置格式
-  exceptionposturl: "http://192.168.15.168:8441/web/vidu/callback/recording" # 录制异常回调地址
+  # exceptionposturl: "http://192.168.15.168:8441/web/vidu/callback/recording" # 录制异常回调地址
   recordfileexpiredays: 2 # 录制文件过期时间，单位天，默认7天
   storage: 
-    endpoint: storage.xiding.tech
+    endpoint: 192.168.1.198:9000
     accesskey: xidinguser
     secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
     bucket: vidu-media-bucket

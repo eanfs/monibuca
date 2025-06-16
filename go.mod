@@ -3,7 +3,7 @@ module monibuca
 go 1.21
 
 require (
-	github.com/eanfs/plugin-record/v4 v4.8.2
+	github.com/eanfs/plugin-record/v4 v4.9.2
 	go.uber.org/zap v1.27.0
 	m7s.live/engine/v4 v4.15.3
 	m7s.live/plugin/debug/v4 v4.0.3
@@ -99,7 +99,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.13 // indirect
 	github.com/tklauser/numcpus v0.7.0 // indirect
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2 // indirect
-	github.com/yapingcat/gomedia v0.0.0-20240601043430-920523f8e5c7 // indirect
+	github.com/yapingcat/gomedia v0.0.0-20240906162731-17feea57090c // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
@@ -124,4 +124,4 @@ require (
 
 )
 
-replace github.com/eanfs/plugin-record/v4 => ../monibuca-plugin/plugin-record
+// replace github.com/eanfs/plugin-record/v4 => ../monibuca-plugin/plugin-record
