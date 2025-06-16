@@ -183,7 +183,7 @@ func (t *TimeSnapTask) GetTickInterval() time.Duration {
 // Tick 执行定时截图操作
 func (t *TimeSnapTask) Tick(any) {
 	// 获取视频帧
-	annexb, _, err := GetVideoFrame(t.job.OriginPublisher, t.job.Plugin.Server)
+	annexb, err := GetVideoFrame(t.job.OriginPublisher, t.job.Plugin.Server)
 	if err != nil {
 		t.Error("get video frame failed", "error", err.Error())
 		return

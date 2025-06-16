@@ -65,8 +65,6 @@ type (
 	}
 )
 
-var _ IAVFrame = (*AnnexB)(nil)
-
 func (frame *AVFrame) Clone() {
 
 }

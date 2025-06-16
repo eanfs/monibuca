@@ -224,9 +224,14 @@ service api {
       get: "/api/transform/list"
     };
   }
-  rpc GetRecordList (ReqRecordList) returns (ResponseList) {
+  rpc GetRecordList (ReqRecordList) returns (RecordResponseList) {
     option (google.api.http) = {
       get: "/api/record/{type}/list/{streamPath=**}"
+    };
+  }
+  rpc GetEventRecordList (ReqRecordList) returns (EventRecordResponseList) {
+    option (google.api.http) = {
+      get: "/api/record/{type}/event/list/{streamPath=**}"
     };
   }
   rpc GetRecordCatalog (ReqRecordCatalog) returns (ResponseCatalog) {
@@ -664,9 +669,8 @@ message ReqRecordList {
   string end = 4;
   uint32 pageNum = 5;
   uint32 pageSize = 6;
-  string eventId = 7;
-  string type = 8;
-  string eventLevel = 9;
+  string type = 7;
+  string eventLevel = 8;
 }
 
 message RecordFile {
@@ -675,18 +679,36 @@ message RecordFile {
   string streamPath = 3;
   google.protobuf.Timestamp startTime = 4;
   google.protobuf.Timestamp endTime = 5;
-  string eventLevel = 6;
-  string eventName = 7;
-  string eventDesc = 8;
 }
 
-message ResponseList {
+message EventRecordFile {
+  uint32 id = 1;
+  string filePath = 2;
+  string streamPath = 3;
+  google.protobuf.Timestamp startTime = 4;
+  google.protobuf.Timestamp endTime = 5;
+  string eventId = 6;
+  string eventLevel = 7;
+  string eventName = 8;
+  string eventDesc = 9;
+}
+
+message RecordResponseList {
   int32 code = 1;
   string message = 2;
   uint32 total = 3;
   uint32 pageNum = 4;
   uint32 pageSize = 5;
   repeated RecordFile data = 6;
+}
+
+message EventRecordResponseList {
+  int32 code = 1;
+  string message = 2;
+  uint32 total = 3;
+  uint32 pageNum = 4;
+  uint32 pageSize = 5;
+  repeated EventRecordFile data = 6;
 }
 
 message Catalog {

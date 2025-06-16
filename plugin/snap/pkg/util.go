@@ -10,45 +10,34 @@ import (
 )
 
 // GetVideoFrame 获取视频帧数据
-func GetVideoFrame(publisher *m7s.Publisher, server *m7s.Server) ([]*pkg.AnnexB, *pkg.AVTrack, error) {
+func GetVideoFrame(publisher *m7s.Publisher, server *m7s.Server) ([]*pkg.AnnexB, error) {
 	if publisher.VideoTrack.AVTrack == nil {
-		return nil, nil, pkg.ErrNotFound
+		return nil, pkg.ErrNotFound
 	}
 
 	// 等待视频就绪
 	if err := publisher.VideoTrack.WaitReady(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// 创建读取器并等待 I 帧
 	reader := pkg.NewAVRingReader(publisher.VideoTrack.AVTrack, "snapshot")
 	if err := reader.StartRead(publisher.VideoTrack.GetIDR()); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer reader.StopRead()
-	var track pkg.AVTrack
-	var annexb pkg.AnnexB
-	var err error
-	track.ICodecCtx, track.SequenceFrame, err = annexb.ConvertCtx(publisher.VideoTrack.ICodecCtx)
-	if err != nil {
-		return nil, nil, err
-	}
-	if track.ICodecCtx == nil {
-		return nil, nil, pkg.ErrUnsupportCodec
-	}
+	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.AVTrack, nil)
+
 	var annexbList []*pkg.AnnexB
 
 	for lastFrameSequence := publisher.VideoTrack.AVTrack.LastValue.Sequence; reader.Value.Sequence <= lastFrameSequence; reader.ReadNext() {
-		if reader.Value.Raw == nil {
-			if err := reader.Value.Demux(publisher.VideoTrack.ICodecCtx); err != nil {
-				return nil, nil, err
-			}
+		annexb, err := converter.ConvertFromAVFrame(&reader.Value)
+		if err != nil {
+			return nil, err
 		}
-		var annexb pkg.AnnexB
-		annexb.Mux(track.ICodecCtx, &reader.Value)
-		annexbList = append(annexbList, &annexb)
+		annexbList = append(annexbList, annexb)
 	}
-	return annexbList, &track, nil
+	return annexbList, nil
 }
 
 // ProcessWithFFmpeg 使用 FFmpeg 处理视频帧并生成截图

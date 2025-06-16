@@ -736,7 +736,63 @@ func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb
 	return
 }
 
-func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.ResponseList, err error) {
+func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	if req.PageSize == 0 {
+		req.PageSize = 10
+	}
+	if req.PageNum == 0 {
+		req.PageNum = 1
+	}
+	offset := (req.PageNum - 1) * req.PageSize // 计算偏移量
+	var totalCount int64                       //总条数
+
+	var result []*RecordStream
+	query := s.DB.Model(&RecordStream{})
+	if strings.Contains(req.StreamPath, "*") {
+		query = query.Where("stream_path like ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
+	} else if req.StreamPath != "" {
+		query = query.Where("stream_path = ?", req.StreamPath)
+	}
+	if req.Type != "" {
+		query = query.Where("type = ?", req.Type)
+	}
+	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{"range": []string{req.Range}, "start": []string{req.Start}, "end": []string{req.End}})
+	if err == nil {
+		if !startTime.IsZero() {
+			query = query.Where("start_time >= ?", startTime)
+		}
+		if !endTime.IsZero() {
+			query = query.Where("end_time <= ?", endTime)
+		}
+	}
+
+	query.Count(&totalCount)
+	err = query.Offset(int(offset)).Limit(int(req.PageSize)).Order("start_time desc").Find(&result).Error
+	if err != nil {
+		return
+	}
+	resp = &pb.RecordResponseList{
+		Total:    uint32(totalCount),
+		PageNum:  req.PageNum,
+		PageSize: req.PageSize,
+	}
+	for _, recordFile := range result {
+		resp.Data = append(resp.Data, &pb.RecordFile{
+			Id:         uint32(recordFile.ID),
+			StartTime:  timestamppb.New(recordFile.StartTime),
+			EndTime:    timestamppb.New(recordFile.EndTime),
+			FilePath:   recordFile.FilePath,
+			StreamPath: recordFile.StreamPath,
+		})
+	}
+	return
+}
+
+func (s *Server) GetEventRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.EventRecordResponseList, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -751,14 +807,11 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 	var totalCount int64                       //总条数
 
 	var result []*EventRecordStream
-	query := s.DB.Model(&RecordStream{})
+	query := s.DB.Model(&EventRecordStream{})
 	if strings.Contains(req.StreamPath, "*") {
 		query = query.Where("stream_path like ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
 	} else if req.StreamPath != "" {
 		query = query.Where("stream_path = ?", req.StreamPath)
-	}
-	if req.Mode != "" {
-		query = query.Where("mode = ?", req.Mode)
 	}
 	if req.Type != "" {
 		query = query.Where("type = ?", req.Type)
@@ -781,21 +834,22 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 	if err != nil {
 		return
 	}
-	resp = &pb.ResponseList{
+	resp = &pb.EventRecordResponseList{
 		Total:    uint32(totalCount),
 		PageNum:  req.PageNum,
 		PageSize: req.PageSize,
 	}
 	for _, recordFile := range result {
-		resp.Data = append(resp.Data, &pb.RecordFile{
+		resp.Data = append(resp.Data, &pb.EventRecordFile{
 			Id:         uint32(recordFile.ID),
 			StartTime:  timestamppb.New(recordFile.StartTime),
 			EndTime:    timestamppb.New(recordFile.EndTime),
 			FilePath:   recordFile.FilePath,
 			StreamPath: recordFile.StreamPath,
 			EventLevel: recordFile.EventLevel,
-			EventDesc:  recordFile.EventDesc,
+			EventId:    recordFile.EventId,
 			EventName:  recordFile.EventName,
+			EventDesc:  recordFile.EventDesc,
 		})
 	}
 	return

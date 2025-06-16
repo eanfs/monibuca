@@ -7,7 +7,7 @@ package mp4;
 option go_package="m7s.live/v5/plugin/mp4/pb";
 
 service api {
-  rpc List (ReqRecordList) returns (global.ResponseList) {
+  rpc List (ReqRecordList) returns (global.RecordResponseList) {
     option (google.api.http) = {
       get: "/mp4/api/list/{streamPath=**}"
     };

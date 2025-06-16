@@ -87,32 +87,8 @@ func (track *Track) makeElstBox() *EditListBox {
 
 }
 
-func (track *Track) Seek(dts uint64) int {
-	for i, sample := range track.Samplelist {
-		if sample.Timestamp*1000/uint32(track.Timescale) < uint32(dts) {
-			continue
-		} else if track.Cid.IsVideo() {
-			if sample.KeyFrame {
-				return i
-			}
-		} else {
-			return i
-		}
-	}
-	return -1
-}
-
-/**
-* @brief 函数跳帧到dts 前面的第一个关键帧位置
-*
-* @param 参数名dts 跳帧位置
-*
-* @author erroot
-* @date 250614
-*
-**/
-func (track *Track) SeekPreIDR(dts uint64) int {
-	idx := 0
+func (track *Track) Seek(dts uint64) (idx int) {
+	idx = -1
 	for i, sample := range track.Samplelist {
 		if track.Cid.IsVideo() && sample.KeyFrame {
 			idx = i
@@ -121,7 +97,7 @@ func (track *Track) SeekPreIDR(dts uint64) int {
 			break
 		}
 	}
-	return idx
+	return
 }
 
 func (track *Track) makeEdtsBox() *ContainerBox {

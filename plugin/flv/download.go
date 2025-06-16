@@ -12,11 +12,9 @@ import (
 	"time"
 
 	m7s "m7s.live/v5"
-	codec "m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
-	"m7s.live/v5/plugin/mp4/pkg/box"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
@@ -198,191 +196,56 @@ func (plugin *FLVPlugin) processMp4ToFlv(w http.ResponseWriter, r *http.Request,
 		})
 	}
 
-	// 创建DemuxerRange进行MP4解复用
-	demuxer := &mp4.DemuxerRange{
-		StartTime: params.startTime,
-		EndTime:   params.endTime,
-		Streams:   mp4Streams,
+	// 创建DemuxerConverterRange进行MP4解复用和转换
+	demuxer := &mp4.DemuxerConverterRange[*rtmp.RTMPAudio, *rtmp.RTMPVideo]{
+		DemuxerRange: mp4.DemuxerRange{
+			StartTime: params.startTime,
+			EndTime:   params.endTime,
+			Streams:   mp4Streams,
+		},
 	}
 
 	// 创建FLV编码器状态
-	flvWriter := &flvMp4Writer{
-		FlvWriter:  flv.NewFlvWriter(w),
-		plugin:     plugin,
-		hasWritten: false,
-	}
-
-	// 设置回调函数
-	demuxer.OnVideoExtraData = flvWriter.onVideoExtraData
-	demuxer.OnAudioExtraData = flvWriter.onAudioExtraData
-	demuxer.OnVideoSample = flvWriter.onVideoSample
-	demuxer.OnAudioSample = flvWriter.onAudioSample
-
+	flvWriter := flv.NewFlvWriter(w)
+	hasWritten := false
+	ts := int64(0)       // 初始化时间戳
+	tsOffset := int64(0) // 偏移时间戳
 	// 执行解复用和转换
-	err := demuxer.Demux(r.Context())
+	err := demuxer.Demux(r.Context(),
+		func(audio *rtmp.RTMPAudio) error {
+			if !hasWritten {
+				if err := flvWriter.WriteHeader(demuxer.AudioTrack != nil, demuxer.VideoTrack != nil); err != nil {
+					return err
+				}
+			}
+
+			// 计算调整后的时间戳
+			ts = int64(audio.Timestamp) + tsOffset
+			timestamp := uint32(ts)
+
+			// 写入音频数据帧
+			return flvWriter.WriteTag(flv.FLV_TAG_TYPE_AUDIO, timestamp, uint32(audio.Size), audio.Buffers...)
+		}, func(frame *rtmp.RTMPVideo) error {
+			if !hasWritten {
+				if err := flvWriter.WriteHeader(demuxer.AudioTrack != nil, demuxer.VideoTrack != nil); err != nil {
+					return err
+				}
+			}
+			// 计算调整后的时间戳
+			ts = int64(frame.Timestamp) + tsOffset
+			timestamp := uint32(ts)
+			// 写入视频数据帧
+			return flvWriter.WriteTag(flv.FLV_TAG_TYPE_VIDEO, timestamp, uint32(frame.Size), frame.Buffers...)
+		})
 	if err != nil {
 		plugin.Error("MP4 to FLV conversion failed", "err", err)
-		if !flvWriter.hasWritten {
+		if !hasWritten {
 			http.Error(w, "Conversion failed", http.StatusInternalServerError)
 		}
 		return
 	}
 
 	plugin.Info("MP4 to FLV conversion completed")
-}
-
-type ExtraDataInfo struct {
-	CodecType box.MP4_CODEC_TYPE
-	Data      []byte
-}
-
-// flvMp4Writer 处理MP4到FLV的转换写入
-type flvMp4Writer struct {
-	*flv.FlvWriter
-	plugin                 *FLVPlugin
-	audioExtra, videoExtra *ExtraDataInfo
-	hasWritten             bool  // 是否已经写入FLV头
-	ts                     int64 // 当前时间戳
-	tsOffset               int64 // 时间戳偏移量，用于多文件连续播放
-}
-
-// writeFlvHeader 写入FLV文件头
-func (w *flvMp4Writer) writeFlvHeader() error {
-	if w.hasWritten {
-		return nil
-	}
-
-	// 使用 FlvWriter 的 WriteHeader 方法
-	err := w.FlvWriter.WriteHeader(w.audioExtra != nil, w.videoExtra != nil) // 有音频和视频
-	if err != nil {
-		return err
-	}
-	w.hasWritten = true
-	if w.videoExtra != nil {
-		w.onVideoExtraData(w.videoExtra.CodecType, w.videoExtra.Data)
-	}
-	if w.audioExtra != nil {
-		w.onAudioExtraData(w.audioExtra.CodecType, w.audioExtra.Data)
-	}
-	return nil
-}
-
-// onVideoExtraData 处理视频序列头
-func (w *flvMp4Writer) onVideoExtraData(codecType box.MP4_CODEC_TYPE, data []byte) error {
-	if !w.hasWritten {
-		w.videoExtra = &ExtraDataInfo{
-			CodecType: codecType,
-			Data:      data,
-		}
-		return nil
-	}
-	switch codecType {
-	case box.MP4_CODEC_H264:
-		return w.WriteTag(flv.FLV_TAG_TYPE_VIDEO, uint32(w.ts), uint32(len(data)+5), []byte{(1 << 4) | 7, 0, 0, 0, 0}, data)
-	case box.MP4_CODEC_H265:
-		return w.WriteTag(flv.FLV_TAG_TYPE_VIDEO, uint32(w.ts), uint32(len(data)+5), []byte{0b1001_0000 | rtmp.PacketTypeSequenceStart, codec.FourCC_H265[0], codec.FourCC_H265[1], codec.FourCC_H265[2], codec.FourCC_H265[3]}, data)
-	default:
-		return fmt.Errorf("unsupported video codec: %v", codecType)
-	}
-}
-
-// onAudioExtraData 处理音频序列头
-func (w *flvMp4Writer) onAudioExtraData(codecType box.MP4_CODEC_TYPE, data []byte) error {
-	if !w.hasWritten {
-		w.audioExtra = &ExtraDataInfo{
-			CodecType: codecType,
-			Data:      data,
-		}
-		return nil
-	}
-	var flvCodec byte
-	switch codecType {
-	case box.MP4_CODEC_AAC:
-		flvCodec = 10 // AAC
-	case box.MP4_CODEC_G711A:
-		flvCodec = 7 // G.711 A-law
-	case box.MP4_CODEC_G711U:
-		flvCodec = 8 // G.711 μ-law
-	default:
-		return fmt.Errorf("unsupported audio codec: %v", codecType)
-	}
-
-	// 构建FLV音频标签 - 序列头
-	if flvCodec == 10 { // AAC 需要两个字节头部
-		return w.WriteTag(flv.FLV_TAG_TYPE_AUDIO, uint32(w.ts), uint32(len(data)+2), []byte{(flvCodec << 4) | (3 << 2) | (1 << 1) | 1, 0}, data)
-	} else {
-		return w.WriteTag(flv.FLV_TAG_TYPE_AUDIO, uint32(w.ts), uint32(len(data)+1), []byte{(flvCodec << 4) | (3 << 2) | (1 << 1) | 1}, data)
-	}
-}
-
-// onVideoSample 处理视频样本
-func (w *flvMp4Writer) onVideoSample(codecType box.MP4_CODEC_TYPE, sample box.Sample) error {
-	if !w.hasWritten {
-		if err := w.writeFlvHeader(); err != nil {
-			return err
-		}
-	}
-
-	// 计算调整后的时间戳
-	w.ts = int64(sample.Timestamp) + w.tsOffset
-	timestamp := uint32(w.ts)
-
-	switch codecType {
-	case box.MP4_CODEC_H264:
-		frameType := byte(2) // P帧
-		if sample.KeyFrame {
-			frameType = 1 // I帧
-		}
-		return w.WriteTag(flv.FLV_TAG_TYPE_VIDEO, timestamp, uint32(len(sample.Data)+5), []byte{(frameType << 4) | 7, 1, byte(sample.CTS >> 16), byte(sample.CTS >> 8), byte(sample.CTS)}, sample.Data)
-	case box.MP4_CODEC_H265:
-		// Enhanced RTMP格式用于H.265
-		var b0 byte = 0b1010_0000 // P帧标识
-		if sample.KeyFrame {
-			b0 = 0b1001_0000 // 关键帧标识
-		}
-		if sample.CTS == 0 {
-			// CTS为0时使用PacketTypeCodedFramesX（5字节头）
-			return w.WriteTag(flv.FLV_TAG_TYPE_VIDEO, timestamp, uint32(len(sample.Data)+5), []byte{b0 | rtmp.PacketTypeCodedFramesX, codec.FourCC_H265[0], codec.FourCC_H265[1], codec.FourCC_H265[2], codec.FourCC_H265[3]}, sample.Data)
-		} else {
-			// CTS不为0时使用PacketTypeCodedFrames（8字节头，包含CTS）
-			return w.WriteTag(flv.FLV_TAG_TYPE_VIDEO, timestamp, uint32(len(sample.Data)+8), []byte{b0 | rtmp.PacketTypeCodedFrames, codec.FourCC_H265[0], codec.FourCC_H265[1], codec.FourCC_H265[2], codec.FourCC_H265[3], byte(sample.CTS >> 16), byte(sample.CTS >> 8), byte(sample.CTS)}, sample.Data)
-		}
-	default:
-		return fmt.Errorf("unsupported video codec: %v", codecType)
-	}
-}
-
-// onAudioSample 处理音频样本
-func (w *flvMp4Writer) onAudioSample(codec box.MP4_CODEC_TYPE, sample box.Sample) error {
-	if !w.hasWritten {
-		if err := w.writeFlvHeader(); err != nil {
-			return err
-		}
-	}
-
-	// 计算调整后的时间戳
-	w.ts = int64(sample.Timestamp) + w.tsOffset
-	timestamp := uint32(w.ts)
-
-	var flvCodec byte
-	switch codec {
-	case box.MP4_CODEC_AAC:
-		flvCodec = 10 // AAC
-	case box.MP4_CODEC_G711A:
-		flvCodec = 7 // G.711 A-law
-	case box.MP4_CODEC_G711U:
-		flvCodec = 8 // G.711 μ-law
-	default:
-		return fmt.Errorf("unsupported audio codec: %v", codec)
-	}
-
-	// 构建FLV音频标签 - 音频帧
-	if flvCodec == 10 { // AAC 需要两个字节头部
-		return w.WriteTag(flv.FLV_TAG_TYPE_AUDIO, timestamp, uint32(len(sample.Data)+2), []byte{(flvCodec << 4) | (3 << 2) | (1 << 1) | 1, 1}, sample.Data)
-	} else {
-		// 对于非AAC编解码器（如G.711），只需要一个字节头部
-		return w.WriteTag(flv.FLV_TAG_TYPE_AUDIO, timestamp, uint32(len(sample.Data)+1), []byte{(flvCodec << 4) | (3 << 2) | (1 << 1) | 1}, sample.Data)
-	}
 }
 
 // processFlvFiles 处理原生FLV文件

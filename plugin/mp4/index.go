@@ -76,11 +76,10 @@ var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/download/{streamPath...}":          p.download,
-		"/extractClip/{streamPath...}":       p.extractClipToFileHandel,
-		"/extractCompressed/{streamPath...}": p.extractCompressedVideoHandel,
-		"/extractGop/{streamPath...}":        p.extractGopVideoHandel,
-		"/snap/{streamPath...}":              p.snapHandel,
+		"/download/{streamPath...}":           p.download,
+		"/extract/compressed/{streamPath...}": p.extractCompressedVideoHandel,
+		"/extract/gop/{streamPath...}":        p.extractGopVideoHandel,
+		"/snap/{streamPath...}":               p.snapHandel,
 	}
 }
 

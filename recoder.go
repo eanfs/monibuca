@@ -23,7 +23,6 @@ type (
 	// RecordEvent 包含录像事件的公共字段
 
 	EventRecordStream struct {
-		CreatedAt time.Time
 		*config.RecordEvent
 		RecordStream
 	}
@@ -53,6 +52,7 @@ type (
 		StreamPath string
 		AudioCodec string
 		VideoCodec string
+		CreatedAt  time.Time
 		DeletedAt  gorm.DeletedAt `gorm:"index" yaml:"-"`
 	}
 )

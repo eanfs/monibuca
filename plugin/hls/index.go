@@ -59,6 +59,7 @@ func (p *HLSPlugin) OnInit() (err error) {
 func (p *HLSPlugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"/vod/{streamPath...}":              p.vod,
+		"/download/{streamPath...}":         p.download,
 		"/api/record/start/{streamPath...}": p.API_record_start,
 		"/api/record/stop/{id}":             p.API_record_stop,
 	}
@@ -108,6 +109,26 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 							Duration: float64(record.Duration) / 1000,
 							URL:      fmt.Sprintf("/mp4/download/%s.fmp4?id=%d", streamPath, record.ID),
 							Title:    record.StartTime.Format(time.RFC3339),
+						})
+					}
+					plBuffer.WriteString("#EXT-X-ENDLIST\n")
+					w.Write(plBuffer)
+					return
+				} else if recordType == "ts" {
+					playlist := hls.Playlist{
+						Version:        7,
+						Sequence:       0,
+						Targetduration: 10,
+					}
+					var plBuffer util.Buffer
+					playlist.Writer = &plBuffer
+					playlist.Init()
+					segDur := endTime.Sub(startTime) / 10 * time.Second
+					for i := startTime; i.Before(endTime); i = i.Add(segDur) {
+						playlist.WriteInf(hls.PlaylistInf{
+							Duration: 10,
+							URL:      fmt.Sprintf("/hls/download/%s.ts?start=%d&end=%d", streamPath, i.Unix(), i.Add(segDur).Unix()),
+							Title:    i.Format(time.RFC3339),
 						})
 					}
 					plBuffer.WriteString("#EXT-X-ENDLIST\n")

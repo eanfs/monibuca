@@ -46,7 +46,7 @@ func parseRGBA(rgba string) (color.RGBA, error) {
 func (p *SnapPlugin) snap(publisher *m7s.Publisher, watermarkConfig *snap_pkg.WatermarkConfig) (*bytes.Buffer, error) {
 
 	// 获取视频帧
-	annexb, _, err := snap_pkg.GetVideoFrame(publisher, p.Server)
+	annexb, err := snap_pkg.GetVideoFrame(publisher, p.Server)
 	if err != nil {
 		return nil, err
 	}

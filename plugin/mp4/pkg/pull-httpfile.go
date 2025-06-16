@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepch/vdk/codec/aacparser"
+	"github.com/deepch/vdk/codec/h264parser"
+	"github.com/deepch/vdk/codec/h265parser"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
 	"m7s.live/v5/plugin/mp4/pkg/box"
-	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
 type HTTPReader struct {
@@ -51,20 +53,27 @@ func (p *HTTPReader) Run() (err error) {
 	for _, track := range demuxer.Tracks {
 		switch track.Cid {
 		case box.MP4_CODEC_H264:
-			var sequence rtmp.RTMPVideo
-			sequence.SetAllocator(allocator)
-			sequence.Append([]byte{0x17, 0x00, 0x00, 0x00, 0x00}, track.ExtraData)
-			err = publisher.WriteVideo(&sequence)
+			var h264Ctx codec.H264Ctx
+			h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+			if err == nil {
+				publisher.SetCodecCtx(&h264Ctx, &Video{})
+			}
 		case box.MP4_CODEC_H265:
-			var sequence rtmp.RTMPVideo
-			sequence.SetAllocator(allocator)
-			sequence.Append([]byte{0b1001_0000 | rtmp.PacketTypeSequenceStart}, codec.FourCC_H265[:], track.ExtraData)
-			err = publisher.WriteVideo(&sequence)
+			var h265Ctx codec.H265Ctx
+			h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+			if err == nil {
+				publisher.SetCodecCtx(&h265Ctx, &Video{
+					allocator: allocator,
+				})
+			}
 		case box.MP4_CODEC_AAC:
-			var sequence rtmp.RTMPAudio
-			sequence.SetAllocator(allocator)
-			sequence.Append([]byte{0xaf, 0x00}, track.ExtraData)
-			err = publisher.WriteAudio(&sequence)
+			var aacCtx codec.AACCtx
+			aacCtx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(track.ExtraData)
+			if err == nil {
+				publisher.SetCodecCtx(&aacCtx, &Audio{
+					allocator: allocator,
+				})
+			}
 		}
 	}
 
@@ -92,56 +101,44 @@ func (p *HTTPReader) Run() (err error) {
 				allocator.Free(sample.Data)
 				return
 			}
+			fixTimestamp := uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
 			switch track.Cid {
 			case box.MP4_CODEC_H264:
-				var videoFrame rtmp.RTMPVideo
-				videoFrame.SetAllocator(allocator)
-				videoFrame.CTS = sample.CTS
-				videoFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
-				videoFrame.AppendOne([]byte{util.Conditional[byte](sample.KeyFrame, 0x17, 0x27), 0x01, byte(videoFrame.CTS >> 24), byte(videoFrame.CTS >> 8), byte(videoFrame.CTS)})
-				videoFrame.AddRecycleBytes(sample.Data)
+				var videoFrame = Video{
+					Sample:    sample,
+					allocator: allocator,
+				}
+				videoFrame.Timestamp = fixTimestamp
 				err = publisher.WriteVideo(&videoFrame)
 			case box.MP4_CODEC_H265:
-				var videoFrame rtmp.RTMPVideo
-				videoFrame.SetAllocator(allocator)
-				videoFrame.CTS = uint32(sample.CTS)
-				videoFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
-				var head []byte
-				var b0 byte = 0b1010_0000
-				if sample.KeyFrame {
-					b0 = 0b1001_0000
+				var videoFrame = Video{
+					Sample:    sample,
+					allocator: allocator,
 				}
-				if videoFrame.CTS == 0 {
-					head = videoFrame.NextN(5)
-					head[0] = b0 | rtmp.PacketTypeCodedFramesX
-				} else {
-					head = videoFrame.NextN(8)
-					head[0] = b0 | rtmp.PacketTypeCodedFrames
-					util.PutBE(head[5:8], videoFrame.CTS) // cts
-				}
-				copy(head[1:], codec.FourCC_H265[:])
-				videoFrame.AddRecycleBytes(sample.Data)
+				videoFrame.Timestamp = fixTimestamp
 				err = publisher.WriteVideo(&videoFrame)
 			case box.MP4_CODEC_AAC:
-				var audioFrame rtmp.RTMPAudio
-				audioFrame.SetAllocator(allocator)
-				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
-				audioFrame.AppendOne([]byte{0xaf, 0x01})
-				audioFrame.AddRecycleBytes(sample.Data)
+				var audioFrame = Audio{
+					Sample:    sample,
+					allocator: allocator,
+				}
+				audioFrame.Timestamp = fixTimestamp
 				err = publisher.WriteAudio(&audioFrame)
 			case box.MP4_CODEC_G711A:
-				var audioFrame rtmp.RTMPAudio
-				audioFrame.SetAllocator(allocator)
-				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
-				audioFrame.AppendOne([]byte{0x72})
-				audioFrame.AddRecycleBytes(sample.Data)
+				var audioFrame = Audio{
+					Sample:    sample,
+					allocator: allocator,
+				}
+				audioFrame.Timestamp = fixTimestamp
 				err = publisher.WriteAudio(&audioFrame)
 			case box.MP4_CODEC_G711U:
-				var audioFrame rtmp.RTMPAudio
+				var audioFrame = Audio{
+					Sample:    sample,
+					allocator: allocator,
+				}
+				audioFrame.Sample = sample
 				audioFrame.SetAllocator(allocator)
-				audioFrame.Timestamp = uint32(uint64(sample.Timestamp)*1000/uint64(track.Timescale) + timestampOffset)
-				audioFrame.AppendOne([]byte{0x82})
-				audioFrame.AddRecycleBytes(sample.Data)
+				audioFrame.Timestamp = fixTimestamp
 				err = publisher.WriteAudio(&audioFrame)
 			}
 		}

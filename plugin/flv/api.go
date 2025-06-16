@@ -9,7 +9,7 @@ import (
 	flvpb "m7s.live/v5/plugin/flv/pb"
 )
 
-func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *pb.ResponseList, err error) {
+func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
 	globalReq := &pb.ReqRecordList{
 		StreamPath: req.StreamPath,
 		Range:      req.Range,
@@ -17,7 +17,6 @@ func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *p
 		End:        req.End,
 		PageNum:    req.PageNum,
 		PageSize:   req.PageSize,
-		Mode:       req.Mode,
 		Type:       "flv",
 	}
 	return p.Server.GetRecordList(ctx, globalReq)

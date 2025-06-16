@@ -4010,9 +4010,8 @@ type ReqRecordList struct {
 	End           string                 `protobuf:"bytes,4,opt,name=end,proto3" json:"end,omitempty"`
 	PageNum       uint32                 `protobuf:"varint,5,opt,name=pageNum,proto3" json:"pageNum,omitempty"`
 	PageSize      uint32                 `protobuf:"varint,6,opt,name=pageSize,proto3" json:"pageSize,omitempty"`
-	Mode          string                 `protobuf:"bytes,7,opt,name=mode,proto3" json:"mode,omitempty"`
-	Type          string                 `protobuf:"bytes,8,opt,name=type,proto3" json:"type,omitempty"`
-	EventLevel    string                 `protobuf:"bytes,9,opt,name=eventLevel,proto3" json:"eventLevel,omitempty"`
+	Type          string                 `protobuf:"bytes,7,opt,name=type,proto3" json:"type,omitempty"`
+	EventLevel    string                 `protobuf:"bytes,8,opt,name=eventLevel,proto3" json:"eventLevel,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4089,13 +4088,6 @@ func (x *ReqRecordList) GetPageSize() uint32 {
 	return 0
 }
 
-func (x *ReqRecordList) GetMode() string {
-	if x != nil {
-		return x.Mode
-	}
-	return ""
-}
-
 func (x *ReqRecordList) GetType() string {
 	if x != nil {
 		return x.Type
@@ -4117,9 +4109,6 @@ type RecordFile struct {
 	StreamPath    string                 `protobuf:"bytes,3,opt,name=streamPath,proto3" json:"streamPath,omitempty"`
 	StartTime     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=startTime,proto3" json:"startTime,omitempty"`
 	EndTime       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=endTime,proto3" json:"endTime,omitempty"`
-	EventLevel    string                 `protobuf:"bytes,6,opt,name=eventLevel,proto3" json:"eventLevel,omitempty"`
-	EventName     string                 `protobuf:"bytes,7,opt,name=eventName,proto3" json:"eventName,omitempty"`
-	EventDesc     string                 `protobuf:"bytes,8,opt,name=eventDesc,proto3" json:"eventDesc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4189,53 +4178,35 @@ func (x *RecordFile) GetEndTime() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *RecordFile) GetEventLevel() string {
-	if x != nil {
-		return x.EventLevel
-	}
-	return ""
-}
-
-func (x *RecordFile) GetEventName() string {
-	if x != nil {
-		return x.EventName
-	}
-	return ""
-}
-
-func (x *RecordFile) GetEventDesc() string {
-	if x != nil {
-		return x.EventDesc
-	}
-	return ""
-}
-
-type ResponseList struct {
+type EventRecordFile struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          int32                  `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	Total         uint32                 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
-	PageNum       uint32                 `protobuf:"varint,4,opt,name=pageNum,proto3" json:"pageNum,omitempty"`
-	PageSize      uint32                 `protobuf:"varint,5,opt,name=pageSize,proto3" json:"pageSize,omitempty"`
-	Data          []*RecordFile          `protobuf:"bytes,6,rep,name=data,proto3" json:"data,omitempty"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	FilePath      string                 `protobuf:"bytes,2,opt,name=filePath,proto3" json:"filePath,omitempty"`
+	StreamPath    string                 `protobuf:"bytes,3,opt,name=streamPath,proto3" json:"streamPath,omitempty"`
+	StartTime     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=startTime,proto3" json:"startTime,omitempty"`
+	EndTime       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=endTime,proto3" json:"endTime,omitempty"`
+	EventId       string                 `protobuf:"bytes,6,opt,name=eventId,proto3" json:"eventId,omitempty"`
+	EventLevel    string                 `protobuf:"bytes,7,opt,name=eventLevel,proto3" json:"eventLevel,omitempty"`
+	EventName     string                 `protobuf:"bytes,8,opt,name=eventName,proto3" json:"eventName,omitempty"`
+	EventDesc     string                 `protobuf:"bytes,9,opt,name=eventDesc,proto3" json:"eventDesc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ResponseList) Reset() {
-	*x = ResponseList{}
+func (x *EventRecordFile) Reset() {
+	*x = EventRecordFile{}
 	mi := &file_global_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ResponseList) String() string {
+func (x *EventRecordFile) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ResponseList) ProtoMessage() {}
+func (*EventRecordFile) ProtoMessage() {}
 
-func (x *ResponseList) ProtoReflect() protoreflect.Message {
+func (x *EventRecordFile) ProtoReflect() protoreflect.Message {
 	mi := &file_global_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -4247,47 +4218,236 @@ func (x *ResponseList) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ResponseList.ProtoReflect.Descriptor instead.
-func (*ResponseList) Descriptor() ([]byte, []int) {
+// Deprecated: Use EventRecordFile.ProtoReflect.Descriptor instead.
+func (*EventRecordFile) Descriptor() ([]byte, []int) {
 	return file_global_proto_rawDescGZIP(), []int{58}
 }
 
-func (x *ResponseList) GetCode() int32 {
+func (x *EventRecordFile) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *EventRecordFile) GetFilePath() string {
+	if x != nil {
+		return x.FilePath
+	}
+	return ""
+}
+
+func (x *EventRecordFile) GetStreamPath() string {
+	if x != nil {
+		return x.StreamPath
+	}
+	return ""
+}
+
+func (x *EventRecordFile) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *EventRecordFile) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
+}
+
+func (x *EventRecordFile) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+func (x *EventRecordFile) GetEventLevel() string {
+	if x != nil {
+		return x.EventLevel
+	}
+	return ""
+}
+
+func (x *EventRecordFile) GetEventName() string {
+	if x != nil {
+		return x.EventName
+	}
+	return ""
+}
+
+func (x *EventRecordFile) GetEventDesc() string {
+	if x != nil {
+		return x.EventDesc
+	}
+	return ""
+}
+
+type RecordResponseList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          int32                  `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Total         uint32                 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	PageNum       uint32                 `protobuf:"varint,4,opt,name=pageNum,proto3" json:"pageNum,omitempty"`
+	PageSize      uint32                 `protobuf:"varint,5,opt,name=pageSize,proto3" json:"pageSize,omitempty"`
+	Data          []*RecordFile          `protobuf:"bytes,6,rep,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordResponseList) Reset() {
+	*x = RecordResponseList{}
+	mi := &file_global_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordResponseList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordResponseList) ProtoMessage() {}
+
+func (x *RecordResponseList) ProtoReflect() protoreflect.Message {
+	mi := &file_global_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordResponseList.ProtoReflect.Descriptor instead.
+func (*RecordResponseList) Descriptor() ([]byte, []int) {
+	return file_global_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *RecordResponseList) GetCode() int32 {
 	if x != nil {
 		return x.Code
 	}
 	return 0
 }
 
-func (x *ResponseList) GetMessage() string {
+func (x *RecordResponseList) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
 	return ""
 }
 
-func (x *ResponseList) GetTotal() uint32 {
+func (x *RecordResponseList) GetTotal() uint32 {
 	if x != nil {
 		return x.Total
 	}
 	return 0
 }
 
-func (x *ResponseList) GetPageNum() uint32 {
+func (x *RecordResponseList) GetPageNum() uint32 {
 	if x != nil {
 		return x.PageNum
 	}
 	return 0
 }
 
-func (x *ResponseList) GetPageSize() uint32 {
+func (x *RecordResponseList) GetPageSize() uint32 {
 	if x != nil {
 		return x.PageSize
 	}
 	return 0
 }
 
-func (x *ResponseList) GetData() []*RecordFile {
+func (x *RecordResponseList) GetData() []*RecordFile {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type EventRecordResponseList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          int32                  `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Total         uint32                 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	PageNum       uint32                 `protobuf:"varint,4,opt,name=pageNum,proto3" json:"pageNum,omitempty"`
+	PageSize      uint32                 `protobuf:"varint,5,opt,name=pageSize,proto3" json:"pageSize,omitempty"`
+	Data          []*EventRecordFile     `protobuf:"bytes,6,rep,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventRecordResponseList) Reset() {
+	*x = EventRecordResponseList{}
+	mi := &file_global_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventRecordResponseList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventRecordResponseList) ProtoMessage() {}
+
+func (x *EventRecordResponseList) ProtoReflect() protoreflect.Message {
+	mi := &file_global_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventRecordResponseList.ProtoReflect.Descriptor instead.
+func (*EventRecordResponseList) Descriptor() ([]byte, []int) {
+	return file_global_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *EventRecordResponseList) GetCode() int32 {
+	if x != nil {
+		return x.Code
+	}
+	return 0
+}
+
+func (x *EventRecordResponseList) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *EventRecordResponseList) GetTotal() uint32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *EventRecordResponseList) GetPageNum() uint32 {
+	if x != nil {
+		return x.PageNum
+	}
+	return 0
+}
+
+func (x *EventRecordResponseList) GetPageSize() uint32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *EventRecordResponseList) GetData() []*EventRecordFile {
 	if x != nil {
 		return x.Data
 	}
@@ -4306,7 +4466,7 @@ type Catalog struct {
 
 func (x *Catalog) Reset() {
 	*x = Catalog{}
-	mi := &file_global_proto_msgTypes[59]
+	mi := &file_global_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4318,7 +4478,7 @@ func (x *Catalog) String() string {
 func (*Catalog) ProtoMessage() {}
 
 func (x *Catalog) ProtoReflect() protoreflect.Message {
-	mi := &file_global_proto_msgTypes[59]
+	mi := &file_global_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4331,7 +4491,7 @@ func (x *Catalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Catalog.ProtoReflect.Descriptor instead.
 func (*Catalog) Descriptor() ([]byte, []int) {
-	return file_global_proto_rawDescGZIP(), []int{59}
+	return file_global_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *Catalog) GetStreamPath() string {
@@ -4373,7 +4533,7 @@ type ResponseCatalog struct {
 
 func (x *ResponseCatalog) Reset() {
 	*x = ResponseCatalog{}
-	mi := &file_global_proto_msgTypes[60]
+	mi := &file_global_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4385,7 +4545,7 @@ func (x *ResponseCatalog) String() string {
 func (*ResponseCatalog) ProtoMessage() {}
 
 func (x *ResponseCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_global_proto_msgTypes[60]
+	mi := &file_global_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4398,7 +4558,7 @@ func (x *ResponseCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseCatalog.ProtoReflect.Descriptor instead.
 func (*ResponseCatalog) Descriptor() ([]byte, []int) {
-	return file_global_proto_rawDescGZIP(), []int{60}
+	return file_global_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *ResponseCatalog) GetCode() int32 {
@@ -4436,7 +4596,7 @@ type ReqRecordDelete struct {
 
 func (x *ReqRecordDelete) Reset() {
 	*x = ReqRecordDelete{}
-	mi := &file_global_proto_msgTypes[61]
+	mi := &file_global_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4448,7 +4608,7 @@ func (x *ReqRecordDelete) String() string {
 func (*ReqRecordDelete) ProtoMessage() {}
 
 func (x *ReqRecordDelete) ProtoReflect() protoreflect.Message {
-	mi := &file_global_proto_msgTypes[61]
+	mi := &file_global_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4461,7 +4621,7 @@ func (x *ReqRecordDelete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReqRecordDelete.ProtoReflect.Descriptor instead.
 func (*ReqRecordDelete) Descriptor() ([]byte, []int) {
-	return file_global_proto_rawDescGZIP(), []int{61}
+	return file_global_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ReqRecordDelete) GetStreamPath() string {
@@ -4517,7 +4677,7 @@ type ResponseDelete struct {
 
 func (x *ResponseDelete) Reset() {
 	*x = ResponseDelete{}
-	mi := &file_global_proto_msgTypes[62]
+	mi := &file_global_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4529,7 +4689,7 @@ func (x *ResponseDelete) String() string {
 func (*ResponseDelete) ProtoMessage() {}
 
 func (x *ResponseDelete) ProtoReflect() protoreflect.Message {
-	mi := &file_global_proto_msgTypes[62]
+	mi := &file_global_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4542,7 +4702,7 @@ func (x *ResponseDelete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseDelete.ProtoReflect.Descriptor instead.
 func (*ResponseDelete) Descriptor() ([]byte, []int) {
-	return file_global_proto_rawDescGZIP(), []int{62}
+	return file_global_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ResponseDelete) GetCode() int32 {
@@ -4575,7 +4735,7 @@ type ReqRecordCatalog struct {
 
 func (x *ReqRecordCatalog) Reset() {
 	*x = ReqRecordCatalog{}
-	mi := &file_global_proto_msgTypes[63]
+	mi := &file_global_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4587,7 +4747,7 @@ func (x *ReqRecordCatalog) String() string {
 func (*ReqRecordCatalog) ProtoMessage() {}
 
 func (x *ReqRecordCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_global_proto_msgTypes[63]
+	mi := &file_global_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4600,7 +4760,7 @@ func (x *ReqRecordCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReqRecordCatalog.ProtoReflect.Descriptor instead.
 func (*ReqRecordCatalog) Descriptor() ([]byte, []int) {
-	return file_global_proto_rawDescGZIP(), []int{63}
+	return file_global_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ReqRecordCatalog) GetType() string {
@@ -5015,7 +5175,7 @@ const file_global_proto_rawDesc = "" +
 	"\x15TransformListResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12%\n" +
-	"\x04data\x18\x03 \x03(\v2\x11.global.TransformR\x04data\"\xeb\x01\n" +
+	"\x04data\x18\x03 \x03(\v2\x11.global.TransformR\x04data\"\xd7\x01\n" +
 	"\rReqRecordList\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x01 \x01(\tR\n" +
@@ -5025,11 +5185,10 @@ const file_global_proto_rawDesc = "" +
 	"\x03end\x18\x04 \x01(\tR\x03end\x12\x18\n" +
 	"\apageNum\x18\x05 \x01(\rR\apageNum\x12\x1a\n" +
 	"\bpageSize\x18\x06 \x01(\rR\bpageSize\x12\x12\n" +
-	"\x04mode\x18\a \x01(\tR\x04mode\x12\x12\n" +
-	"\x04type\x18\b \x01(\tR\x04type\x12\x1e\n" +
+	"\x04type\x18\a \x01(\tR\x04type\x12\x1e\n" +
 	"\n" +
-	"eventLevel\x18\t \x01(\tR\n" +
-	"eventLevel\"\xa4\x02\n" +
+	"eventLevel\x18\b \x01(\tR\n" +
+	"eventLevel\"\xc8\x01\n" +
 	"\n" +
 	"RecordFile\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x1a\n" +
@@ -5038,19 +5197,35 @@ const file_global_proto_rawDesc = "" +
 	"streamPath\x18\x03 \x01(\tR\n" +
 	"streamPath\x128\n" +
 	"\tstartTime\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x124\n" +
-	"\aendTime\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12\x1e\n" +
+	"\aendTime\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\"\xc3\x02\n" +
+	"\x0fEventRecordFile\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\x12\x1a\n" +
+	"\bfilePath\x18\x02 \x01(\tR\bfilePath\x12\x1e\n" +
 	"\n" +
-	"eventLevel\x18\x06 \x01(\tR\n" +
+	"streamPath\x18\x03 \x01(\tR\n" +
+	"streamPath\x128\n" +
+	"\tstartTime\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x124\n" +
+	"\aendTime\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12\x18\n" +
+	"\aeventId\x18\x06 \x01(\tR\aeventId\x12\x1e\n" +
+	"\n" +
+	"eventLevel\x18\a \x01(\tR\n" +
 	"eventLevel\x12\x1c\n" +
-	"\teventName\x18\a \x01(\tR\teventName\x12\x1c\n" +
-	"\teventDesc\x18\b \x01(\tR\teventDesc\"\xb0\x01\n" +
-	"\fResponseList\x12\x12\n" +
+	"\teventName\x18\b \x01(\tR\teventName\x12\x1c\n" +
+	"\teventDesc\x18\t \x01(\tR\teventDesc\"\xb6\x01\n" +
+	"\x12RecordResponseList\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x14\n" +
 	"\x05total\x18\x03 \x01(\rR\x05total\x12\x18\n" +
 	"\apageNum\x18\x04 \x01(\rR\apageNum\x12\x1a\n" +
 	"\bpageSize\x18\x05 \x01(\rR\bpageSize\x12&\n" +
-	"\x04data\x18\x06 \x03(\v2\x12.global.RecordFileR\x04data\"\xaf\x01\n" +
+	"\x04data\x18\x06 \x03(\v2\x12.global.RecordFileR\x04data\"\xc0\x01\n" +
+	"\x17EventRecordResponseList\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x14\n" +
+	"\x05total\x18\x03 \x01(\rR\x05total\x12\x18\n" +
+	"\apageNum\x18\x04 \x01(\rR\apageNum\x12\x1a\n" +
+	"\bpageSize\x18\x05 \x01(\rR\bpageSize\x12+\n" +
+	"\x04data\x18\x06 \x03(\v2\x17.global.EventRecordFileR\x04data\"\xaf\x01\n" +
 	"\aCatalog\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x01 \x01(\tR\n" +
@@ -5076,7 +5251,7 @@ const file_global_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
 	"\x04data\x18\x03 \x03(\v2\x12.global.RecordFileR\x04data\"&\n" +
 	"\x10ReqRecordCatalog\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type2\xae!\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type2\xba\"\n" +
 	"\x03api\x12P\n" +
 	"\aSysInfo\x12\x16.google.protobuf.Empty\x1a\x17.global.SysInfoResponse\"\x14\x82\xd3\xe4\x93\x02\x0e\x12\f/api/sysinfo\x12i\n" +
 	"\x0fDisabledPlugins\x12\x16.google.protobuf.Empty\x1a\x1f.global.DisabledPluginsResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/api/plugins/disabled\x12P\n" +
@@ -5118,8 +5293,9 @@ const file_global_proto_rawDesc = "" +
 	"\x0fRemovePushProxy\x12\x15.global.RequestWithId\x1a\x17.global.SuccessResponse\"&\x82\xd3\xe4\x93\x02 :\x01*\"\x1b/api/proxy/push/remove/{id}\x12d\n" +
 	"\x0fUpdatePushProxy\x12\x15.global.PushProxyInfo\x1a\x17.global.SuccessResponse\"!\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/api/proxy/push/update\x12_\n" +
 	"\fGetRecording\x12\x16.google.protobuf.Empty\x1a\x1d.global.RecordingListResponse\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/api/record/list\x12f\n" +
-	"\x10GetTransformList\x12\x16.google.protobuf.Empty\x1a\x1d.global.TransformListResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/transform/list\x12m\n" +
-	"\rGetRecordList\x12\x15.global.ReqRecordList\x1a\x14.global.ResponseList\"/\x82\xd3\xe4\x93\x02)\x12'/api/record/{type}/list/{streamPath=**}\x12i\n" +
+	"\x10GetTransformList\x12\x16.google.protobuf.Empty\x1a\x1d.global.TransformListResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/transform/list\x12s\n" +
+	"\rGetRecordList\x12\x15.global.ReqRecordList\x1a\x1a.global.RecordResponseList\"/\x82\xd3\xe4\x93\x02)\x12'/api/record/{type}/list/{streamPath=**}\x12\x83\x01\n" +
+	"\x12GetEventRecordList\x12\x15.global.ReqRecordList\x1a\x1f.global.EventRecordResponseList\"5\x82\xd3\xe4\x93\x02/\x12-/api/record/{type}/event/list/{streamPath=**}\x12i\n" +
 	"\x10GetRecordCatalog\x12\x18.global.ReqRecordCatalog\x1a\x17.global.ResponseCatalog\"\"\x82\xd3\xe4\x93\x02\x1c\x12\x1a/api/record/{type}/catalog\x12u\n" +
 	"\fDeleteRecord\x12\x17.global.ReqRecordDelete\x1a\x16.global.ResponseDelete\"4\x82\xd3\xe4\x93\x02.:\x01*\")/api/record/{type}/delete/{streamPath=**}B\x10Z\x0em7s.live/v5/pbb\x06proto3"
 
@@ -5135,7 +5311,7 @@ func file_global_proto_rawDescGZIP() []byte {
 	return file_global_proto_rawDescData
 }
 
-var file_global_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
+var file_global_proto_msgTypes = make([]protoimpl.MessageInfo, 73)
 var file_global_proto_goTypes = []any{
 	(*DisabledPluginsResponse)(nil), // 0: global.DisabledPluginsResponse
 	(*GetConfigRequest)(nil),        // 1: global.GetConfigRequest
@@ -5195,171 +5371,178 @@ var file_global_proto_goTypes = []any{
 	(*TransformListResponse)(nil),   // 55: global.TransformListResponse
 	(*ReqRecordList)(nil),           // 56: global.ReqRecordList
 	(*RecordFile)(nil),              // 57: global.RecordFile
-	(*ResponseList)(nil),            // 58: global.ResponseList
-	(*Catalog)(nil),                 // 59: global.Catalog
-	(*ResponseCatalog)(nil),         // 60: global.ResponseCatalog
-	(*ReqRecordDelete)(nil),         // 61: global.ReqRecordDelete
-	(*ResponseDelete)(nil),          // 62: global.ResponseDelete
-	(*ReqRecordCatalog)(nil),        // 63: global.ReqRecordCatalog
-	nil,                             // 64: global.Formily.PropertiesEntry
-	nil,                             // 65: global.Formily.ComponentPropsEntry
-	nil,                             // 66: global.FormilyResponse.PropertiesEntry
-	nil,                             // 67: global.PluginInfo.DescriptionEntry
-	nil,                             // 68: global.TaskTreeData.DescriptionEntry
-	nil,                             // 69: global.StreamWaitListResponse.ListEntry
-	nil,                             // 70: global.TrackSnapShotData.ReaderEntry
-	(*timestamppb.Timestamp)(nil),   // 71: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),     // 72: google.protobuf.Duration
-	(*anypb.Any)(nil),               // 73: google.protobuf.Any
-	(*emptypb.Empty)(nil),           // 74: google.protobuf.Empty
+	(*EventRecordFile)(nil),         // 58: global.EventRecordFile
+	(*RecordResponseList)(nil),      // 59: global.RecordResponseList
+	(*EventRecordResponseList)(nil), // 60: global.EventRecordResponseList
+	(*Catalog)(nil),                 // 61: global.Catalog
+	(*ResponseCatalog)(nil),         // 62: global.ResponseCatalog
+	(*ReqRecordDelete)(nil),         // 63: global.ReqRecordDelete
+	(*ResponseDelete)(nil),          // 64: global.ResponseDelete
+	(*ReqRecordCatalog)(nil),        // 65: global.ReqRecordCatalog
+	nil,                             // 66: global.Formily.PropertiesEntry
+	nil,                             // 67: global.Formily.ComponentPropsEntry
+	nil,                             // 68: global.FormilyResponse.PropertiesEntry
+	nil,                             // 69: global.PluginInfo.DescriptionEntry
+	nil,                             // 70: global.TaskTreeData.DescriptionEntry
+	nil,                             // 71: global.StreamWaitListResponse.ListEntry
+	nil,                             // 72: global.TrackSnapShotData.ReaderEntry
+	(*timestamppb.Timestamp)(nil),   // 73: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),     // 74: google.protobuf.Duration
+	(*anypb.Any)(nil),               // 75: google.protobuf.Any
+	(*emptypb.Empty)(nil),           // 76: google.protobuf.Empty
 }
 var file_global_proto_depIdxs = []int32{
 	12,  // 0: global.DisabledPluginsResponse.data:type_name -> global.PluginInfo
-	64,  // 1: global.Formily.properties:type_name -> global.Formily.PropertiesEntry
-	65,  // 2: global.Formily.componentProps:type_name -> global.Formily.ComponentPropsEntry
-	66,  // 3: global.FormilyResponse.properties:type_name -> global.FormilyResponse.PropertiesEntry
+	66,  // 1: global.Formily.properties:type_name -> global.Formily.PropertiesEntry
+	67,  // 2: global.Formily.componentProps:type_name -> global.Formily.ComponentPropsEntry
+	68,  // 3: global.FormilyResponse.properties:type_name -> global.FormilyResponse.PropertiesEntry
 	4,   // 4: global.GetConfigResponse.data:type_name -> global.ConfigData
 	10,  // 5: global.SummaryResponse.memory:type_name -> global.Usage
 	10,  // 6: global.SummaryResponse.hardDisk:type_name -> global.Usage
 	9,   // 7: global.SummaryResponse.netWork:type_name -> global.NetWorkInfo
-	67,  // 8: global.PluginInfo.description:type_name -> global.PluginInfo.DescriptionEntry
-	71,  // 9: global.SysInfoData.startTime:type_name -> google.protobuf.Timestamp
+	69,  // 8: global.PluginInfo.description:type_name -> global.PluginInfo.DescriptionEntry
+	73,  // 9: global.SysInfoData.startTime:type_name -> google.protobuf.Timestamp
 	12,  // 10: global.SysInfoData.plugins:type_name -> global.PluginInfo
 	13,  // 11: global.SysInfoResponse.data:type_name -> global.SysInfoData
-	71,  // 12: global.TaskTreeData.startTime:type_name -> google.protobuf.Timestamp
-	68,  // 13: global.TaskTreeData.description:type_name -> global.TaskTreeData.DescriptionEntry
+	73,  // 12: global.TaskTreeData.startTime:type_name -> google.protobuf.Timestamp
+	70,  // 13: global.TaskTreeData.description:type_name -> global.TaskTreeData.DescriptionEntry
 	15,  // 14: global.TaskTreeData.children:type_name -> global.TaskTreeData
 	15,  // 15: global.TaskTreeData.blocked:type_name -> global.TaskTreeData
 	15,  // 16: global.TaskTreeResponse.data:type_name -> global.TaskTreeData
 	22,  // 17: global.StreamListResponse.data:type_name -> global.StreamInfo
-	69,  // 18: global.StreamWaitListResponse.list:type_name -> global.StreamWaitListResponse.ListEntry
+	71,  // 18: global.StreamWaitListResponse.list:type_name -> global.StreamWaitListResponse.ListEntry
 	22,  // 19: global.StreamInfoResponse.data:type_name -> global.StreamInfo
 	28,  // 20: global.StreamInfo.audioTrack:type_name -> global.AudioTrackInfo
 	31,  // 21: global.StreamInfo.videoTrack:type_name -> global.VideoTrackInfo
-	71,  // 22: global.StreamInfo.startTime:type_name -> google.protobuf.Timestamp
-	72,  // 23: global.StreamInfo.bufferTime:type_name -> google.protobuf.Duration
+	73,  // 22: global.StreamInfo.startTime:type_name -> google.protobuf.Timestamp
+	74,  // 23: global.StreamInfo.bufferTime:type_name -> google.protobuf.Duration
 	23,  // 24: global.StreamInfo.recording:type_name -> global.RecordingDetail
-	72,  // 25: global.RecordingDetail.fragment:type_name -> google.protobuf.Duration
-	71,  // 26: global.TrackSnapShot.writeTime:type_name -> google.protobuf.Timestamp
+	74,  // 25: global.RecordingDetail.fragment:type_name -> google.protobuf.Duration
+	73,  // 26: global.TrackSnapShot.writeTime:type_name -> google.protobuf.Timestamp
 	24,  // 27: global.TrackSnapShot.wrap:type_name -> global.Wrap
 	26,  // 28: global.MemoryBlockGroup.list:type_name -> global.MemoryBlock
 	25,  // 29: global.TrackSnapShotData.ring:type_name -> global.TrackSnapShot
-	70,  // 30: global.TrackSnapShotData.reader:type_name -> global.TrackSnapShotData.ReaderEntry
+	72,  // 30: global.TrackSnapShotData.reader:type_name -> global.TrackSnapShotData.ReaderEntry
 	27,  // 31: global.TrackSnapShotData.memory:type_name -> global.MemoryBlockGroup
 	29,  // 32: global.TrackSnapShotResponse.data:type_name -> global.TrackSnapShotData
-	71,  // 33: global.SubscriberSnapShot.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 33: global.SubscriberSnapShot.startTime:type_name -> google.protobuf.Timestamp
 	37,  // 34: global.SubscriberSnapShot.audioReader:type_name -> global.RingReaderSnapShot
 	37,  // 35: global.SubscriberSnapShot.videoReader:type_name -> global.RingReaderSnapShot
-	72,  // 36: global.SubscriberSnapShot.bufferTime:type_name -> google.protobuf.Duration
+	74,  // 36: global.SubscriberSnapShot.bufferTime:type_name -> google.protobuf.Duration
 	38,  // 37: global.SubscribersResponse.data:type_name -> global.SubscriberSnapShot
 	41,  // 38: global.PullProxyListResponse.data:type_name -> global.PullProxyInfo
-	71,  // 39: global.PullProxyInfo.createTime:type_name -> google.protobuf.Timestamp
-	71,  // 40: global.PullProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
-	72,  // 41: global.PullProxyInfo.recordFragment:type_name -> google.protobuf.Duration
-	71,  // 42: global.PushProxyInfo.createTime:type_name -> google.protobuf.Timestamp
-	71,  // 43: global.PushProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
+	73,  // 39: global.PullProxyInfo.createTime:type_name -> google.protobuf.Timestamp
+	73,  // 40: global.PullProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
+	74,  // 41: global.PullProxyInfo.recordFragment:type_name -> google.protobuf.Duration
+	73,  // 42: global.PushProxyInfo.createTime:type_name -> google.protobuf.Timestamp
+	73,  // 43: global.PushProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
 	42,  // 44: global.PushProxyListResponse.data:type_name -> global.PushProxyInfo
 	45,  // 45: global.StreamAliasListResponse.data:type_name -> global.StreamAlias
-	71,  // 46: global.Recording.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 46: global.Recording.startTime:type_name -> google.protobuf.Timestamp
 	49,  // 47: global.RecordingListResponse.data:type_name -> global.Recording
-	71,  // 48: global.PushInfo.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 48: global.PushInfo.startTime:type_name -> google.protobuf.Timestamp
 	51,  // 49: global.PushListResponse.data:type_name -> global.PushInfo
 	54,  // 50: global.TransformListResponse.data:type_name -> global.Transform
-	71,  // 51: global.RecordFile.startTime:type_name -> google.protobuf.Timestamp
-	71,  // 52: global.RecordFile.endTime:type_name -> google.protobuf.Timestamp
-	57,  // 53: global.ResponseList.data:type_name -> global.RecordFile
-	71,  // 54: global.Catalog.startTime:type_name -> google.protobuf.Timestamp
-	71,  // 55: global.Catalog.endTime:type_name -> google.protobuf.Timestamp
-	59,  // 56: global.ResponseCatalog.data:type_name -> global.Catalog
-	57,  // 57: global.ResponseDelete.data:type_name -> global.RecordFile
-	2,   // 58: global.Formily.PropertiesEntry.value:type_name -> global.Formily
-	73,  // 59: global.Formily.ComponentPropsEntry.value:type_name -> google.protobuf.Any
-	2,   // 60: global.FormilyResponse.PropertiesEntry.value:type_name -> global.Formily
-	74,  // 61: global.api.SysInfo:input_type -> google.protobuf.Empty
-	74,  // 62: global.api.DisabledPlugins:input_type -> google.protobuf.Empty
-	74,  // 63: global.api.Summary:input_type -> google.protobuf.Empty
-	33,  // 64: global.api.Shutdown:input_type -> global.RequestWithId
-	33,  // 65: global.api.Restart:input_type -> global.RequestWithId
-	74,  // 66: global.api.TaskTree:input_type -> google.protobuf.Empty
-	34,  // 67: global.api.StopTask:input_type -> global.RequestWithId64
-	34,  // 68: global.api.RestartTask:input_type -> global.RequestWithId64
-	17,  // 69: global.api.StreamList:input_type -> global.StreamListRequest
-	74,  // 70: global.api.WaitList:input_type -> google.protobuf.Empty
-	20,  // 71: global.api.StreamInfo:input_type -> global.StreamSnapRequest
-	20,  // 72: global.api.PauseStream:input_type -> global.StreamSnapRequest
-	20,  // 73: global.api.ResumeStream:input_type -> global.StreamSnapRequest
-	47,  // 74: global.api.SetStreamSpeed:input_type -> global.SetStreamSpeedRequest
-	48,  // 75: global.api.SeekStream:input_type -> global.SeekStreamRequest
-	36,  // 76: global.api.GetSubscribers:input_type -> global.SubscribersRequest
-	20,  // 77: global.api.AudioTrackSnap:input_type -> global.StreamSnapRequest
-	20,  // 78: global.api.VideoTrackSnap:input_type -> global.StreamSnapRequest
-	35,  // 79: global.api.ChangeSubscribe:input_type -> global.ChangeSubscribeRequest
-	74,  // 80: global.api.GetStreamAlias:input_type -> google.protobuf.Empty
-	44,  // 81: global.api.SetStreamAlias:input_type -> global.SetStreamAliasRequest
-	20,  // 82: global.api.StopPublish:input_type -> global.StreamSnapRequest
-	33,  // 83: global.api.StopSubscribe:input_type -> global.RequestWithId
-	74,  // 84: global.api.GetConfigFile:input_type -> google.protobuf.Empty
-	7,   // 85: global.api.UpdateConfigFile:input_type -> global.UpdateConfigFileRequest
-	1,   // 86: global.api.GetConfig:input_type -> global.GetConfigRequest
-	1,   // 87: global.api.GetFormily:input_type -> global.GetConfigRequest
-	74,  // 88: global.api.GetPullProxyList:input_type -> google.protobuf.Empty
-	41,  // 89: global.api.AddPullProxy:input_type -> global.PullProxyInfo
-	33,  // 90: global.api.RemovePullProxy:input_type -> global.RequestWithId
-	41,  // 91: global.api.UpdatePullProxy:input_type -> global.PullProxyInfo
-	74,  // 92: global.api.GetPushProxyList:input_type -> google.protobuf.Empty
-	42,  // 93: global.api.AddPushProxy:input_type -> global.PushProxyInfo
-	33,  // 94: global.api.RemovePushProxy:input_type -> global.RequestWithId
-	42,  // 95: global.api.UpdatePushProxy:input_type -> global.PushProxyInfo
-	74,  // 96: global.api.GetRecording:input_type -> google.protobuf.Empty
-	74,  // 97: global.api.GetTransformList:input_type -> google.protobuf.Empty
-	56,  // 98: global.api.GetRecordList:input_type -> global.ReqRecordList
-	63,  // 99: global.api.GetRecordCatalog:input_type -> global.ReqRecordCatalog
-	61,  // 100: global.api.DeleteRecord:input_type -> global.ReqRecordDelete
-	14,  // 101: global.api.SysInfo:output_type -> global.SysInfoResponse
-	0,   // 102: global.api.DisabledPlugins:output_type -> global.DisabledPluginsResponse
-	11,  // 103: global.api.Summary:output_type -> global.SummaryResponse
-	32,  // 104: global.api.Shutdown:output_type -> global.SuccessResponse
-	32,  // 105: global.api.Restart:output_type -> global.SuccessResponse
-	16,  // 106: global.api.TaskTree:output_type -> global.TaskTreeResponse
-	32,  // 107: global.api.StopTask:output_type -> global.SuccessResponse
-	32,  // 108: global.api.RestartTask:output_type -> global.SuccessResponse
-	18,  // 109: global.api.StreamList:output_type -> global.StreamListResponse
-	19,  // 110: global.api.WaitList:output_type -> global.StreamWaitListResponse
-	21,  // 111: global.api.StreamInfo:output_type -> global.StreamInfoResponse
-	32,  // 112: global.api.PauseStream:output_type -> global.SuccessResponse
-	32,  // 113: global.api.ResumeStream:output_type -> global.SuccessResponse
-	32,  // 114: global.api.SetStreamSpeed:output_type -> global.SuccessResponse
-	32,  // 115: global.api.SeekStream:output_type -> global.SuccessResponse
-	39,  // 116: global.api.GetSubscribers:output_type -> global.SubscribersResponse
-	30,  // 117: global.api.AudioTrackSnap:output_type -> global.TrackSnapShotResponse
-	30,  // 118: global.api.VideoTrackSnap:output_type -> global.TrackSnapShotResponse
-	32,  // 119: global.api.ChangeSubscribe:output_type -> global.SuccessResponse
-	46,  // 120: global.api.GetStreamAlias:output_type -> global.StreamAliasListResponse
-	32,  // 121: global.api.SetStreamAlias:output_type -> global.SuccessResponse
-	32,  // 122: global.api.StopPublish:output_type -> global.SuccessResponse
-	32,  // 123: global.api.StopSubscribe:output_type -> global.SuccessResponse
-	5,   // 124: global.api.GetConfigFile:output_type -> global.GetConfigFileResponse
-	32,  // 125: global.api.UpdateConfigFile:output_type -> global.SuccessResponse
-	6,   // 126: global.api.GetConfig:output_type -> global.GetConfigResponse
-	6,   // 127: global.api.GetFormily:output_type -> global.GetConfigResponse
-	40,  // 128: global.api.GetPullProxyList:output_type -> global.PullProxyListResponse
-	32,  // 129: global.api.AddPullProxy:output_type -> global.SuccessResponse
-	32,  // 130: global.api.RemovePullProxy:output_type -> global.SuccessResponse
-	32,  // 131: global.api.UpdatePullProxy:output_type -> global.SuccessResponse
-	43,  // 132: global.api.GetPushProxyList:output_type -> global.PushProxyListResponse
-	32,  // 133: global.api.AddPushProxy:output_type -> global.SuccessResponse
-	32,  // 134: global.api.RemovePushProxy:output_type -> global.SuccessResponse
-	32,  // 135: global.api.UpdatePushProxy:output_type -> global.SuccessResponse
-	50,  // 136: global.api.GetRecording:output_type -> global.RecordingListResponse
-	55,  // 137: global.api.GetTransformList:output_type -> global.TransformListResponse
-	58,  // 138: global.api.GetRecordList:output_type -> global.ResponseList
-	60,  // 139: global.api.GetRecordCatalog:output_type -> global.ResponseCatalog
-	62,  // 140: global.api.DeleteRecord:output_type -> global.ResponseDelete
-	101, // [101:141] is the sub-list for method output_type
-	61,  // [61:101] is the sub-list for method input_type
-	61,  // [61:61] is the sub-list for extension type_name
-	61,  // [61:61] is the sub-list for extension extendee
-	0,   // [0:61] is the sub-list for field type_name
+	73,  // 51: global.RecordFile.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 52: global.RecordFile.endTime:type_name -> google.protobuf.Timestamp
+	73,  // 53: global.EventRecordFile.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 54: global.EventRecordFile.endTime:type_name -> google.protobuf.Timestamp
+	57,  // 55: global.RecordResponseList.data:type_name -> global.RecordFile
+	58,  // 56: global.EventRecordResponseList.data:type_name -> global.EventRecordFile
+	73,  // 57: global.Catalog.startTime:type_name -> google.protobuf.Timestamp
+	73,  // 58: global.Catalog.endTime:type_name -> google.protobuf.Timestamp
+	61,  // 59: global.ResponseCatalog.data:type_name -> global.Catalog
+	57,  // 60: global.ResponseDelete.data:type_name -> global.RecordFile
+	2,   // 61: global.Formily.PropertiesEntry.value:type_name -> global.Formily
+	75,  // 62: global.Formily.ComponentPropsEntry.value:type_name -> google.protobuf.Any
+	2,   // 63: global.FormilyResponse.PropertiesEntry.value:type_name -> global.Formily
+	76,  // 64: global.api.SysInfo:input_type -> google.protobuf.Empty
+	76,  // 65: global.api.DisabledPlugins:input_type -> google.protobuf.Empty
+	76,  // 66: global.api.Summary:input_type -> google.protobuf.Empty
+	33,  // 67: global.api.Shutdown:input_type -> global.RequestWithId
+	33,  // 68: global.api.Restart:input_type -> global.RequestWithId
+	76,  // 69: global.api.TaskTree:input_type -> google.protobuf.Empty
+	34,  // 70: global.api.StopTask:input_type -> global.RequestWithId64
+	34,  // 71: global.api.RestartTask:input_type -> global.RequestWithId64
+	17,  // 72: global.api.StreamList:input_type -> global.StreamListRequest
+	76,  // 73: global.api.WaitList:input_type -> google.protobuf.Empty
+	20,  // 74: global.api.StreamInfo:input_type -> global.StreamSnapRequest
+	20,  // 75: global.api.PauseStream:input_type -> global.StreamSnapRequest
+	20,  // 76: global.api.ResumeStream:input_type -> global.StreamSnapRequest
+	47,  // 77: global.api.SetStreamSpeed:input_type -> global.SetStreamSpeedRequest
+	48,  // 78: global.api.SeekStream:input_type -> global.SeekStreamRequest
+	36,  // 79: global.api.GetSubscribers:input_type -> global.SubscribersRequest
+	20,  // 80: global.api.AudioTrackSnap:input_type -> global.StreamSnapRequest
+	20,  // 81: global.api.VideoTrackSnap:input_type -> global.StreamSnapRequest
+	35,  // 82: global.api.ChangeSubscribe:input_type -> global.ChangeSubscribeRequest
+	76,  // 83: global.api.GetStreamAlias:input_type -> google.protobuf.Empty
+	44,  // 84: global.api.SetStreamAlias:input_type -> global.SetStreamAliasRequest
+	20,  // 85: global.api.StopPublish:input_type -> global.StreamSnapRequest
+	33,  // 86: global.api.StopSubscribe:input_type -> global.RequestWithId
+	76,  // 87: global.api.GetConfigFile:input_type -> google.protobuf.Empty
+	7,   // 88: global.api.UpdateConfigFile:input_type -> global.UpdateConfigFileRequest
+	1,   // 89: global.api.GetConfig:input_type -> global.GetConfigRequest
+	1,   // 90: global.api.GetFormily:input_type -> global.GetConfigRequest
+	76,  // 91: global.api.GetPullProxyList:input_type -> google.protobuf.Empty
+	41,  // 92: global.api.AddPullProxy:input_type -> global.PullProxyInfo
+	33,  // 93: global.api.RemovePullProxy:input_type -> global.RequestWithId
+	41,  // 94: global.api.UpdatePullProxy:input_type -> global.PullProxyInfo
+	76,  // 95: global.api.GetPushProxyList:input_type -> google.protobuf.Empty
+	42,  // 96: global.api.AddPushProxy:input_type -> global.PushProxyInfo
+	33,  // 97: global.api.RemovePushProxy:input_type -> global.RequestWithId
+	42,  // 98: global.api.UpdatePushProxy:input_type -> global.PushProxyInfo
+	76,  // 99: global.api.GetRecording:input_type -> google.protobuf.Empty
+	76,  // 100: global.api.GetTransformList:input_type -> google.protobuf.Empty
+	56,  // 101: global.api.GetRecordList:input_type -> global.ReqRecordList
+	56,  // 102: global.api.GetEventRecordList:input_type -> global.ReqRecordList
+	65,  // 103: global.api.GetRecordCatalog:input_type -> global.ReqRecordCatalog
+	63,  // 104: global.api.DeleteRecord:input_type -> global.ReqRecordDelete
+	14,  // 105: global.api.SysInfo:output_type -> global.SysInfoResponse
+	0,   // 106: global.api.DisabledPlugins:output_type -> global.DisabledPluginsResponse
+	11,  // 107: global.api.Summary:output_type -> global.SummaryResponse
+	32,  // 108: global.api.Shutdown:output_type -> global.SuccessResponse
+	32,  // 109: global.api.Restart:output_type -> global.SuccessResponse
+	16,  // 110: global.api.TaskTree:output_type -> global.TaskTreeResponse
+	32,  // 111: global.api.StopTask:output_type -> global.SuccessResponse
+	32,  // 112: global.api.RestartTask:output_type -> global.SuccessResponse
+	18,  // 113: global.api.StreamList:output_type -> global.StreamListResponse
+	19,  // 114: global.api.WaitList:output_type -> global.StreamWaitListResponse
+	21,  // 115: global.api.StreamInfo:output_type -> global.StreamInfoResponse
+	32,  // 116: global.api.PauseStream:output_type -> global.SuccessResponse
+	32,  // 117: global.api.ResumeStream:output_type -> global.SuccessResponse
+	32,  // 118: global.api.SetStreamSpeed:output_type -> global.SuccessResponse
+	32,  // 119: global.api.SeekStream:output_type -> global.SuccessResponse
+	39,  // 120: global.api.GetSubscribers:output_type -> global.SubscribersResponse
+	30,  // 121: global.api.AudioTrackSnap:output_type -> global.TrackSnapShotResponse
+	30,  // 122: global.api.VideoTrackSnap:output_type -> global.TrackSnapShotResponse
+	32,  // 123: global.api.ChangeSubscribe:output_type -> global.SuccessResponse
+	46,  // 124: global.api.GetStreamAlias:output_type -> global.StreamAliasListResponse
+	32,  // 125: global.api.SetStreamAlias:output_type -> global.SuccessResponse
+	32,  // 126: global.api.StopPublish:output_type -> global.SuccessResponse
+	32,  // 127: global.api.StopSubscribe:output_type -> global.SuccessResponse
+	5,   // 128: global.api.GetConfigFile:output_type -> global.GetConfigFileResponse
+	32,  // 129: global.api.UpdateConfigFile:output_type -> global.SuccessResponse
+	6,   // 130: global.api.GetConfig:output_type -> global.GetConfigResponse
+	6,   // 131: global.api.GetFormily:output_type -> global.GetConfigResponse
+	40,  // 132: global.api.GetPullProxyList:output_type -> global.PullProxyListResponse
+	32,  // 133: global.api.AddPullProxy:output_type -> global.SuccessResponse
+	32,  // 134: global.api.RemovePullProxy:output_type -> global.SuccessResponse
+	32,  // 135: global.api.UpdatePullProxy:output_type -> global.SuccessResponse
+	43,  // 136: global.api.GetPushProxyList:output_type -> global.PushProxyListResponse
+	32,  // 137: global.api.AddPushProxy:output_type -> global.SuccessResponse
+	32,  // 138: global.api.RemovePushProxy:output_type -> global.SuccessResponse
+	32,  // 139: global.api.UpdatePushProxy:output_type -> global.SuccessResponse
+	50,  // 140: global.api.GetRecording:output_type -> global.RecordingListResponse
+	55,  // 141: global.api.GetTransformList:output_type -> global.TransformListResponse
+	59,  // 142: global.api.GetRecordList:output_type -> global.RecordResponseList
+	60,  // 143: global.api.GetEventRecordList:output_type -> global.EventRecordResponseList
+	62,  // 144: global.api.GetRecordCatalog:output_type -> global.ResponseCatalog
+	64,  // 145: global.api.DeleteRecord:output_type -> global.ResponseDelete
+	105, // [105:146] is the sub-list for method output_type
+	64,  // [64:105] is the sub-list for method input_type
+	64,  // [64:64] is the sub-list for extension type_name
+	64,  // [64:64] is the sub-list for extension extendee
+	0,   // [0:64] is the sub-list for field type_name
 }
 
 func init() { file_global_proto_init() }
@@ -5373,7 +5556,7 @@ func file_global_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_global_proto_rawDesc), len(file_global_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   71,
+			NumMessages:   73,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

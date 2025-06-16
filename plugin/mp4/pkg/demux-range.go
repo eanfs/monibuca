@@ -5,22 +5,26 @@ import (
 	"os"
 	"time"
 
+	"github.com/deepch/vdk/codec/aacparser"
+	"github.com/deepch/vdk/codec/h264parser"
+	"github.com/deepch/vdk/codec/h265parser"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/util"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
 type DemuxerRange struct {
-	StartTime, EndTime time.Time
-	Streams            []m7s.RecordStream
-	OnAudioExtraData   func(codec box.MP4_CODEC_TYPE, data []byte) error
-	OnVideoExtraData   func(codec box.MP4_CODEC_TYPE, data []byte) error
-	OnAudioSample      func(codec box.MP4_CODEC_TYPE, sample box.Sample) error
-	OnVideoSample      func(codec box.MP4_CODEC_TYPE, sample box.Sample) error
+	StartTime, EndTime     time.Time
+	Streams                []m7s.RecordStream
+	AudioTrack, VideoTrack *pkg.AVTrack
 }
 
-func (d *DemuxerRange) Demux(ctx context.Context) error {
+func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, onVideo func(*Video) error) error {
 	var ts, tsOffset int64
-
+	allocator := util.NewScalableMemoryAllocator(1 << 10)
+	defer allocator.Recycle()
 	for _, stream := range d.Streams {
 		// 检查流的时间范围是否在指定范围内
 		if stream.EndTime.Before(d.StartTime) || stream.StartTime.After(d.EndTime) {
@@ -42,19 +46,50 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 		// 处理每个轨道的额外数据 (序列头)
 		for _, track := range demuxer.Tracks {
 			switch track.Cid {
-			case box.MP4_CODEC_H264, box.MP4_CODEC_H265:
-				if d.OnVideoExtraData != nil {
-					err := d.OnVideoExtraData(track.Cid, track.ExtraData)
-					if err != nil {
-						return err
+			case box.MP4_CODEC_H264:
+				var h264Ctx codec.H264Ctx
+				h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+				if err == nil {
+					if d.VideoTrack == nil {
+						d.VideoTrack = pkg.NewAVTrack(&Video{
+							allocator: allocator,
+						}, &h264Ctx)
+					} else {
+						// 如果已经有视频轨道，使用现有的轨道
+						d.VideoTrack.ICodecCtx = &h264Ctx
 					}
 				}
-			case box.MP4_CODEC_AAC, box.MP4_CODEC_G711A, box.MP4_CODEC_G711U:
-				if d.OnAudioExtraData != nil {
-					err := d.OnAudioExtraData(track.Cid, track.ExtraData)
-					if err != nil {
-						return err
+			case box.MP4_CODEC_H265:
+				var h265Ctx codec.H265Ctx
+				h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+				if err == nil {
+					if d.VideoTrack == nil {
+						d.VideoTrack = pkg.NewAVTrack(&Video{
+							allocator: allocator,
+						}, &h265Ctx)
+					} else {
+						// 如果已经有视频轨道，使用现有的轨道
+						d.VideoTrack.ICodecCtx = &h265Ctx
 					}
+				}
+			case box.MP4_CODEC_AAC:
+				var aacCtx codec.AACCtx
+				aacCtx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(track.ExtraData)
+				if err == nil {
+					if d.AudioTrack == nil {
+						d.AudioTrack = pkg.NewAVTrack(&Audio{
+							allocator: allocator,
+						}, &aacCtx)
+					} else {
+						// 如果已经有音频轨道，使用现有的轨道
+						d.AudioTrack.ICodecCtx = &aacCtx
+					}
+				}
+			case box.MP4_CODEC_G711A, box.MP4_CODEC_G711U:
+				if d.AudioTrack == nil {
+					d.AudioTrack = pkg.NewAVTrack(&Audio{
+						allocator: allocator,
+					})
 				}
 			}
 		}
@@ -101,21 +136,50 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			// 根据轨道类型调用相应的回调函数
 			switch track.Cid {
 			case box.MP4_CODEC_H264, box.MP4_CODEC_H265:
-				if d.OnVideoSample != nil {
-					err := d.OnVideoSample(track.Cid, sample)
-					if err != nil {
-						return err
-					}
+				if err := onVideo(&Video{
+					Sample:    sample,
+					allocator: allocator,
+				}); err != nil {
+					return err
 				}
 			case box.MP4_CODEC_AAC, box.MP4_CODEC_G711A, box.MP4_CODEC_G711U:
-				if d.OnAudioSample != nil {
-					err := d.OnAudioSample(track.Cid, sample)
-					if err != nil {
-						return err
-					}
+				if err := onAudio(&Audio{
+					Sample:    sample,
+					allocator: allocator,
+				}); err != nil {
+					return err
 				}
 			}
 		}
 	}
+	return nil
+}
+
+type DemuxerConverterRange[TA pkg.IAVFrame, TV pkg.IAVFrame] struct {
+	DemuxerRange
+	audioConverter *pkg.AVFrameConvert[TA]
+	videoConverter *pkg.AVFrameConvert[TV]
+}
+
+func (d *DemuxerConverterRange[TA, TV]) Demux(ctx context.Context, onAudio func(TA) error, onVideo func(TV) error) error {
+	d.DemuxerRange.Demux(ctx, func(audio *Audio) error {
+		if d.audioConverter == nil {
+			d.audioConverter = pkg.NewAVFrameConvert[TA](d.AudioTrack, nil)
+		}
+		target, err := d.audioConverter.Convert(audio)
+		if err == nil {
+			err = onAudio(target)
+		}
+		return err
+	}, func(video *Video) error {
+		if d.videoConverter == nil {
+			d.videoConverter = pkg.NewAVFrameConvert[TV](d.VideoTrack, nil)
+		}
+		target, err := d.videoConverter.Convert(video)
+		if err == nil {
+			err = onVideo(target)
+		}
+		return err
+	})
 	return nil
 }

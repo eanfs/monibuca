@@ -20,46 +20,47 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Api_SysInfo_FullMethodName          = "/global.api/SysInfo"
-	Api_DisabledPlugins_FullMethodName  = "/global.api/DisabledPlugins"
-	Api_Summary_FullMethodName          = "/global.api/Summary"
-	Api_Shutdown_FullMethodName         = "/global.api/Shutdown"
-	Api_Restart_FullMethodName          = "/global.api/Restart"
-	Api_TaskTree_FullMethodName         = "/global.api/TaskTree"
-	Api_StopTask_FullMethodName         = "/global.api/StopTask"
-	Api_RestartTask_FullMethodName      = "/global.api/RestartTask"
-	Api_StreamList_FullMethodName       = "/global.api/StreamList"
-	Api_WaitList_FullMethodName         = "/global.api/WaitList"
-	Api_StreamInfo_FullMethodName       = "/global.api/StreamInfo"
-	Api_PauseStream_FullMethodName      = "/global.api/PauseStream"
-	Api_ResumeStream_FullMethodName     = "/global.api/ResumeStream"
-	Api_SetStreamSpeed_FullMethodName   = "/global.api/SetStreamSpeed"
-	Api_SeekStream_FullMethodName       = "/global.api/SeekStream"
-	Api_GetSubscribers_FullMethodName   = "/global.api/GetSubscribers"
-	Api_AudioTrackSnap_FullMethodName   = "/global.api/AudioTrackSnap"
-	Api_VideoTrackSnap_FullMethodName   = "/global.api/VideoTrackSnap"
-	Api_ChangeSubscribe_FullMethodName  = "/global.api/ChangeSubscribe"
-	Api_GetStreamAlias_FullMethodName   = "/global.api/GetStreamAlias"
-	Api_SetStreamAlias_FullMethodName   = "/global.api/SetStreamAlias"
-	Api_StopPublish_FullMethodName      = "/global.api/StopPublish"
-	Api_StopSubscribe_FullMethodName    = "/global.api/StopSubscribe"
-	Api_GetConfigFile_FullMethodName    = "/global.api/GetConfigFile"
-	Api_UpdateConfigFile_FullMethodName = "/global.api/UpdateConfigFile"
-	Api_GetConfig_FullMethodName        = "/global.api/GetConfig"
-	Api_GetFormily_FullMethodName       = "/global.api/GetFormily"
-	Api_GetPullProxyList_FullMethodName = "/global.api/GetPullProxyList"
-	Api_AddPullProxy_FullMethodName     = "/global.api/AddPullProxy"
-	Api_RemovePullProxy_FullMethodName  = "/global.api/RemovePullProxy"
-	Api_UpdatePullProxy_FullMethodName  = "/global.api/UpdatePullProxy"
-	Api_GetPushProxyList_FullMethodName = "/global.api/GetPushProxyList"
-	Api_AddPushProxy_FullMethodName     = "/global.api/AddPushProxy"
-	Api_RemovePushProxy_FullMethodName  = "/global.api/RemovePushProxy"
-	Api_UpdatePushProxy_FullMethodName  = "/global.api/UpdatePushProxy"
-	Api_GetRecording_FullMethodName     = "/global.api/GetRecording"
-	Api_GetTransformList_FullMethodName = "/global.api/GetTransformList"
-	Api_GetRecordList_FullMethodName    = "/global.api/GetRecordList"
-	Api_GetRecordCatalog_FullMethodName = "/global.api/GetRecordCatalog"
-	Api_DeleteRecord_FullMethodName     = "/global.api/DeleteRecord"
+	Api_SysInfo_FullMethodName            = "/global.api/SysInfo"
+	Api_DisabledPlugins_FullMethodName    = "/global.api/DisabledPlugins"
+	Api_Summary_FullMethodName            = "/global.api/Summary"
+	Api_Shutdown_FullMethodName           = "/global.api/Shutdown"
+	Api_Restart_FullMethodName            = "/global.api/Restart"
+	Api_TaskTree_FullMethodName           = "/global.api/TaskTree"
+	Api_StopTask_FullMethodName           = "/global.api/StopTask"
+	Api_RestartTask_FullMethodName        = "/global.api/RestartTask"
+	Api_StreamList_FullMethodName         = "/global.api/StreamList"
+	Api_WaitList_FullMethodName           = "/global.api/WaitList"
+	Api_StreamInfo_FullMethodName         = "/global.api/StreamInfo"
+	Api_PauseStream_FullMethodName        = "/global.api/PauseStream"
+	Api_ResumeStream_FullMethodName       = "/global.api/ResumeStream"
+	Api_SetStreamSpeed_FullMethodName     = "/global.api/SetStreamSpeed"
+	Api_SeekStream_FullMethodName         = "/global.api/SeekStream"
+	Api_GetSubscribers_FullMethodName     = "/global.api/GetSubscribers"
+	Api_AudioTrackSnap_FullMethodName     = "/global.api/AudioTrackSnap"
+	Api_VideoTrackSnap_FullMethodName     = "/global.api/VideoTrackSnap"
+	Api_ChangeSubscribe_FullMethodName    = "/global.api/ChangeSubscribe"
+	Api_GetStreamAlias_FullMethodName     = "/global.api/GetStreamAlias"
+	Api_SetStreamAlias_FullMethodName     = "/global.api/SetStreamAlias"
+	Api_StopPublish_FullMethodName        = "/global.api/StopPublish"
+	Api_StopSubscribe_FullMethodName      = "/global.api/StopSubscribe"
+	Api_GetConfigFile_FullMethodName      = "/global.api/GetConfigFile"
+	Api_UpdateConfigFile_FullMethodName   = "/global.api/UpdateConfigFile"
+	Api_GetConfig_FullMethodName          = "/global.api/GetConfig"
+	Api_GetFormily_FullMethodName         = "/global.api/GetFormily"
+	Api_GetPullProxyList_FullMethodName   = "/global.api/GetPullProxyList"
+	Api_AddPullProxy_FullMethodName       = "/global.api/AddPullProxy"
+	Api_RemovePullProxy_FullMethodName    = "/global.api/RemovePullProxy"
+	Api_UpdatePullProxy_FullMethodName    = "/global.api/UpdatePullProxy"
+	Api_GetPushProxyList_FullMethodName   = "/global.api/GetPushProxyList"
+	Api_AddPushProxy_FullMethodName       = "/global.api/AddPushProxy"
+	Api_RemovePushProxy_FullMethodName    = "/global.api/RemovePushProxy"
+	Api_UpdatePushProxy_FullMethodName    = "/global.api/UpdatePushProxy"
+	Api_GetRecording_FullMethodName       = "/global.api/GetRecording"
+	Api_GetTransformList_FullMethodName   = "/global.api/GetTransformList"
+	Api_GetRecordList_FullMethodName      = "/global.api/GetRecordList"
+	Api_GetEventRecordList_FullMethodName = "/global.api/GetEventRecordList"
+	Api_GetRecordCatalog_FullMethodName   = "/global.api/GetRecordCatalog"
+	Api_DeleteRecord_FullMethodName       = "/global.api/DeleteRecord"
 )
 
 // ApiClient is the client API for Api service.
@@ -103,7 +104,8 @@ type ApiClient interface {
 	UpdatePushProxy(ctx context.Context, in *PushProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetRecording(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RecordingListResponse, error)
 	GetTransformList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TransformListResponse, error)
-	GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*ResponseList, error)
+	GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*RecordResponseList, error)
+	GetEventRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*EventRecordResponseList, error)
 	GetRecordCatalog(ctx context.Context, in *ReqRecordCatalog, opts ...grpc.CallOption) (*ResponseCatalog, error)
 	DeleteRecord(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*ResponseDelete, error)
 }
@@ -486,10 +488,20 @@ func (c *apiClient) GetTransformList(ctx context.Context, in *emptypb.Empty, opt
 	return out, nil
 }
 
-func (c *apiClient) GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*ResponseList, error) {
+func (c *apiClient) GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*RecordResponseList, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ResponseList)
+	out := new(RecordResponseList)
 	err := c.cc.Invoke(ctx, Api_GetRecordList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetEventRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*EventRecordResponseList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EventRecordResponseList)
+	err := c.cc.Invoke(ctx, Api_GetEventRecordList_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -557,7 +569,8 @@ type ApiServer interface {
 	UpdatePushProxy(context.Context, *PushProxyInfo) (*SuccessResponse, error)
 	GetRecording(context.Context, *emptypb.Empty) (*RecordingListResponse, error)
 	GetTransformList(context.Context, *emptypb.Empty) (*TransformListResponse, error)
-	GetRecordList(context.Context, *ReqRecordList) (*ResponseList, error)
+	GetRecordList(context.Context, *ReqRecordList) (*RecordResponseList, error)
+	GetEventRecordList(context.Context, *ReqRecordList) (*EventRecordResponseList, error)
 	GetRecordCatalog(context.Context, *ReqRecordCatalog) (*ResponseCatalog, error)
 	DeleteRecord(context.Context, *ReqRecordDelete) (*ResponseDelete, error)
 	mustEmbedUnimplementedApiServer()
@@ -681,8 +694,11 @@ func (UnimplementedApiServer) GetRecording(context.Context, *emptypb.Empty) (*Re
 func (UnimplementedApiServer) GetTransformList(context.Context, *emptypb.Empty) (*TransformListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTransformList not implemented")
 }
-func (UnimplementedApiServer) GetRecordList(context.Context, *ReqRecordList) (*ResponseList, error) {
+func (UnimplementedApiServer) GetRecordList(context.Context, *ReqRecordList) (*RecordResponseList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRecordList not implemented")
+}
+func (UnimplementedApiServer) GetEventRecordList(context.Context, *ReqRecordList) (*EventRecordResponseList, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetEventRecordList not implemented")
 }
 func (UnimplementedApiServer) GetRecordCatalog(context.Context, *ReqRecordCatalog) (*ResponseCatalog, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRecordCatalog not implemented")
@@ -1395,6 +1411,24 @@ func _Api_GetRecordList_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_GetEventRecordList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReqRecordList)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetEventRecordList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_GetEventRecordList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetEventRecordList(ctx, req.(*ReqRecordList))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Api_GetRecordCatalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReqRecordCatalog)
 	if err := dec(in); err != nil {
@@ -1589,6 +1623,10 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRecordList",
 			Handler:    _Api_GetRecordList_Handler,
+		},
+		{
+			MethodName: "GetEventRecordList",
+			Handler:    _Api_GetEventRecordList_Handler,
 		},
 		{
 			MethodName: "GetRecordCatalog",

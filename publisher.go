@@ -314,6 +314,30 @@ func (p *Publisher) trackAdded() error {
 	return nil
 }
 
+func (p *Publisher) SetCodecCtx(ctx codec.ICodecCtx, data IAVFrame) {
+	if _, ok := ctx.(IAudioCodecCtx); ok {
+		t := p.AudioTrack.AVTrack
+		if t == nil {
+			t = NewAVTrack(data, p.Logger.With("track", "audio"), &p.Publish, p.audioReady, ctx)
+			p.AudioTrack.Set(t)
+			p.Call(p.trackAdded)
+		} else {
+			t.ICodecCtx = ctx
+		}
+		return
+	} else if _, ok := ctx.(IVideoCodecCtx); ok {
+		t := p.VideoTrack.AVTrack
+		if t == nil {
+			t = NewAVTrack(data, p.Logger.With("track", "video"), &p.Publish, p.videoReady, ctx)
+			p.VideoTrack.Set(t)
+			p.Call(p.trackAdded)
+		} else {
+			t.ICodecCtx = ctx
+		}
+		return
+	}
+}
+
 func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	defer func() {
 		if err != nil {
