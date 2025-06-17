@@ -153,6 +153,7 @@ var CustomFileName = func(job *m7s.RecordJob) string {
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
+	r.RecordJob.RecConf.Type = "flv"
 	return r.CreateStream(start, CustomFileName)
 }
 

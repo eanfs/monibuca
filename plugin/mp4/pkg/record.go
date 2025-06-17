@@ -135,6 +135,9 @@ var CustomFileName = func(job *m7s.RecordJob) string {
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
+	if r.RecordJob.RecConf.Type == "" {
+		r.RecordJob.RecConf.Type = "mp4"
+	}
 	err = r.CreateStream(start, CustomFileName)
 	if err != nil {
 		return
@@ -143,8 +146,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	if r.RecordJob.RecConf.Type == "fmp4" {
-		r.Event.Type = "fmp4"
+	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)
 	} else {
 		r.muxer = NewMuxerWithStreamPath(0, r.Event.StreamPath)
