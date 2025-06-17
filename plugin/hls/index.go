@@ -295,7 +295,7 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		http.ServeFileFS(w, r, zipReader, strings.TrimPrefix(r.URL.Path, "/hls.js"))
+		http.ServeFileFS(w, r, zipReader, r.URL.Path)
 	}
 }
 
