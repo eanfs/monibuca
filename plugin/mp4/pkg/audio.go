@@ -30,10 +30,6 @@ func (a *Audio) SetAllocator(allocator *util.ScalableMemoryAllocator) {
 
 // Parse implements pkg.IAVFrame.
 func (a *Audio) Parse(t *pkg.AVTrack) error {
-	// 设置音频帧的基本信息
-	t.Value.IDR = false // 音频帧通常不是 IDR
-	t.Value.Timestamp = time.Duration(a.Timestamp) * time.Millisecond
-	t.Value.CTS = time.Duration(a.CTS) * time.Millisecond
 	return nil
 }
 

@@ -163,7 +163,9 @@ func (wsh *WebSocketHandler) Go() (err error) {
 
 // Dispose 清理资源
 func (wsh *WebSocketHandler) Dispose() {
-	wsh.PeerConnection.Close()
+	if wsh.PeerConnection != nil {
+		wsh.PeerConnection.Close()
+	}
 	wsh.conn.Close()
 }
 

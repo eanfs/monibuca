@@ -1,9 +1,11 @@
 package mpegts
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+
 	"m7s.live/v5/pkg/util"
 )
 
@@ -179,50 +181,56 @@ func WritePSI(w io.Writer, pt uint32, psi MpegTsPSI, data []byte) (err error) {
 		return
 	}
 
-	cw := &util.Crc32Writer{W: w, Crc32: 0xffffffff}
+	// 使用buffer收集所有需要计算CRC32的数据
+	bw := &bytes.Buffer{}
 
 	// table id(8)
-	if err = util.WriteUint8ToByte(cw, tableId); err != nil {
+	if err = util.WriteUint8ToByte(bw, tableId); err != nil {
 		return
 	}
 
 	// sectionSyntaxIndicator(1) + zero(1)  + reserved1(2) + sectionLength(12)
 	// sectionLength 前两个字节固定为00
 	// 1 0 11 sectionLength
-	if err = util.WriteUint16ToByte(cw, sectionSyntaxIndicatorAndSectionLength, true); err != nil {
+	if err = util.WriteUint16ToByte(bw, sectionSyntaxIndicatorAndSectionLength, true); err != nil {
 		return
 	}
 
 	// PAT TransportStreamID(16) or PMT ProgramNumber(16)
-	if err = util.WriteUint16ToByte(cw, transportStreamIdOrProgramNumber, true); err != nil {
+	if err = util.WriteUint16ToByte(bw, transportStreamIdOrProgramNumber, true); err != nil {
 		return
 	}
 
 	// reserved2(2) + versionNumber(5) + currentNextIndicator(1)
 	// 0x3 << 6 -> 1100 0000
 	// 0x3 << 6  | 1 -> 1100 0001
-	if err = util.WriteUint8ToByte(cw, versionNumberAndCurrentNextIndicator); err != nil {
+	if err = util.WriteUint8ToByte(bw, versionNumberAndCurrentNextIndicator); err != nil {
 		return
 	}
 
 	// sectionNumber(8)
-	if err = util.WriteUint8ToByte(cw, sectionNumber); err != nil {
+	if err = util.WriteUint8ToByte(bw, sectionNumber); err != nil {
 		return
 	}
 
 	// lastSectionNumber(8)
-	if err = util.WriteUint8ToByte(cw, lastSectionNumber); err != nil {
+	if err = util.WriteUint8ToByte(bw, lastSectionNumber); err != nil {
 		return
 	}
 
 	// data
-	if _, err = cw.Write(data); err != nil {
+	if _, err = bw.Write(data); err != nil {
 		return
 	}
 
-	// crc32
-	crc32 := util.BigLittleSwap(uint(cw.Crc32))
-	if err = util.WriteUint32ToByte(cw, uint32(crc32), true); err != nil {
+	// 写入PSI数据
+	if _, err = w.Write(bw.Bytes()); err != nil {
+		return
+	}
+
+	// 使用MPEG-TS CRC32算法计算CRC32
+	crc32 := GetCRC32(bw.Bytes())
+	if err = util.WriteUint32ToByte(w, crc32, true); err != nil {
 		return
 	}
 

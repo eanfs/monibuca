@@ -31,14 +31,7 @@ func (v *Video) SetAllocator(allocator *util.ScalableMemoryAllocator) {
 
 // Parse implements pkg.IAVFrame.
 func (v *Video) Parse(t *pkg.AVTrack) error {
-	// 设置视频帧的基本信息
 	t.Value.IDR = v.KeyFrame
-	t.Value.Timestamp = time.Duration(v.Timestamp) * time.Millisecond
-	t.Value.CTS = time.Duration(v.CTS) * time.Millisecond
-
-	// 这里可以添加更多的解析逻辑，比如解析编解码器信息
-	// 对于 MP4 视频帧，我们通常从 Sample 中获取数据
-
 	return nil
 }
 
