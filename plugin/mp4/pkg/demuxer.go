@@ -382,23 +382,20 @@ func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 		maxdts := int64(-1)
 		minTsSample := Sample{Timestamp: uint32(maxdts)}
 		var whichTrack *Track
-		whichTracki := 0
-		for i, track := range d.Tracks {
-			idx := d.ReadSampleIdx[i]
+		for _, track := range d.Tracks {
+			idx := d.ReadSampleIdx[track.TrackId-1]
 			if int(idx) == len(track.Samplelist) {
 				continue
 			}
 			if whichTrack == nil {
 				minTsSample = track.Samplelist[idx]
 				whichTrack = track
-				whichTracki = i
 			} else {
 				dts1 := uint64(minTsSample.Timestamp) * uint64(d.moov.MVHD.Timescale) / uint64(whichTrack.Timescale)
 				dts2 := uint64(track.Samplelist[idx].Timestamp) * uint64(d.moov.MVHD.Timescale) / uint64(track.Timescale)
 				if dts1 > dts2 {
 					minTsSample = track.Samplelist[idx]
 					whichTrack = track
-					whichTracki = i
 				}
 			}
 			// subSample := d.readSubSample(idx, whichTrack)
@@ -407,7 +404,7 @@ func (d *Demuxer) ReadSample(yield func(*Track, Sample) bool) {
 			return
 		}
 
-		d.ReadSampleIdx[whichTracki]++
+		d.ReadSampleIdx[whichTrack.TrackId-1]++
 		if !yield(whichTrack, minTsSample) {
 			return
 		}
@@ -418,21 +415,18 @@ func (d *Demuxer) RangeSample(yield func(*Track, *Sample) bool) {
 	for {
 		var minTsSample *Sample
 		var whichTrack *Track
-		whichTracki := 0
-		for i, track := range d.Tracks {
-			idx := d.ReadSampleIdx[i]
+		for _, track := range d.Tracks {
+			idx := d.ReadSampleIdx[track.TrackId-1]
 			if int(idx) == len(track.Samplelist) {
 				continue
 			}
 			if whichTrack == nil {
 				minTsSample = &track.Samplelist[idx]
 				whichTrack = track
-				whichTracki = i
 			} else {
 				if minTsSample.Offset > track.Samplelist[idx].Offset {
 					minTsSample = &track.Samplelist[idx]
 					whichTrack = track
-					whichTracki = i
 				}
 			}
 			// subSample := d.readSubSample(idx, whichTrack)
@@ -440,7 +434,7 @@ func (d *Demuxer) RangeSample(yield func(*Track, *Sample) bool) {
 		if minTsSample == nil {
 			return
 		}
-		d.ReadSampleIdx[whichTracki]++
+		d.ReadSampleIdx[whichTrack.TrackId-1]++
 		if !yield(whichTrack, minTsSample) {
 			return
 		}
