@@ -153,6 +153,8 @@ func (wsh *WebSocketHandler) Go() (err error) {
 			wsh.handleAnswer(signal)
 		case SignalTypeGetStreamList:
 			wsh.handleGetStreamList()
+		case SignalTypePing:
+			wsh.handlePing(signal)
 		default:
 			wsh.sendError("Unknown signal type: " + string(signal.Type))
 		}
@@ -188,6 +190,20 @@ func (wsh *WebSocketHandler) sendError(message string) error {
 		Type:    "error",
 		Message: message,
 	})
+}
+
+func (wsh *WebSocketHandler) handlePing(signal Signal) {
+	// 处理ping信号，直接回复pong
+	if signal.Type == SignalTypePing {
+		wsh.Debug("Received ping, sending pong")
+		if err := wsh.sendJSON(Signal{
+			Type: SignalTypePong,
+		}); err != nil {
+			wsh.Error("Failed to send pong", "error", err)
+		}
+	} else {
+		wsh.sendError("Invalid signal type for ping: " + string(signal.Type))
+	}
 }
 
 // handlePublish 处理发布信号

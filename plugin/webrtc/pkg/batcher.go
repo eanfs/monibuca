@@ -13,6 +13,9 @@ const (
 	SignalTypeUnpublish     SignalType = "unpublish"
 	SignalTypeAnswer        SignalType = "answer"
 	SignalTypeGetStreamList SignalType = "getStreamList"
+	SignalTypePing          SignalType = "ping"
+	SignalTypePong          SignalType = "pong"
+	SignalTypeError         SignalType = "error"
 )
 
 type Signal struct {
