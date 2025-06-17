@@ -26,7 +26,7 @@
 
 ### Plugin Development
 
-[plugin/README.md](../plugin/README.md)
+[plugin/README.md](../../plugin/README.md)
 
 ## Task System
 
