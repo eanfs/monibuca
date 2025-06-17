@@ -74,6 +74,9 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	fileName := query.Get("streamPath")
+	if fileName == "" {
+		fileName = r.PathValue("streamPath")
+	}
 	waitTimeout, err := time.ParseDuration(query.Get("timeout"))
 	if err == nil {
 		config.Debug("request", "fileName", fileName, "timeout", waitTimeout)
@@ -116,18 +119,17 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 					return
 				} else if recordType == "ts" {
 					playlist := hls.Playlist{
-						Version:        7,
+						Version:        3,
 						Sequence:       0,
 						Targetduration: 10,
 					}
 					var plBuffer util.Buffer
 					playlist.Writer = &plBuffer
 					playlist.Init()
-					segDur := endTime.Sub(startTime) / 10 * time.Second
-					for i := startTime; i.Before(endTime); i = i.Add(segDur) {
+					for i := startTime; i.Before(endTime); i = i.Add(10 * time.Second) {
 						playlist.WriteInf(hls.PlaylistInf{
 							Duration: 10,
-							URL:      fmt.Sprintf("/hls/download/%s.ts?start=%d&end=%d", streamPath, i.Unix(), i.Add(segDur).Unix()),
+							URL:      fmt.Sprintf("/hls/download/%s.ts?start=%d&end=%d", streamPath, i.Unix(), i.Add(10*time.Second).Unix()),
 							Title:    i.Format(time.RFC3339),
 						})
 					}

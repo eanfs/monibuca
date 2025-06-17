@@ -86,8 +86,6 @@ func NewAVTrack(args ...any) (t *AVTrack) {
 			t.RingWriter.SLogger = t.Logger
 		case *util.Promise:
 			t.ready = v
-		case codec.ICodecCtx:
-			t.ICodecCtx = v
 		}
 	}
 	//t.ready = util.NewPromise(struct{}{})

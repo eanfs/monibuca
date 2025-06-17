@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 )
 
 type DemuxerRange struct {
+	*slog.Logger
 	StartTime, EndTime     time.Time
 	Streams                []m7s.RecordStream
 	AudioTrack, VideoTrack *pkg.AVTrack
@@ -51,9 +53,12 @@ func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, on
 				h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
 				if err == nil {
 					if d.VideoTrack == nil {
-						d.VideoTrack = pkg.NewAVTrack(&Video{
-							allocator: allocator,
-						}, &h264Ctx)
+						d.VideoTrack = &pkg.AVTrack{
+							ICodecCtx: &h264Ctx,
+							RingWriter: &pkg.RingWriter{
+								Ring: util.NewRing[pkg.AVFrame](1),
+							}}
+						d.VideoTrack.Logger = d.With("track", "video")
 					} else {
 						// 如果已经有视频轨道，使用现有的轨道
 						d.VideoTrack.ICodecCtx = &h264Ctx
@@ -64,9 +69,12 @@ func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, on
 				h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
 				if err == nil {
 					if d.VideoTrack == nil {
-						d.VideoTrack = pkg.NewAVTrack(&Video{
-							allocator: allocator,
-						}, &h265Ctx)
+						d.VideoTrack = &pkg.AVTrack{
+							ICodecCtx: &h265Ctx,
+							RingWriter: &pkg.RingWriter{
+								Ring: util.NewRing[pkg.AVFrame](1),
+							}}
+						d.VideoTrack.Logger = d.With("track", "video")
 					} else {
 						// 如果已经有视频轨道，使用现有的轨道
 						d.VideoTrack.ICodecCtx = &h265Ctx
@@ -77,19 +85,46 @@ func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, on
 				aacCtx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(track.ExtraData)
 				if err == nil {
 					if d.AudioTrack == nil {
-						d.AudioTrack = pkg.NewAVTrack(&Audio{
-							allocator: allocator,
-						}, &aacCtx)
+						d.AudioTrack = &pkg.AVTrack{
+							ICodecCtx: &aacCtx,
+							RingWriter: &pkg.RingWriter{
+								Ring: util.NewRing[pkg.AVFrame](1),
+							}}
+						d.AudioTrack.Logger = d.With("track", "audio")
 					} else {
 						// 如果已经有音频轨道，使用现有的轨道
 						d.AudioTrack.ICodecCtx = &aacCtx
 					}
 				}
-			case box.MP4_CODEC_G711A, box.MP4_CODEC_G711U:
+			case box.MP4_CODEC_G711A:
 				if d.AudioTrack == nil {
-					d.AudioTrack = pkg.NewAVTrack(&Audio{
-						allocator: allocator,
-					})
+					d.AudioTrack = &pkg.AVTrack{
+						ICodecCtx: &codec.PCMACtx{
+							AudioCtx: codec.AudioCtx{
+								SampleRate: 8000,
+								Channels:   1,
+								SampleSize: 16,
+							},
+						},
+						RingWriter: &pkg.RingWriter{
+							Ring: util.NewRing[pkg.AVFrame](1),
+						}}
+					d.AudioTrack.Logger = d.With("track", "audio")
+				}
+			case box.MP4_CODEC_G711U:
+				if d.AudioTrack == nil {
+					d.AudioTrack = &pkg.AVTrack{
+						ICodecCtx: &codec.PCMUCtx{
+							AudioCtx: codec.AudioCtx{
+								SampleRate: 8000,
+								Channels:   1,
+								SampleSize: 16,
+							},
+						},
+						RingWriter: &pkg.RingWriter{
+							Ring: util.NewRing[pkg.AVFrame](1),
+						}}
+					d.AudioTrack.Logger = d.With("track", "audio")
 				}
 			}
 		}

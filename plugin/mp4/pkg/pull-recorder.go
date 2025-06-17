@@ -49,7 +49,9 @@ func (p *RecordReader) Run() (err error) {
 	var tsOffset int64 // 时间戳偏移量
 
 	// 创建可复用的 DemuxerRange 实例
-	demuxerRange := &DemuxerRange{}
+	demuxerRange := &DemuxerRange{
+		Logger: p.Logger.With("demuxer", "mp4"),
+	}
 
 	for loop := 0; loop < p.Loop; loop++ {
 		// 每次循环时更新时间戳偏移量以保持连续性

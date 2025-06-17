@@ -96,22 +96,14 @@ func (s *Server) api_Stream_AnnexB_(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer reader.StopRead()
-	if reader.Value.Raw == nil {
-		if err = reader.Value.Demux(publisher.VideoTrack.ICodecCtx); err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	var annexb pkg.AnnexB
-	var t pkg.AVTrack
-
-	t.ICodecCtx, t.SequenceFrame, err = annexb.ConvertCtx(publisher.VideoTrack.ICodecCtx)
-	if t.ICodecCtx == nil {
-		http.Error(rw, "unsupported codec", http.StatusInternalServerError)
+	var annexb *pkg.AnnexB
+	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.AVTrack, nil)
+	annexb, err = converter.ConvertFromAVFrame(&reader.Value)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	annexb.Mux(t.ICodecCtx, &reader.Value)
-	_, err = annexb.WriteTo(rw)
+	annexb.WriteTo(rw)
 }
 
 func (s *Server) getStreamInfo(pub *Publisher) (res *pb.StreamInfoResponse, err error) {

@@ -34,10 +34,6 @@ func (a *Audio) Parse(t *pkg.AVTrack) error {
 	t.Value.IDR = false // 音频帧通常不是 IDR
 	t.Value.Timestamp = time.Duration(a.Timestamp) * time.Millisecond
 	t.Value.CTS = time.Duration(a.CTS) * time.Millisecond
-
-	// 对于 MP4 音频帧，我们通常从 Sample 中获取数据
-	// 这里可以添加更多的解析逻辑，比如解析编解码器信息
-
 	return nil
 }
 

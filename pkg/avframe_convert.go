@@ -42,10 +42,8 @@ func (c *AVFrameConvert[T]) ConvertFromAVFrame(avFrame *AVFrame) (to T, err erro
 			return
 		}
 	}
-	if avFrame.Raw == nil {
-		if err = avFrame.Demux(c.FromTrack.ICodecCtx); err != nil {
-			return
-		}
+	if err = avFrame.Demux(c.FromTrack.ICodecCtx); err != nil {
+		return
 	}
 	to.SetAllocator(avFrame.Wraps[0].GetAllocator())
 	to.Mux(c.ToTrack.ICodecCtx, avFrame)
@@ -67,10 +65,8 @@ func (c *AVFrameConvert[T]) Convert(frame IAVFrame) (to T, err error) {
 		}
 	}
 	c.lastFromCodecCtx = c.FromTrack.ICodecCtx
-	if c.FromTrack.Value.Raw == nil {
-		if c.FromTrack.Value.Raw, err = frame.Demux(c.FromTrack.ICodecCtx); err != nil {
-			return
-		}
+	if c.FromTrack.Value.Raw, err = frame.Demux(c.FromTrack.ICodecCtx); err != nil {
+		return
 	}
 	to.SetAllocator(frame.GetAllocator())
 	to.Mux(c.ToTrack.ICodecCtx, &c.FromTrack.Value)

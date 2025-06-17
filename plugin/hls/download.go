@@ -12,6 +12,7 @@ import (
 
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
 	hls "m7s.live/v5/plugin/hls/pkg"
 	mpegts "m7s.live/v5/plugin/hls/pkg/ts"
@@ -188,6 +189,7 @@ func (plugin *HLSPlugin) processMp4ToTs(w http.ResponseWriter, r *http.Request, 
 	// 创建MP4流列表
 	var mp4Streams []m7s.RecordStream
 	for _, info := range fileInfoList {
+		plugin.Debug("Processing MP4 file", "path", info.filePath, "startTime", info.startTime, "endTime", info.endTime)
 		mp4Streams = append(mp4Streams, m7s.RecordStream{
 			FilePath:  info.filePath,
 			StartTime: info.startTime,
@@ -202,6 +204,7 @@ func (plugin *HLSPlugin) processMp4ToTs(w http.ResponseWriter, r *http.Request, 
 			StartTime: params.startTime,
 			EndTime:   params.endTime,
 			Streams:   mp4Streams,
+			Logger:    plugin.Logger.With("demuxer", "mp4_Ts"),
 		},
 	}
 
@@ -211,7 +214,14 @@ func (plugin *HLSPlugin) processMp4ToTs(w http.ResponseWriter, r *http.Request, 
 	// 写入PMT头的辅助函数
 	writePMTHeader := func() {
 		if !hasWritten {
-			tsWriter.WritePMTPacket(demuxer.AudioTrack.ICodecCtx.FourCC(), demuxer.VideoTrack.ICodecCtx.FourCC())
+			var audio, video codec.FourCC
+			if demuxer.AudioTrack != nil && demuxer.AudioTrack.ICodecCtx != nil {
+				audio = demuxer.AudioTrack.ICodecCtx.FourCC()
+			}
+			if demuxer.VideoTrack != nil && demuxer.VideoTrack.ICodecCtx != nil {
+				video = demuxer.VideoTrack.ICodecCtx.FourCC()
+			}
+			tsWriter.WritePMTPacket(audio, video)
 			hasWritten = true
 		}
 	}

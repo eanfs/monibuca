@@ -202,6 +202,7 @@ func (plugin *FLVPlugin) processMp4ToFlv(w http.ResponseWriter, r *http.Request,
 			StartTime: params.startTime,
 			EndTime:   params.endTime,
 			Streams:   mp4Streams,
+			Logger:    plugin.Logger.With("demuxer", "mp4_flv"),
 		},
 	}
 
