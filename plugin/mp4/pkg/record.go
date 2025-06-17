@@ -259,10 +259,11 @@ func (r *Recorder) Run() (err error) {
 				}
 			}
 		}
-		ctx := vt.ICodecCtx.(pkg.IVideoCodecCtx)
-		width, height := uint32(ctx.Width()), uint32(ctx.Height())
+
 		if vt == nil {
 			vt = sub.VideoReader.Track
+			ctx := vt.ICodecCtx.(pkg.IVideoCodecCtx)
+			width, height := uint32(ctx.Width()), uint32(ctx.Height())
 			switch ctx := vt.ICodecCtx.GetBase().(type) {
 			case *codec.H264Ctx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
@@ -278,7 +279,8 @@ func (r *Recorder) Run() (err error) {
 				track.Height = height
 			}
 		}
-
+		ctx := vt.ICodecCtx.(pkg.IVideoCodecCtx)
+		width, height := uint32(ctx.Width()), uint32(ctx.Height())
 		if width != videoTrack.Width || height != videoTrack.Height {
 			r.Info("Video resolution changed, restarting recording",
 				"old", fmt.Sprintf("%dx%d", videoTrack.Width, videoTrack.Height),
