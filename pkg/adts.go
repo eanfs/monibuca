@@ -3,7 +3,6 @@ package pkg
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/deepch/vdk/codec/aacparser"
@@ -18,32 +17,36 @@ type ADTS struct {
 	util.RecyclableMemory
 }
 
-func (A *ADTS) Parse(track *AVTrack) (err error) {
-	if track.ICodecCtx == nil {
+func (A *ADTS) Parse(old codec.ICodecCtx, f *AVFrame) (new codec.ICodecCtx, err error) {
+	if old == nil {
 		var ctx = &codec.AACCtx{}
 		var reader = A.NewReader()
 		var adts []byte
 		adts, err = reader.ReadBytes(7)
 		if err != nil {
-			return err
+			return
 		}
 		var hdrlen, framelen, samples int
 		ctx.Config, hdrlen, framelen, samples, err = aacparser.ParseADTSHeader(adts)
 		if err != nil {
-			return err
+			return
 		}
 		b := &bytes.Buffer{}
 		aacparser.WriteMPEG4AudioConfig(b, ctx.Config)
 		ctx.ConfigBytes = b.Bytes()
-		track.ICodecCtx = ctx
-		track.Info("ADTS", "hdrlen", hdrlen, "framelen", framelen, "samples", samples)
+		new = ctx
+		if false {
+			println("ADTS", "hdrlen", hdrlen, "framelen", framelen, "samples", samples, "config", ctx.Config)
+		}
+		// track.Info("ADTS", "hdrlen", hdrlen, "framelen", framelen, "samples", samples)
+	} else {
+		new = old
 	}
-	track.Value.Raw, err = A.Demux(track.ICodecCtx)
 	return
 }
 
-func (A *ADTS) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, IAVFrame, error) {
-	return ctx.GetBase(), nil, nil
+func (ADTS) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, error) {
+	return ctx.GetBase(), nil
 }
 
 func (A *ADTS) Demux(ctx codec.ICodecCtx) (any, error) {
@@ -82,9 +85,4 @@ func (A *ADTS) GetSize() int {
 
 func (A *ADTS) String() string {
 	return fmt.Sprintf("ADTS{size:%d}", A.Size)
-}
-
-func (A *ADTS) Dump(b byte, writer io.Writer) {
-	//TODO implement me
-	panic("implement me")
 }

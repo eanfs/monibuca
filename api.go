@@ -97,8 +97,8 @@ func (s *Server) api_Stream_AnnexB_(rw http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.StopRead()
 	var annexb *pkg.AnnexB
-	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.AVTrack, nil)
-	annexb, err = converter.ConvertFromAVFrame(&reader.Value)
+	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.ICodecCtx)
+	annexb, err = converter.Convert(reader.Value.Wraps[0])
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return

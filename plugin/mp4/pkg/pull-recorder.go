@@ -67,7 +67,7 @@ func (p *RecordReader) Run() (err error) {
 		}
 		if err = demuxerRange.Demux(p.Context, func(a *Audio) error {
 			if !publisher.HasAudioTrack() {
-				publisher.SetCodecCtx(demuxerRange.AudioTrack.ICodecCtx, a)
+				publisher.SetCodecCtx(demuxerRange.AudioCodec, a)
 			}
 			if publisher.Paused != nil {
 				publisher.Paused.Await()
@@ -90,7 +90,7 @@ func (p *RecordReader) Run() (err error) {
 			return publisher.WriteAudio(a)
 		}, func(v *Video) error {
 			if !publisher.HasVideoTrack() {
-				publisher.SetCodecCtx(demuxerRange.VideoTrack.ICodecCtx, v)
+				publisher.SetCodecCtx(demuxerRange.VideoCodec, v)
 			}
 			if publisher.Paused != nil {
 				publisher.Paused.Await()

@@ -197,7 +197,7 @@ func (plugin *FLVPlugin) processMp4ToFlv(w http.ResponseWriter, r *http.Request,
 	}
 
 	// 创建DemuxerConverterRange进行MP4解复用和转换
-	demuxer := &mp4.DemuxerConverterRange[*rtmp.RTMPAudio, *rtmp.RTMPVideo]{
+	demuxer := &mp4.DemuxerConverterRange[*rtmp.Audio, *rtmp.Video]{
 		DemuxerRange: mp4.DemuxerRange{
 			StartTime: params.startTime,
 			EndTime:   params.endTime,
@@ -213,9 +213,9 @@ func (plugin *FLVPlugin) processMp4ToFlv(w http.ResponseWriter, r *http.Request,
 	tsOffset := int64(0) // 偏移时间戳
 	// 执行解复用和转换
 	err := demuxer.Demux(r.Context(),
-		func(audio *rtmp.RTMPAudio) error {
+		func(audio *rtmp.Audio) error {
 			if !hasWritten {
-				if err := flvWriter.WriteHeader(demuxer.AudioTrack != nil, demuxer.VideoTrack != nil); err != nil {
+				if err := flvWriter.WriteHeader(demuxer.AudioCodec != nil, demuxer.VideoCodec != nil); err != nil {
 					return err
 				}
 			}
@@ -226,9 +226,9 @@ func (plugin *FLVPlugin) processMp4ToFlv(w http.ResponseWriter, r *http.Request,
 
 			// 写入音频数据帧
 			return flvWriter.WriteTag(flv.FLV_TAG_TYPE_AUDIO, timestamp, uint32(audio.Size), audio.Buffers...)
-		}, func(frame *rtmp.RTMPVideo) error {
+		}, func(frame *rtmp.Video) error {
 			if !hasWritten {
-				if err := flvWriter.WriteHeader(demuxer.AudioTrack != nil, demuxer.VideoTrack != nil); err != nil {
+				if err := flvWriter.WriteHeader(demuxer.AudioCodec != nil, demuxer.VideoCodec != nil); err != nil {
 					return err
 				}
 			}

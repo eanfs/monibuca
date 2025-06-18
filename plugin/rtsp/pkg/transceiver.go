@@ -495,7 +495,7 @@ func (r *Receiver) Receive() (err error) {
 				r.audioTSCheckStart = now
 				r.Stream.Debug("check audio timestamp start firsttime", "timestamp", packet.Timestamp)
 			} else if !r.useVideoTS {
-				r.Stream.Debug("debug audio timestamp", "current", packet.Timestamp, "last", r.lastAudioPacketTS, "duration", now.Sub(r.audioTSCheckStart))
+				// r.Stream.Debug("debug audio timestamp", "current", packet.Timestamp, "last", r.lastAudioPacketTS, "duration", now.Sub(r.audioTSCheckStart))
 				// 如果3秒内时间戳没有变化，切换到使用视频时间戳
 				if packet.Timestamp == r.lastAudioPacketTS && now.Sub(r.audioTSCheckStart) > 3*time.Second {
 					r.useVideoTS = true
@@ -511,7 +511,7 @@ func (r *Receiver) Receive() (err error) {
 					// 时间戳有变化，重置检查
 					r.lastAudioPacketTS = packet.Timestamp
 					r.audioTSCheckStart = now
-					r.Stream.Debug("reset audioTSCheckStart", "lastAudioPacketTS", r.lastAudioPacketTS)
+					// r.Stream.Debug("reset audioTSCheckStart", "lastAudioPacketTS", r.lastAudioPacketTS)
 				}
 			}
 
@@ -553,10 +553,11 @@ func (r *Receiver) Receive() (err error) {
 				return pkg.ErrDiscard
 			} else {
 				// t := time.Now()
+				// fmt.Println("write video1", t)
 				if err = r.WriteVideo(videoFrame); err != nil {
 					return err
 				}
-				// fmt.Println("write video", time.Since(t))
+				// fmt.Println("write video2", time.Since(t))
 				videoFrame = &mrtp.Video{}
 				videoFrame.AddRecycleBytes(buf)
 				videoFrame.Packets = []*rtp.Packet{packet}

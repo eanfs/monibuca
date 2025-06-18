@@ -72,19 +72,19 @@ type (
 	}
 	PCMACtx struct {
 		RTPCtx
-		codec.PCMACtx
+		*codec.PCMACtx
 	}
 	PCMUCtx struct {
 		RTPCtx
-		codec.PCMUCtx
+		*codec.PCMUCtx
 	}
 	OPUSCtx struct {
 		RTPCtx
-		codec.OPUSCtx
+		*codec.OPUSCtx
 	}
 	AACCtx struct {
 		RTPCtx
-		codec.AACCtx
+		*codec.AACCtx
 		SizeLength       int // 通常为13
 		IndexLength      int
 		IndexDeltaLength int
@@ -137,11 +137,11 @@ func (r *RTPData) Append(ctx *RTPCtx, ts uint32, payload []byte) (lastPacket *rt
 	return
 }
 
-func (r *RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVFrame, err error) {
-	switch from.FourCC() {
-	case codec.FourCC_H264:
+func (RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, err error) {
+	switch base := from.GetBase().(type) {
+	case *codec.H264Ctx:
 		var ctx H264Ctx
-		ctx.H264Ctx = *from.GetBase().(*codec.H264Ctx)
+		ctx.H264Ctx = base
 		ctx.PayloadType = 96
 		ctx.MimeType = webrtc.MimeTypeH264
 		ctx.ClockRate = 90000
@@ -149,19 +149,19 @@ func (r *RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVF
 		ctx.SDPFmtpLine = fmt.Sprintf("sprop-parameter-sets=%s,%s;profile-level-id=%02x%02x%02x;level-asymmetry-allowed=1;packetization-mode=1", base64.StdEncoding.EncodeToString(ctx.SPS()), base64.StdEncoding.EncodeToString(ctx.PPS()), spsInfo.ProfileIdc, spsInfo.ConstraintSetFlag, spsInfo.LevelIdc)
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
 		to = &ctx
-	case codec.FourCC_H265:
+	case *codec.H265Ctx:
 		var ctx H265Ctx
-		ctx.H265Ctx = *from.GetBase().(*codec.H265Ctx)
+		ctx.H265Ctx = base
 		ctx.PayloadType = 98
 		ctx.MimeType = webrtc.MimeTypeH265
 		ctx.SDPFmtpLine = fmt.Sprintf("profile-id=1;sprop-sps=%s;sprop-pps=%s;sprop-vps=%s", base64.StdEncoding.EncodeToString(ctx.SPS()), base64.StdEncoding.EncodeToString(ctx.PPS()), base64.StdEncoding.EncodeToString(ctx.VPS()))
 		ctx.ClockRate = 90000
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
 		to = &ctx
-	case codec.FourCC_MP4A:
+	case *codec.AACCtx:
 		var ctx AACCtx
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
-		ctx.AACCtx = *from.GetBase().(*codec.AACCtx)
+		ctx.AACCtx = base
 		ctx.MimeType = "audio/MPEG4-GENERIC"
 		ctx.SDPFmtpLine = fmt.Sprintf("profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=%s", hex.EncodeToString(ctx.AACCtx.ConfigBytes))
 		ctx.IndexLength = 3
@@ -171,26 +171,26 @@ func (r *RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVF
 		ctx.PayloadType = 97
 		ctx.ClockRate = uint32(ctx.CodecData.SampleRate())
 		to = &ctx
-	case codec.FourCC_ALAW:
+	case *codec.PCMACtx:
 		var ctx PCMACtx
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
-		ctx.PCMACtx = *from.GetBase().(*codec.PCMACtx)
+		ctx.PCMACtx = base
 		ctx.MimeType = webrtc.MimeTypePCMA
 		ctx.PayloadType = 8
 		ctx.ClockRate = uint32(ctx.SampleRate)
 		to = &ctx
-	case codec.FourCC_ULAW:
+	case *codec.PCMUCtx:
 		var ctx PCMUCtx
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
-		ctx.PCMUCtx = *from.GetBase().(*codec.PCMUCtx)
+		ctx.PCMUCtx = base
 		ctx.MimeType = webrtc.MimeTypePCMU
 		ctx.PayloadType = 0
 		ctx.ClockRate = uint32(ctx.SampleRate)
 		to = &ctx
-	case codec.FourCC_OPUS:
+	case *codec.OPUSCtx:
 		var ctx OPUSCtx
 		ctx.SSRC = uint32(uintptr(unsafe.Pointer(&ctx)))
-		ctx.OPUSCtx = *from.GetBase().(*codec.OPUSCtx)
+		ctx.OPUSCtx = base
 		ctx.MimeType = webrtc.MimeTypeOpus
 		ctx.PayloadType = 111
 		ctx.ClockRate = uint32(ctx.CodecData.SampleRate())
@@ -199,67 +199,67 @@ func (r *RTPData) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVF
 	return
 }
 
+var _ IAVFrame = (*Audio)(nil)
+
 type Audio struct {
 	RTPData
 }
 
-func (r *Audio) Parse(t *AVTrack) (err error) {
+func (r *Audio) Parse(old codec.ICodecCtx, f *AVFrame) (new codec.ICodecCtx, err error) {
+	if old != nil {
+		return old, nil
+	}
 	switch r.MimeType {
 	case webrtc.MimeTypeOpus:
 		var ctx OPUSCtx
+		ctx.OPUSCtx = &codec.OPUSCtx{}
 		ctx.parseFmtpLine(r.RTPCodecParameters)
 		ctx.OPUSCtx.Channels = int(ctx.RTPCodecParameters.Channels)
-		t.ICodecCtx = &ctx
+		new = &ctx
 	case webrtc.MimeTypePCMA:
 		var ctx PCMACtx
+		ctx.PCMACtx = &codec.PCMACtx{}
 		ctx.parseFmtpLine(r.RTPCodecParameters)
 		ctx.AudioCtx.SampleRate = int(r.ClockRate)
 		ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
-		t.ICodecCtx = &ctx
+		new = &ctx
 	case webrtc.MimeTypePCMU:
 		var ctx PCMUCtx
+		ctx.PCMUCtx = &codec.PCMUCtx{}
 		ctx.parseFmtpLine(r.RTPCodecParameters)
 		ctx.AudioCtx.SampleRate = int(r.ClockRate)
 		ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
-		t.ICodecCtx = &ctx
+		new = &ctx
 	case "audio/MP4A-LATM":
-		var ctx *AACCtx
-		if t.ICodecCtx != nil {
-			// ctx = t.ICodecCtx.(*AACCtx)
-		} else {
-			ctx = &AACCtx{}
-			ctx.parseFmtpLine(r.RTPCodecParameters)
-			if conf, ok := ctx.Fmtp["config"]; ok {
-				if ctx.AACCtx.ConfigBytes, err = hex.DecodeString(conf); err == nil {
-					if ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(ctx.AACCtx.ConfigBytes); err != nil {
-						return
-					}
+		ctx := &AACCtx{
+			AACCtx: &codec.AACCtx{},
+		}
+		ctx.parseFmtpLine(r.RTPCodecParameters)
+		if conf, ok := ctx.Fmtp["config"]; ok {
+			if ctx.AACCtx.ConfigBytes, err = hex.DecodeString(conf); err == nil {
+				if ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(ctx.AACCtx.ConfigBytes); err != nil {
+					return
 				}
 			}
-			t.ICodecCtx = ctx
 		}
+		new = ctx
 	case "audio/MPEG4-GENERIC":
-		var ctx *AACCtx
-		if t.ICodecCtx != nil {
-			// ctx = t.ICodecCtx.(*AACCtx)
-		} else {
-			ctx = &AACCtx{}
-			ctx.parseFmtpLine(r.RTPCodecParameters)
-			ctx.IndexLength = 3
-			ctx.IndexDeltaLength = 3
-			ctx.SizeLength = 13
-			if conf, ok := ctx.Fmtp["config"]; ok {
-				if ctx.AACCtx.ConfigBytes, err = hex.DecodeString(conf); err == nil {
-					if ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(ctx.AACCtx.ConfigBytes); err != nil {
-						return
-					}
+		ctx := &AACCtx{AACCtx: &codec.AACCtx{}}
+		ctx.parseFmtpLine(r.RTPCodecParameters)
+		ctx.IndexLength = 3
+		ctx.IndexDeltaLength = 3
+		ctx.SizeLength = 13
+		if conf, ok := ctx.Fmtp["config"]; ok {
+			if ctx.AACCtx.ConfigBytes, err = hex.DecodeString(conf); err == nil {
+				if ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(ctx.AACCtx.ConfigBytes); err != nil {
+					return
 				}
 			}
-			t.ICodecCtx = ctx
 		}
+		new = ctx
 	}
 	if len(r.Packets) == 0 {
-		return ErrSkip
+		err = ErrSkip
 	}
 	return
 }

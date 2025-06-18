@@ -56,9 +56,8 @@ type (
 		Track
 		*RingWriter
 		codec.ICodecCtx
-		Allocator     *util.ScalableMemoryAllocator
-		SequenceFrame IAVFrame
-		WrapIndex     int
+		Allocator *util.ScalableMemoryAllocator
+		WrapIndex int
 		TsTamer
 		SpeedController
 		DropController
@@ -244,7 +243,7 @@ func (s *SpeedController) speedControl(speed float64, ts time.Duration) {
 		}
 		should := time.Duration(float64(ts-s.beginTimestamp) / speed)
 		s.Delta = should - elapsed
-		// fmt.Println(speed, elapsed, should, s.Delta)
+		// fmt.Println("speed control", "speed", speed, "elapsed", elapsed, "should", should, "delta", s.Delta)
 		if s.Delta > threshold {
 			time.Sleep(min(s.Delta, time.Millisecond*500))
 		}

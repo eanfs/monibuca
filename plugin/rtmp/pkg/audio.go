@@ -9,11 +9,13 @@ import (
 	"m7s.live/v5/pkg/util"
 )
 
-type RTMPAudio struct {
+var _ IAVFrame = (*Audio)(nil)
+
+type Audio struct {
 	RTMPData
 }
 
-func (avcc *RTMPAudio) Parse(t *AVTrack) (err error) {
+func (avcc *Audio) Parse(old codec.ICodecCtx, f *AVFrame) (ctx codec.ICodecCtx, err error) {
 	reader := avcc.NewReader()
 	var b byte
 	b, err = reader.ReadByte()
@@ -22,20 +24,24 @@ func (avcc *RTMPAudio) Parse(t *AVTrack) (err error) {
 	}
 	switch b & 0b1111_0000 >> 4 {
 	case 7:
-		if t.ICodecCtx == nil {
-			var ctx codec.PCMACtx
-			ctx.SampleRate = 8000
-			ctx.Channels = 1
-			ctx.SampleSize = 8
-			t.ICodecCtx = &ctx
+		if old == nil {
+			var pcma codec.PCMACtx
+			pcma.SampleRate = 8000
+			pcma.Channels = 1
+			pcma.SampleSize = 8
+			ctx = &pcma
+		} else {
+			ctx = old
 		}
 	case 8:
-		if t.ICodecCtx == nil {
+		if old == nil {
 			var ctx codec.PCMUCtx
 			ctx.SampleRate = 8000
 			ctx.Channels = 1
 			ctx.SampleSize = 8
-			t.ICodecCtx = &ctx
+			old = &ctx
+		} else {
+			ctx = old
 		}
 	case 10:
 		b, err = reader.ReadByte()
@@ -43,29 +49,38 @@ func (avcc *RTMPAudio) Parse(t *AVTrack) (err error) {
 			return
 		}
 		if b == 0 {
-			var ctx codec.AACCtx
-			var cloneFrame RTMPAudio
-			cloneFrame.CopyFrom(&avcc.Memory)
-			ctx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(cloneFrame.Buffers[0][2:])
-			t.SequenceFrame = &cloneFrame
-			t.ICodecCtx = &ctx
+			if old == nil || avcc.Memory.Equal(&old.(*AACCtx).SequenceFrame.Memory) {
+				var c AACCtx
+				c.AACCtx = &codec.AACCtx{}
+				c.SequenceFrame.CopyFrom(&avcc.Memory)
+				c.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(c.SequenceFrame.Buffers[0][2:])
+				ctx = &c
+			} else {
+				ctx = old
+				err = ErrSkip
+			}
+		} else {
+			ctx = old
 		}
 	}
 	return
 }
 
-func (avcc *RTMPAudio) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, seq IAVFrame, err error) {
-	to = from.GetBase()
-	switch v := to.(type) {
+func (avcc *Audio) ConvertCtx(from codec.ICodecCtx) (to codec.ICodecCtx, err error) {
+	switch v := from.GetBase().(type) {
 	case *codec.AACCtx:
-		var seqFrame RTMPAudio
-		seqFrame.AppendOne(append([]byte{0xAF, 0x00}, v.ConfigBytes...))
-		seq = &seqFrame
+		ctx := &AACCtx{
+			AACCtx: v,
+		}
+		ctx.SequenceFrame.AppendOne(append([]byte{0xAF, 0x00}, v.ConfigBytes...))
+		to = ctx
+	default:
+		to = v
 	}
 	return
 }
 
-func (avcc *RTMPAudio) Demux(codecCtx codec.ICodecCtx) (raw any, err error) {
+func (avcc *Audio) Demux(codecCtx codec.ICodecCtx) (raw any, err error) {
 	reader := avcc.NewReader()
 	var result util.Memory
 	if _, ok := codecCtx.(*codec.AACCtx); ok {
@@ -79,7 +94,7 @@ func (avcc *RTMPAudio) Demux(codecCtx codec.ICodecCtx) (raw any, err error) {
 	}
 }
 
-func (avcc *RTMPAudio) Mux(codecCtx codec.ICodecCtx, from *AVFrame) {
+func (avcc *Audio) Mux(codecCtx codec.ICodecCtx, from *AVFrame) {
 	avcc.Timestamp = uint32(from.Timestamp / time.Millisecond)
 	audioData := from.Raw.(AudioData)
 	avcc.InitRecycleIndexes(1)

@@ -22,16 +22,16 @@ func TestRTPH264Ctx_CreateFrame(t *testing.T) {
 	var avFrame = &pkg.AVFrame{}
 	var mem util.Memory
 	mem.Append([]byte(randStr))
-	avFrame.Raw = []util.Memory{mem}
+	avFrame.Raw = pkg.Nalus{mem}
 	frame := new(Video)
 	frame.Mux(ctx, avFrame)
-	var track = &pkg.AVTrack{}
-	err := frame.Parse(track)
+	var track = &pkg.AVFrame{}
+	_, err := frame.Parse(nil, track)
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	if s := string(track.Value.Raw.(pkg.Nalus)[0].ToBytes()); s != randStr {
+	if s := string(track.Raw.(pkg.Nalus)[0].ToBytes()); s != randStr {
 		t.Error("not equal", len(s), len(randStr))
 	}
 }

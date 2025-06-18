@@ -438,9 +438,9 @@ func (handler *SubscribeHandler[A, V]) Run() (err error) {
 				// fmt.Println("video", s.VideoReader.Track.PreFrame().Sequence-frame.Sequence)
 				if handler.videoFrame.IDR && vr.DecConfChanged() {
 					vr.LastCodecCtx = vr.Track.ICodecCtx
-					if seqFrame := vr.Track.SequenceFrame; seqFrame != nil {
+					if sctx, ok := vr.LastCodecCtx.(ISequenceCodecCtx[V]); ok {
 						if handler.vwi > 0 {
-							err = handler.OnVideo(seqFrame.(V))
+							err = handler.OnVideo(sctx.GetSequenceFrame())
 						}
 					}
 				}
@@ -498,9 +498,9 @@ func (handler *SubscribeHandler[A, V]) Run() (err error) {
 				// fmt.Println("audio", s.AudioReader.Track.PreFrame().Sequence-frame.Sequence)
 				if ar.DecConfChanged() {
 					ar.LastCodecCtx = ar.Track.ICodecCtx
-					if seqFrame := ar.Track.SequenceFrame; seqFrame != nil {
+					if sctx, ok := ar.LastCodecCtx.(ISequenceCodecCtx[A]); ok {
 						if handler.awi > 0 {
-							err = handler.OnAudio(seqFrame.(A))
+							err = handler.OnAudio(sctx.GetSequenceFrame())
 						}
 					}
 				}

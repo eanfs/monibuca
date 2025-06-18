@@ -26,12 +26,12 @@ func GetVideoFrame(publisher *m7s.Publisher, server *m7s.Server) ([]*pkg.AnnexB,
 		return nil, err
 	}
 	defer reader.StopRead()
-	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.AVTrack, nil)
+	var converter = pkg.NewAVFrameConvert[*pkg.AnnexB](publisher.VideoTrack.ICodecCtx)
 
 	var annexbList []*pkg.AnnexB
 
 	for lastFrameSequence := publisher.VideoTrack.AVTrack.LastValue.Sequence; reader.Value.Sequence <= lastFrameSequence; reader.ReadNext() {
-		annexb, err := converter.ConvertFromAVFrame(&reader.Value)
+		annexb, err := converter.Convert(reader.Value.Wraps[0])
 		if err != nil {
 			return nil, err
 		}

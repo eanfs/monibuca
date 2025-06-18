@@ -20,7 +20,7 @@ type DemuxerRange struct {
 	*slog.Logger
 	StartTime, EndTime     time.Time
 	Streams                []m7s.RecordStream
-	AudioTrack, VideoTrack *pkg.AVTrack
+	AudioCodec, VideoCodec codec.ICodecCtx
 }
 
 func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, onVideo func(*Video) error) error {
@@ -52,79 +52,40 @@ func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, on
 				var h264Ctx codec.H264Ctx
 				h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
 				if err == nil {
-					if d.VideoTrack == nil {
-						d.VideoTrack = &pkg.AVTrack{
-							ICodecCtx: &h264Ctx,
-							RingWriter: &pkg.RingWriter{
-								Ring: util.NewRing[pkg.AVFrame](1),
-							}}
-						d.VideoTrack.Logger = d.With("track", "video")
-					} else {
-						// 如果已经有视频轨道，使用现有的轨道
-						d.VideoTrack.ICodecCtx = &h264Ctx
-					}
+					d.AudioCodec = &h264Ctx
 				}
 			case box.MP4_CODEC_H265:
 				var h265Ctx codec.H265Ctx
 				h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
-				if err == nil {
-					if d.VideoTrack == nil {
-						d.VideoTrack = &pkg.AVTrack{
-							ICodecCtx: &h265Ctx,
-							RingWriter: &pkg.RingWriter{
-								Ring: util.NewRing[pkg.AVFrame](1),
-							}}
-						d.VideoTrack.Logger = d.With("track", "video")
-					} else {
-						// 如果已经有视频轨道，使用现有的轨道
-						d.VideoTrack.ICodecCtx = &h265Ctx
-					}
+				if err != nil {
+					return err
 				}
+				d.VideoCodec = &h265Ctx
 			case box.MP4_CODEC_AAC:
 				var aacCtx codec.AACCtx
 				aacCtx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(track.ExtraData)
 				if err == nil {
-					if d.AudioTrack == nil {
-						d.AudioTrack = &pkg.AVTrack{
-							ICodecCtx: &aacCtx,
-							RingWriter: &pkg.RingWriter{
-								Ring: util.NewRing[pkg.AVFrame](1),
-							}}
-						d.AudioTrack.Logger = d.With("track", "audio")
-					} else {
-						// 如果已经有音频轨道，使用现有的轨道
-						d.AudioTrack.ICodecCtx = &aacCtx
-					}
+					d.AudioCodec = &aacCtx
 				}
 			case box.MP4_CODEC_G711A:
-				if d.AudioTrack == nil {
-					d.AudioTrack = &pkg.AVTrack{
-						ICodecCtx: &codec.PCMACtx{
-							AudioCtx: codec.AudioCtx{
-								SampleRate: 8000,
-								Channels:   1,
-								SampleSize: 16,
-							},
+				if d.AudioCodec == nil {
+					d.AudioCodec = &codec.PCMACtx{
+						AudioCtx: codec.AudioCtx{
+							SampleRate: 8000,
+							Channels:   1,
+							SampleSize: 16,
 						},
-						RingWriter: &pkg.RingWriter{
-							Ring: util.NewRing[pkg.AVFrame](1),
-						}}
-					d.AudioTrack.Logger = d.With("track", "audio")
+					}
 				}
 			case box.MP4_CODEC_G711U:
-				if d.AudioTrack == nil {
-					d.AudioTrack = &pkg.AVTrack{
-						ICodecCtx: &codec.PCMUCtx{
-							AudioCtx: codec.AudioCtx{
-								SampleRate: 8000,
-								Channels:   1,
-								SampleSize: 16,
-							},
+				if d.AudioCodec == nil {
+					d.AudioCodec = &codec.PCMUCtx{
+						AudioCtx: codec.AudioCtx{
+							SampleRate: 8000,
+							Channels:   1,
+							SampleSize: 16,
 						},
-						RingWriter: &pkg.RingWriter{
-							Ring: util.NewRing[pkg.AVFrame](1),
-						}}
-					d.AudioTrack.Logger = d.With("track", "audio")
+					}
 				}
 			}
 		}
@@ -192,25 +153,25 @@ func (d *DemuxerRange) Demux(ctx context.Context, onAudio func(*Audio) error, on
 
 type DemuxerConverterRange[TA pkg.IAVFrame, TV pkg.IAVFrame] struct {
 	DemuxerRange
-	audioConverter *pkg.AVFrameConvert[TA]
-	videoConverter *pkg.AVFrameConvert[TV]
+	AudioConverter *pkg.AVFrameConvert[TA]
+	VideoConverter *pkg.AVFrameConvert[TV]
 }
 
 func (d *DemuxerConverterRange[TA, TV]) Demux(ctx context.Context, onAudio func(TA) error, onVideo func(TV) error) error {
 	d.DemuxerRange.Demux(ctx, func(audio *Audio) error {
-		if d.audioConverter == nil {
-			d.audioConverter = pkg.NewAVFrameConvert[TA](d.AudioTrack, nil)
+		if d.AudioConverter == nil {
+			d.AudioConverter = pkg.NewAVFrameConvert[TA](d.AudioCodec)
 		}
-		target, err := d.audioConverter.Convert(audio)
+		target, err := d.AudioConverter.Convert(audio)
 		if err == nil {
 			err = onAudio(target)
 		}
 		return err
 	}, func(video *Video) error {
-		if d.videoConverter == nil {
-			d.videoConverter = pkg.NewAVFrameConvert[TV](d.VideoTrack, nil)
+		if d.VideoConverter == nil {
+			d.VideoConverter = pkg.NewAVFrameConvert[TV](d.VideoCodec)
 		}
-		target, err := d.videoConverter.Convert(video)
+		target, err := d.VideoConverter.Convert(video)
 		if err == nil {
 			err = onVideo(target)
 		}

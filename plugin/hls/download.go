@@ -215,11 +215,11 @@ func (plugin *HLSPlugin) processMp4ToTs(w http.ResponseWriter, r *http.Request, 
 	writePMTHeader := func() {
 		if !hasWritten {
 			var audio, video codec.FourCC
-			if demuxer.AudioTrack != nil && demuxer.AudioTrack.ICodecCtx != nil {
-				audio = demuxer.AudioTrack.ICodecCtx.FourCC()
+			if demuxer.AudioCodec != nil {
+				audio = demuxer.AudioCodec.FourCC()
 			}
-			if demuxer.VideoTrack != nil && demuxer.VideoTrack.ICodecCtx != nil {
-				video = demuxer.VideoTrack.ICodecCtx.FourCC()
+			if demuxer.VideoCodec != nil {
+				video = demuxer.VideoCodec.FourCC()
 			}
 			tsWriter.WritePMTPacket(audio, video)
 			hasWritten = true
@@ -241,7 +241,7 @@ func (plugin *HLSPlugin) processMp4ToTs(w http.ResponseWriter, r *http.Request, 
 			return tsWriter.WriteAudioFrame(audio, &audioFrame)
 		}, func(video *pkg.AnnexB) error {
 			writePMTHeader()
-			videoFrame.IsKeyFrame = demuxer.VideoTrack.Value.IDR
+			videoFrame.IsKeyFrame = demuxer.VideoConverter.IDR
 			// 写入视频帧
 			return tsWriter.WriteVideoFrame(video, &videoFrame)
 		})

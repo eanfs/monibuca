@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -30,8 +31,8 @@ func (a *AnnexB) Dump(t byte, w io.Writer) {
 }
 
 // DecodeConfig implements pkg.IAVFrame.
-func (a *AnnexB) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, IAVFrame, error) {
-	return ctx.GetBase(), nil, nil
+func (a *AnnexB) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, error) {
+	return ctx.GetBase(), nil
 }
 
 // GetSize implements pkg.IAVFrame.
@@ -43,27 +44,20 @@ func (a *AnnexB) GetTimestamp() time.Duration {
 	return a.DTS * time.Millisecond / 90
 }
 
-func (a *AnnexB) GetCTS() time.Duration {
-	return (a.PTS - a.DTS) * time.Millisecond / 90
-}
-
 // Parse implements pkg.IAVFrame.
-func (a *AnnexB) Parse(t *AVTrack) (err error) {
+func (a *AnnexB) Parse(old codec.ICodecCtx, f *AVFrame) (new codec.ICodecCtx, err error) {
+	f.CTS = (a.PTS - a.DTS) * time.Millisecond / 90
 	if a.Hevc {
-		if t.ICodecCtx == nil {
-			t.ICodecCtx = &codec.H265Ctx{}
-		}
+		new = &codec.H265Ctx{}
 	} else {
-		if t.ICodecCtx == nil {
-			t.ICodecCtx = &codec.H264Ctx{}
-		}
+		new = &codec.H264Ctx{}
 	}
-	if t.Value.Raw, err = a.Demux(t.ICodecCtx); err != nil {
+	if f.Raw, err = a.Demux(old); err != nil {
 		return
 	}
-	for _, nalu := range t.Value.Raw.(Nalus) {
+	for _, nalu := range f.Raw.(Nalus) {
 		if a.Hevc {
-			ctx := t.ICodecCtx.(*codec.H265Ctx)
+			ctx := new.(*codec.H265Ctx)
 			switch codec.ParseH265NALUType(nalu.Buffers[0][0]) {
 			case h265parser.NAL_UNIT_VPS:
 				ctx.RecordInfo.VPS = [][]byte{nalu.ToBytes()}
@@ -72,29 +66,38 @@ func (a *AnnexB) Parse(t *AVTrack) (err error) {
 			case h265parser.NAL_UNIT_PPS:
 				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
 				ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(ctx.VPS(), ctx.SPS(), ctx.PPS())
+				if old != nil && bytes.Equal(ctx.CodecData.Record, old.(*codec.H265Ctx).Record) {
+					new = old
+				}
 			case h265parser.NAL_UNIT_CODED_SLICE_BLA_W_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_W_RADL,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_N_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_IDR_W_RADL,
 				h265parser.NAL_UNIT_CODED_SLICE_IDR_N_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_CRA:
-				t.Value.IDR = true
+				f.IDR = true
 			}
 		} else {
-			ctx := t.ICodecCtx.(*codec.H264Ctx)
+			ctx := new.(*codec.H264Ctx)
 			switch codec.ParseH264NALUType(nalu.Buffers[0][0]) {
 			case codec.NALU_SPS:
 				ctx.RecordInfo.SPS = [][]byte{nalu.ToBytes()}
 				if len(ctx.RecordInfo.PPS) > 0 {
 					ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.SPS(), ctx.PPS())
+					if old != nil && bytes.Equal(ctx.CodecData.Record, old.(*codec.H264Ctx).Record) {
+						new = old
+					}
 				}
 			case codec.NALU_PPS:
 				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
 				if len(ctx.RecordInfo.SPS) > 0 {
 					ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.SPS(), ctx.PPS())
+					if old != nil && bytes.Equal(ctx.CodecData.Record, old.(*codec.H264Ctx).Record) {
+						new = old
+					}
 				}
 			case codec.NALU_IDR_Picture:
-				t.Value.IDR = true
+				f.IDR = true
 			}
 		}
 	}

@@ -256,7 +256,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ctx.ws {
 		ctx.Flush()
 	}
-	m7s.PlayBlock(sub, func(frame *rtmp.RTMPAudio) (err error) {
+	m7s.PlayBlock(sub, func(frame *rtmp.Audio) (err error) {
 		bs := frame.Memory.ToBytes()
 		if offsetAudio == 2 && bs[1] == 0 {
 			return nil
@@ -277,7 +277,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		audio.Samplelist[0].Data = bs[offsetAudio:]
 		audio.Samplelist[0].Size = len(audio.Samplelist[0].Data)
 		return
-	}, func(frame *rtmp.RTMPVideo) (err error) {
+	}, func(frame *rtmp.Video) (err error) {
 		bs := frame.Memory.ToBytes()
 		if ctx, ok := sub.VideoReader.Track.ICodecCtx.(*rtmp.H265Ctx); ok && ctx.Enhanced {
 			switch bs[0] & 0b1111 {

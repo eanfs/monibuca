@@ -60,11 +60,11 @@ func (task *Live) rtmpData2FlvTag(t byte, data *rtmp.RTMPData, ts uint32) error 
 	return task.WriteFlvTag(append(net.Buffers{task.b[:]}, data.Memory.Buffers...))
 }
 
-func (task *Live) WriteAudioTag(data *rtmp.RTMPAudio, ts uint32) error {
+func (task *Live) WriteAudioTag(data *rtmp.Audio, ts uint32) error {
 	return task.rtmpData2FlvTag(FLV_TAG_TYPE_AUDIO, &data.RTMPData, ts)
 }
 
-func (task *Live) WriteVideoTag(data *rtmp.RTMPVideo, ts uint32) error {
+func (task *Live) WriteVideoTag(data *rtmp.Video, ts uint32) error {
 	return task.rtmpData2FlvTag(FLV_TAG_TYPE_VIDEO, &data.RTMPData, ts)
 }
 
@@ -73,9 +73,9 @@ func (task *Live) Run() (err error) {
 	if err != nil {
 		return
 	}
-	err = m7s.PlayBlock(task.Subscriber, func(audio *rtmp.RTMPAudio) error {
+	err = m7s.PlayBlock(task.Subscriber, func(audio *rtmp.Audio) error {
 		return task.WriteAudioTag(audio, task.Subscriber.AudioReader.AbsTime)
-	}, func(video *rtmp.RTMPVideo) error {
+	}, func(video *rtmp.Video) error {
 		return task.WriteVideoTag(video, task.Subscriber.VideoReader.AbsTime)
 	})
 	if err != nil {

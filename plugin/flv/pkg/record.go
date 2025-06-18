@@ -252,14 +252,14 @@ func (r *Recorder) Run() (err error) {
 			writer = NewFlvWriter(file)
 			if vr := suber.VideoReader; vr != nil {
 				vr.ResetAbsTime()
-				seq := vr.Track.SequenceFrame.(*rtmp.RTMPVideo)
+				seq := vr.Track.ICodecCtx.(pkg.ISequenceCodecCtx[*rtmp.Video]).GetSequenceFrame()
 				err = writer.WriteTag(FLV_TAG_TYPE_VIDEO, 0, uint32(seq.Size), seq.Buffers...)
 				offset = int64(seq.Size + 15)
 			}
 			if ar := suber.AudioReader; ar != nil {
 				ar.ResetAbsTime()
-				if ar.Track.SequenceFrame != nil {
-					seq := ar.Track.SequenceFrame.(*rtmp.RTMPAudio)
+				if seqCtx, ok := ar.Track.ICodecCtx.(pkg.ISequenceCodecCtx[*rtmp.Audio]); ok {
+					seq := seqCtx.GetSequenceFrame()
 					err = writer.WriteTag(FLV_TAG_TYPE_AUDIO, 0, uint32(seq.Size), seq.Buffers...)
 					offset += int64(seq.Size + 15)
 				}
@@ -267,14 +267,14 @@ func (r *Recorder) Run() (err error) {
 		}
 	}
 
-	return m7s.PlayBlock(ctx.Subscriber, func(audio *rtmp.RTMPAudio) (err error) {
+	return m7s.PlayBlock(ctx.Subscriber, func(audio *rtmp.Audio) (err error) {
 		if suber.VideoReader == nil && !noFragment {
 			checkFragment(suber.AudioReader.AbsTime)
 		}
 		err = writer.WriteTag(FLV_TAG_TYPE_AUDIO, suber.AudioReader.AbsTime, uint32(audio.Size), audio.Buffers...)
 		offset += int64(audio.Size + 15)
 		return
-	}, func(video *rtmp.RTMPVideo) (err error) {
+	}, func(video *rtmp.Video) (err error) {
 		if suber.VideoReader.Value.IDR {
 			filepositions = append(filepositions, uint64(offset))
 			times = append(times, float64(suber.VideoReader.AbsTime)/1000)

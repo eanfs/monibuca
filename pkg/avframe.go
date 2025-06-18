@@ -1,7 +1,6 @@
 package pkg
 
 import (
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -29,18 +28,18 @@ type (
 	IAVFrame interface {
 		GetAllocator() *util.ScalableMemoryAllocator
 		SetAllocator(*util.ScalableMemoryAllocator)
-		Parse(*AVTrack) error                                          // get codec info, idr
-		ConvertCtx(codec.ICodecCtx) (codec.ICodecCtx, IAVFrame, error) // convert codec from source stream
-		Demux(codec.ICodecCtx) (any, error)                            // demux to raw format
-		Mux(codec.ICodecCtx, *AVFrame)                                 // mux from raw format
+		Parse(old codec.ICodecCtx, frame *AVFrame) (new codec.ICodecCtx, err error) // get codec info, idr
+		ConvertCtx(source codec.ICodecCtx) (target codec.ICodecCtx, err error)      // convert codec from source stream
+		Demux(codec.ICodecCtx) (any, error)                                         // demux to raw format
+		Mux(codec.ICodecCtx, *AVFrame)                                              // mux from raw format
 		GetTimestamp() time.Duration
-		GetCTS() time.Duration
 		GetSize() int
 		Recycle()
 		String() string
-		Dump(byte, io.Writer)
 	}
-
+	ISequenceCodecCtx[T any] interface {
+		GetSequenceFrame() T
+	}
 	Nalus []util.Memory
 
 	AudioData = util.Memory

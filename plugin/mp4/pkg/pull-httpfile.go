@@ -6,9 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deepch/vdk/codec/aacparser"
-	"github.com/deepch/vdk/codec/h264parser"
-	"github.com/deepch/vdk/codec/h265parser"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
@@ -53,24 +50,24 @@ func (p *HTTPReader) Run() (err error) {
 	for _, track := range demuxer.Tracks {
 		switch track.Cid {
 		case box.MP4_CODEC_H264:
-			var h264Ctx codec.H264Ctx
-			h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+			var h264Ctx *codec.H264Ctx
+			h264Ctx, err = codec.NewH264CtxFromRecord(track.ExtraData)
 			if err == nil {
-				publisher.SetCodecCtx(&h264Ctx, &Video{})
+				publisher.SetCodecCtx(h264Ctx, &Video{})
 			}
 		case box.MP4_CODEC_H265:
-			var h265Ctx codec.H265Ctx
-			h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(track.ExtraData)
+			var h265Ctx *codec.H265Ctx
+			h265Ctx, err = codec.NewH265CtxFromRecord(track.ExtraData)
 			if err == nil {
-				publisher.SetCodecCtx(&h265Ctx, &Video{
+				publisher.SetCodecCtx(h265Ctx, &Video{
 					allocator: allocator,
 				})
 			}
 		case box.MP4_CODEC_AAC:
-			var aacCtx codec.AACCtx
-			aacCtx.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(track.ExtraData)
+			var aacCtx *codec.AACCtx
+			aacCtx, err = codec.NewAACCtxFromRecord(track.ExtraData)
 			if err == nil {
-				publisher.SetCodecCtx(&aacCtx, &Audio{
+				publisher.SetCodecCtx(aacCtx, &Audio{
 					allocator: allocator,
 				})
 			}

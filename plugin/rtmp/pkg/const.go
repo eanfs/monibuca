@@ -1,9 +1,7 @@
 package rtmp
 
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
 	"time"
 
 	"m7s.live/v5/pkg/util"
@@ -21,15 +19,6 @@ const (
 type RTMPData struct {
 	Timestamp uint32
 	util.RecyclableMemory
-}
-
-func (avcc *RTMPData) Dump(t byte, w io.Writer) {
-	m := avcc.GetAllocator().Borrow(9 + avcc.Size)
-	m[0] = t
-	binary.BigEndian.PutUint32(m[1:], uint32(4+avcc.Size))
-	binary.BigEndian.PutUint32(m[5:], avcc.Timestamp)
-	avcc.CopyTo(m[9:])
-	w.Write(m)
 }
 
 func (avcc *RTMPData) GetSize() int {
@@ -51,14 +40,10 @@ func (avcc *RTMPData) GetTimestamp() time.Duration {
 	return time.Duration(avcc.Timestamp) * time.Millisecond
 }
 
-func (avcc *RTMPData) GetCTS() time.Duration {
-	return 0
+func (avcc *RTMPData) WrapAudio() *Audio {
+	return &Audio{RTMPData: *avcc}
 }
 
-func (avcc *RTMPData) WrapAudio() *RTMPAudio {
-	return &RTMPAudio{RTMPData: *avcc}
-}
-
-func (avcc *RTMPData) WrapVideo() *RTMPVideo {
-	return &RTMPVideo{RTMPData: *avcc}
+func (avcc *RTMPData) WrapVideo() *Video {
+	return &Video{RTMPData: *avcc}
 }

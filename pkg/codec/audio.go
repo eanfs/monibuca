@@ -27,6 +27,12 @@ type (
 	}
 )
 
+func NewAACCtxFromRecord(record []byte) (ret *AACCtx, err error) {
+	ret = &AACCtx{}
+	ret.CodecData, err = aacparser.NewCodecDataFromMPEG4AudioConfigBytes(record)
+	return
+}
+
 func (ctx *AudioCtx) GetRecord() []byte {
 	return []byte{}
 }

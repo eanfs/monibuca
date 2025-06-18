@@ -47,6 +47,18 @@ func (m *Memory) CopyFrom(b *Memory) {
 	m.AppendOne(buf)
 }
 
+func (m *Memory) Equal(b *Memory) bool {
+	if m.Size != b.Size || len(m.Buffers) != len(b.Buffers) {
+		return false
+	}
+	for i, buf := range m.Buffers {
+		if !slices.Equal(buf, b.Buffers[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Memory) CopyTo(buf []byte) {
 	for _, b := range m.Buffers {
 		l := len(b)

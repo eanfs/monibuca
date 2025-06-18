@@ -29,14 +29,14 @@ func (a *Audio) SetAllocator(allocator *util.ScalableMemoryAllocator) {
 }
 
 // Parse implements pkg.IAVFrame.
-func (a *Audio) Parse(t *pkg.AVTrack) error {
-	return nil
+func (a *Audio) Parse(old codec.ICodecCtx, f *pkg.AVFrame) (new codec.ICodecCtx, err error) {
+	return old, nil
 }
 
 // ConvertCtx implements pkg.IAVFrame.
-func (a *Audio) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, pkg.IAVFrame, error) {
+func (a *Audio) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, error) {
 	// 返回基础编解码器上下文，不进行转换
-	return ctx.GetBase(), nil, nil
+	return ctx.GetBase(), nil
 }
 
 // Demux implements pkg.IAVFrame.
@@ -65,8 +65,6 @@ func (a *Audio) Demux(codecCtx codec.ICodecCtx) (any, error) {
 
 // Mux implements pkg.IAVFrame.
 func (a *Audio) Mux(codecCtx codec.ICodecCtx, frame *pkg.AVFrame) {
-	// 从 AVFrame 复制数据到 MP4 Sample
-	a.KeyFrame = false // 音频帧通常不是关键帧
 	a.Timestamp = uint32(frame.Timestamp.Milliseconds())
 	a.CTS = uint32(frame.CTS.Milliseconds())
 
@@ -96,11 +94,6 @@ func (a *Audio) Mux(codecCtx codec.ICodecCtx, frame *pkg.AVFrame) {
 // GetTimestamp implements pkg.IAVFrame.
 func (a *Audio) GetTimestamp() time.Duration {
 	return time.Duration(a.Timestamp) * time.Millisecond
-}
-
-// GetCTS implements pkg.IAVFrame.
-func (a *Audio) GetCTS() time.Duration {
-	return time.Duration(a.CTS) * time.Millisecond
 }
 
 // GetSize implements pkg.IAVFrame.

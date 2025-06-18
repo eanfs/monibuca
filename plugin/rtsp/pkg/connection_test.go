@@ -218,7 +218,7 @@ func TestNetConnection_Receive(t *testing.T) {
 				videoFrame.Packets = append(videoFrame.Packets, packet)
 				return nil
 			} else {
-				videoFrame.Parse(videoTrack)
+				videoFrame.Parse(videoTrack.ICodecCtx, &videoTrack.Value)
 				// t := time.Now()
 				// if err = r.WriteVideo(videoFrame); err != nil {
 				// 	return err

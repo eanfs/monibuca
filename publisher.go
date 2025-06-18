@@ -2,8 +2,6 @@ package m7s
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -112,7 +110,6 @@ type Publisher struct {
 	OnSeek                 func(time.Time)
 	OnGetPosition          func() time.Time
 	PullProxyConfig        *PullProxyConfig
-	dumpFile               *os.File
 	dropAfterTs            time.Duration
 }
 
@@ -159,12 +156,6 @@ func (p *Publisher) Start() (err error) {
 	if !p.PubVideo {
 		p.videoReady.Reject(ErrMuted)
 	}
-	if p.Dump {
-		f := filepath.Join("./dump", p.StreamPath)
-		os.MkdirAll(filepath.Dir(f), 0666)
-		p.dumpFile, _ = os.OpenFile(filepath.Join("./dump", p.StreamPath), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	}
-
 	s.Waiting.WakeUp(p.StreamPath, p)
 	p.processAliasOnStart()
 	p.Plugin.Server.OnPublish(p)
@@ -290,7 +281,6 @@ func (p *Publisher) AddSubscriber(subscriber *Subscriber) {
 func (p *Publisher) fixTimestamp(t *AVTrack, data IAVFrame) {
 	frame := &t.Value
 	ts := data.GetTimestamp()
-	frame.CTS = data.GetCTS()
 	bytesIn := data.GetSize()
 	t.AddBytesIn(bytesIn)
 	frame.Timestamp = t.Tame(ts, t.FPS, p.Scale)
@@ -350,9 +340,6 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 	if err = p.Err(); err != nil {
 		return
 	}
-	if p.dumpFile != nil {
-		data.Dump(1, p.dumpFile)
-	}
 	if !p.PubVideo {
 		return ErrMuted
 	}
@@ -362,20 +349,22 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 		p.VideoTrack.Set(t)
 		p.Call(p.trackAdded)
 	}
-	err = data.Parse(t)
+	var newCodecCtx codec.ICodecCtx
+	oldCodecCtx := t.ICodecCtx
+	newCodecCtx, err = data.Parse(oldCodecCtx, &t.Value)
 	if err != nil {
-		return nil
+		return
 	}
+	codecCtxChanged := oldCodecCtx != newCodecCtx
+	if newCodecCtx == nil {
+		return ErrUnsupportCodec
+	}
+	t.ICodecCtx = newCodecCtx
 	p.fixTimestamp(t, data)
 	defer t.SpeedControl(p.Speed)
-	oldCodecCtx := t.ICodecCtx
-	codecCtxChanged := oldCodecCtx != t.ICodecCtx
 	if err != nil {
 		p.Error("parse", "err", err)
 		return err
-	}
-	if t.ICodecCtx == nil {
-		return ErrUnsupportCodec
 	}
 	if codecCtxChanged && oldCodecCtx != nil {
 		oldWidth, oldHeight := oldCodecCtx.(IVideoCodecCtx).Width(), oldCodecCtx.(IVideoCodecCtx).Height()
@@ -418,7 +407,7 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 			toType := track.FrameType.Elem()
 			toFrame := reflect.New(toType).Interface().(IAVFrame)
 			if track.ICodecCtx == nil {
-				if track.ICodecCtx, track.SequenceFrame, err = toFrame.ConvertCtx(t.ICodecCtx); err != nil {
+				if track.ICodecCtx, err = toFrame.ConvertCtx(t.ICodecCtx); err != nil {
 					track.Error("DecodeConfig", "err", err)
 					return
 				}
@@ -440,7 +429,7 @@ func (p *Publisher) WriteVideo(data IAVFrame) (err error) {
 			toFrame.SetAllocator(data.GetAllocator())
 			toFrame.Mux(track.ICodecCtx, &t.Value)
 			if codecCtxChanged {
-				track.ICodecCtx, track.SequenceFrame, err = toFrame.ConvertCtx(t.ICodecCtx)
+				track.ICodecCtx, err = toFrame.ConvertCtx(t.ICodecCtx)
 			}
 			t.Value.Wraps = append(t.Value.Wraps, toFrame)
 			if track.ICodecCtx != nil {
@@ -465,9 +454,7 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 	if err = p.Err(); err != nil {
 		return
 	}
-	if p.dumpFile != nil {
-		data.Dump(0, p.dumpFile)
-	}
+
 	if !p.PubAudio {
 		return ErrMuted
 	}
@@ -477,10 +464,16 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 		p.AudioTrack.Set(t)
 		p.Call(p.trackAdded)
 	}
-	err = data.Parse(t)
+	var newCodecCtx codec.ICodecCtx
+	newCodecCtx, err = data.Parse(t.ICodecCtx, &t.Value)
 	if err != nil {
 		return
 	}
+	codecCtxChanged := t.ICodecCtx != newCodecCtx
+	if newCodecCtx == nil {
+		return ErrUnsupportCodec
+	}
+	t.ICodecCtx = newCodecCtx
 	p.fixTimestamp(t, data)
 	defer t.SpeedControl(p.Speed)
 	// 根据丢帧率进行音频帧丢弃
@@ -491,11 +484,6 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 				return ErrSkip
 			}
 		}
-	}
-	oldCodecCtx := t.ICodecCtx
-	codecCtxChanged := oldCodecCtx != t.ICodecCtx
-	if t.ICodecCtx == nil {
-		return ErrUnsupportCodec
 	}
 	t.Ready(err)
 	p.writeAV(t, data)
@@ -510,7 +498,7 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 			toType := track.FrameType.Elem()
 			toFrame := reflect.New(toType).Interface().(IAVFrame)
 			if track.ICodecCtx == nil {
-				if track.ICodecCtx, track.SequenceFrame, err = toFrame.ConvertCtx(t.ICodecCtx); err != nil {
+				if track.ICodecCtx, err = toFrame.ConvertCtx(t.ICodecCtx); err != nil {
 					track.Error("DecodeConfig", "err", err)
 					return
 				}
@@ -532,7 +520,7 @@ func (p *Publisher) WriteAudio(data IAVFrame) (err error) {
 			toFrame.SetAllocator(data.GetAllocator())
 			toFrame.Mux(track.ICodecCtx, &t.Value)
 			if codecCtxChanged {
-				track.ICodecCtx, track.SequenceFrame, err = toFrame.ConvertCtx(t.ICodecCtx)
+				track.ICodecCtx, err = toFrame.ConvertCtx(t.ICodecCtx)
 			}
 			t.Value.Wraps = append(t.Value.Wraps, toFrame)
 			if track.ICodecCtx != nil {
@@ -600,9 +588,6 @@ func (p *Publisher) Dispose() {
 	p.AudioTrack.Dispose()
 	p.VideoTrack.Dispose()
 	p.Info("unpublish", "remain", s.Streams.Length, "reason", p.StopReason())
-	if p.dumpFile != nil {
-		p.dumpFile.Close()
-	}
 	p.State = PublisherStateDisposed
 	p.processPullProxyOnDispose()
 }

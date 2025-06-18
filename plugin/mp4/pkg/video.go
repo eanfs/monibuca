@@ -2,7 +2,6 @@ package mp4
 
 import (
 	"fmt"
-	"io"
 	"slices"
 	"time"
 
@@ -30,15 +29,16 @@ func (v *Video) SetAllocator(allocator *util.ScalableMemoryAllocator) {
 }
 
 // Parse implements pkg.IAVFrame.
-func (v *Video) Parse(t *pkg.AVTrack) error {
-	t.Value.IDR = v.KeyFrame
-	return nil
+func (v *Video) Parse(old codec.ICodecCtx, f *pkg.AVFrame) (new codec.ICodecCtx, err error) {
+	f.IDR = v.KeyFrame
+	f.CTS = time.Duration(v.CTS) * time.Millisecond
+	return old, nil
 }
 
 // ConvertCtx implements pkg.IAVFrame.
-func (v *Video) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, pkg.IAVFrame, error) {
+func (v *Video) ConvertCtx(ctx codec.ICodecCtx) (codec.ICodecCtx, error) {
 	// 返回基础编解码器上下文，不进行转换
-	return ctx.GetBase(), nil, nil
+	return ctx.GetBase(), nil
 }
 
 // Demux implements pkg.IAVFrame.
@@ -159,12 +159,4 @@ func (v *Video) Recycle() {
 func (v *Video) String() string {
 	return fmt.Sprintf("MP4Video[ts:%d, cts:%d, size:%d, keyframe:%t]",
 		v.Timestamp, v.CTS, v.Size, v.KeyFrame)
-}
-
-// Dump implements pkg.IAVFrame.
-func (v *Video) Dump(t byte, w io.Writer) {
-	// 输出数据到 writer
-	if v.Data != nil {
-		w.Write(v.Data)
-	}
 }

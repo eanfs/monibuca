@@ -1,6 +1,7 @@
 package rtp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -26,16 +27,16 @@ type (
 	}
 	H264Ctx struct {
 		H26xCtx
-		codec.H264Ctx
+		*codec.H264Ctx
 	}
 	H265Ctx struct {
 		H26xCtx
-		codec.H265Ctx
+		*codec.H265Ctx
 		DONL bool
 	}
 	AV1Ctx struct {
 		RTPCtx
-		codec.AV1Ctx
+		*codec.AV1Ctx
 	}
 	VP9Ctx struct {
 		RTPCtx
@@ -62,14 +63,17 @@ const (
 	MTUSize      = 1460
 )
 
-func (r *Video) Parse(t *AVTrack) (err error) {
+func (r *Video) Parse(old codec.ICodecCtx, f *AVFrame) (new codec.ICodecCtx, err error) {
+	f.CTS = r.CTS
 	switch r.MimeType {
 	case webrtc.MimeTypeH264:
 		var ctx *H264Ctx
-		if t.ICodecCtx != nil {
-			ctx = t.ICodecCtx.(*H264Ctx)
+		if old != nil {
+			ctx = old.(*H264Ctx)
 		} else {
-			ctx = &H264Ctx{}
+			ctx = &H264Ctx{
+				H264Ctx: &codec.H264Ctx{},
+			}
 			ctx.parseFmtpLine(r.RTPCodecParameters)
 			var sps, pps []byte
 			//packetization-mode=1; sprop-parameter-sets=J2QAKaxWgHgCJ+WagICAgQ==,KO48sA==; profile-level-id=640029
@@ -86,9 +90,8 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 					return
 				}
 			}
-			t.ICodecCtx = ctx
 		}
-		if t.Value.Raw, err = r.Demux(ctx); err != nil {
+		if f.Raw, err = r.Demux(ctx); err != nil {
 			return
 		}
 		pts := r.Packets[0].Timestamp
@@ -96,45 +99,58 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 		dts := ctx.dtsEst.Feed(pts)
 		r.DTS = time.Duration(dts) * time.Millisecond / 90
 		r.CTS = time.Duration(pts-dts) * time.Millisecond / 90
-		for _, nalu := range t.Value.Raw.(Nalus) {
+		var sps, pps []byte
+		for _, nalu := range f.Raw.(Nalus) {
 			switch codec.ParseH264NALUType(nalu.Buffers[0][0]) {
 			case h264parser.NALU_SPS:
-				ctx.RecordInfo.SPS = [][]byte{nalu.ToBytes()}
-				if ctx.SPSInfo, err = h264parser.ParseSPS(ctx.SPS()); err != nil {
-					return
-				}
+				sps = nalu.ToBytes()
 			case h264parser.NALU_PPS:
-				hasSPSPPS = true
-				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
-				if ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(ctx.RecordInfo.SPS[0], ctx.RecordInfo.PPS[0]); err != nil {
-					return
-				}
+				pps = nalu.ToBytes()
 			case codec.NALU_IDR_Picture:
-				t.Value.IDR = true
+				f.IDR = true
 			}
 		}
-		if t.Value.IDR && !hasSPSPPS {
-			spsRTP := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					SequenceNumber: ctx.SequenceNumber,
-					Timestamp:      pts,
-					SSRC:           ctx.SSRC,
-					PayloadType:    uint8(ctx.PayloadType),
-				},
-				Payload: ctx.SPS(),
+		if hasSPSPPS = sps != nil && pps != nil; hasSPSPPS {
+			var newCodecData h264parser.CodecData
+			if newCodecData, err = h264parser.NewCodecDataFromSPSAndPPS(sps, pps); err != nil {
+				return
 			}
-			ppsRTP := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					SequenceNumber: ctx.SequenceNumber,
-					Timestamp:      pts,
-					SSRC:           ctx.SSRC,
-					PayloadType:    uint8(ctx.PayloadType),
-				},
-				Payload: ctx.PPS(),
+			if old != nil && bytes.Equal(newCodecData.Record, old.(*H264Ctx).Record) {
+				new = old
+			} else {
+				ctx = &H264Ctx{
+					H264Ctx: &codec.H264Ctx{
+						CodecData: newCodecData,
+					},
+				}
+				ctx.parseFmtpLine(r.RTPCodecParameters)
+				new = ctx
 			}
-			r.Packets = slices.Insert(r.Packets, 0, spsRTP, ppsRTP)
+		} else {
+			new = ctx
+			if f.IDR {
+				spsRTP := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						SequenceNumber: ctx.SequenceNumber,
+						Timestamp:      pts,
+						SSRC:           ctx.SSRC,
+						PayloadType:    uint8(ctx.PayloadType),
+					},
+					Payload: ctx.SPS(),
+				}
+				ppsRTP := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						SequenceNumber: ctx.SequenceNumber,
+						Timestamp:      pts,
+						SSRC:           ctx.SSRC,
+						PayloadType:    uint8(ctx.PayloadType),
+					},
+					Payload: ctx.PPS(),
+				}
+				r.Packets = slices.Insert(r.Packets, 0, spsRTP, ppsRTP)
+			}
 		}
 		for _, p := range r.Packets {
 			p.SequenceNumber = ctx.seq
@@ -142,10 +158,12 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 		}
 	case webrtc.MimeTypeH265:
 		var ctx *H265Ctx
-		if t.ICodecCtx != nil {
-			ctx = t.ICodecCtx.(*H265Ctx)
+		if old != nil {
+			ctx = old.(*H265Ctx)
 		} else {
-			ctx = &H265Ctx{}
+			ctx = &H265Ctx{
+				H265Ctx: &codec.H265Ctx{},
+			}
 			ctx.parseFmtpLine(r.RTPCodecParameters)
 			var vps, sps, pps []byte
 			if sprop_sps, ok := ctx.Fmtp["sprop-sps"]; ok {
@@ -173,76 +191,86 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 					ctx.DONL = true
 				}
 			}
-			t.ICodecCtx = ctx
 		}
-		if t.Value.Raw, err = r.Demux(ctx); err != nil {
+		if f.Raw, err = r.Demux(ctx); err != nil {
 			return
 		}
 		pts := r.Packets[0].Timestamp
 		dts := ctx.dtsEst.Feed(pts)
 		r.DTS = time.Duration(dts) * time.Millisecond / 90
 		r.CTS = time.Duration(pts-dts) * time.Millisecond / 90
+		var vps, sps, pps []byte
 		var hasVPSSPSPPS bool
-		for _, nalu := range t.Value.Raw.(Nalus) {
+		for _, nalu := range f.Raw.(Nalus) {
 			switch codec.ParseH265NALUType(nalu.Buffers[0][0]) {
 			case h265parser.NAL_UNIT_VPS:
-				ctx = &H265Ctx{}
-				ctx.RecordInfo.VPS = [][]byte{nalu.ToBytes()}
-				ctx.RTPCodecParameters = *r.RTPCodecParameters
-				t.ICodecCtx = ctx
+				vps = nalu.ToBytes()
 			case h265parser.NAL_UNIT_SPS:
-				ctx.RecordInfo.SPS = [][]byte{nalu.ToBytes()}
-				if ctx.SPSInfo, err = h265parser.ParseSPS(ctx.SPS()); err != nil {
-					return
-				}
+				sps = nalu.ToBytes()
 			case h265parser.NAL_UNIT_PPS:
-				hasVPSSPSPPS = true
-				ctx.RecordInfo.PPS = [][]byte{nalu.ToBytes()}
-				if ctx.CodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(ctx.RecordInfo.VPS[0], ctx.RecordInfo.SPS[0], ctx.RecordInfo.PPS[0]); err != nil {
-					return
-				}
+				pps = nalu.ToBytes()
 			case h265parser.NAL_UNIT_CODED_SLICE_BLA_W_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_W_RADL,
 				h265parser.NAL_UNIT_CODED_SLICE_BLA_N_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_IDR_W_RADL,
 				h265parser.NAL_UNIT_CODED_SLICE_IDR_N_LP,
 				h265parser.NAL_UNIT_CODED_SLICE_CRA:
-				t.Value.IDR = true
+				f.IDR = true
 			}
 		}
-		if t.Value.IDR && !hasVPSSPSPPS {
-			vpsRTP := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					SequenceNumber: ctx.SequenceNumber,
-					Timestamp:      pts,
-					SSRC:           ctx.SSRC,
-					PayloadType:    uint8(ctx.PayloadType),
-				},
-				Payload: ctx.VPS(),
+		if hasVPSSPSPPS = vps != nil && sps != nil && pps != nil; hasVPSSPSPPS {
+			var newCodecData h265parser.CodecData
+			if newCodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
+				return
 			}
-			spsRTP := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					SequenceNumber: ctx.SequenceNumber,
-					Timestamp:      pts,
-					SSRC:           ctx.SSRC,
-					PayloadType:    uint8(ctx.PayloadType),
-				},
-				Payload: ctx.SPS(),
+			if old != nil && bytes.Equal(newCodecData.Record, old.(*H265Ctx).Record) {
+				new = old
+			} else {
+				ctx = &H265Ctx{
+					H265Ctx: &codec.H265Ctx{
+						CodecData: newCodecData,
+					},
+				}
+				ctx.parseFmtpLine(r.RTPCodecParameters)
+				new = ctx
 			}
-			ppsRTP := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					SequenceNumber: ctx.SequenceNumber,
-					Timestamp:      pts,
-					SSRC:           ctx.SSRC,
-					PayloadType:    uint8(ctx.PayloadType),
-				},
-				Payload: ctx.PPS(),
+		} else {
+			new = ctx
+			if f.IDR {
+				vpsRTP := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						SequenceNumber: ctx.SequenceNumber,
+						Timestamp:      pts,
+						SSRC:           ctx.SSRC,
+						PayloadType:    uint8(ctx.PayloadType),
+					},
+					Payload: ctx.VPS(),
+				}
+				spsRTP := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						SequenceNumber: ctx.SequenceNumber,
+						Timestamp:      pts,
+						SSRC:           ctx.SSRC,
+						PayloadType:    uint8(ctx.PayloadType),
+					},
+					Payload: ctx.SPS(),
+				}
+				ppsRTP := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						SequenceNumber: ctx.SequenceNumber,
+						Timestamp:      pts,
+						SSRC:           ctx.SSRC,
+						PayloadType:    uint8(ctx.PayloadType),
+					},
+					Payload: ctx.PPS(),
+				}
+				r.Packets = slices.Insert(r.Packets, 0, vpsRTP, spsRTP, ppsRTP)
 			}
-			r.Packets = slices.Insert(r.Packets, 0, vpsRTP, spsRTP, ppsRTP)
 		}
+
 		for _, p := range r.Packets {
 			p.SequenceNumber = ctx.seq
 			ctx.seq++
@@ -253,8 +281,9 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 		// codecCtx = &ctx
 	case webrtc.MimeTypeAV1:
 		var ctx AV1Ctx
+		ctx.AV1Ctx = &codec.AV1Ctx{}
 		ctx.RTPCodecParameters = *r.RTPCodecParameters
-		t.ICodecCtx = &ctx
+		new = &ctx
 	default:
 		err = ErrUnsupportCodec
 	}
@@ -275,10 +304,6 @@ func (av1 *AV1Ctx) GetInfo() string {
 
 func (r *Video) GetTimestamp() time.Duration {
 	return r.DTS
-}
-
-func (r *Video) GetCTS() time.Duration {
-	return r.CTS
 }
 
 func (r *Video) Mux(codecCtx codec.ICodecCtx, from *AVFrame) {

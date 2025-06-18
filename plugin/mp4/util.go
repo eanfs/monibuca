@@ -6,8 +6,6 @@ import (
 	"log"
 	"os/exec"
 
-	"github.com/deepch/vdk/codec/h264parser"
-	"github.com/deepch/vdk/codec/h265parser"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
@@ -50,24 +48,24 @@ func ProcessWithFFmpeg(samples []box.Sample, index int, videoTrack *mp4.Track, o
 
 	go func() {
 		defer stdin.Close()
-		convert := pkg.NewAVFrameConvert[*pkg.AnnexB](nil, nil)
+		var convert *pkg.AVFrameConvert[*pkg.AnnexB]
 		switch videoTrack.Cid {
 		case box.MP4_CODEC_H264:
-			var h264Ctx codec.H264Ctx
-			h264Ctx.CodecData, err = h264parser.NewCodecDataFromAVCDecoderConfRecord(videoTrack.ExtraData)
+			var h264Ctx *codec.H264Ctx
+			h264Ctx, err = codec.NewH264CtxFromRecord(videoTrack.ExtraData)
 			if err != nil {
 				log.Printf("解析H264失败: %v", err)
 				return
 			}
-			convert.FromTrack.ICodecCtx = &h264Ctx
+			convert = pkg.NewAVFrameConvert[*pkg.AnnexB](h264Ctx)
 		case box.MP4_CODEC_H265:
-			var h265Ctx codec.H265Ctx
-			h265Ctx.CodecData, err = h265parser.NewCodecDataFromAVCDecoderConfRecord(videoTrack.ExtraData)
+			var h265Ctx *codec.H265Ctx
+			h265Ctx, err = codec.NewH265CtxFromRecord(videoTrack.ExtraData)
 			if err != nil {
 				log.Printf("解析H265失败: %v", err)
 				return
 			}
-			convert.FromTrack.ICodecCtx = &h265Ctx
+			convert = pkg.NewAVFrameConvert[*pkg.AnnexB](h265Ctx)
 		default:
 			log.Printf("不支持的编解码器: %v", videoTrack.Cid)
 			return

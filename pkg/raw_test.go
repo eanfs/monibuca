@@ -16,12 +16,12 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x65}), // IDR Picture NALU type
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err == ErrSkip {
 			t.Error("Expected H264 IDR frame to not be skipped, but got ErrSkip")
 		}
-		if !track.Value.IDR {
+		if !track.IDR {
 			t.Error("Expected IDR flag to be set for H264 IDR frame")
 		}
 	})
@@ -34,8 +34,8 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x21}), // Non-IDR Picture NALU type
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err == ErrSkip {
 			t.Error("Expected H264 Non-IDR frame to not be skipped, but got ErrSkip")
 		}
@@ -49,8 +49,8 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x67}), // SPS NALU type
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err != ErrSkip {
 			t.Errorf("Expected H264 SPS-only frame to be skipped, but got: %v", err)
 		}
@@ -64,8 +64,8 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x68}), // PPS NALU type
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err != ErrSkip {
 			t.Errorf("Expected H264 PPS-only frame to be skipped, but got: %v", err)
 		}
@@ -80,7 +80,7 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				// Using NAL_UNIT_CODED_SLICE_IDR_W_RADL which should be type 19
 			},
 		}
-		track := &AVTrack{}
+		track := &AVFrame{}
 
 		// Let's use the correct byte pattern for H265 IDR slice
 		// NAL_UNIT_CODED_SLICE_IDR_W_RADL = 19
@@ -88,11 +88,11 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 		idrSliceByte := byte(19 << 1) // 19 * 2 = 38 = 0x26
 		frame.Nalus[0] = util.NewMemory([]byte{idrSliceByte})
 
-		err := frame.Parse(track)
+		_, err := frame.Parse(nil, track)
 		if err == ErrSkip {
 			t.Error("Expected H265 IDR slice to not be skipped, but got ErrSkip")
 		}
-		if !track.Value.IDR {
+		if !track.IDR {
 			t.Error("Expected IDR flag to be set for H265 IDR slice")
 		}
 	})
@@ -105,8 +105,8 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x40, 0x01}), // VPS NALU type (32 << 1 = 64 = 0x40)
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err != ErrSkip {
 			t.Errorf("Expected H265 VPS-only frame to be skipped, but got: %v", err)
 		}
@@ -121,12 +121,12 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x65}), // IDR Picture NALU type
 			},
 		}
-		track := &AVTrack{}
-		err := frame.Parse(track)
+		track := &AVFrame{}
+		_, err := frame.Parse(nil, track)
 		if err == ErrSkip {
 			t.Error("Expected H264 mixed SPS+IDR frame to not be skipped, but got ErrSkip")
 		}
-		if !track.Value.IDR {
+		if !track.IDR {
 			t.Error("Expected IDR flag to be set for H264 mixed frame with IDR")
 		}
 	})
@@ -140,17 +140,17 @@ func TestH26xFrame_Parse_VideoFrameDetection(t *testing.T) {
 				util.NewMemory([]byte{0x4C, 0x01}), // IDR_W_RADL slice type (19 << 1)
 			},
 		}
-		track := &AVTrack{}
+		track := &AVFrame{}
 
 		// Fix the IDR slice byte for H265
 		idrSliceByte := byte(19 << 1) // NAL_UNIT_CODED_SLICE_IDR_W_RADL = 19
 		frame.Nalus[1] = util.NewMemory([]byte{idrSliceByte, 0x01})
 
-		err := frame.Parse(track)
+		_, err := frame.Parse(nil, track)
 		if err == ErrSkip {
 			t.Error("Expected H265 mixed VPS+IDR frame to not be skipped, but got ErrSkip")
 		}
-		if !track.Value.IDR {
+		if !track.IDR {
 			t.Error("Expected IDR flag to be set for H265 mixed frame with IDR")
 		}
 	})

@@ -2,8 +2,9 @@ package rtmp
 
 import (
 	"errors"
-	"m7s.live/v5/pkg"
 	"runtime"
+
+	"m7s.live/v5/pkg"
 
 	"m7s.live/v5"
 )
@@ -15,11 +16,11 @@ type Sender struct {
 	lastAbs     uint32
 }
 
-func (av *Sender) HandleAudio(frame *RTMPAudio) (err error) {
+func (av *Sender) HandleAudio(frame *Audio) (err error) {
 	return av.SendFrame(&frame.RTMPData)
 }
 
-func (av *Sender) HandleVideo(frame *RTMPVideo) (err error) {
+func (av *Sender) HandleVideo(frame *Video) (err error) {
 	return av.SendFrame(&frame.RTMPData)
 }
 

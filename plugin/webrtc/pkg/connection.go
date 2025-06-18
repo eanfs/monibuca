@@ -234,7 +234,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 		} else {
 			var rtpCtx mrtp.RTPData
 			var tmpAVTrack AVTrack
-			tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(vctx)
+			tmpAVTrack.ICodecCtx, err = rtpCtx.ConvertCtx(vctx)
 			if err == nil {
 				rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
 			} else {
@@ -277,7 +277,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 		} else {
 			var rtpCtx mrtp.RTPData
 			var tmpAVTrack AVTrack
-			tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(actx)
+			tmpAVTrack.ICodecCtx, err = rtpCtx.ConvertCtx(actx)
 			if err == nil {
 				rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
 			} else {
@@ -399,13 +399,10 @@ func (r *RemoteStream) Start() (err error) {
 	if ctx, ok := vctx.(mrtp.IRTPCtx); ok {
 		rcc = ctx.GetRTPCodecParameter()
 	} else {
-		var rtpCtx mrtp.RTPData
-		var tmpAVTrack AVTrack
-		tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(vctx)
-		if err == nil {
-			rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
+		if ctx, err := (mrtp.RTPData{}).ConvertCtx(vctx); err == nil {
+			rcc = ctx.(mrtp.IRTPCtx).GetRTPCodecParameter()
 		} else {
-			return
+			return err
 		}
 	}
 
