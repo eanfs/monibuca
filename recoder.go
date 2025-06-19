@@ -204,9 +204,9 @@ type eventRecordCheck struct {
 
 func (t *eventRecordCheck) Run() (err error) {
 	var eventRecordStreams []EventRecordStream
-	t.DB.Find(&eventRecordStreams, `type=? AND event_level="high" AND stream_path=?`, t.Type, t.streamPath) //搜索事件录像，且为重要事件（无法自动删除）
+	t.DB.Find(&eventRecordStreams, `type=? AND event_level='high' AND stream_path=?`, t.Type, t.streamPath) //搜索事件录像，且为重要事件（无法自动删除）
 	for _, recordStream := range eventRecordStreams {
-		t.DB.Model(&EventRecordStream{}).Where(`event_level="low" AND start_time <= ? and end_time >= ?`, recordStream.EndTime, recordStream.StartTime).Update("event_level", config.EventLevelHigh)
+		t.DB.Model(&EventRecordStream{}).Where(`event_level='low' AND start_time <= ? and end_time >= ?`, recordStream.EndTime, recordStream.StartTime).Update("event_level", config.EventLevelHigh)
 	}
 	return
 }
