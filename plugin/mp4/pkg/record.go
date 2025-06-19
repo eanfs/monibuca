@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"bytes"
 
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
@@ -283,8 +284,8 @@ func (r *Recorder) Run() (err error) {
 		}
 		ctx := vt.ICodecCtx.(pkg.IVideoCodecCtx)
 		width, height := uint32(ctx.Width()), uint32(ctx.Height())
-		if width != videoTrack.Width || height != videoTrack.Height {
-			r.Info("Video resolution changed, restarting recording",
+		if !bytes.Equal(ctx.GetRecord(), videoTrack.ExtraData) {
+			r.Info("avcc changed, restarting recording",
 				"old", fmt.Sprintf("%dx%d", videoTrack.Width, videoTrack.Height),
 				"new", fmt.Sprintf("%dx%d", width, height))
 			r.writeTailer(sub.VideoReader.Value.WriteTime)
