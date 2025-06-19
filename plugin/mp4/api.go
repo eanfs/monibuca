@@ -167,7 +167,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	queryRecord := m7s.RecordStream{
 		Type: "mp4",
 	}
-	p.DB.Where(&queryRecord).Find(&streams, "event_id=0 AND end_time>? AND start_time<? AND stream_path=?", startTime, endTime, streamPath)
+	p.DB.Where(&queryRecord).Find(&streams, "end_time>? AND start_time<? AND stream_path=?", startTime, endTime, streamPath)
 
 	// 创建 MP4 混合器
 	muxer := mp4.NewMuxer(flag)
