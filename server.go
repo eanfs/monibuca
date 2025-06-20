@@ -603,12 +603,7 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 	for plugin := range s.Plugins.Range {
 		plugin.OnSubscribe(streamPath, args)
 	}
-	for pullProxy := range s.PullProxies.Range {
-		conf := pullProxy.GetConfig()
-		if conf.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath && !conf.PullOnStart {
-			pullProxy.Pull()
-		}
-	}
+	s.PullProxies.CheckToPull(streamPath)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

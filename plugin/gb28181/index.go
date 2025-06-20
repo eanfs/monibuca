@@ -305,7 +305,7 @@ func (gb *GB28181Plugin) checkDeviceExpire() (err error) {
 				gb.devices.Set(device)
 			})
 			device.channels.OnAdd(func(c *Channel) {
-				if absDevice, ok := gb.Server.PullProxies.Find(func(absDevice m7s.IPullProxy) bool {
+				if absDevice, ok := gb.Server.PullProxies.SafeFind(func(absDevice m7s.IPullProxy) bool {
 					conf := absDevice.GetConfig()
 					return conf.Type == "gb28181" && conf.URL == fmt.Sprintf("%s/%s", device.DeviceId, c.ChannelID)
 				}); ok {

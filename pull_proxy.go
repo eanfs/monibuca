@@ -107,7 +107,7 @@ func (d *BasePullProxy) ChangeStatus(status byte) {
 	}
 	switch status {
 	case PullProxyStatusOnline:
-		if d.PullOnStart && from == PullProxyStatusOffline {
+		if d.PullOnStart && (from == PullProxyStatusOffline) {
 			d.Pull()
 		}
 	}
@@ -197,7 +197,7 @@ func (d *TCPPullProxy) Tick(any) {
 
 func (p *Publisher) processPullProxyOnStart() {
 	s := p.Plugin.Server
-	if pullProxy, ok := s.PullProxies.Find(func(pullProxy IPullProxy) bool {
+	if pullProxy, ok := s.PullProxies.SafeFind(func(pullProxy IPullProxy) bool {
 		return pullProxy.GetStreamPath() == p.StreamPath
 	}); ok {
 		p.PullProxyConfig = pullProxy.GetConfig()
@@ -213,7 +213,7 @@ func (p *Publisher) processPullProxyOnStart() {
 func (p *Publisher) processPullProxyOnDispose() {
 	s := p.Plugin.Server
 	if p.PullProxyConfig != nil && p.PullProxyConfig.Status == PullProxyStatusPulling {
-		if pullproxy, ok := s.PullProxies.Get(p.PullProxyConfig.GetKey()); ok {
+		if pullproxy, ok := s.PullProxies.SafeGet(p.PullProxyConfig.GetKey()); ok {
 			pullproxy.ChangeStatus(PullProxyStatusOnline)
 		}
 	}
@@ -479,5 +479,14 @@ func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (re
 	} else {
 		res.Message = "parameter wrong"
 		return
+	}
+}
+
+func (p *PullProxyManager) CheckToPull(streamPath string) {
+	for pullProxy := range p.SafeRange {
+		conf := pullProxy.GetConfig()
+		if conf.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath {
+			pullProxy.Pull()
+		}
 	}
 }

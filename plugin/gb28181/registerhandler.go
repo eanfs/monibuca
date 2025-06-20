@@ -451,7 +451,7 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 	d.OnStart(func() {
 		task.gb.devices.Set(d)
 		d.channels.OnAdd(func(c *Channel) {
-			if absDevice, ok := task.gb.Server.PullProxies.Find(func(absDevice m7s.IPullProxy) bool {
+			if absDevice, ok := task.gb.Server.PullProxies.SafeFind(func(absDevice m7s.IPullProxy) bool {
 				conf := absDevice.GetConfig()
 				return conf.Type == "gb28181" && conf.URL == fmt.Sprintf("%s/%s", d.DeviceId, c.ChannelID)
 			}); ok {
