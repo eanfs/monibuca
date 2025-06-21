@@ -1,6 +1,8 @@
 package m7s
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -652,13 +654,31 @@ func (p *Publisher) takeOver(old *Publisher) {
 	old.Subscribers = SubscriberCollection{}
 }
 
-func (p *Publisher) WaitTrack() (err error) {
+func (p *Publisher) WaitTrack(audio, video bool) (err error) {
 	var v, a = pkg.ErrNoTrack, pkg.ErrNoTrack
-	if p.PubVideo {
-		v = p.videoReady.Await()
-	}
-	if p.PubAudio {
-		a = p.audioReady.Await()
+	// wait any track
+	if p.PubAudio && p.PubVideo && !audio && !video {
+		select {
+		case <-p.videoReady.Done():
+			err = context.Cause(p.videoReady.Context)
+			if errors.Is(err, util.ErrResolve) {
+				err = nil
+			}
+		case <-p.audioReady.Done():
+			err = context.Cause(p.audioReady.Context)
+			if errors.Is(err, util.ErrResolve) {
+				err = nil
+			}
+		}
+	} else {
+		// need wait video
+		if p.PubVideo && video {
+			v = p.videoReady.Await()
+		}
+		// need wait audio
+		if p.PubAudio && audio {
+			a = p.audioReady.Await()
+		}
 	}
 	if v != nil && a != nil {
 		return ErrNoTrack

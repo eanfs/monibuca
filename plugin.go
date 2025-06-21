@@ -613,7 +613,9 @@ func (p *Plugin) SubscribeWithConfig(ctx context.Context, streamPath string, con
 	if err == nil {
 		select {
 		case <-subscriber.waitPublishDone:
-			err = subscriber.Publisher.WaitTrack()
+			waitAudio := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "audio")
+			waitVideo := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "video")
+			err = subscriber.Publisher.WaitTrack(waitAudio, waitVideo)
 		case <-subscriber.Done():
 			err = subscriber.StopReason()
 		}
@@ -716,10 +718,11 @@ func (p *Plugin) registerHandler(handlers map[string]http.HandlerFunc) {
 			streamPath := r.PathValue("streamPath")
 			t := r.PathValue("type")
 			expire := r.URL.Query().Get("expire")
-			if t == "publish" {
+			switch t {
+			case "publish":
 				secret := md5.Sum([]byte(p.config.Publish.Key + streamPath + expire))
 				rw.Write([]byte(hex.EncodeToString(secret[:])))
-			} else if t == "subscribe" {
+			case "subscribe":
 				secret := md5.Sum([]byte(p.config.Subscribe.Key + streamPath + expire))
 				rw.Write([]byte(hex.EncodeToString(secret[:])))
 			}
