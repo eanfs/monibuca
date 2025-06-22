@@ -654,20 +654,20 @@ func (p *Publisher) takeOver(old *Publisher) {
 	old.Subscribers = SubscriberCollection{}
 }
 
-func (p *Publisher) WaitTrack(audio, video bool) (err error) {
+func (p *Publisher) WaitTrack(audio, video bool) (error) {
 	var v, a = pkg.ErrNoTrack, pkg.ErrNoTrack
 	// wait any track
 	if p.PubAudio && p.PubVideo && !audio && !video {
 		select {
 		case <-p.videoReady.Done():
-			err = context.Cause(p.videoReady.Context)
-			if errors.Is(err, util.ErrResolve) {
-				err = nil
+			v = context.Cause(p.videoReady.Context)
+			if errors.Is(v, util.ErrResolve) {
+				v = nil
 			}
 		case <-p.audioReady.Done():
-			err = context.Cause(p.audioReady.Context)
-			if errors.Is(err, util.ErrResolve) {
-				err = nil
+			v = context.Cause(p.audioReady.Context)
+			if errors.Is(v, util.ErrResolve) {
+				v = nil
 			}
 		}
 	} else {
@@ -683,7 +683,7 @@ func (p *Publisher) WaitTrack(audio, video bool) (err error) {
 	if v != nil && a != nil {
 		return ErrNoTrack
 	}
-	return
+	return nil
 }
 
 func (p *Publisher) NoVideo() {
