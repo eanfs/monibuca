@@ -277,6 +277,7 @@ func (s *Server) Start() (err error) {
 
 	s.registerHandler(map[string]http.HandlerFunc{
 		"/api/config/json/{name}":             s.api_Config_JSON_,
+		"/api/config/yaml/all":                s.api_Config_YAML_All,
 		"/api/stream/annexb/{streamPath...}":  s.api_Stream_AnnexB_,
 		"/api/videotrack/sse/{streamPath...}": s.api_VideoTrack_SSE,
 		"/api/audiotrack/sse/{streamPath...}": s.api_AudioTrack_SSE,
