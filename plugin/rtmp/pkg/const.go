@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"slices"
 	"time"
 
 	"m7s.live/v5/pkg/util"
@@ -57,13 +56,9 @@ func (avcc *RTMPData) GetCTS() time.Duration {
 }
 
 func (avcc *RTMPData) WrapAudio() *RTMPAudio {
-	ret := &RTMPAudio{RTMPData: *avcc}
-	ret.Memory.Buffers = slices.Clone(avcc.Memory.Buffers)
-	return ret
+	return &RTMPAudio{RTMPData: *avcc}
 }
 
 func (avcc *RTMPData) WrapVideo() *RTMPVideo {
-	ret := &RTMPVideo{RTMPData: *avcc}
-	ret.Memory.Buffers = slices.Clone(avcc.Memory.Buffers)
-	return ret
+	return &RTMPVideo{RTMPData: *avcc}
 }

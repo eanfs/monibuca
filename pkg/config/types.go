@@ -70,7 +70,7 @@ type (
 		SyncMode        int           `default:"1" desc:"同步模式" enum:"0:采用时间戳同步,1:采用写入时间同步"` // 0，采用时间戳同步，1，采用写入时间同步
 		IFrameOnly      bool          `desc:"只要关键帧"`                                        // 只要关键帧
 		WaitTimeout     time.Duration `default:"10s" desc:"等待流超时时间"`                        // 等待流超时
-		WaitTrack       string        `default:"" desc:"等待轨道" enum:"audio:等待音频,video:等待视频,all:等待全部"`
+		WaitTrack       string        `default:"video" desc:"等待轨道" enum:"audio:等待音频,video:等待视频,all:等待全部"`
 		WriteBufferSize int           `desc:"写缓冲大小"`   // 写缓冲大小
 		Key             string        `desc:"订阅鉴权key"` // 订阅鉴权key
 		SubType         string        `desc:"订阅类型"`    // 订阅类型
