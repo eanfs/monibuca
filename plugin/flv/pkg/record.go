@@ -185,13 +185,6 @@ func (r *Recorder) Run() (err error) {
 	ctx := &r.RecordJob
 	suber := ctx.Subscriber
 	noFragment := ctx.RecConf.Fragment == 0 || ctx.RecConf.Append
-	startTime := time.Now()
-	if ctx.Event.BeforeDuration > 0 {
-		startTime = startTime.Add(-time.Duration(ctx.Event.BeforeDuration) * time.Millisecond)
-	}
-	if err = r.createStream(startTime); err != nil {
-		return
-	}
 	if noFragment {
 		file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR|util.Conditional(ctx.RecConf.Append, os.O_APPEND, os.O_TRUNC), 0666)
 		if err != nil {
@@ -235,14 +228,14 @@ func (r *Recorder) Run() (err error) {
 		_, err = file.Write(FLVHead)
 	}
 	writer := NewFlvWriter(file)
-	checkFragment := func(absTime uint32) {
+	checkFragment := func(absTime uint32, writeTime time.Time) {
 		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.RecConf.Fragment {
 			writeMetaTag(file, suber, filepositions, times, &duration)
-			r.writeTailer(time.Now())
+			r.writeTailer(writeTime)
 			filepositions = []uint64{0}
 			times = []float64{0}
 			offset = 0
-			if err = r.createStream(time.Now()); err != nil {
+			if err = r.createStream(writeTime); err != nil {
 				return
 			}
 			if file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR, 0666); err != nil {
@@ -268,18 +261,30 @@ func (r *Recorder) Run() (err error) {
 	}
 
 	return m7s.PlayBlock(ctx.Subscriber, func(audio *rtmp.RTMPAudio) (err error) {
+		if r.Event.StartTime.IsZero() {
+			err = r.createStream(suber.AudioReader.Value.WriteTime)
+			if err != nil {
+				return err
+			}
+		}
 		if suber.VideoReader == nil && !noFragment {
-			checkFragment(suber.AudioReader.AbsTime)
+			checkFragment(suber.AudioReader.AbsTime, suber.AudioReader.Value.WriteTime)
 		}
 		err = writer.WriteTag(FLV_TAG_TYPE_AUDIO, suber.AudioReader.AbsTime, uint32(audio.Size), audio.Buffers...)
 		offset += int64(audio.Size + 15)
 		return
 	}, func(video *rtmp.RTMPVideo) (err error) {
+		if r.Event.StartTime.IsZero() {
+			err = r.createStream(suber.VideoReader.Value.WriteTime)
+			if err != nil {
+				return err
+			}
+		}
 		if suber.VideoReader.Value.IDR {
 			filepositions = append(filepositions, uint64(offset))
 			times = append(times, float64(suber.VideoReader.AbsTime)/1000)
 			if !noFragment {
-				checkFragment(suber.VideoReader.AbsTime)
+				checkFragment(suber.VideoReader.AbsTime, suber.VideoReader.Value.WriteTime)
 			}
 		}
 		err = writer.WriteTag(FLV_TAG_TYPE_VIDEO, suber.VideoReader.AbsTime, uint32(video.Size), video.Buffers...)

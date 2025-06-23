@@ -68,7 +68,7 @@ func (r *Recorder) createNewTs() {
 	}
 }
 
-func (r *Recorder) writeSegment(ts time.Duration) (err error) {
+func (r *Recorder) writeSegment(ts time.Duration, writeTime time.Time) (err error) {
 	if dur := ts - r.lastTs; dur >= r.RecordJob.RecConf.Fragment || r.lastTs == 0 {
 		if dur == ts && r.lastTs == 0 { //时间戳不对的情况，首个默认为2s
 			dur = time.Duration(2) * time.Second
@@ -82,10 +82,10 @@ func (r *Recorder) writeSegment(ts time.Duration) (err error) {
 		}
 
 		// 结束当前片段的记录
-		r.writeTailer(time.Now())
+		r.writeTailer(writeTime)
 
 		// 创建新的数据库记录
-		err = r.createStream(time.Now())
+		err = r.createStream(writeTime)
 		if err != nil {
 			return
 		}
@@ -102,10 +102,6 @@ func (r *Recorder) Run() (err error) {
 	ctx := &r.RecordJob
 	suber := ctx.Subscriber
 	startTime := time.Now()
-	if ctx.Event.BeforeDuration > 0 {
-		startTime = startTime.Add(-time.Duration(ctx.Event.BeforeDuration) * time.Millisecond)
-	}
-
 	// 创建第一个片段记录
 	if err = r.createStream(startTime); err != nil {
 		return
@@ -139,7 +135,7 @@ func (r *Recorder) ProcessADTS(audio *pkg.ADTS) (err error) {
 
 func (r *Recorder) ProcessAnnexB(video *pkg.AnnexB) (err error) {
 	if r.RecordJob.Subscriber.VideoReader.Value.IDR {
-		if err = r.writeSegment(video.GetTimestamp()); err != nil {
+		if err = r.writeSegment(video.GetTimestamp(), r.RecordJob.Subscriber.VideoReader.Value.WriteTime); err != nil {
 			return
 		}
 	}
