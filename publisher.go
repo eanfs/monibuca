@@ -320,22 +320,20 @@ func (p *Publisher) SetCodecCtx(ctx codec.ICodecCtx, data IAVFrame) {
 	if _, ok := ctx.(IAudioCodecCtx); ok {
 		t := p.AudioTrack.AVTrack
 		if t == nil {
-			t = NewAVTrack(data, p.Logger.With("track", "audio"), &p.Publish, p.audioReady, ctx)
+			t = NewAVTrack(data, p.Logger.With("track", "audio"), &p.Publish, p.audioReady)
 			p.AudioTrack.Set(t)
 			p.Call(p.trackAdded)
-		} else {
-			t.ICodecCtx = ctx
 		}
+		t.ICodecCtx = ctx
 		return
 	} else if _, ok := ctx.(IVideoCodecCtx); ok {
 		t := p.VideoTrack.AVTrack
 		if t == nil {
-			t = NewAVTrack(data, p.Logger.With("track", "video"), &p.Publish, p.videoReady, ctx)
+			t = NewAVTrack(data, p.Logger.With("track", "video"), &p.Publish, p.videoReady)
 			p.VideoTrack.Set(t)
 			p.Call(p.trackAdded)
-		} else {
-			t.ICodecCtx = ctx
 		}
+		t.ICodecCtx = ctx
 		return
 	}
 }
@@ -654,7 +652,7 @@ func (p *Publisher) takeOver(old *Publisher) {
 	old.Subscribers = SubscriberCollection{}
 }
 
-func (p *Publisher) WaitTrack(audio, video bool) (error) {
+func (p *Publisher) WaitTrack(audio, video bool) error {
 	var v, a = pkg.ErrNoTrack, pkg.ErrNoTrack
 	// wait any track
 	if p.PubAudio && p.PubVideo && !audio && !video {

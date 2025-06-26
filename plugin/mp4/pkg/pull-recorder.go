@@ -50,7 +50,8 @@ func (p *RecordReader) Run() (err error) {
 
 	// 创建可复用的 DemuxerRange 实例
 	demuxerRange := &DemuxerRange{
-		Logger: p.Logger.With("demuxer", "mp4"),
+		Logger:  p.Logger.With("demuxer", "mp4"),
+		Streams: p.Streams,
 	}
 
 	for loop := 0; loop < p.Loop; loop++ {
