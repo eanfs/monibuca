@@ -1,5 +1,33 @@
 # Monibuca v5.0.x Release Notes
 
+## v5.0.3 (2025-06-27)
+
+### 🎉 新功能 (New Features)
+
+#### 录像与流媒体协议增强
+- **MP4/FLV录像优化**：多项修复和优化录像拉取、分片、写入、格式转换等功能，提升兼容性和稳定性。
+- **GB28181协议增强**：支持pullproxy代理GB28181流，完善平台配置、子码流播放、单独media port等能力。
+- **插件与配置系统**：插件初始化、配置加载、数据库适配等增强，支持获取全部配置yaml示例。
+- **WebRTC/HLS/RTMP协议适配**：WebRTC支持更多编解码器，HLS/RTMP协议兼容性提升。
+- **crontab计划录像**：定时任务插件支持计划录像，拉流代理支持禁用。
+
+### 🐛 问题修复 (Bug Fixes)
+- **录像/流媒体相关**：修复mp4、flv、rtmp、hls等协议的多项bug，包括clone buffer、SQL语法、表结构适配等。
+- **GB28181/数据库**：修复注册、流订阅、表结构、SQL语法等问题，适配PostgreSQL。
+- **插件系统**：修复插件初始化、数据库对象赋值、配置加载等问题。
+
+### 🛠️ 优化改进 (Improvements)
+- **代码结构重构**：重构mp4、record、插件等系统，提升可维护性。
+- **文档与示例**：完善文档说明，增加配置和API示例。
+- **Docker镜像**：优化tcpdump、ffmpeg等工具集成。
+
+### 👥 贡献者 (Contributors)
+- langhuihui
+- pggiroro
+- banshan
+
+---
+
 ## v5.0.2 (2025-06-05)
 
 ### 🎉 新功能 (New Features)
