@@ -236,12 +236,11 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					var plBuffer util.Buffer
 					playlist.Writer = &plBuffer
 					playlist.Init()
-
 					for _, record := range records {
 						duration := record.EndTime.Sub(record.StartTime).Seconds()
 						playlist.WriteInf(hls.PlaylistInf{
 							Duration: duration,
-							URL:      path.Base(record.FilePath),
+							URL:      record.FilePath,
 							FilePath: record.FilePath,
 						})
 					}
@@ -271,9 +270,14 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if strings.HasSuffix(r.URL.Path, ".ts") {
 		w.Header().Add("Content-Type", "video/mp2t") //video/mp2t
+		data, err := os.ReadFile(fileName)
+		if err == nil {
+			w.Write(data)
+			return
+		}
 		parts := strings.Split(fileName, "/")
 		filePath := strings.Join(parts[1:], "/")
-		data, err := os.ReadFile(filePath)
+		data, err = os.ReadFile(filePath)
 		if err == nil {
 			w.Write(data)
 			return
