@@ -130,14 +130,15 @@ func (r *Recorder) Run() (err error) {
 }
 
 func (r *Recorder) ProcessADTS(audio *pkg.ADTS) (err error) {
-	return r.ts.WriteAudioFrame(audio, r.pesAudio)
+	return r.ts.WriteAudioFrame( r.RecordJob.Subscriber.AudioReader.AbsTime, audio, r.pesAudio)
 }
 
 func (r *Recorder) ProcessAnnexB(video *pkg.AnnexB) (err error) {
-	if r.RecordJob.Subscriber.VideoReader.Value.IDR {
-		if err = r.writeSegment(video.GetTimestamp(), r.RecordJob.Subscriber.VideoReader.Value.WriteTime); err != nil {
+	vr := r.RecordJob.Subscriber.VideoReader
+	if vr.Value.IDR {
+		if err = r.writeSegment(time.Duration(vr.AbsTime)*time.Millisecond, vr.Value.WriteTime); err != nil {
 			return
 		}
 	}
-	return r.ts.WriteVideoFrame(video, r.pesVideo)
+	return r.ts.WriteVideoFrame(vr.AbsTime, video, r.pesVideo)
 }

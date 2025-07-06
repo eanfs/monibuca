@@ -145,11 +145,11 @@ func (ts *TsInFile) WritePESPacket(frame *mpegts.MpegtsPESFrame, packet mpegts.M
 	return nil
 }
 
-func (ts *TsInFile) WriteAudioFrame(frame *pkg.ADTS, pes *mpegts.MpegtsPESFrame) (err error) {
+func (ts *TsInFile) WriteAudioFrame(absTime uint32, frame *pkg.ADTS, pes *mpegts.MpegtsPESFrame) (err error) {
 	var packet mpegts.MpegTsPESPacket
 	packet.Header.PesPacketLength = uint16(frame.Size + 8)
 	packet.Buffers = slices.Clone(frame.Buffers)
-	packet.Header.Pts = uint64(frame.DTS)
+	packet.Header.Pts = uint64(absTime) * 90
 	packet.Header.PacketStartCodePrefix = 0x000001
 	packet.Header.ConstTen = 0x80
 	packet.Header.StreamID = mpegts.STREAM_ID_AUDIO
@@ -159,7 +159,7 @@ func (ts *TsInFile) WriteAudioFrame(frame *pkg.ADTS, pes *mpegts.MpegtsPESFrame)
 	return ts.WritePESPacket(pes, packet)
 }
 
-func (ts *TsInFile) WriteVideoFrame(frame *pkg.AnnexB, pes *mpegts.MpegtsPESFrame) (err error) {
+func (ts *TsInFile) WriteVideoFrame(absTime uint32, frame *pkg.AnnexB, pes *mpegts.MpegtsPESFrame) (err error) {
 	var buffer net.Buffers
 	if frame.Hevc {
 		buffer = append(buffer, codec.AudNalu)
@@ -177,9 +177,9 @@ func (ts *TsInFile) WriteVideoFrame(frame *pkg.AnnexB, pes *mpegts.MpegtsPESFram
 	packet.Header.ConstTen = 0x80
 	packet.Header.StreamID = mpegts.STREAM_ID_VIDEO
 	packet.Header.PesPacketLength = uint16(pktLength)
-	packet.Header.Pts = uint64(frame.PTS)
+	packet.Header.Dts = uint64(absTime) * 90
+	packet.Header.Pts = uint64(frame.PTS - frame.DTS) + packet.Header.Dts
 	pes.ProgramClockReferenceBase = packet.Header.Pts
-	packet.Header.Dts = uint64(frame.DTS)
 	packet.Header.PtsDtsFlags = 0xC0
 	packet.Header.PesHeaderDataLength = 10
 	packet.Buffers = buffer
