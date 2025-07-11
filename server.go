@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -407,9 +408,11 @@ func (s *Server) Start() (err error) {
 	if grpcServer != nil {
 		s.AddTask(grpcServer, s.Logger)
 	}
-	s.Streams.OnStart(func() {
-		s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
-	})
+	if s.PulseInterval > 0 {
+		s.Streams.OnStart(func() {
+			s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
+		})
+	}
 	s.loadAdminZip()
 	// s.Transforms.AddTask(&TransformsPublishEvent{Transforms: &s.Transforms})
 	s.Info("server started")
