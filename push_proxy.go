@@ -285,7 +285,7 @@ func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *
 	return
 }
 
-func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.UpdatePushProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -295,37 +295,56 @@ func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (re
 	if err != nil {
 		return
 	}
-	target.Name = req.Name
-	target.URL = req.PushURL
-	target.ParentID = uint(req.ParentID)
-	target.Type = req.Type
+
+	// Update only if the field is provided (optional fields)
+	if req.Name != nil {
+		target.Name = *req.Name
+	}
+	if req.PushURL != nil {
+		target.URL = *req.PushURL
+	}
+	if req.ParentID != nil {
+		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Type != nil {
+		target.Type = *req.Type
+	}
 	if target.Type == "" {
 		var u *url.URL
-		u, err = url.Parse(req.PushURL)
-		if err != nil {
-			s.Error("parse pull url failed", "error", err)
-			return
-		}
-		switch u.Scheme {
-		case "srt", "rtsp", "rtmp":
-			target.Type = u.Scheme
-		default:
-			ext := filepath.Ext(u.Path)
-			switch ext {
-			case ".m3u8":
-				target.Type = "hls"
-			case ".flv":
-				target.Type = "flv"
-			case ".mp4":
-				target.Type = "mp4"
+		if req.PushURL != nil {
+			u, err = url.Parse(*req.PushURL)
+			if err != nil {
+				s.Error("parse push url failed", "error", err)
+				return
+			}
+			switch u.Scheme {
+			case "srt", "rtsp", "rtmp":
+				target.Type = u.Scheme
+			default:
+				ext := filepath.Ext(u.Path)
+				switch ext {
+				case ".m3u8":
+					target.Type = "hls"
+				case ".flv":
+					target.Type = "flv"
+				case ".mp4":
+					target.Type = "mp4"
+				}
 			}
 		}
 	}
-	target.PushOnStart = req.PushOnStart
-	target.Audio = req.Audio
-	target.Description = req.Description
-	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
-	target.StreamPath = req.StreamPath
+	if req.PushOnStart != nil {
+		target.PushOnStart = *req.PushOnStart
+	}
+	if req.Audio != nil {
+		target.Audio = *req.Audio
+	}
+	if req.Description != nil {
+		target.Description = *req.Description
+	}
+	if req.StreamPath != nil {
+		target.StreamPath = *req.StreamPath
+	}
 	s.DB.Save(target)
 
 	// Stop the old proxy if needed

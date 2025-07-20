@@ -181,7 +181,7 @@ service api {
       }
     };
   }
-  rpc UpdatePullProxy (PullProxyInfo) returns (SuccessResponse) {
+  rpc UpdatePullProxy (UpdatePullProxyRequest) returns (SuccessResponse) {
     option (google.api.http) = {
       post: "/api/proxy/pull/update"
       body: "*"
@@ -208,7 +208,7 @@ service api {
       body: "*"
     };
   }
-  rpc UpdatePushProxy (PushProxyInfo) returns (SuccessResponse) {
+  rpc UpdatePushProxy (UpdatePushProxyRequest) returns (SuccessResponse) {
     option (google.api.http) = {
       post: "/api/proxy/push/update"
       body: "*"
@@ -571,6 +571,22 @@ message PullProxyInfo {
   string streamPath = 16; // 流路径
 }
 
+message UpdatePullProxyRequest {
+  uint32 ID = 1;
+  optional uint32 parentID = 2; // 父设备ID
+  optional string name = 3; // 设备名称
+  optional string type = 4; // 设备类型
+  optional uint32 status = 5; // 设备状态
+  optional string pullURL = 6; // 拉流地址
+  optional bool pullOnStart = 7; // 启动时拉流
+  optional bool stopOnIdle = 8; // 空闲时停止拉流
+  optional bool audio = 9; // 是否拉取音频
+  optional string description = 10; // 设备描述
+  optional string recordPath = 11; // 录制路径
+  optional google.protobuf.Duration recordFragment = 12; // 录制片段长度
+  optional string streamPath = 13; // 流路径
+}
+
 message PushProxyInfo {
   uint32 ID = 1;
   google.protobuf.Timestamp createTime = 2;
@@ -585,6 +601,20 @@ message PushProxyInfo {
   string description = 11; // 设备描述
   uint32 rtt = 12; // 平均RTT
   string streamPath = 13; // 流路径
+}
+
+message UpdatePushProxyRequest {
+  uint32 ID = 1;
+  optional uint32 parentID = 2; // 父设备ID
+  optional string name = 3; // 设备名称
+  optional string type = 4; // 设备类型
+  optional uint32 status = 5; // 设备状态
+  optional string pushURL = 6; // 推流地址
+  optional bool pushOnStart = 7; // 启动时推流
+  optional bool audio = 8; // 是否推音频
+  optional string description = 9; // 设备描述
+  optional uint32 rtt = 10; // 平均RTT
+  optional string streamPath = 11; // 流路径
 }
 
 message PushProxyListResponse {

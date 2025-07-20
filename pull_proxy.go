@@ -332,7 +332,7 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	return
 }
 
-func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -346,43 +346,76 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 	// 记录原始状态，用于后续判断状态变化
 	originalStatus := target.Status
 
-	target.Name = req.Name
-	target.URL = req.PullURL
-	target.ParentID = uint(req.ParentID)
-	target.Type = req.Type
-	if target.Type == "" {
-		var u *url.URL
-		u, err = url.Parse(req.PullURL)
-		if err != nil {
-			s.Error("parse pull url failed", "error", err)
-			return
+	// 只有当字段有值时才进行赋值
+	if req.Name != nil {
+		target.Name = *req.Name
+	}
+	if req.PullURL != nil {
+		target.URL = *req.PullURL
+	}
+	if req.ParentID != nil {
+		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Type != nil {
+		target.Type = *req.Type
+	}
+
+	// 如果Type字段被更新或者原来为空，则尝试从URL推导类型
+	if (req.Type != nil && *req.Type == "") || (req.PullURL != nil && target.Type == "") {
+		var urlToParse string
+		if req.PullURL != nil {
+			urlToParse = *req.PullURL
+		} else {
+			urlToParse = target.URL
 		}
-		switch u.Scheme {
-		case "srt", "rtsp", "rtmp":
-			target.Type = u.Scheme
-		default:
-			ext := filepath.Ext(u.Path)
-			switch ext {
-			case ".m3u8":
-				target.Type = "hls"
-			case ".flv":
-				target.Type = "flv"
-			case ".mp4":
-				target.Type = "mp4"
+
+		if urlToParse != "" {
+			var u *url.URL
+			u, err = url.Parse(urlToParse)
+			if err != nil {
+				s.Error("parse pull url failed", "error", err)
+				return
+			}
+			switch u.Scheme {
+			case "srt", "rtsp", "rtmp":
+				target.Type = u.Scheme
+			default:
+				ext := filepath.Ext(u.Path)
+				switch ext {
+				case ".m3u8":
+					target.Type = "hls"
+				case ".flv":
+					target.Type = "flv"
+				case ".mp4":
+					target.Type = "mp4"
+				}
 			}
 		}
 	}
-	target.PullOnStart = req.PullOnStart
-	target.StopOnIdle = req.StopOnIdle
-	target.Audio = req.Audio
-	target.Description = req.Description
-	target.Record.FilePath = req.RecordPath
-	target.Record.Fragment = req.RecordFragment.AsDuration()
-	target.RTT = time.Duration(int(req.Rtt)) * time.Millisecond
-	target.StreamPath = req.StreamPath
 
+	if req.PullOnStart != nil {
+		target.PullOnStart = *req.PullOnStart
+	}
+	if req.StopOnIdle != nil {
+		target.StopOnIdle = *req.StopOnIdle
+	}
+	if req.Audio != nil {
+		target.Audio = *req.Audio
+	}
+	if req.Description != nil {
+		target.Description = *req.Description
+	}
+	if req.RecordPath != nil {
+		target.Record.FilePath = *req.RecordPath
+	}
+	if req.RecordFragment != nil {
+		target.Record.Fragment = req.RecordFragment.AsDuration()
+	}
+	if req.StreamPath != nil {
+		target.StreamPath = *req.StreamPath
+	}
 	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
-	if req.Status != uint32(PullProxyStatusDisabled) {
+	if req.Status != nil && *req.Status != uint32(PullProxyStatusDisabled) {
 		var existingCount int64
 		streamPath := target.StreamPath
 		if streamPath == "" {
@@ -395,8 +428,8 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 			err = fmt.Errorf("已存在相同 streamPath [%s] 的非禁用代理，更新失败", streamPath)
 			return
 		}
-		target.Status = byte(req.Status)
-	} else {
+		target.Status = byte(*req.Status)
+	} else if req.Status != nil {
 		target.Status = PullProxyStatusDisabled
 	}
 
