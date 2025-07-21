@@ -642,6 +642,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Admin.zipReader != nil {
+		// Handle root path redirect to HomePage
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/admin/#/"+s.Admin.HomePage, http.StatusFound)
+			return
+		}
+
 		http.ServeFileFS(w, r, s.Admin.zipReader, strings.TrimPrefix(r.URL.Path, "/admin"))
 		return
 	}

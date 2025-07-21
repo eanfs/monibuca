@@ -113,6 +113,9 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 				t.Value.IDR = true
 			}
 		}
+		if len(ctx.CodecData.Record) == 0 {
+			return ErrSkip
+		}
 		if t.Value.IDR && !hasSPSPPS {
 			spsRTP := &rtp.Packet{
 				Header: rtp.Header{
@@ -209,6 +212,9 @@ func (r *Video) Parse(t *AVTrack) (err error) {
 				h265parser.NAL_UNIT_CODED_SLICE_CRA:
 				t.Value.IDR = true
 			}
+		}
+		if len(ctx.CodecData.Record) == 0 {
+			return ErrSkip
 		}
 		if t.Value.IDR && !hasVPSSPSPPS {
 			vpsRTP := &rtp.Packet{
