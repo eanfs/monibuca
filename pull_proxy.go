@@ -36,6 +36,7 @@ type (
 		GetStreamPath() string
 		GetConfig() *PullProxyConfig
 		ChangeStatus(status byte)
+		GetPullJob() *PullJob
 		Pull()
 		GetKey() uint
 	}
@@ -60,7 +61,8 @@ type (
 	}
 	BasePullProxy struct {
 		*PullProxyConfig
-		Plugin *Plugin
+		Plugin  *Plugin
+		PullJob *PullJob
 	}
 	HTTPPullProxy struct {
 		TCPPullProxy
@@ -116,8 +118,8 @@ func (d *BasePullProxy) ChangeStatus(status byte) {
 
 func (d *BasePullProxy) Dispose() {
 	d.ChangeStatus(PullProxyStatusOffline)
-	if stream, ok := d.Plugin.Server.Streams.SafeGet(d.GetStreamPath()); ok {
-		stream.Stop(task.ErrStopByUser)
+	if d.PullJob != nil {
+		d.PullJob.Stop(task.ErrStopByUser)
 	}
 }
 
@@ -145,11 +147,15 @@ func (d *PullProxyConfig) InitializeWithServer(s *Server) {
 	}
 }
 
+func (d *BasePullProxy) GetPullJob() *PullJob {
+	return d.PullJob
+}
+
 func (d *BasePullProxy) Pull() {
 	var pubConf = d.Plugin.config.Publish
 	pubConf.PubAudio = d.Audio
 	pubConf.DelayCloseTimeout = util.Conditional(d.StopOnIdle, time.Second*5, 0)
-	d.Plugin.handler.Pull(d.GetStreamPath(), d.PullProxyConfig.Pull, &pubConf)
+	d.PullJob, _ = d.Plugin.handler.Pull(d.GetStreamPath(), d.PullProxyConfig.Pull, &pubConf)
 }
 
 func (d *HTTPPullProxy) Start() (err error) {
@@ -453,9 +459,9 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 			device.Stop(task.ErrStopByUser)
 			device, err = s.createPullProxy(target)
 			if target.Status == PullProxyStatusPulling {
-				if pullJob, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
-					pullJob.OnDispose(device.Pull)
-					pullJob.Stop(task.ErrStopByUser)
+				if pullJob := device.GetPullJob(); pullJob != nil {
+					pullJob.WaitStopped()
+					device.Pull()
 				}
 			}
 		} else {
@@ -466,8 +472,11 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
 				device.Pull()
 			} else if target.Status == PullProxyStatusPulling {
-				if pullJob, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok && pullJob.Publisher != nil {
-					pullJob.Publisher.Publish.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
+				if pullJob := device.GetPullJob(); pullJob != nil {
+					pullJob.PublishConfig.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
+					if pullJob.Publisher != nil {
+						pullJob.Publisher.Publish.DelayCloseTimeout = pullJob.PublishConfig.DelayCloseTimeout
+					}
 				}
 			}
 		}
@@ -495,9 +504,6 @@ func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (re
 		err = tx.Error
 		if device, ok := s.PullProxies.SafeGet(uint(req.Id)); ok {
 			device.Stop(task.ErrStopByUser)
-			// if pull, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
-			// 	pull.Stop(task.ErrStopByUser)
-			// }
 		}
 		return
 	} else if req.StreamPath != "" {
@@ -509,9 +515,6 @@ func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (re
 				err = tx.Error
 				if device, ok := s.PullProxies.SafeGet(uint(device.ID)); ok {
 					device.Stop(task.ErrStopByUser)
-					// if pull, ok := s.Pulls.SafeGet(device.GetStreamPath()); ok {
-					// 	pull.Stop(task.ErrStopByUser)
-					// }
 				}
 			}
 		}

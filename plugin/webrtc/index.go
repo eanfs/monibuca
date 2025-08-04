@@ -446,10 +446,11 @@ func (p *WebRTCPlugin) testPage(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, f)
 }
 
-func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
+func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) (job *m7s.PullJob, err error) {
 	if strings.HasPrefix(conf.URL, "https://rtc.live.cloudflare.com") {
 		cfClient := NewCFClient(DIRECTION_PULL)
-		api, err := p.createAPI(nil)
+		var api *API
+		api, err = p.createAPI(nil)
 		if err != nil {
 			p.Error("create API failed", "error", err)
 			return
@@ -462,6 +463,8 @@ func (p *WebRTCPlugin) Pull(streamPath string, conf config.Pull, pubConf *config
 			p.Error("pull", "error", err)
 			return
 		}
-		cfClient.GetPullJob().Init(cfClient, &p.Plugin, streamPath, conf, pubConf)
+		job = cfClient.GetPullJob()
+		job.Init(cfClient, &p.Plugin, streamPath, conf, pubConf)
 	}
+	return
 }

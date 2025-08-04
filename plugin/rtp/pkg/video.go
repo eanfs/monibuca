@@ -387,6 +387,9 @@ func (r *Video) Demux(ictx codec.ICodecCtx) (any, error) {
 			}
 		}
 		for _, packet := range r.Packets {
+			if len(packet.Payload) == 0 {
+				continue
+			}
 			if packet.Padding {
 				packet.Padding = false
 			}

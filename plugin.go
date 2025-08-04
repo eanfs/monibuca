@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"m7s.live/v5/pkg/task"
 
@@ -66,7 +67,7 @@ type (
 		task.IJob
 		OnInit() error
 		OnStop()
-		Pull(string, config.Pull, *config.Publish)
+		Pull(string, config.Pull, *config.Publish) (*PullJob, error)
 		Push(string, config.Push, *config.Subscribe)
 		Transform(*Publisher, config.Transform)
 		OnPublish(*Publisher)
@@ -724,12 +725,14 @@ func (p *Plugin) Subscribe(ctx context.Context, streamPath string) (subscriber *
 	return p.SubscribeWithConfig(ctx, streamPath, p.config.Subscribe)
 }
 
-func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
+func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) (job *PullJob, err error) {
 	puller := p.Meta.NewPuller(conf)
 	if puller == nil {
-		return
+		return nil, ErrNotFound
 	}
-	puller.GetPullJob().Init(puller, p, streamPath, conf, pubConf)
+	job = puller.GetPullJob()
+	job.Init(puller, p, streamPath, conf, pubConf)
+	return
 }
 
 func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subscribe) {

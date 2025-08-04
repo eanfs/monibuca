@@ -22,7 +22,7 @@ type CascadeClientPlugin struct {
 	conn     quic.Connection
 }
 
-var _ = m7s.InstallPlugin[CascadeClientPlugin](cascade.NewCascadePuller)
+var _ = m7s.InstallPlugin[CascadeClientPlugin]()
 
 type CascadeClient struct {
 	task.Work
@@ -91,11 +91,13 @@ func (c *CascadeClientPlugin) OnInit() (err error) {
 	return
 }
 
-func (c *CascadeClientPlugin) Pull(streamPath string, conf config.Pull, pub *config.Publish) {
+func (c *CascadeClientPlugin) Pull(streamPath string, conf config.Pull, pub *config.Publish) (job *m7s.PullJob, err error) {
 	puller := &cascade.Puller{
 		Connection: c.conn,
 	}
-	puller.GetPullJob().Init(puller, &c.Plugin, streamPath, conf, pub)
+	job = puller.GetPullJob()
+	job.Init(puller, &c.Plugin, streamPath, conf, pub)
+	return
 }
 
 //func (c *CascadeClientPlugin) Start() {

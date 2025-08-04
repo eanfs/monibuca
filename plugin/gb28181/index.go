@@ -683,10 +683,11 @@ func (gb *GB28181Plugin) OnNotify(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (gb *GB28181Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
+func (gb *GB28181Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) (job *m7s.PullJob, err error) {
 	if util.Exist(conf.URL) {
 		var puller gb28181.DumpPuller
-		puller.GetPullJob().Init(&puller, &gb.Plugin, streamPath, conf, pubConf)
+		job = puller.GetPullJob()
+		job.Init(&puller, &gb.Plugin, streamPath, conf, pubConf)
 		return
 	}
 	dialog := Dialog{
@@ -701,7 +702,9 @@ func (gb *GB28181Plugin) Pull(streamPath string, conf config.Pull, pubConf *conf
 			dialog.stream = conf.Args.Get("stream")
 		}
 	}
-	dialog.GetPullJob().Init(&dialog, &gb.Plugin, streamPath, conf, pubConf)
+	job = dialog.GetPullJob()
+	job.Init(&dialog, &gb.Plugin, streamPath, conf, pubConf)
+	return
 }
 
 func (gb *GB28181Plugin) GetPullableList() []string {
