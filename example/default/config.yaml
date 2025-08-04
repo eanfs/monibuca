@@ -4,6 +4,8 @@ global:
   loglevel: debug
   admin:
     enablelogin: false
+debug:
+  enableTaskHistory: true #是否启用任务历史记录
 srt:
   listenaddr: :6000
   passphrase: foobarfoobar
@@ -51,7 +53,6 @@ mp4:
   #     ^live/.+:
   #         fragment: 10s
   #         filepath: record/$0
-          # type: fmp4
   # pull:
   #   live/test: /Users/dexter/Movies/1744963190.mp4
   onsub:
@@ -108,18 +109,6 @@ snap:
               savepath: "snaps"  # 截图保存路径
               iframeinterval: 3  # 间隔多少帧截图
               querytimedelta: 3  # 查询截图时允许的最大时间差（秒）
-
-crypto:
-  enable: false
-  isstatic: false
-  algo: aes_ctr # 加密算法 支持 aes_ctr xor_c
-  encryptlen: 1024
-  secret:
-    key: your key
-    iv: your iv
-  onpub:
-    transform:
-      .* : $0
 onvif:
   enable: false
   discoverinterval: 3 # 发现设备的间隔，单位秒，默认30秒，建议比rtsp插件的重连间隔大点

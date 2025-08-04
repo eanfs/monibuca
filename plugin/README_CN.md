@@ -6,6 +6,13 @@
 - Visual Studio Code
 - Goland
 - Cursor
+- CodeBuddy
+- Trae
+- Qoder
+- Claude Code
+- Kiro
+- Windsurf
+
 ### 安装gRPC
 ```shell
 $ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
@@ -51,12 +58,14 @@ type MyPlugin struct {
 const defaultConfig = m7s.DefaultYaml(`tcp:
   listenaddr: :5554`)
 
-var _ = m7s.InstallPlugin[MyPlugin](defaultConfig)
+var _ = m7s.InstallPlugin[MyPlugin](m7s.PluginMeta{
+    DefaultYaml: defaultConfig,
+})
 ```
 ## 3. 实现事件回调（可选）
 ### 初始化回调
 ```go
-func (config *MyPlugin) OnInit() (err error) {
+func (config *MyPlugin) Start() (err error) {
     // 初始化一些东西
     return
 }
@@ -113,26 +122,29 @@ func (config *MyPlugin) test1(rw http.ResponseWriter, r *http.Request) {
 ## 5. 实现推拉流客户端
 
 ### 实现推流客户端
-推流客户端就是想要实现一个 IPusher，然后将创建 IPusher 的方法传入 InstallPlugin 中。
+推流客户端需要实现 IPusher 接口，然后将创建 IPusher 的方法传入 InstallPlugin 中。
 ```go
 type Pusher struct {
-  pullCtx m7s.PullJob
+  task.Task
+  pushJob m7s.PushJob
 }
 
-func (c *Pusher) GetPullJob() *m7s.PullJob {
-	return &c.pullCtx
+func (c *Pusher) GetPushJob() *m7s.PushJob {
+	return &c.pushJob
 }
 
 func NewPusher(_ config.Push) m7s.IPusher {
 	return &Pusher{}
 }
-var _ = m7s.InstallPlugin[MyPlugin](NewPusher)
+var _ = m7s.InstallPlugin[MyPlugin](m7s.PluginMeta{
+    NewPusher: NewPusher,
+})
 
 ```
 
 ### 实现拉流客户端
-拉流客户端就是想要实现一个 IPuller，然后将创建 IPuller 的方法传入 InstallPlugin 中。
-下面这个 Puller 继承了 m7s.HTTPFilePuller，可以实现基本的文件和 HTTP拉流。具体拉流逻辑需要覆盖 Run 方法。
+拉流客户端需要实现 IPuller 接口，然后将创建 IPuller 的方法传入 InstallPlugin 中。
+下面这个 Puller 继承了 m7s.HTTPFilePuller，可以实现基本的文件和 HTTP拉流。具体拉流逻辑需要覆盖 Start 方法。
 ```go
 type Puller struct {
 	m7s.HTTPFilePuller
@@ -141,7 +153,9 @@ type Puller struct {
 func NewPuller(_ config.Pull) m7s.IPuller {
 	return &Puller{}
 }
-var _ = m7s.InstallPlugin[MyPlugin](NewPuller)
+var _ = m7s.InstallPlugin[MyPlugin](m7s.PluginMeta{
+    NewPuller: NewPuller,
+})
 ```
 
 ## 6. 实现gRPC服务
@@ -221,7 +235,10 @@ import (
 	"m7s.live/v5/plugin/myplugin/pb"
 )
 
-var _ = m7s.InstallPlugin[MyPlugin](&pb.Api_ServiceDesc, pb.RegisterApiHandler)
+var _ = m7s.InstallPlugin[MyPlugin](m7s.PluginMeta{
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+})
 
 type MyPlugin struct {
 	pb.UnimplementedApiServer
@@ -239,51 +256,78 @@ func (config *MyPlugin)  API_test1(rw http.ResponseWriter, r *http.Request) {
 ```
 就可以通过 get 请求`/myplugin/api/test1`来调用`API_test1`方法。
 
-## 5. 发布流
+## 7. 发布流
 
 ```go
-
-publisher, err = p.Publish(streamPath, connectInfo)
+publisher, err := p.Publish(ctx, streamPath)
 ```
-后面两个入参是可选的
+`ctx` 参数是必需的，`streamPath` 参数是必需的。
 
-得到 `publisher` 后，就可以通过调用 `publisher.WriteAudio`、`publisher.WriteVideo` 来发布音视频数据。
+### 写入音视频数据
+
+旧的 `WriteAudio` 和 `WriteVideo` 方法已被更结构化的写入器模式取代，使用泛型实现：
+
+#### **创建写入器**
+```go
+// 音频写入器
+audioWriter := m7s.NewPublishAudioWriter[*AudioFrame](publisher, allocator)
+
+// 视频写入器  
+videoWriter := m7s.NewPublishVideoWriter[*VideoFrame](publisher, allocator)
+
+// 组合音视频写入器
+writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
+```
+
+#### **写入帧**
+```go
+// 设置时间戳并写入音频帧
+writer.AudioFrame.SetTS32(timestamp)
+err := writer.NextAudio()
+
+// 设置时间戳并写入视频帧
+writer.VideoFrame.SetTS32(timestamp)
+err := writer.NextVideo()
+```
+
+#### **写入自定义数据**
+```go
+// 对于自定义数据帧
+err := publisher.WriteData(data IDataFrame)
+```
+
 ### 定义音视频数据
-如果先有的音视频数据格式无法满足需求，可以自定义音视频数据格式。
+如果现有的音视频数据格式无法满足需求，可以自定义音视频数据格式。
 但需要满足转换格式的要求。即需要实现下面这个接口：
 ```go
 IAVFrame interface {
-    GetAllocator() *util.ScalableMemoryAllocator
-    SetAllocator(*util.ScalableMemoryAllocator)
-    Parse(*AVTrack) error                                          // get codec info, idr
-    ConvertCtx(codec.ICodecCtx) (codec.ICodecCtx, IAVFrame, error) // convert codec from source stream
-    Demux(codec.ICodecCtx) (any, error)                            // demux to raw format
-    Mux(codec.ICodecCtx, *AVFrame)                                 // mux from raw format
-    GetTimestamp() time.Duration
-    GetCTS() time.Duration
+    GetSample() *Sample
     GetSize() int
+    CheckCodecChange() error
+    Demux() error      // demux to raw format
+    Mux(*Sample) error // mux from origin format
     Recycle()
     String() string
-    Dump(byte, io.Writer)
 }
 ```
 > 音频和视频需要定义两个不同的类型
 
-其中 `Parse` 方法用于解析音视频数据，`ConvertCtx` 方法用于转换音视频数据格式的上下文，`Demux` 方法用于解封装音视频数据，`Mux` 方法用于封装音视频数据，`Recycle` 方法用于回收资源。
-- GetAllocator 方法用于获取内存分配器。(嵌入 RecyclableMemory 会自动实现)
-- SetAllocator 方法用于设置内存分配器。(嵌入 RecyclableMemory 会自动实现)
-- Parse方法主要从数据中识别关键帧，序列帧等重要信息。
-- ConvertCtx 会在需要转换协议的时候调用，传入原始的协议上下文，返回新的协议上下文（即自定义格式的上下文）。
-- Demux 会在需要解封装音视频数据的时候调用，传入协议上下文，返回解封装后的音视频数据，用于给其他格式封装使用。
-- Mux 会在需要封装音视频数据的时候调用，传入协议上下文和解封装后的音视频数据，用于封装成自定义格式的音视频数据。
-- Recycle 方法会在嵌入 RecyclableMemory 时自动实现，无需手动实现。
-- String 方法用于打印音视频数据的信息。
+其中各方法的作用如下：
+- GetSample 方法用于获取音视频数据的Sample对象，包含编解码上下文和原始数据。
 - GetSize 方法用于获取音视频数据的大小。
-- GetTimestamp 方法用于获取音视频数据的时间戳(单位：纳秒)。
-- GetCTS 方法用于获取音视频数据的Composition Time Stamp(单位：纳秒)。PTS = DTS+CTS
-- Dump 方法用于打印音视频数据的二进制数据。
+- CheckCodecChange 方法用于检查编解码器是否发生变化。
+- Demux 方法用于解封装音视频数据到裸格式，用于给其他格式封装使用。
+- Mux 方法用于从原始格式封装成自定义格式的音视频数据。
+- Recycle 方法用于回收资源，会在嵌入 RecyclableMemory 时自动实现。
+- String 方法用于打印音视频数据的信息。
 
-### 6. 订阅流
+### 内存管理
+新的模式包含内置的内存管理：
+- `util.ScalableMemoryAllocator` - 用于高效的内存分配
+- 通过 `Recycle()` 方法进行帧回收
+- 自动内存池管理
+
+## 8. 订阅流
 ```go
 var suber *m7s.Subscriber
 suber, err = p.Subscribe(ctx,streamPath)
@@ -292,7 +336,244 @@ go m7s.PlayBlock(suber, handleAudio, handleVideo)
 这里需要注意的是 handleAudio, handleVideo 是处理音视频数据的回调函数，需要自己实现。
 handleAudio/Video 的入参是一个你需要接受到的音视频格式类型,返回 error，如果返回的 error 不是 nil，则订阅中止。
 
-## 7. 接入 Prometheus
+## 9. 使用 H26xFrame 处理裸流数据
+
+### 9.1 理解 H26xFrame 结构
+
+`H26xFrame` 结构体用于处理 H.264/H.265 裸流数据：
+
+```go
+type H26xFrame struct {
+    pkg.Sample
+}
+```
+
+主要特性：
+- 继承自 `pkg.Sample` - 包含编解码上下文、内存管理和时间戳信息
+- 使用 `Raw.(*pkg.Nalus)` 存储 NALU（网络抽象层单元）数据
+- 支持 H.264 (AVC) 和 H.265 (HEVC) 格式
+- 使用高效的内存分配器实现零拷贝操作
+
+### 9.2 创建 H26xFrame 进行发布
+
+```go
+import (
+    "m7s.live/v5"
+    "m7s.live/v5/pkg/format"
+    "m7s.live/v5/pkg/util"
+    "time"
+)
+
+// 创建支持 H26xFrame 的发布器 - 多帧发布
+func publishRawH264Stream(streamPath string, h264Frames [][]byte) error {
+    // 获取发布器
+    publisher, err := p.Publish(streamPath)
+    if err != nil {
+        return err
+    }
+    
+    // 创建内存分配器
+    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    defer allocator.Recycle()
+    
+    // 创建 H26xFrame 写入器
+    writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](publisher, allocator)
+    
+    // 设置 H264 编码器上下文
+    writer.VideoFrame.ICodecCtx = &format.H264{}
+    
+    // 发布多帧
+    // 注意：这只是演示一次写入多帧，实际情况是逐步写入的，即从视频源接收到一帧就写入一帧
+    startTime := time.Now()
+    for i, frameData := range h264Frames {
+        // 为每帧创建 H26xFrame
+        frame := writer.VideoFrame
+        
+        // 设置正确间隔的时间戳
+        frame.Timestamp = startTime.Add(time.Duration(i) * time.Second / 30) // 30 FPS
+        
+        // 写入 NALU 数据
+        nalus := frame.GetNalus() 
+        // 假如 frameData 中只有一个 NALU，否则需要循环执行下面的代码
+        p := nalus.GetNextPointer()
+        mem := frame.NextN(len(frameData))
+        copy(mem, frameData)
+        p.PushOne(mem)	
+        // 发布帧
+        if err := writer.NextVideo(); err != nil {
+            return err
+        }
+    }
+    
+    return nil
+}
+
+// 连续流发布示例
+func continuousH264Publishing(streamPath string, frameSource <-chan []byte, stopChan <-chan struct{}) error {
+    // 获取发布器
+    publisher, err := p.Publish(streamPath)
+    if err != nil {
+        return err
+    }
+    defer publisher.Dispose()
+    
+    // 创建内存分配器
+    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    defer allocator.Recycle()
+    
+    // 创建 H26xFrame 写入器
+    writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](publisher, allocator)
+    
+    // 设置 H264 编码器上下文
+    writer.VideoFrame.ICodecCtx = &format.H264{}
+    
+    startTime := time.Now()
+    frameCount := 0
+    
+    for {
+        select {
+        case frameData := <-frameSource:
+            // 为每帧创建 H26xFrame
+            frame := writer.VideoFrame
+            
+            // 设置正确间隔的时间戳
+            frame.Timestamp = startTime.Add(time.Duration(frameCount) * time.Second / 30) // 30 FPS
+            
+            // 写入 NALU 数据
+            nalus := frame.GetNalus()
+            mem := frame.NextN(len(frameData))
+            copy(mem, frameData)
+            
+            // 发布帧
+            if err := writer.NextVideo(); err != nil {
+                return err
+            }
+            
+            frameCount++
+            
+        case <-stopChan:
+            // 停止发布
+            return nil
+        }
+    }
+}
+```
+
+### 9.3 处理 H26xFrame（转换器模式）
+
+```go
+type MyTransform struct {
+    m7s.DefaultTransformer
+    Writer *m7s.PublishWriter[*format.RawAudio, *format.H26xFrame]
+}
+
+func (t *MyTransform) Go() {
+    defer t.Dispose()
+    
+    for video := range t.Video {
+        if err := t.processH26xFrame(video); err != nil {
+            t.Error("process frame failed", "error", err)
+            break
+        }
+    }
+}
+
+func (t *MyTransform) processH26xFrame(video *format.H26xFrame) error {
+    // 复制帧元数据
+    copyVideo := t.Writer.VideoFrame
+    copyVideo.ICodecCtx = video.ICodecCtx
+    *copyVideo.BaseSample = *video.BaseSample
+    nalus := copyVideo.GetNalus()
+    
+    // 处理每个 NALU 单元
+    for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
+        p := nalus.GetNextPointer()
+        mem := copyVideo.NextN(nalu.Size)
+        nalu.CopyTo(mem)
+        
+        // 示例：过滤或修改特定 NALU 类型
+        if video.FourCC() == codec.FourCC_H264 {
+            switch codec.ParseH264NALUType(mem[0]) {
+            case codec.NALU_IDR_Picture, codec.NALU_Non_IDR_Picture:
+                // 处理视频帧 NALU
+                // 示例：应用转换、滤镜等
+            case codec.NALU_SPS, codec.NALU_PPS:
+                // 处理参数集 NALU
+            }
+        } else if video.FourCC() == codec.FourCC_H265 {
+            switch codec.ParseH265NALUType(mem[0]) {
+            case h265parser.NAL_UNIT_CODED_SLICE_IDR_W_RADL:
+                // 处理 H.265 IDR 帧
+            }
+        }
+        
+        // 推送处理后的 NALU
+        p.PushOne(mem)
+    }
+    
+    return t.Writer.NextVideo()
+}
+```
+
+### 9.4 H.264/H.265 常见 NALU 类型
+
+#### H.264 NALU 类型
+```go
+const (
+    NALU_Non_IDR_Picture = 1  // 非 IDR 图像（P 帧）
+    NALU_IDR_Picture     = 5  // IDR 图像（I 帧）
+    NALU_SEI             = 6  // 补充增强信息
+    NALU_SPS             = 7  // 序列参数集
+    NALU_PPS             = 8  // 图像参数集
+)
+
+// 从第一个字节解析 NALU 类型
+naluType := codec.ParseH264NALUType(mem[0])
+```
+
+#### H.265 NALU 类型
+```go
+// 从第一个字节解析 H.265 NALU 类型
+naluType := codec.ParseH265NALUType(mem[0])
+```
+
+### 9.5 内存管理最佳实践
+
+```go
+// 使用内存分配器进行高效操作
+allocator := util.NewScalableMemoryAllocator(1 << 20) // 1MB 初始大小
+defer allocator.Recycle()
+
+// 处理多帧时重用同一个分配器
+writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](publisher, allocator)
+```
+
+### 9.6 错误处理和验证
+
+```go
+func processFrame(video *format.H26xFrame) error {
+    // 检查编解码器变化
+    if err := video.CheckCodecChange(); err != nil {
+        return err
+    }
+    
+    // 验证帧数据
+    if video.Raw == nil {
+        return fmt.Errorf("empty frame data")
+    }
+    
+    // 安全处理 NALU
+    nalus, ok := video.Raw.(*pkg.Nalus)
+    if !ok {
+        return fmt.Errorf("invalid NALUs format")
+    }
+    
+    // 处理帧...
+    return nil
+}
+```
+
+## 10. 接入 Prometheus
 只需要实现 Collector 接口，系统会自动收集所有插件的指标信息。
 ```go
 func (p *MyPlugin) Describe(ch chan<- *prometheus.Desc) {
@@ -302,5 +583,42 @@ func (p *MyPlugin) Describe(ch chan<- *prometheus.Desc) {
 func (p *MyPlugin) Collect(ch chan<- prometheus.Metric) {
   
 }
+
+## 插件合并说明
+
+### Monitor 插件合并到 Debug 插件
+
+从 v5 版本开始，Monitor 插件的功能已经合并到 Debug 插件中。这种合并简化了插件结构，并提供了更统一的调试和监控体验。
+
+#### 功能变更
+
+- Monitor 插件的所有功能现在可以通过 Debug 插件访问
+- 任务监控 API 路径从 `/monitor/api/*` 变更为 `/debug/api/monitor/*`
+- 数据模型和数据库结构保持不变
+- Session 和 Task 的监控逻辑完全迁移到 Debug 插件
+
+#### 使用方法
+
+以前通过 Monitor 插件访问的 API 现在应该通过 Debug 插件访问：
+
+```
+# 旧路径
+GET /monitor/api/session/list
+GET /monitor/api/search/task/{sessionId}
+
+# 新路径
+GET /debug/api/monitor/session/list
+GET /debug/api/monitor/task/{sessionId}
+```
+
+#### 配置变更
+
+不再需要单独配置 Monitor 插件，只需配置 Debug 插件即可。Debug 插件会自动初始化监控功能。
+
+```yaml
+debug:
+  enable: true
+  # 其他 debug 配置项
+```
 
 ```

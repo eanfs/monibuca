@@ -24,6 +24,8 @@ const (
 	Api_GetHeapGraph_FullMethodName = "/debug.api/GetHeapGraph"
 	Api_GetCpuGraph_FullMethodName  = "/debug.api/GetCpuGraph"
 	Api_GetCpu_FullMethodName       = "/debug.api/GetCpu"
+	Api_SearchTask_FullMethodName   = "/debug.api/SearchTask"
+	Api_SessionList_FullMethodName  = "/debug.api/SessionList"
 )
 
 // ApiClient is the client API for Api service.
@@ -34,6 +36,8 @@ type ApiClient interface {
 	GetHeapGraph(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HeapGraphResponse, error)
 	GetCpuGraph(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuGraphResponse, error)
 	GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.CallOption) (*CpuResponse, error)
+	SearchTask(ctx context.Context, in *SearchTaskRequest, opts ...grpc.CallOption) (*SearchTaskResponse, error)
+	SessionList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SessionListResponse, error)
 }
 
 type apiClient struct {
@@ -84,6 +88,26 @@ func (c *apiClient) GetCpu(ctx context.Context, in *CpuRequest, opts ...grpc.Cal
 	return out, nil
 }
 
+func (c *apiClient) SearchTask(ctx context.Context, in *SearchTaskRequest, opts ...grpc.CallOption) (*SearchTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchTaskResponse)
+	err := c.cc.Invoke(ctx, Api_SearchTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) SessionList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SessionListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SessionListResponse)
+	err := c.cc.Invoke(ctx, Api_SessionList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility.
@@ -92,6 +116,8 @@ type ApiServer interface {
 	GetHeapGraph(context.Context, *emptypb.Empty) (*HeapGraphResponse, error)
 	GetCpuGraph(context.Context, *CpuRequest) (*CpuGraphResponse, error)
 	GetCpu(context.Context, *CpuRequest) (*CpuResponse, error)
+	SearchTask(context.Context, *SearchTaskRequest) (*SearchTaskResponse, error)
+	SessionList(context.Context, *emptypb.Empty) (*SessionListResponse, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -113,6 +139,12 @@ func (UnimplementedApiServer) GetCpuGraph(context.Context, *CpuRequest) (*CpuGra
 }
 func (UnimplementedApiServer) GetCpu(context.Context, *CpuRequest) (*CpuResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCpu not implemented")
+}
+func (UnimplementedApiServer) SearchTask(context.Context, *SearchTaskRequest) (*SearchTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SearchTask not implemented")
+}
+func (UnimplementedApiServer) SessionList(context.Context, *emptypb.Empty) (*SessionListResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SessionList not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 func (UnimplementedApiServer) testEmbeddedByValue()             {}
@@ -207,6 +239,42 @@ func _Api_GetCpu_Handler(srv interface{}, ctx context.Context, dec func(interfac
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_SearchTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).SearchTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_SearchTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).SearchTask(ctx, req.(*SearchTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_SessionList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).SessionList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_SessionList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).SessionList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -229,6 +297,14 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCpu",
 			Handler:    _Api_GetCpu_Handler,
+		},
+		{
+			MethodName: "SearchTask",
+			Handler:    _Api_SearchTask_Handler,
+		},
+		{
+			MethodName: "SessionList",
+			Handler:    _Api_SessionList_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

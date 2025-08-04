@@ -11,7 +11,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
-	_ "google.golang.org/protobuf/types/known/timestamppb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -646,6 +646,355 @@ func (x *CpuResponse) GetData() *CpuData {
 	return nil
 }
 
+// Monitor plugin messages
+type SearchTaskRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     uint32                 `protobuf:"varint,1,opt,name=sessionId,proto3" json:"sessionId,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchTaskRequest) Reset() {
+	*x = SearchTaskRequest{}
+	mi := &file_debug_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchTaskRequest) ProtoMessage() {}
+
+func (x *SearchTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchTaskRequest.ProtoReflect.Descriptor instead.
+func (*SearchTaskRequest) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SearchTaskRequest) GetSessionId() uint32 {
+	if x != nil {
+		return x.SessionId
+	}
+	return 0
+}
+
+type Task struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Owner         string                 `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Type          uint32                 `protobuf:"varint,3,opt,name=type,proto3" json:"type,omitempty"`
+	StartTime     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=startTime,proto3" json:"startTime,omitempty"`
+	EndTime       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=endTime,proto3" json:"endTime,omitempty"`
+	Description   string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
+	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
+	SessionId     uint32                 `protobuf:"varint,8,opt,name=sessionId,proto3" json:"sessionId,omitempty"`
+	ParentId      uint32                 `protobuf:"varint,9,opt,name=parentId,proto3" json:"parentId,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Task) Reset() {
+	*x = Task{}
+	mi := &file_debug_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Task) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Task) ProtoMessage() {}
+
+func (x *Task) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Task.ProtoReflect.Descriptor instead.
+func (*Task) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Task) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *Task) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *Task) GetType() uint32 {
+	if x != nil {
+		return x.Type
+	}
+	return 0
+}
+
+func (x *Task) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *Task) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
+}
+
+func (x *Task) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *Task) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *Task) GetSessionId() uint32 {
+	if x != nil {
+		return x.SessionId
+	}
+	return 0
+}
+
+func (x *Task) GetParentId() uint32 {
+	if x != nil {
+		return x.ParentId
+	}
+	return 0
+}
+
+type SearchTaskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Data          []*Task                `protobuf:"bytes,3,rep,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchTaskResponse) Reset() {
+	*x = SearchTaskResponse{}
+	mi := &file_debug_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchTaskResponse) ProtoMessage() {}
+
+func (x *SearchTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchTaskResponse.ProtoReflect.Descriptor instead.
+func (*SearchTaskResponse) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SearchTaskResponse) GetCode() uint32 {
+	if x != nil {
+		return x.Code
+	}
+	return 0
+}
+
+func (x *SearchTaskResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SearchTaskResponse) GetData() []*Task {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type Session struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Pid           uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
+	Args          string                 `protobuf:"bytes,3,opt,name=args,proto3" json:"args,omitempty"`
+	StartTime     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=startTime,proto3" json:"startTime,omitempty"`
+	EndTime       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=endTime,proto3" json:"endTime,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Session) Reset() {
+	*x = Session{}
+	mi := &file_debug_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Session) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Session) ProtoMessage() {}
+
+func (x *Session) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Session.ProtoReflect.Descriptor instead.
+func (*Session) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Session) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *Session) GetPid() uint32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *Session) GetArgs() string {
+	if x != nil {
+		return x.Args
+	}
+	return ""
+}
+
+func (x *Session) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *Session) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
+}
+
+type SessionListResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Data          []*Session             `protobuf:"bytes,3,rep,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionListResponse) Reset() {
+	*x = SessionListResponse{}
+	mi := &file_debug_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionListResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionListResponse) ProtoMessage() {}
+
+func (x *SessionListResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionListResponse.ProtoReflect.Descriptor instead.
+func (*SessionListResponse) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SessionListResponse) GetCode() uint32 {
+	if x != nil {
+		return x.Code
+	}
+	return 0
+}
+
+func (x *SessionListResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SessionListResponse) GetData() []*Session {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 type CpuData struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	TotalCpuTimeNs     uint64                 `protobuf:"varint,1,opt,name=total_cpu_time_ns,json=totalCpuTimeNs,proto3" json:"total_cpu_time_ns,omitempty"`           // 总 CPU 时间（纳秒）
@@ -660,7 +1009,7 @@ type CpuData struct {
 
 func (x *CpuData) Reset() {
 	*x = CpuData{}
-	mi := &file_debug_proto_msgTypes[9]
+	mi := &file_debug_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -672,7 +1021,7 @@ func (x *CpuData) String() string {
 func (*CpuData) ProtoMessage() {}
 
 func (x *CpuData) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[9]
+	mi := &file_debug_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -685,7 +1034,7 @@ func (x *CpuData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CpuData.ProtoReflect.Descriptor instead.
 func (*CpuData) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{9}
+	return file_debug_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CpuData) GetTotalCpuTimeNs() uint64 {
@@ -744,7 +1093,7 @@ type FunctionProfile struct {
 
 func (x *FunctionProfile) Reset() {
 	*x = FunctionProfile{}
-	mi := &file_debug_proto_msgTypes[10]
+	mi := &file_debug_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -756,7 +1105,7 @@ func (x *FunctionProfile) String() string {
 func (*FunctionProfile) ProtoMessage() {}
 
 func (x *FunctionProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[10]
+	mi := &file_debug_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -769,7 +1118,7 @@ func (x *FunctionProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionProfile.ProtoReflect.Descriptor instead.
 func (*FunctionProfile) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{10}
+	return file_debug_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *FunctionProfile) GetFunctionName() string {
@@ -820,7 +1169,7 @@ type GoroutineProfile struct {
 
 func (x *GoroutineProfile) Reset() {
 	*x = GoroutineProfile{}
-	mi := &file_debug_proto_msgTypes[11]
+	mi := &file_debug_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +1181,7 @@ func (x *GoroutineProfile) String() string {
 func (*GoroutineProfile) ProtoMessage() {}
 
 func (x *GoroutineProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[11]
+	mi := &file_debug_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +1194,7 @@ func (x *GoroutineProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GoroutineProfile.ProtoReflect.Descriptor instead.
 func (*GoroutineProfile) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{11}
+	return file_debug_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GoroutineProfile) GetId() uint64 {
@@ -888,7 +1237,7 @@ type SystemCall struct {
 
 func (x *SystemCall) Reset() {
 	*x = SystemCall{}
-	mi := &file_debug_proto_msgTypes[12]
+	mi := &file_debug_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -900,7 +1249,7 @@ func (x *SystemCall) String() string {
 func (*SystemCall) ProtoMessage() {}
 
 func (x *SystemCall) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[12]
+	mi := &file_debug_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -913,7 +1262,7 @@ func (x *SystemCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemCall.ProtoReflect.Descriptor instead.
 func (*SystemCall) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{12}
+	return file_debug_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SystemCall) GetName() string {
@@ -950,7 +1299,7 @@ type RuntimeStats struct {
 
 func (x *RuntimeStats) Reset() {
 	*x = RuntimeStats{}
-	mi := &file_debug_proto_msgTypes[13]
+	mi := &file_debug_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -962,7 +1311,7 @@ func (x *RuntimeStats) String() string {
 func (*RuntimeStats) ProtoMessage() {}
 
 func (x *RuntimeStats) ProtoReflect() protoreflect.Message {
-	mi := &file_debug_proto_msgTypes[13]
+	mi := &file_debug_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -975,7 +1324,7 @@ func (x *RuntimeStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeStats.ProtoReflect.Descriptor instead.
 func (*RuntimeStats) Descriptor() ([]byte, []int) {
-	return file_debug_proto_rawDescGZIP(), []int{13}
+	return file_debug_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RuntimeStats) GetGcCpuFraction() float64 {
@@ -1061,7 +1410,33 @@ const file_debug_proto_rawDesc = "" +
 	"\vCpuResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\"\n" +
-	"\x04data\x18\x03 \x01(\v2\x0e.debug.CpuDataR\x04data\"\xc5\x02\n" +
+	"\x04data\x18\x03 \x01(\v2\x0e.debug.CpuDataR\x04data\"1\n" +
+	"\x11SearchTaskRequest\x12\x1c\n" +
+	"\tsessionId\x18\x01 \x01(\rR\tsessionId\"\xa4\x02\n" +
+	"\x04Task\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\x12\x14\n" +
+	"\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\rR\x04type\x128\n" +
+	"\tstartTime\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x124\n" +
+	"\aendTime\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12 \n" +
+	"\vdescription\x18\x06 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06reason\x18\a \x01(\tR\x06reason\x12\x1c\n" +
+	"\tsessionId\x18\b \x01(\rR\tsessionId\x12\x1a\n" +
+	"\bparentId\x18\t \x01(\rR\bparentId\"c\n" +
+	"\x12SearchTaskResponse\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1f\n" +
+	"\x04data\x18\x03 \x03(\v2\v.debug.TaskR\x04data\"\xaf\x01\n" +
+	"\aSession\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x12\n" +
+	"\x04args\x18\x03 \x01(\tR\x04args\x128\n" +
+	"\tstartTime\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x124\n" +
+	"\aendTime\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\"g\n" +
+	"\x13SessionListResponse\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\"\n" +
+	"\x04data\x18\x03 \x03(\v2\x0e.debug.SessionR\x04data\"\xc5\x02\n" +
 	"\aCpuData\x12)\n" +
 	"\x11total_cpu_time_ns\x18\x01 \x01(\x04R\x0etotalCpuTimeNs\x120\n" +
 	"\x14sampling_interval_ns\x18\x02 \x01(\x04R\x12samplingIntervalNs\x124\n" +
@@ -1094,12 +1469,15 @@ const file_debug_proto_rawDesc = "" +
 	"\x0fgc_cpu_fraction\x18\x01 \x01(\x01R\rgcCpuFraction\x12\x19\n" +
 	"\bgc_count\x18\x02 \x01(\x04R\agcCount\x12'\n" +
 	"\x10gc_pause_time_ns\x18\x03 \x01(\x04R\rgcPauseTimeNs\x12(\n" +
-	"\x10blocking_time_ns\x18\x04 \x01(\x04R\x0eblockingTimeNs2\xd9\x02\n" +
+	"\x10blocking_time_ns\x18\x04 \x01(\x04R\x0eblockingTimeNs2\xa5\x04\n" +
 	"\x03api\x12O\n" +
 	"\aGetHeap\x12\x16.google.protobuf.Empty\x1a\x13.debug.HeapResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/debug/api/heap\x12_\n" +
 	"\fGetHeapGraph\x12\x16.google.protobuf.Empty\x1a\x18.debug.HeapGraphResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/debug/api/heap/graph\x12W\n" +
 	"\vGetCpuGraph\x12\x11.debug.CpuRequest\x1a\x17.debug.CpuGraphResponse\"\x1c\x82\xd3\xe4\x93\x02\x16\x12\x14/debug/api/cpu/graph\x12G\n" +
-	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpuB\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
+	"\x06GetCpu\x12\x11.debug.CpuRequest\x1a\x12.debug.CpuResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/debug/api/cpu\x12f\n" +
+	"\n" +
+	"SearchTask\x12\x18.debug.SearchTaskRequest\x1a\x19.debug.SearchTaskResponse\"#\x82\xd3\xe4\x93\x02\x1d\x12\x1b/debug/api/task/{sessionId}\x12b\n" +
+	"\vSessionList\x12\x16.google.protobuf.Empty\x1a\x1a.debug.SessionListResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/debug/api/session/listB\x1dZ\x1bm7s.live/v5/plugin/debug/pbb\x06proto3"
 
 var (
 	file_debug_proto_rawDescOnce sync.Once
@@ -1113,47 +1491,63 @@ func file_debug_proto_rawDescGZIP() []byte {
 	return file_debug_proto_rawDescData
 }
 
-var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_debug_proto_goTypes = []any{
-	(*CpuRequest)(nil),        // 0: debug.CpuRequest
-	(*HeapObject)(nil),        // 1: debug.HeapObject
-	(*HeapStats)(nil),         // 2: debug.HeapStats
-	(*HeapData)(nil),          // 3: debug.HeapData
-	(*HeapEdge)(nil),          // 4: debug.HeapEdge
-	(*HeapResponse)(nil),      // 5: debug.HeapResponse
-	(*HeapGraphResponse)(nil), // 6: debug.HeapGraphResponse
-	(*CpuGraphResponse)(nil),  // 7: debug.CpuGraphResponse
-	(*CpuResponse)(nil),       // 8: debug.CpuResponse
-	(*CpuData)(nil),           // 9: debug.CpuData
-	(*FunctionProfile)(nil),   // 10: debug.FunctionProfile
-	(*GoroutineProfile)(nil),  // 11: debug.GoroutineProfile
-	(*SystemCall)(nil),        // 12: debug.SystemCall
-	(*RuntimeStats)(nil),      // 13: debug.RuntimeStats
-	(*emptypb.Empty)(nil),     // 14: google.protobuf.Empty
+	(*CpuRequest)(nil),            // 0: debug.CpuRequest
+	(*HeapObject)(nil),            // 1: debug.HeapObject
+	(*HeapStats)(nil),             // 2: debug.HeapStats
+	(*HeapData)(nil),              // 3: debug.HeapData
+	(*HeapEdge)(nil),              // 4: debug.HeapEdge
+	(*HeapResponse)(nil),          // 5: debug.HeapResponse
+	(*HeapGraphResponse)(nil),     // 6: debug.HeapGraphResponse
+	(*CpuGraphResponse)(nil),      // 7: debug.CpuGraphResponse
+	(*CpuResponse)(nil),           // 8: debug.CpuResponse
+	(*SearchTaskRequest)(nil),     // 9: debug.SearchTaskRequest
+	(*Task)(nil),                  // 10: debug.Task
+	(*SearchTaskResponse)(nil),    // 11: debug.SearchTaskResponse
+	(*Session)(nil),               // 12: debug.Session
+	(*SessionListResponse)(nil),   // 13: debug.SessionListResponse
+	(*CpuData)(nil),               // 14: debug.CpuData
+	(*FunctionProfile)(nil),       // 15: debug.FunctionProfile
+	(*GoroutineProfile)(nil),      // 16: debug.GoroutineProfile
+	(*SystemCall)(nil),            // 17: debug.SystemCall
+	(*RuntimeStats)(nil),          // 18: debug.RuntimeStats
+	(*timestamppb.Timestamp)(nil), // 19: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 20: google.protobuf.Empty
 }
 var file_debug_proto_depIdxs = []int32{
 	2,  // 0: debug.HeapData.stats:type_name -> debug.HeapStats
 	1,  // 1: debug.HeapData.objects:type_name -> debug.HeapObject
 	4,  // 2: debug.HeapData.edges:type_name -> debug.HeapEdge
 	3,  // 3: debug.HeapResponse.data:type_name -> debug.HeapData
-	9,  // 4: debug.CpuResponse.data:type_name -> debug.CpuData
-	10, // 5: debug.CpuData.functions:type_name -> debug.FunctionProfile
-	11, // 6: debug.CpuData.goroutines:type_name -> debug.GoroutineProfile
-	12, // 7: debug.CpuData.system_calls:type_name -> debug.SystemCall
-	13, // 8: debug.CpuData.runtime_stats:type_name -> debug.RuntimeStats
-	14, // 9: debug.api.GetHeap:input_type -> google.protobuf.Empty
-	14, // 10: debug.api.GetHeapGraph:input_type -> google.protobuf.Empty
-	0,  // 11: debug.api.GetCpuGraph:input_type -> debug.CpuRequest
-	0,  // 12: debug.api.GetCpu:input_type -> debug.CpuRequest
-	5,  // 13: debug.api.GetHeap:output_type -> debug.HeapResponse
-	6,  // 14: debug.api.GetHeapGraph:output_type -> debug.HeapGraphResponse
-	7,  // 15: debug.api.GetCpuGraph:output_type -> debug.CpuGraphResponse
-	8,  // 16: debug.api.GetCpu:output_type -> debug.CpuResponse
-	13, // [13:17] is the sub-list for method output_type
-	9,  // [9:13] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	14, // 4: debug.CpuResponse.data:type_name -> debug.CpuData
+	19, // 5: debug.Task.startTime:type_name -> google.protobuf.Timestamp
+	19, // 6: debug.Task.endTime:type_name -> google.protobuf.Timestamp
+	10, // 7: debug.SearchTaskResponse.data:type_name -> debug.Task
+	19, // 8: debug.Session.startTime:type_name -> google.protobuf.Timestamp
+	19, // 9: debug.Session.endTime:type_name -> google.protobuf.Timestamp
+	12, // 10: debug.SessionListResponse.data:type_name -> debug.Session
+	15, // 11: debug.CpuData.functions:type_name -> debug.FunctionProfile
+	16, // 12: debug.CpuData.goroutines:type_name -> debug.GoroutineProfile
+	17, // 13: debug.CpuData.system_calls:type_name -> debug.SystemCall
+	18, // 14: debug.CpuData.runtime_stats:type_name -> debug.RuntimeStats
+	20, // 15: debug.api.GetHeap:input_type -> google.protobuf.Empty
+	20, // 16: debug.api.GetHeapGraph:input_type -> google.protobuf.Empty
+	0,  // 17: debug.api.GetCpuGraph:input_type -> debug.CpuRequest
+	0,  // 18: debug.api.GetCpu:input_type -> debug.CpuRequest
+	9,  // 19: debug.api.SearchTask:input_type -> debug.SearchTaskRequest
+	20, // 20: debug.api.SessionList:input_type -> google.protobuf.Empty
+	5,  // 21: debug.api.GetHeap:output_type -> debug.HeapResponse
+	6,  // 22: debug.api.GetHeapGraph:output_type -> debug.HeapGraphResponse
+	7,  // 23: debug.api.GetCpuGraph:output_type -> debug.CpuGraphResponse
+	8,  // 24: debug.api.GetCpu:output_type -> debug.CpuResponse
+	11, // 25: debug.api.SearchTask:output_type -> debug.SearchTaskResponse
+	13, // 26: debug.api.SessionList:output_type -> debug.SessionListResponse
+	21, // [21:27] is the sub-list for method output_type
+	15, // [15:21] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_debug_proto_init() }
@@ -1167,7 +1561,7 @@ func file_debug_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_debug_proto_rawDesc), len(file_debug_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

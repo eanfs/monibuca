@@ -26,6 +26,17 @@ service api {
       get: "/debug/api/cpu"
     };
   }
+  
+  rpc SearchTask (SearchTaskRequest) returns (SearchTaskResponse) {
+    option (google.api.http) = {
+      get: "/debug/api/task/{sessionId}"
+    };
+  }
+  rpc SessionList (google.protobuf.Empty) returns (SessionListResponse) {
+    option (google.api.http) = {
+      get: "/debug/api/session/list"
+    };
+  }
 }
 
 // CPU分析请求参数
@@ -92,6 +103,43 @@ message CpuResponse {
   uint32 code = 1;
   string message = 2;
   CpuData data = 3;
+}
+
+// Monitor plugin messages
+message SearchTaskRequest {
+  uint32 sessionId = 1;
+}
+
+message Task {
+  uint32 id = 1;
+  string owner = 2;
+  uint32 type = 3;
+  google.protobuf.Timestamp startTime = 4;
+  google.protobuf.Timestamp endTime = 5;
+  string description = 6;
+  string reason = 7;
+  uint32 sessionId = 8;
+  uint32 parentId = 9;
+}
+
+message SearchTaskResponse {
+  uint32 code = 1;
+  string message = 2;
+  repeated Task data = 3;
+}
+
+message Session {
+  uint32 id = 1;
+  uint32 pid = 2;
+  string args = 3;
+  google.protobuf.Timestamp startTime = 4;
+  google.protobuf.Timestamp endTime = 5;
+}
+
+message SessionListResponse {
+  uint32 code = 1;
+  string message = 2;
+  repeated Session data = 3;
 }
 
 message CpuData {

@@ -2,6 +2,7 @@ package plugin_debug
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,27 +21,35 @@ import (
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/debug/pb"
 	debug "m7s.live/v5/plugin/debug/pkg"
 	"m7s.live/v5/plugin/debug/pkg/profile"
 )
 
-var _ = m7s.InstallPlugin[DebugPlugin](&pb.Api_ServiceDesc, pb.RegisterApiHandler)
+var _ = m7s.InstallPlugin[DebugPlugin](m7s.PluginMeta{
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+})
 var conf, _ = config.LoadConfig()
 
 type DebugPlugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
-	ProfileDuration time.Duration `default:"10s" desc:"profile持续时间"`
-	Profile         string        `desc:"采集profile存储文件"`
-	Grfout          string        `default:"grf.out" desc:"grf输出文件"`
-	EnableChart     bool          `default:"true" desc:"是否启用图表功能"`
+	ProfileDuration   time.Duration `default:"10s" desc:"profile持续时间"`
+	Profile           string        `desc:"采集profile存储文件"`
+	Grfout            string        `default:"grf.out" desc:"grf输出文件"`
+	EnableChart       bool          `default:"true" desc:"是否启用图表功能"`
+	EnableTaskHistory bool          `default:"false" desc:"是否启用任务历史功能"`
 	// 添加缓存字段
 	cpuProfileData *profile.Profile // 缓存 CPU Profile 数据
 	cpuProfileOnce sync.Once        // 确保只采集一次
 	cpuProfileLock sync.Mutex       // 保护缓存数据
 	chartServer    server
+	// Monitor plugin fields
+	session *debug.Session
 }
 
 type WriteToFile struct {
@@ -54,7 +63,7 @@ func (w *WriteToFile) Header() http.Header {
 
 func (w *WriteToFile) WriteHeader(statusCode int) {}
 
-func (p *DebugPlugin) OnInit() error {
+func (p *DebugPlugin) Start() error {
 	// 启用阻塞分析
 	runtime.SetBlockProfileRate(1) // 设置采样率为1纳秒
 
@@ -76,6 +85,32 @@ func (p *DebugPlugin) OnInit() error {
 		p.AddTask(&p.chartServer)
 	}
 
+	// 初始化 monitor session
+	if p.DB != nil && p.EnableTaskHistory {
+		p.session = &debug.Session{
+			PID:       os.Getpid(),
+			Args:      strings.Join(os.Args, " "),
+			StartTime: time.Now(),
+		}
+		err := p.DB.AutoMigrate(p.session)
+		if err != nil {
+			return err
+		}
+		err = p.DB.Create(p.session).Error
+		if err != nil {
+			return err
+		}
+		err = p.DB.AutoMigrate(&debug.Task{})
+		if err != nil {
+			return err
+		}
+		p.Plugin.Server.Using(func() {
+			p.saveTask(p.Plugin.Server)
+		})
+		// 监听任务完成事件
+		p.Plugin.Server.OnDescendantsDispose(p.saveTask)
+	}
+
 	return nil
 }
 
@@ -84,9 +119,90 @@ func (p *DebugPlugin) Pprof_Trace(w http.ResponseWriter, r *http.Request) {
 	pprof.Trace(w, r)
 }
 
+func (p *DebugPlugin) Dispose() {
+	// 保存 session 结束时间
+	if p.DB != nil && p.session != nil {
+		p.DB.Model(p.session).Update("end_time", time.Now())
+	}
+}
+
+// saveTask 保存任务信息到数据库
+func (p *DebugPlugin) saveTask(task task.ITask) {
+	if p.DB == nil || p.session == nil {
+		return
+	}
+	var th debug.Task
+	th.SessionID = p.session.ID
+	th.TaskID = task.GetTaskID()
+	th.ParentID = task.GetParent().GetTaskID()
+	th.StartTime = task.GetTask().StartTime
+	th.EndTime = time.Now()
+	th.OwnerType = task.GetOwnerType()
+	th.TaskType = byte(task.GetTaskType())
+	th.Reason = task.StopReason().Error()
+	th.Level = task.GetLevel()
+	b, _ := json.Marshal(task.GetDescriptions())
+	th.Description = string(b)
+	p.DB.Create(&th)
+}
+
 func (p *DebugPlugin) Pprof_profile(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/debug" + r.URL.Path
 	pprof.Profile(w, r)
+}
+
+// Monitor plugin API implementations
+func (p *DebugPlugin) SearchTask(ctx context.Context, req *pb.SearchTaskRequest) (res *pb.SearchTaskResponse, err error) {
+	if p.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if !p.EnableTaskHistory {
+		return nil, fmt.Errorf("task history is not enabled")
+	}
+	res = &pb.SearchTaskResponse{}
+	var tasks []*debug.Task
+	tx := p.DB.Find(&tasks, "session_id = ?", req.SessionId)
+	if err = tx.Error; err == nil {
+		for _, t := range tasks {
+			res.Data = append(res.Data, &pb.Task{
+				Id:          t.TaskID,
+				StartTime:   timestamppb.New(t.StartTime),
+				EndTime:     timestamppb.New(t.EndTime),
+				Owner:       t.OwnerType,
+				Type:        uint32(t.TaskType),
+				Description: t.Description,
+				Reason:      t.Reason,
+				SessionId:   t.SessionID,
+				ParentId:    t.ParentID,
+			})
+		}
+	}
+	return
+}
+
+func (p *DebugPlugin) SessionList(context.Context, *emptypb.Empty) (res *pb.SessionListResponse, err error) {
+	if p.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if !p.EnableTaskHistory {
+		return nil, fmt.Errorf("task history is not enabled")
+	}
+	res = &pb.SessionListResponse{}
+	var sessions []*debug.Session
+	tx := p.DB.Find(&sessions)
+	err = tx.Error
+	if err == nil {
+		for _, s := range sessions {
+			res.Data = append(res.Data, &pb.Session{
+				Id:        s.ID,
+				Pid:       uint32(s.PID),
+				Args:      s.Args,
+				StartTime: timestamppb.New(s.StartTime),
+				EndTime:   timestamppb.New(s.EndTime.Time),
+			})
+		}
+	}
+	return
 }
 
 func (p *DebugPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +568,7 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 
 func (p *DebugPlugin) API_TcpDump(rw http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	args := []string{"-W", "1"}
+	args := []string{"-S", "tcpdump", "-w", "dump.cap"}
 	if query.Get("interface") != "" {
 		args = append(args, "-i", query.Get("interface"))
 	}
@@ -466,25 +582,34 @@ func (p *DebugPlugin) API_TcpDump(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "duration is required", http.StatusBadRequest)
 		return
 	}
-	rw.Header().Set("Content-Type", "text/plain")
-	rw.Header().Set("Cache-Control", "no-cache")
-	rw.Header().Set("Content-Disposition", "attachment; filename=tcpdump.txt")
-	cmd := exec.CommandContext(p, "tcpdump", args...)
-	p.Info("starting tcpdump", "args", strings.Join(cmd.Args, " "))
-	cmd.Stdout = rw
-	cmd.Stderr = os.Stderr // 将错误输出重定向到标准错误
-	err := cmd.Start()
-	if err != nil {
-		http.Error(rw, fmt.Sprintf("failed to start tcpdump: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// rw.Header().Set("Content-Type", "text/plain")
+	// rw.Header().Set("Cache-Control", "no-cache")
+	// rw.Header().Set("Content-Disposition", "attachment; filename=tcpdump.txt")
 	duration, err := strconv.Atoi(query.Get("duration"))
 	if err != nil {
 		http.Error(rw, "invalid duration", http.StatusBadRequest)
 		return
 	}
-	<-time.After(time.Duration(duration) * time.Second)
-	if err := cmd.Process.Kill(); err != nil {
-		p.Error("failed to kill tcpdump process", "error", err)
+	ctx, _ := context.WithTimeout(p, time.Duration(duration)*time.Second)
+	cmd := exec.CommandContext(ctx, "sudo", args...)
+	p.Info("starting tcpdump", "args", strings.Join(cmd.Args, " "))
+	cmd.Stdin = strings.NewReader(query.Get("password"))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr // 将错误输出重定向到标准错误
+	err = cmd.Start()
+	if err != nil {
+		http.Error(rw, fmt.Sprintf("failed to start tcpdump: %v", err), http.StatusInternalServerError)
+		return
 	}
+	<-ctx.Done()
+	killcmd := exec.Command("sudo", "-S", "pkill", "-9", "tcpdump")
+	p.Info("killing tcpdump", "args", strings.Join(killcmd.Args, " "))
+	killcmd.Stdin = strings.NewReader(query.Get("password"))
+	killcmd.Stderr = os.Stderr
+	killcmd.Stdout = os.Stdout
+	killcmd.Run()
+	p.Info("kill done")
+	cmd.Wait()
+	p.Info("dump done")
+	http.ServeFile(rw, r, "dump.cap")
 }
