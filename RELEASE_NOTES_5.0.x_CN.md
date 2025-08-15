@@ -1,5 +1,17 @@
 # Monibuca v5.0.x Release Notes
 
+## v5.0.4 (2025-08-15)
+
+### 新增 / 改进 (Features & Improvements)
+- GB28181: 支持更新 channelName / channelId（eba62c4）
+- 定时任务(crontab): 初始化 SQL 支持（2bbee90）
+- Snap 插件: 支持批量抓图（272def3）
+- 管理后台: 支持自定义首页（15d830f）
+- 推/拉代理: 支持可选参数更新（ad32f6f）
+- 心跳/脉冲: pulse interval 允许为 0（17faf3f）
+- 告警上报: 通过 Hook 发送报警（baf3640）
+- 告警信息上报: 通过 Hook 发送 alarminfo（cad47ae）
+
 ## v5.0.3 (2025-06-27)
 
 ### 🎉 新功能 (New Features)

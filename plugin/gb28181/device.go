@@ -137,10 +137,11 @@ func (d *Device) Dispose() {
 				if channel.PullProxyTask != nil {
 					channel.PullProxyTask.ChangeStatus(m7s.PullProxyStatusOffline)
 				}
-				d.channels.RemoveByKey(channel.ID)
+				//d.channels.RemoveByKey(channel.ID)
 				d.plugin.channels.RemoveByKey(channel.ID)
 				return true
 			})
+			d.channels.Clear()
 		}
 		// 保存设备信息
 		d.plugin.DB.Save(d)
