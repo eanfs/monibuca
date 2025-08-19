@@ -143,10 +143,10 @@ func (s *Server) api_Config_YAML_All(rw http.ResponseWriter, r *http.Request) {
 
 	// 3. Process plugin configs.
 	for _, meta := range plugins {
-		if filterName != "" && meta.Name != filterName {
+		if filterName != "" && !strings.EqualFold(meta.Name, filterName) {
 			continue
 		}
-
+		name := strings.ToLower(meta.Name)
 		configType := meta.Type
 		if configType.Kind() == reflect.Ptr {
 			configType = configType.Elem()
@@ -168,12 +168,12 @@ func (s *Server) api_Config_YAML_All(rw http.ResponseWriter, r *http.Request) {
 				configSections = append(configSections, struct {
 					name string
 					data any
-				}{meta.Name, mergedConf})
+				}{name, mergedConf})
 			} else {
 				configSections = append(configSections, struct {
 					name string
 					data any
-				}{meta.Name, pluginConf})
+				}{name, pluginConf})
 			}
 		}
 	}
