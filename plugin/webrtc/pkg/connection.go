@@ -68,7 +68,10 @@ func (IO *MultipleConnection) Start() (err error) {
 	if IO.Subscriber != nil {
 		IO.Using(IO.Subscriber)
 		IO.Subscriber.Using(IO)
-		IO.Send()
+		err = IO.Send()
+		if err != nil {
+			return
+		}
 	}
 	IO.OnICECandidate(func(ice *ICECandidate) {
 		if ice != nil {

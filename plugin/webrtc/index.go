@@ -29,6 +29,7 @@ var (
 		DefaultYaml: defaultYaml,
 		NewPuller:   NewPuller,
 		NewPusher:   NewPusher,
+		NewPullProxy: NewPullProxy,
 	})
 )
 

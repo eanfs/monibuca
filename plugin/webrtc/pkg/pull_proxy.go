@@ -1,0 +1,52 @@
+package webrtc
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/pion/webrtc/v4"
+	"m7s.live/v5"
+	"m7s.live/v5/pkg/util"
+)
+
+func NewPullProxy() m7s.IPullProxy {
+	return &PullProxy{}
+}
+
+type PullProxy struct {
+	Client
+	m7s.BasePullProxy
+}
+
+func (p *PullProxy) Start() (err error) {
+	err = p.Client.Start()
+	if err != nil {
+		return
+	}
+	var sdpBody SDPBody
+	sdpBody.SessionDescription, err = p.GetOffer()
+	if err != nil {
+		return
+	}
+
+	var res *http.Response
+	res, err = http.DefaultClient.Post(p.BasePullProxy.URL, "application/sdp", strings.NewReader(sdpBody.SessionDescription.SDP))
+	if err != nil {
+		return
+	}
+	if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
+		err = errors.New(res.Status)
+		return
+	}
+	var sd webrtc.SessionDescription
+	sd.Type = webrtc.SDPTypeAnswer
+	var body util.Buffer
+	io.Copy(&body, res.Body)
+	sd.SDP = string(body)
+	if err = p.SetRemoteDescription(sd); err != nil {
+		return
+	}
+	return
+}
