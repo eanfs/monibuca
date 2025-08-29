@@ -507,6 +507,9 @@ func (s *Server) initPullProxies() {
 
 	// 3. Finally add all proxies to collections, excluding disabled ones
 	for _, proxy := range pullProxies {
+		if proxy.CheckInterval == 0 {
+			proxy.CheckInterval = time.Second * 10
+		}
 		if proxy.Status != PullProxyStatusDisabled {
 			s.createPullProxy(proxy)
 		}

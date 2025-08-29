@@ -59,7 +59,7 @@ const (
 type (
 	EventLevel = string
 	RecordMode = string
-	HookType   string
+	HookType   = string
 	Publish    struct {
 		MaxCount          int             `default:"0" desc:"最大发布者数量"` // 最大发布者数量
 		PubAudio          bool            `default:"true" desc:"是否发布音频"`

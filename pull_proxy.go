@@ -53,6 +53,7 @@ type (
 		Type                           string
 		Status                         byte
 		Description                    string
+		CheckInterval                  time.Duration `default:"10s"`
 		RTT                            time.Duration
 	}
 	PullProxyFactory = func() IPullProxy
@@ -183,7 +184,7 @@ func (d *HTTPPullProxy) Start() (err error) {
 }
 
 func (d *TCPPullProxy) GetTickInterval() time.Duration {
-	return time.Second * 10
+	return d.CheckInterval
 }
 
 func (d *TCPPullProxy) Tick(any) {
@@ -345,6 +346,11 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	pullProxyConfig.StopOnIdle = req.StopOnIdle
 	pullProxyConfig.Record.FilePath = req.RecordPath
 	pullProxyConfig.Record.Fragment = req.RecordFragment.AsDuration()
+	if req.CheckInterval != nil {
+		pullProxyConfig.CheckInterval = req.CheckInterval.AsDuration()
+	} else {
+		pullProxyConfig.CheckInterval = time.Second * 10
+	}
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -458,6 +464,9 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	}
 	if req.StreamPath != nil {
 		target.StreamPath = *req.StreamPath
+	}
+	if req.CheckInterval != nil {
+		target.CheckInterval = req.CheckInterval.AsDuration()
 	}
 	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
 	if req.Status != nil && *req.Status != uint32(PullProxyStatusDisabled) {

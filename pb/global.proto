@@ -576,6 +576,7 @@ message PullProxyInfo {
   google.protobuf.Duration recordFragment = 14; // 录制片段长度
   uint32 rtt = 15; // 平均RTT
   string streamPath = 16; // 流路径
+  google.protobuf.Duration checkInterval = 17; // 检查间隔
 }
 
 message UpdatePullProxyRequest {
@@ -592,6 +593,7 @@ message UpdatePullProxyRequest {
   optional string recordPath = 11; // 录制路径
   optional google.protobuf.Duration recordFragment = 12; // 录制片段长度
   optional string streamPath = 13; // 流路径
+  optional google.protobuf.Duration checkInterval = 14; // 检查间隔
 }
 
 message PushProxyInfo {

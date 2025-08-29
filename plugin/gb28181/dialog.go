@@ -304,7 +304,7 @@ func (d *Dialog) Run() (err error) {
 	err = d.session.WaitAnswer(d.gb, sipgo.AnswerOptions{})
 	d.gb.Info("after WaitAnswer")
 	if err != nil {
-		d.pullCtx.Fail("wait answer error: " + err.Error())
+		d.pullCtx.Fail("等待响应错误: " + err.Error())
 		return errors.New("wait answer error" + err.Error())
 	}
 	inviteResponseBody := string(d.session.InviteResponse.Body())
@@ -318,7 +318,7 @@ func (d *Dialog) Run() (err error) {
 					if _ssrc, err := strconv.ParseInt(ls[1], 10, 0); err == nil {
 						d.SSRC = uint32(_ssrc)
 					} else {
-						d.pullCtx.Fail("read invite response y error: " + err.Error())
+						d.pullCtx.Fail("解析邀请响应y字段错误: " + err.Error())
 						return errors.New("read invite respose y error" + err.Error())
 					}
 				}
@@ -349,6 +349,7 @@ func (d *Dialog) Run() (err error) {
 		d.gb.Error("ack session err", err)
 	}
 
+	// 移动到流数据接收步骤
 	d.pullCtx.GoToStepConst(pkg.StepStreaming)
 
 	var pub mrtp.PSReceiver

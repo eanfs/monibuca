@@ -85,6 +85,8 @@ func (c *Client) Run() (err error) {
 		return
 	}
 	if c.direction == DIRECTION_PULL {
+		c.pullCtx.GoToStepConst(StepDescribe)
+
 		var medias []*Media
 		if medias, err = c.Describe(); err != nil {
 			return
@@ -93,6 +95,9 @@ func (c *Client) Run() (err error) {
 		if err = receiver.SetMedia(medias); err != nil {
 			return
 		}
+
+		c.pullCtx.GoToStepConst(StepSetup)
+
 		for i, media := range medias {
 			switch media.Kind {
 			case "audio", "video":
@@ -104,9 +109,15 @@ func (c *Client) Run() (err error) {
 				c.Warn("media kind not support", "kind", media.Kind)
 			}
 		}
+
+		c.pullCtx.GoToStepConst(StepPlay)
+
 		if err = c.Play(); err != nil {
 			return
 		}
+
+		c.pullCtx.GoToStepConst(pkg.StepStreaming)
+
 		return receiver.Receive()
 	} else {
 		err = c.pushCtx.Subscribe()

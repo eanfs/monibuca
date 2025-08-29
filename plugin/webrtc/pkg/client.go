@@ -8,6 +8,7 @@ import (
 
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/util"
 )
@@ -36,6 +37,9 @@ func (c *Client) Start() (err error) {
 		BundlePolicy:       BundlePolicyMaxBundle,
 		ICETransportPolicy: ICETransportPolicyAll,
 	})
+	if err != nil {
+		return
+	}
 	return c.MultipleConnection.Start()
 }
 
@@ -121,7 +125,7 @@ func (c *WHEPClient) Start() (err error) {
 	if err = c.SetRemoteDescription(sd); err != nil {
 		return
 	}
-	c.pullCtx.GoToStepConst(StepNegotiation)
+	c.pullCtx.GoToStepConst(pkg.StepStreaming)
 	return
 }
 

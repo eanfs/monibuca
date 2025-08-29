@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 	"m7s.live/v5"
@@ -25,6 +26,20 @@ func (p *PullProxy) Start() (err error) {
 	if err != nil {
 		return
 	}
+	p.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		p.Info("Connection State has changed:" + state.String())
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			p.ChangeStatus(m7s.PullProxyStatusOnline)
+		case webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			p.ChangeStatus(m7s.PullProxyStatusOffline)
+			if !p.IsStopped() {
+				time.AfterFunc(p.CheckInterval, func() {
+					p.Start()
+				})
+			}
+		}
+	})
 	var sdpBody SDPBody
 	sdpBody.SessionDescription, err = p.GetOffer()
 	if err != nil {

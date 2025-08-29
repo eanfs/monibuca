@@ -431,12 +431,16 @@ func (p *AnnexBPuller) Run() (err error) {
 	writer := NewPublishVideoWriter[*format.AnnexB](p.PullJob.Publisher, allocator)
 	frame := writer.VideoFrame
 
-	p.PullJob.GoToStepConst(pkg.StepParsing) // 解析文件格式
+	// 移动到解析步骤 - 开始解析文件格式
+	p.PullJob.GoToStepConst(pkg.StepParsing)
 
 	// 创建 AnnexB 专用读取器
 	var annexbReader pkg.AnnexBReader
 	var hasFrame bool
-	p.PullJob.GoToStepConst(pkg.StepStreaming) // 进入流数据读取阶段
+
+	// 移动到流数据读取步骤 - 开始读取和发布数据
+	p.PullJob.GoToStepConst(pkg.StepStreaming)
+
 	for !p.IsStopped() {
 		// 读取一块数据
 		chunkData := allocator.Malloc(8192)

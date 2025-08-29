@@ -117,6 +117,9 @@ func (p *Puller) pull(info *M3u8Info) (err error) {
 		if playlist, err2 := readM3U8(resp); err2 == nil {
 			errcount = 0
 			info.LastM3u8 = playlist.String()
+
+			p.PullJob.GoToStepConst(StepM3U8Parse)
+
 			//if !playlist.Live {
 			//	log.Println(p.LastM3u8)
 			//	return
@@ -182,6 +185,9 @@ func (p *Puller) pull(info *M3u8Info) (err error) {
 			if p.PullJob.PublishConfig.RelayMode != config.RelayModeRemux {
 				relayPlayList.Init()
 			}
+
+			p.PullJob.GoToStepConst(StepTsDownload)
+
 			var tsDownloaders = make([]*TSDownloader, len(tsItems))
 			for i, v := range tsItems {
 				if p.Err() != nil {

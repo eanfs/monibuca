@@ -2944,6 +2944,7 @@ type PullProxyInfo struct {
 	RecordFragment *durationpb.Duration   `protobuf:"bytes,14,opt,name=recordFragment,proto3" json:"recordFragment,omitempty"` // 录制片段长度
 	Rtt            uint32                 `protobuf:"varint,15,opt,name=rtt,proto3" json:"rtt,omitempty"`                      // 平均RTT
 	StreamPath     string                 `protobuf:"bytes,16,opt,name=streamPath,proto3" json:"streamPath,omitempty"`         // 流路径
+	CheckInterval  *durationpb.Duration   `protobuf:"bytes,17,opt,name=checkInterval,proto3" json:"checkInterval,omitempty"`   // 检查间隔
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3090,6 +3091,13 @@ func (x *PullProxyInfo) GetStreamPath() string {
 	return ""
 }
 
+func (x *PullProxyInfo) GetCheckInterval() *durationpb.Duration {
+	if x != nil {
+		return x.CheckInterval
+	}
+	return nil
+}
+
 type UpdatePullProxyRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ID             uint32                 `protobuf:"varint,1,opt,name=ID,proto3" json:"ID,omitempty"`
@@ -3105,6 +3113,7 @@ type UpdatePullProxyRequest struct {
 	RecordPath     *string                `protobuf:"bytes,11,opt,name=recordPath,proto3,oneof" json:"recordPath,omitempty"`         // 录制路径
 	RecordFragment *durationpb.Duration   `protobuf:"bytes,12,opt,name=recordFragment,proto3,oneof" json:"recordFragment,omitempty"` // 录制片段长度
 	StreamPath     *string                `protobuf:"bytes,13,opt,name=streamPath,proto3,oneof" json:"streamPath,omitempty"`         // 流路径
+	CheckInterval  *durationpb.Duration   `protobuf:"bytes,14,opt,name=checkInterval,proto3,oneof" json:"checkInterval,omitempty"`   // 检查间隔
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3228,6 +3237,13 @@ func (x *UpdatePullProxyRequest) GetStreamPath() string {
 		return *x.StreamPath
 	}
 	return ""
+}
+
+func (x *UpdatePullProxyRequest) GetCheckInterval() *durationpb.Duration {
+	if x != nil {
+		return x.CheckInterval
+	}
+	return nil
 }
 
 type PushProxyInfo struct {
@@ -5829,7 +5845,7 @@ const file_global_proto_rawDesc = "" +
 	"\x15PullProxyListResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12)\n" +
-	"\x04data\x18\x03 \x03(\v2\x15.global.PullProxyInfoR\x04data\"\x9c\x04\n" +
+	"\x04data\x18\x03 \x03(\v2\x15.global.PullProxyInfoR\x04data\"\xdd\x04\n" +
 	"\rPullProxyInfo\x12\x0e\n" +
 	"\x02ID\x18\x01 \x01(\rR\x02ID\x12:\n" +
 	"\n" +
@@ -5857,7 +5873,8 @@ const file_global_proto_rawDesc = "" +
 	"\x03rtt\x18\x0f \x01(\rR\x03rtt\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x10 \x01(\tR\n" +
-	"streamPath\"\xf7\x04\n" +
+	"streamPath\x12?\n" +
+	"\rcheckInterval\x18\x11 \x01(\v2\x19.google.protobuf.DurationR\rcheckInterval\"\xcf\x05\n" +
 	"\x16UpdatePullProxyRequest\x12\x0e\n" +
 	"\x02ID\x18\x01 \x01(\rR\x02ID\x12\x1f\n" +
 	"\bparentID\x18\x02 \x01(\rH\x00R\bparentID\x88\x01\x01\x12\x17\n" +
@@ -5879,7 +5896,8 @@ const file_global_proto_rawDesc = "" +
 	"R\x0erecordFragment\x88\x01\x01\x12#\n" +
 	"\n" +
 	"streamPath\x18\r \x01(\tH\vR\n" +
-	"streamPath\x88\x01\x01B\v\n" +
+	"streamPath\x88\x01\x01\x12D\n" +
+	"\rcheckInterval\x18\x0e \x01(\v2\x19.google.protobuf.DurationH\fR\rcheckInterval\x88\x01\x01B\v\n" +
 	"\t_parentIDB\a\n" +
 	"\x05_nameB\a\n" +
 	"\x05_typeB\t\n" +
@@ -5892,7 +5910,8 @@ const file_global_proto_rawDesc = "" +
 	"\f_descriptionB\r\n" +
 	"\v_recordPathB\x11\n" +
 	"\x0f_recordFragmentB\r\n" +
-	"\v_streamPath\"\x99\x03\n" +
+	"\v_streamPathB\x10\n" +
+	"\x0e_checkInterval\"\x99\x03\n" +
 	"\rPushProxyInfo\x12\x0e\n" +
 	"\x02ID\x18\x01 \x01(\rR\x02ID\x12:\n" +
 	"\n" +
@@ -6335,127 +6354,129 @@ var file_global_proto_depIdxs = []int32{
 	81,  // 39: global.PullProxyInfo.createTime:type_name -> google.protobuf.Timestamp
 	81,  // 40: global.PullProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
 	82,  // 41: global.PullProxyInfo.recordFragment:type_name -> google.protobuf.Duration
-	82,  // 42: global.UpdatePullProxyRequest.recordFragment:type_name -> google.protobuf.Duration
-	81,  // 43: global.PushProxyInfo.createTime:type_name -> google.protobuf.Timestamp
-	81,  // 44: global.PushProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
-	43,  // 45: global.PushProxyListResponse.data:type_name -> global.PushProxyInfo
-	47,  // 46: global.StreamAliasListResponse.data:type_name -> global.StreamAlias
-	81,  // 47: global.Recording.startTime:type_name -> google.protobuf.Timestamp
-	51,  // 48: global.RecordingListResponse.data:type_name -> global.Recording
-	81,  // 49: global.PushInfo.startTime:type_name -> google.protobuf.Timestamp
-	53,  // 50: global.PushListResponse.data:type_name -> global.PushInfo
-	56,  // 51: global.TransformListResponse.data:type_name -> global.Transform
-	81,  // 52: global.RecordFile.startTime:type_name -> google.protobuf.Timestamp
-	81,  // 53: global.RecordFile.endTime:type_name -> google.protobuf.Timestamp
-	81,  // 54: global.EventRecordFile.startTime:type_name -> google.protobuf.Timestamp
-	81,  // 55: global.EventRecordFile.endTime:type_name -> google.protobuf.Timestamp
-	59,  // 56: global.RecordResponseList.data:type_name -> global.RecordFile
-	60,  // 57: global.EventRecordResponseList.data:type_name -> global.EventRecordFile
-	81,  // 58: global.Catalog.startTime:type_name -> google.protobuf.Timestamp
-	81,  // 59: global.Catalog.endTime:type_name -> google.protobuf.Timestamp
-	63,  // 60: global.ResponseCatalog.data:type_name -> global.Catalog
-	59,  // 61: global.ResponseDelete.data:type_name -> global.RecordFile
-	81,  // 62: global.AlarmInfo.createdAt:type_name -> google.protobuf.Timestamp
-	81,  // 63: global.AlarmInfo.updatedAt:type_name -> google.protobuf.Timestamp
-	68,  // 64: global.AlarmListResponse.data:type_name -> global.AlarmInfo
-	81,  // 65: global.Step.startedAt:type_name -> google.protobuf.Timestamp
-	81,  // 66: global.Step.completedAt:type_name -> google.protobuf.Timestamp
-	71,  // 67: global.SubscriptionProgressData.steps:type_name -> global.Step
-	72,  // 68: global.SubscriptionProgressResponse.data:type_name -> global.SubscriptionProgressData
-	2,   // 69: global.Formily.PropertiesEntry.value:type_name -> global.Formily
-	83,  // 70: global.Formily.ComponentPropsEntry.value:type_name -> google.protobuf.Any
-	2,   // 71: global.FormilyResponse.PropertiesEntry.value:type_name -> global.Formily
-	84,  // 72: global.api.SysInfo:input_type -> google.protobuf.Empty
-	84,  // 73: global.api.DisabledPlugins:input_type -> google.protobuf.Empty
-	84,  // 74: global.api.Summary:input_type -> google.protobuf.Empty
-	33,  // 75: global.api.Shutdown:input_type -> global.RequestWithId
-	33,  // 76: global.api.Restart:input_type -> global.RequestWithId
-	84,  // 77: global.api.TaskTree:input_type -> google.protobuf.Empty
-	34,  // 78: global.api.StopTask:input_type -> global.RequestWithId64
-	34,  // 79: global.api.RestartTask:input_type -> global.RequestWithId64
-	17,  // 80: global.api.StreamList:input_type -> global.StreamListRequest
-	84,  // 81: global.api.WaitList:input_type -> google.protobuf.Empty
-	20,  // 82: global.api.StreamInfo:input_type -> global.StreamSnapRequest
-	20,  // 83: global.api.PauseStream:input_type -> global.StreamSnapRequest
-	20,  // 84: global.api.ResumeStream:input_type -> global.StreamSnapRequest
-	49,  // 85: global.api.SetStreamSpeed:input_type -> global.SetStreamSpeedRequest
-	50,  // 86: global.api.SeekStream:input_type -> global.SeekStreamRequest
-	36,  // 87: global.api.GetSubscribers:input_type -> global.SubscribersRequest
-	20,  // 88: global.api.AudioTrackSnap:input_type -> global.StreamSnapRequest
-	20,  // 89: global.api.VideoTrackSnap:input_type -> global.StreamSnapRequest
-	35,  // 90: global.api.ChangeSubscribe:input_type -> global.ChangeSubscribeRequest
-	84,  // 91: global.api.GetStreamAlias:input_type -> google.protobuf.Empty
-	46,  // 92: global.api.SetStreamAlias:input_type -> global.SetStreamAliasRequest
-	20,  // 93: global.api.StopPublish:input_type -> global.StreamSnapRequest
-	33,  // 94: global.api.StopSubscribe:input_type -> global.RequestWithId
-	84,  // 95: global.api.GetConfigFile:input_type -> google.protobuf.Empty
-	7,   // 96: global.api.UpdateConfigFile:input_type -> global.UpdateConfigFileRequest
-	1,   // 97: global.api.GetConfig:input_type -> global.GetConfigRequest
-	1,   // 98: global.api.GetFormily:input_type -> global.GetConfigRequest
-	84,  // 99: global.api.GetPullProxyList:input_type -> google.protobuf.Empty
-	41,  // 100: global.api.AddPullProxy:input_type -> global.PullProxyInfo
-	33,  // 101: global.api.RemovePullProxy:input_type -> global.RequestWithId
-	42,  // 102: global.api.UpdatePullProxy:input_type -> global.UpdatePullProxyRequest
-	84,  // 103: global.api.GetPushProxyList:input_type -> google.protobuf.Empty
-	43,  // 104: global.api.AddPushProxy:input_type -> global.PushProxyInfo
-	33,  // 105: global.api.RemovePushProxy:input_type -> global.RequestWithId
-	44,  // 106: global.api.UpdatePushProxy:input_type -> global.UpdatePushProxyRequest
-	84,  // 107: global.api.GetRecording:input_type -> google.protobuf.Empty
-	84,  // 108: global.api.GetTransformList:input_type -> google.protobuf.Empty
-	58,  // 109: global.api.GetRecordList:input_type -> global.ReqRecordList
-	58,  // 110: global.api.GetEventRecordList:input_type -> global.ReqRecordList
-	67,  // 111: global.api.GetRecordCatalog:input_type -> global.ReqRecordCatalog
-	65,  // 112: global.api.DeleteRecord:input_type -> global.ReqRecordDelete
-	69,  // 113: global.api.GetAlarmList:input_type -> global.AlarmListRequest
-	20,  // 114: global.api.GetSubscriptionProgress:input_type -> global.StreamSnapRequest
-	14,  // 115: global.api.SysInfo:output_type -> global.SysInfoResponse
-	0,   // 116: global.api.DisabledPlugins:output_type -> global.DisabledPluginsResponse
-	11,  // 117: global.api.Summary:output_type -> global.SummaryResponse
-	32,  // 118: global.api.Shutdown:output_type -> global.SuccessResponse
-	32,  // 119: global.api.Restart:output_type -> global.SuccessResponse
-	16,  // 120: global.api.TaskTree:output_type -> global.TaskTreeResponse
-	32,  // 121: global.api.StopTask:output_type -> global.SuccessResponse
-	32,  // 122: global.api.RestartTask:output_type -> global.SuccessResponse
-	18,  // 123: global.api.StreamList:output_type -> global.StreamListResponse
-	19,  // 124: global.api.WaitList:output_type -> global.StreamWaitListResponse
-	21,  // 125: global.api.StreamInfo:output_type -> global.StreamInfoResponse
-	32,  // 126: global.api.PauseStream:output_type -> global.SuccessResponse
-	32,  // 127: global.api.ResumeStream:output_type -> global.SuccessResponse
-	32,  // 128: global.api.SetStreamSpeed:output_type -> global.SuccessResponse
-	32,  // 129: global.api.SeekStream:output_type -> global.SuccessResponse
-	39,  // 130: global.api.GetSubscribers:output_type -> global.SubscribersResponse
-	30,  // 131: global.api.AudioTrackSnap:output_type -> global.TrackSnapShotResponse
-	30,  // 132: global.api.VideoTrackSnap:output_type -> global.TrackSnapShotResponse
-	32,  // 133: global.api.ChangeSubscribe:output_type -> global.SuccessResponse
-	48,  // 134: global.api.GetStreamAlias:output_type -> global.StreamAliasListResponse
-	32,  // 135: global.api.SetStreamAlias:output_type -> global.SuccessResponse
-	32,  // 136: global.api.StopPublish:output_type -> global.SuccessResponse
-	32,  // 137: global.api.StopSubscribe:output_type -> global.SuccessResponse
-	5,   // 138: global.api.GetConfigFile:output_type -> global.GetConfigFileResponse
-	32,  // 139: global.api.UpdateConfigFile:output_type -> global.SuccessResponse
-	6,   // 140: global.api.GetConfig:output_type -> global.GetConfigResponse
-	6,   // 141: global.api.GetFormily:output_type -> global.GetConfigResponse
-	40,  // 142: global.api.GetPullProxyList:output_type -> global.PullProxyListResponse
-	32,  // 143: global.api.AddPullProxy:output_type -> global.SuccessResponse
-	32,  // 144: global.api.RemovePullProxy:output_type -> global.SuccessResponse
-	32,  // 145: global.api.UpdatePullProxy:output_type -> global.SuccessResponse
-	45,  // 146: global.api.GetPushProxyList:output_type -> global.PushProxyListResponse
-	32,  // 147: global.api.AddPushProxy:output_type -> global.SuccessResponse
-	32,  // 148: global.api.RemovePushProxy:output_type -> global.SuccessResponse
-	32,  // 149: global.api.UpdatePushProxy:output_type -> global.SuccessResponse
-	52,  // 150: global.api.GetRecording:output_type -> global.RecordingListResponse
-	57,  // 151: global.api.GetTransformList:output_type -> global.TransformListResponse
-	61,  // 152: global.api.GetRecordList:output_type -> global.RecordResponseList
-	62,  // 153: global.api.GetEventRecordList:output_type -> global.EventRecordResponseList
-	64,  // 154: global.api.GetRecordCatalog:output_type -> global.ResponseCatalog
-	66,  // 155: global.api.DeleteRecord:output_type -> global.ResponseDelete
-	70,  // 156: global.api.GetAlarmList:output_type -> global.AlarmListResponse
-	73,  // 157: global.api.GetSubscriptionProgress:output_type -> global.SubscriptionProgressResponse
-	115, // [115:158] is the sub-list for method output_type
-	72,  // [72:115] is the sub-list for method input_type
-	72,  // [72:72] is the sub-list for extension type_name
-	72,  // [72:72] is the sub-list for extension extendee
-	0,   // [0:72] is the sub-list for field type_name
+	82,  // 42: global.PullProxyInfo.checkInterval:type_name -> google.protobuf.Duration
+	82,  // 43: global.UpdatePullProxyRequest.recordFragment:type_name -> google.protobuf.Duration
+	82,  // 44: global.UpdatePullProxyRequest.checkInterval:type_name -> google.protobuf.Duration
+	81,  // 45: global.PushProxyInfo.createTime:type_name -> google.protobuf.Timestamp
+	81,  // 46: global.PushProxyInfo.updateTime:type_name -> google.protobuf.Timestamp
+	43,  // 47: global.PushProxyListResponse.data:type_name -> global.PushProxyInfo
+	47,  // 48: global.StreamAliasListResponse.data:type_name -> global.StreamAlias
+	81,  // 49: global.Recording.startTime:type_name -> google.protobuf.Timestamp
+	51,  // 50: global.RecordingListResponse.data:type_name -> global.Recording
+	81,  // 51: global.PushInfo.startTime:type_name -> google.protobuf.Timestamp
+	53,  // 52: global.PushListResponse.data:type_name -> global.PushInfo
+	56,  // 53: global.TransformListResponse.data:type_name -> global.Transform
+	81,  // 54: global.RecordFile.startTime:type_name -> google.protobuf.Timestamp
+	81,  // 55: global.RecordFile.endTime:type_name -> google.protobuf.Timestamp
+	81,  // 56: global.EventRecordFile.startTime:type_name -> google.protobuf.Timestamp
+	81,  // 57: global.EventRecordFile.endTime:type_name -> google.protobuf.Timestamp
+	59,  // 58: global.RecordResponseList.data:type_name -> global.RecordFile
+	60,  // 59: global.EventRecordResponseList.data:type_name -> global.EventRecordFile
+	81,  // 60: global.Catalog.startTime:type_name -> google.protobuf.Timestamp
+	81,  // 61: global.Catalog.endTime:type_name -> google.protobuf.Timestamp
+	63,  // 62: global.ResponseCatalog.data:type_name -> global.Catalog
+	59,  // 63: global.ResponseDelete.data:type_name -> global.RecordFile
+	81,  // 64: global.AlarmInfo.createdAt:type_name -> google.protobuf.Timestamp
+	81,  // 65: global.AlarmInfo.updatedAt:type_name -> google.protobuf.Timestamp
+	68,  // 66: global.AlarmListResponse.data:type_name -> global.AlarmInfo
+	81,  // 67: global.Step.startedAt:type_name -> google.protobuf.Timestamp
+	81,  // 68: global.Step.completedAt:type_name -> google.protobuf.Timestamp
+	71,  // 69: global.SubscriptionProgressData.steps:type_name -> global.Step
+	72,  // 70: global.SubscriptionProgressResponse.data:type_name -> global.SubscriptionProgressData
+	2,   // 71: global.Formily.PropertiesEntry.value:type_name -> global.Formily
+	83,  // 72: global.Formily.ComponentPropsEntry.value:type_name -> google.protobuf.Any
+	2,   // 73: global.FormilyResponse.PropertiesEntry.value:type_name -> global.Formily
+	84,  // 74: global.api.SysInfo:input_type -> google.protobuf.Empty
+	84,  // 75: global.api.DisabledPlugins:input_type -> google.protobuf.Empty
+	84,  // 76: global.api.Summary:input_type -> google.protobuf.Empty
+	33,  // 77: global.api.Shutdown:input_type -> global.RequestWithId
+	33,  // 78: global.api.Restart:input_type -> global.RequestWithId
+	84,  // 79: global.api.TaskTree:input_type -> google.protobuf.Empty
+	34,  // 80: global.api.StopTask:input_type -> global.RequestWithId64
+	34,  // 81: global.api.RestartTask:input_type -> global.RequestWithId64
+	17,  // 82: global.api.StreamList:input_type -> global.StreamListRequest
+	84,  // 83: global.api.WaitList:input_type -> google.protobuf.Empty
+	20,  // 84: global.api.StreamInfo:input_type -> global.StreamSnapRequest
+	20,  // 85: global.api.PauseStream:input_type -> global.StreamSnapRequest
+	20,  // 86: global.api.ResumeStream:input_type -> global.StreamSnapRequest
+	49,  // 87: global.api.SetStreamSpeed:input_type -> global.SetStreamSpeedRequest
+	50,  // 88: global.api.SeekStream:input_type -> global.SeekStreamRequest
+	36,  // 89: global.api.GetSubscribers:input_type -> global.SubscribersRequest
+	20,  // 90: global.api.AudioTrackSnap:input_type -> global.StreamSnapRequest
+	20,  // 91: global.api.VideoTrackSnap:input_type -> global.StreamSnapRequest
+	35,  // 92: global.api.ChangeSubscribe:input_type -> global.ChangeSubscribeRequest
+	84,  // 93: global.api.GetStreamAlias:input_type -> google.protobuf.Empty
+	46,  // 94: global.api.SetStreamAlias:input_type -> global.SetStreamAliasRequest
+	20,  // 95: global.api.StopPublish:input_type -> global.StreamSnapRequest
+	33,  // 96: global.api.StopSubscribe:input_type -> global.RequestWithId
+	84,  // 97: global.api.GetConfigFile:input_type -> google.protobuf.Empty
+	7,   // 98: global.api.UpdateConfigFile:input_type -> global.UpdateConfigFileRequest
+	1,   // 99: global.api.GetConfig:input_type -> global.GetConfigRequest
+	1,   // 100: global.api.GetFormily:input_type -> global.GetConfigRequest
+	84,  // 101: global.api.GetPullProxyList:input_type -> google.protobuf.Empty
+	41,  // 102: global.api.AddPullProxy:input_type -> global.PullProxyInfo
+	33,  // 103: global.api.RemovePullProxy:input_type -> global.RequestWithId
+	42,  // 104: global.api.UpdatePullProxy:input_type -> global.UpdatePullProxyRequest
+	84,  // 105: global.api.GetPushProxyList:input_type -> google.protobuf.Empty
+	43,  // 106: global.api.AddPushProxy:input_type -> global.PushProxyInfo
+	33,  // 107: global.api.RemovePushProxy:input_type -> global.RequestWithId
+	44,  // 108: global.api.UpdatePushProxy:input_type -> global.UpdatePushProxyRequest
+	84,  // 109: global.api.GetRecording:input_type -> google.protobuf.Empty
+	84,  // 110: global.api.GetTransformList:input_type -> google.protobuf.Empty
+	58,  // 111: global.api.GetRecordList:input_type -> global.ReqRecordList
+	58,  // 112: global.api.GetEventRecordList:input_type -> global.ReqRecordList
+	67,  // 113: global.api.GetRecordCatalog:input_type -> global.ReqRecordCatalog
+	65,  // 114: global.api.DeleteRecord:input_type -> global.ReqRecordDelete
+	69,  // 115: global.api.GetAlarmList:input_type -> global.AlarmListRequest
+	20,  // 116: global.api.GetSubscriptionProgress:input_type -> global.StreamSnapRequest
+	14,  // 117: global.api.SysInfo:output_type -> global.SysInfoResponse
+	0,   // 118: global.api.DisabledPlugins:output_type -> global.DisabledPluginsResponse
+	11,  // 119: global.api.Summary:output_type -> global.SummaryResponse
+	32,  // 120: global.api.Shutdown:output_type -> global.SuccessResponse
+	32,  // 121: global.api.Restart:output_type -> global.SuccessResponse
+	16,  // 122: global.api.TaskTree:output_type -> global.TaskTreeResponse
+	32,  // 123: global.api.StopTask:output_type -> global.SuccessResponse
+	32,  // 124: global.api.RestartTask:output_type -> global.SuccessResponse
+	18,  // 125: global.api.StreamList:output_type -> global.StreamListResponse
+	19,  // 126: global.api.WaitList:output_type -> global.StreamWaitListResponse
+	21,  // 127: global.api.StreamInfo:output_type -> global.StreamInfoResponse
+	32,  // 128: global.api.PauseStream:output_type -> global.SuccessResponse
+	32,  // 129: global.api.ResumeStream:output_type -> global.SuccessResponse
+	32,  // 130: global.api.SetStreamSpeed:output_type -> global.SuccessResponse
+	32,  // 131: global.api.SeekStream:output_type -> global.SuccessResponse
+	39,  // 132: global.api.GetSubscribers:output_type -> global.SubscribersResponse
+	30,  // 133: global.api.AudioTrackSnap:output_type -> global.TrackSnapShotResponse
+	30,  // 134: global.api.VideoTrackSnap:output_type -> global.TrackSnapShotResponse
+	32,  // 135: global.api.ChangeSubscribe:output_type -> global.SuccessResponse
+	48,  // 136: global.api.GetStreamAlias:output_type -> global.StreamAliasListResponse
+	32,  // 137: global.api.SetStreamAlias:output_type -> global.SuccessResponse
+	32,  // 138: global.api.StopPublish:output_type -> global.SuccessResponse
+	32,  // 139: global.api.StopSubscribe:output_type -> global.SuccessResponse
+	5,   // 140: global.api.GetConfigFile:output_type -> global.GetConfigFileResponse
+	32,  // 141: global.api.UpdateConfigFile:output_type -> global.SuccessResponse
+	6,   // 142: global.api.GetConfig:output_type -> global.GetConfigResponse
+	6,   // 143: global.api.GetFormily:output_type -> global.GetConfigResponse
+	40,  // 144: global.api.GetPullProxyList:output_type -> global.PullProxyListResponse
+	32,  // 145: global.api.AddPullProxy:output_type -> global.SuccessResponse
+	32,  // 146: global.api.RemovePullProxy:output_type -> global.SuccessResponse
+	32,  // 147: global.api.UpdatePullProxy:output_type -> global.SuccessResponse
+	45,  // 148: global.api.GetPushProxyList:output_type -> global.PushProxyListResponse
+	32,  // 149: global.api.AddPushProxy:output_type -> global.SuccessResponse
+	32,  // 150: global.api.RemovePushProxy:output_type -> global.SuccessResponse
+	32,  // 151: global.api.UpdatePushProxy:output_type -> global.SuccessResponse
+	52,  // 152: global.api.GetRecording:output_type -> global.RecordingListResponse
+	57,  // 153: global.api.GetTransformList:output_type -> global.TransformListResponse
+	61,  // 154: global.api.GetRecordList:output_type -> global.RecordResponseList
+	62,  // 155: global.api.GetEventRecordList:output_type -> global.EventRecordResponseList
+	64,  // 156: global.api.GetRecordCatalog:output_type -> global.ResponseCatalog
+	66,  // 157: global.api.DeleteRecord:output_type -> global.ResponseDelete
+	70,  // 158: global.api.GetAlarmList:output_type -> global.AlarmListResponse
+	73,  // 159: global.api.GetSubscriptionProgress:output_type -> global.SubscriptionProgressResponse
+	117, // [117:160] is the sub-list for method output_type
+	74,  // [74:117] is the sub-list for method input_type
+	74,  // [74:74] is the sub-list for extension type_name
+	74,  // [74:74] is the sub-list for extension extendee
+	0,   // [0:74] is the sub-list for field type_name
 }
 
 func init() { file_global_proto_init() }
