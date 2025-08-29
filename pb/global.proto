@@ -255,6 +255,13 @@ service api {
       get: "/api/stream/progress/{streamPath=**}"
     };
   }
+  
+  rpc StartPull (GlobalPullRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/pull"
+      body: "*"
+    };
+  }
 }
 
 message DisabledPluginsResponse {
@@ -838,4 +845,30 @@ message SubscriptionProgressResponse {
   int32 code = 1;
   string message = 2;
   SubscriptionProgressData data = 3;
+}
+
+message GlobalPullRequest {
+  string remoteURL = 1;
+  string protocol = 2;
+  int32 testMode = 3; // 0: pull, 1: pull without publish
+  string streamPath = 4; // 流路径
+  
+  // Publish configuration
+  optional bool pubAudio = 5;
+  optional bool pubVideo = 6;
+  optional google.protobuf.Duration delayCloseTimeout = 7; // 延迟自动关闭（无订阅时）
+  optional double speed = 8; // 发送速率
+  optional int32 maxCount = 9; // 最大发布者数量
+  optional bool kickExist = 10; // 是否踢掉已经存在的发布者
+  optional google.protobuf.Duration publishTimeout = 11; // 发布无数据超时
+  optional google.protobuf.Duration waitCloseTimeout = 12; // 延迟自动关闭（等待重连）
+  optional google.protobuf.Duration idleTimeout = 13; // 空闲(无订阅)超时
+  optional google.protobuf.Duration pauseTimeout = 14; // 暂停超时时间
+  optional google.protobuf.Duration bufferTime = 15; // 缓冲时长，0代表取最近关键帧
+  optional double scale = 16; // 缩放倍数
+  optional int32 maxFPS = 17; // 最大FPS
+  optional string key = 18; // 发布鉴权key
+  optional string relayMode = 19; // 转发模式
+  optional string pubType = 20; // 发布类型
+  optional bool dump = 21; // 是否dump
 }

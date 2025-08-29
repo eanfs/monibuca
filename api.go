@@ -981,6 +981,127 @@ func (s *Server) GetTransformList(ctx context.Context, req *emptypb.Empty) (res 
 	return
 }
 
+func (s *Server) StartPull(ctx context.Context, req *pb.GlobalPullRequest) (res *pb.SuccessResponse, err error) {
+	// 创建拉流配置
+	pullConfig := config.Pull{
+		URL:      req.RemoteURL,
+		TestMode: int(req.TestMode),
+	}
+
+	// 使用请求中的流路径，如果未提供则生成默认路径
+	streamPath := req.StreamPath
+	protocol := req.Protocol
+
+	// 如果没有提供protocol，则从URL推测
+	if protocol == "" {
+		u, err := url.Parse(req.RemoteURL)
+		if err == nil {
+			switch {
+			case strings.HasPrefix(u.Scheme, "rtmp"):
+				protocol = "rtmp"
+			case strings.HasPrefix(u.Scheme, "rtsp"):
+				protocol = "rtsp"
+			case strings.HasPrefix(u.Scheme, "srt"):
+				protocol = "srt"
+			case strings.HasPrefix(u.Scheme, "whep"):
+				protocol = "webrtc"
+			case strings.HasPrefix(u.Scheme, "http"):
+				if strings.Contains(u.Path, ".m3u8") {
+					protocol = "hls"
+				} else if strings.Contains(u.Path, ".flv") {
+					protocol = "flv"
+				} else if strings.Contains(u.Path, ".mp4") {
+					protocol = "mp4"
+				}
+			}
+		}
+	}
+
+	if streamPath == "" {
+		if protocol == "" {
+			streamPath = "pull/unknown"
+		} else {
+			streamPath = "pull/" + protocol
+		}
+	}
+
+	// 根据protocol找到对应的plugin进行pull
+	if protocol != "" {
+		for p := range s.Plugins.Range {
+			if strings.EqualFold(p.Meta.Name, protocol) {
+				pubConfig := p.GetCommonConf().Publish
+
+				// 设置发布配置参数
+				if req.PubAudio != nil {
+					pubConfig.PubAudio = *req.PubAudio
+				}
+				if req.PubVideo != nil {
+					pubConfig.PubVideo = *req.PubVideo
+				}
+				if req.DelayCloseTimeout != nil {
+					pubConfig.DelayCloseTimeout = req.DelayCloseTimeout.AsDuration()
+				}
+				if req.Speed != nil {
+					pubConfig.Speed = *req.Speed
+				}
+				if req.MaxCount != nil {
+					pubConfig.MaxCount = int(*req.MaxCount)
+				}
+				if req.KickExist != nil {
+					pubConfig.KickExist = *req.KickExist
+				}
+				if req.PublishTimeout != nil {
+					pubConfig.PublishTimeout = req.PublishTimeout.AsDuration()
+				}
+				if req.WaitCloseTimeout != nil {
+					pubConfig.WaitCloseTimeout = req.WaitCloseTimeout.AsDuration()
+				}
+				if req.IdleTimeout != nil {
+					pubConfig.IdleTimeout = req.IdleTimeout.AsDuration()
+				}
+				if req.PauseTimeout != nil {
+					pubConfig.PauseTimeout = req.PauseTimeout.AsDuration()
+				}
+				if req.BufferTime != nil {
+					pubConfig.BufferTime = req.BufferTime.AsDuration()
+				}
+				if req.Scale != nil {
+					pubConfig.Scale = *req.Scale
+				}
+				if req.MaxFPS != nil {
+					pubConfig.MaxFPS = int(*req.MaxFPS)
+				}
+				if req.Key != nil {
+					pubConfig.Key = *req.Key
+				}
+				if req.RelayMode != nil {
+					pubConfig.RelayMode = *req.RelayMode
+				}
+				if req.PubType != nil {
+					pubConfig.PubType = *req.PubType
+				}
+				if req.Dump != nil {
+					pubConfig.Dump = *req.Dump
+				}
+
+				_, err = p.Pull(streamPath, pullConfig, &pubConfig)
+				if err != nil {
+					return nil, err
+				}
+				return &pb.SuccessResponse{
+					Code:    0,
+					Message: "success",
+				}, nil
+			}
+		}
+	}
+
+	return &pb.SuccessResponse{
+		Code:    0,
+		Message: "success",
+	}, nil
+}
+
 func (s *Server) GetAlarmList(ctx context.Context, req *pb.AlarmListRequest) (res *pb.AlarmListResponse, err error) {
 	// 初始化响应对象
 	res = &pb.AlarmListResponse{

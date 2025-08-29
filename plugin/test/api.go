@@ -19,11 +19,13 @@ import (
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	flv "m7s.live/v5/plugin/flv/pkg"
+	hls "m7s.live/v5/plugin/hls/pkg"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 	rtsp "m7s.live/v5/plugin/rtsp/pkg"
 	srt "m7s.live/v5/plugin/srt/pkg"
 	testpb "m7s.live/v5/plugin/test/pb"
+	webrtc "m7s.live/v5/plugin/webrtc/pkg"
 )
 
 // ========== Protobuf 转换函数 ========== //
@@ -208,6 +210,8 @@ func (p *TestPlugin) StartPush(ctx context.Context, req *testpb.PushRequest) (re
 		pusher = rtsp.NewPusher
 	case "srt":
 		pusher = srt.NewPusher
+	case "whip":
+		pusher = webrtc.NewPusher
 	default:
 		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
 	}
@@ -227,6 +231,10 @@ func (p *TestPlugin) StartPull(ctx context.Context, req *testpb.PullRequest) (re
 		puller = flv.NewPuller
 	case "mp4":
 		puller = mp4.NewPuller
+	case "whep":
+		puller = webrtc.NewPuller
+	case "hls":
+		puller = hls.NewPuller
 	default:
 		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
 	}
