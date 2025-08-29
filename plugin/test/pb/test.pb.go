@@ -11,6 +11,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	pb "m7s.live/v5/pb"
 	reflect "reflect"
@@ -534,12 +535,261 @@ func (x *ExecuteTestCaseRequest) GetNames() []string {
 	return nil
 }
 
+// Stress 测试相关消息
+type CountResponseData struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PushCount     uint32                 `protobuf:"varint,1,opt,name=pushCount,proto3" json:"pushCount,omitempty"`
+	PullCount     uint32                 `protobuf:"varint,2,opt,name=pullCount,proto3" json:"pullCount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountResponseData) Reset() {
+	*x = CountResponseData{}
+	mi := &file_test_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountResponseData) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountResponseData) ProtoMessage() {}
+
+func (x *CountResponseData) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountResponseData.ProtoReflect.Descriptor instead.
+func (*CountResponseData) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *CountResponseData) GetPushCount() uint32 {
+	if x != nil {
+		return x.PushCount
+	}
+	return 0
+}
+
+func (x *CountResponseData) GetPullCount() uint32 {
+	if x != nil {
+		return x.PullCount
+	}
+	return 0
+}
+
+type CountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Data          *CountResponseData     `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountResponse) Reset() {
+	*x = CountResponse{}
+	mi := &file_test_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountResponse) ProtoMessage() {}
+
+func (x *CountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountResponse.ProtoReflect.Descriptor instead.
+func (*CountResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CountResponse) GetCode() uint32 {
+	if x != nil {
+		return x.Code
+	}
+	return 0
+}
+
+func (x *CountResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *CountResponse) GetData() *CountResponseData {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type PushRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StreamPath    string                 `protobuf:"bytes,1,opt,name=streamPath,proto3" json:"streamPath,omitempty"`
+	Protocol      string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	RemoteURL     string                 `protobuf:"bytes,3,opt,name=remoteURL,proto3" json:"remoteURL,omitempty"`
+	PushCount     int32                  `protobuf:"varint,4,opt,name=pushCount,proto3" json:"pushCount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushRequest) Reset() {
+	*x = PushRequest{}
+	mi := &file_test_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushRequest) ProtoMessage() {}
+
+func (x *PushRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushRequest.ProtoReflect.Descriptor instead.
+func (*PushRequest) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PushRequest) GetStreamPath() string {
+	if x != nil {
+		return x.StreamPath
+	}
+	return ""
+}
+
+func (x *PushRequest) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *PushRequest) GetRemoteURL() string {
+	if x != nil {
+		return x.RemoteURL
+	}
+	return ""
+}
+
+func (x *PushRequest) GetPushCount() int32 {
+	if x != nil {
+		return x.PushCount
+	}
+	return 0
+}
+
+type PullRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RemoteURL     string                 `protobuf:"bytes,1,opt,name=remoteURL,proto3" json:"remoteURL,omitempty"`
+	Protocol      string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	PullCount     int32                  `protobuf:"varint,3,opt,name=pullCount,proto3" json:"pullCount,omitempty"`
+	TestMode      int32                  `protobuf:"varint,4,opt,name=testMode,proto3" json:"testMode,omitempty"` // 0: pull, 1: pull without publish
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequest) Reset() {
+	*x = PullRequest{}
+	mi := &file_test_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequest) ProtoMessage() {}
+
+func (x *PullRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequest.ProtoReflect.Descriptor instead.
+func (*PullRequest) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *PullRequest) GetRemoteURL() string {
+	if x != nil {
+		return x.RemoteURL
+	}
+	return ""
+}
+
+func (x *PullRequest) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *PullRequest) GetPullCount() int32 {
+	if x != nil {
+		return x.PullCount
+	}
+	return 0
+}
+
+func (x *PullRequest) GetTestMode() int32 {
+	if x != nil {
+		return x.TestMode
+	}
+	return 0
+}
+
 var File_test_proto protoreflect.FileDescriptor
 
 const file_test_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"test.proto\x12\x04test\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\fglobal.proto\"U\n" +
+	"test.proto\x12\x04test\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\fglobal.proto\"U\n" +
 	"\x11ListFilesResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
@@ -585,10 +835,34 @@ const file_test_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\"\n" +
 	"\x04data\x18\x03 \x03(\v2\x0e.test.TestCaseR\x04data\".\n" +
 	"\x16ExecuteTestCaseRequest\x12\x14\n" +
-	"\x05names\x18\x01 \x03(\tR\x05names2\xd6\x01\n" +
+	"\x05names\x18\x01 \x03(\tR\x05names\"O\n" +
+	"\x11CountResponseData\x12\x1c\n" +
+	"\tpushCount\x18\x01 \x01(\rR\tpushCount\x12\x1c\n" +
+	"\tpullCount\x18\x02 \x01(\rR\tpullCount\"j\n" +
+	"\rCountResponse\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12+\n" +
+	"\x04data\x18\x03 \x01(\v2\x17.test.CountResponseDataR\x04data\"\x85\x01\n" +
+	"\vPushRequest\x12\x1e\n" +
+	"\n" +
+	"streamPath\x18\x01 \x01(\tR\n" +
+	"streamPath\x12\x1a\n" +
+	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x1c\n" +
+	"\tremoteURL\x18\x03 \x01(\tR\tremoteURL\x12\x1c\n" +
+	"\tpushCount\x18\x04 \x01(\x05R\tpushCount\"\x81\x01\n" +
+	"\vPullRequest\x12\x1c\n" +
+	"\tremoteURL\x18\x01 \x01(\tR\tremoteURL\x12\x1a\n" +
+	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x1c\n" +
+	"\tpullCount\x18\x03 \x01(\x05R\tpullCount\x12\x1a\n" +
+	"\btestMode\x18\x04 \x01(\x05R\btestMode2\xd5\x05\n" +
 	"\x03api\x12a\n" +
 	"\rListTestCases\x12\x1a.test.ListTestCasesRequest\x1a\x1b.test.ListTestCasesResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/test/api/cases\x12l\n" +
-	"\x0fExecuteTestCase\x12\x1c.test.ExecuteTestCaseRequest\x1a\x17.global.SuccessResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/test/api/cases/executeB\x1cZ\x1am7s.live/v5/plugin/test/pbb\x06proto3"
+	"\x0fExecuteTestCase\x12\x1c.test.ExecuteTestCaseRequest\x1a\x17.global.SuccessResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/test/api/cases/execute\x12p\n" +
+	"\tStartPush\x12\x11.test.PushRequest\x1a\x17.global.SuccessResponse\"7\x82\xd3\xe4\x93\x021:\x01*\",/test/api/stress/push/{protocol}/{pushCount}\x12p\n" +
+	"\tStartPull\x12\x11.test.PullRequest\x1a\x17.global.SuccessResponse\"7\x82\xd3\xe4\x93\x021:\x01*\",/test/api/stress/pull/{protocol}/{pullCount}\x12W\n" +
+	"\bGetCount\x12\x16.google.protobuf.Empty\x1a\x13.test.CountResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/test/api/stress/count\x12_\n" +
+	"\bStopPush\x12\x16.google.protobuf.Empty\x1a\x17.global.SuccessResponse\"\"\x82\xd3\xe4\x93\x02\x1c\"\x1a/test/api/stress/stop/push\x12_\n" +
+	"\bStopPull\x12\x16.google.protobuf.Empty\x1a\x17.global.SuccessResponse\"\"\x82\xd3\xe4\x93\x02\x1c\"\x1a/test/api/stress/stop/pullB\x1cZ\x1am7s.live/v5/plugin/test/pbb\x06proto3"
 
 var (
 	file_test_proto_rawDescOnce sync.Once
@@ -602,7 +876,7 @@ func file_test_proto_rawDescGZIP() []byte {
 	return file_test_proto_rawDescData
 }
 
-var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_test_proto_goTypes = []any{
 	(*ListFilesResponse)(nil),      // 0: test.ListFilesResponse
 	(*TestCase)(nil),               // 1: test.TestCase
@@ -611,27 +885,43 @@ var file_test_proto_goTypes = []any{
 	(*ListTestCasesRequest)(nil),   // 4: test.ListTestCasesRequest
 	(*ListTestCasesResponse)(nil),  // 5: test.ListTestCasesResponse
 	(*ExecuteTestCaseRequest)(nil), // 6: test.ExecuteTestCaseRequest
-	(*durationpb.Duration)(nil),    // 7: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),  // 8: google.protobuf.Timestamp
-	(*pb.SuccessResponse)(nil),     // 9: global.SuccessResponse
+	(*CountResponseData)(nil),      // 7: test.CountResponseData
+	(*CountResponse)(nil),          // 8: test.CountResponse
+	(*PushRequest)(nil),            // 9: test.PushRequest
+	(*PullRequest)(nil),            // 10: test.PullRequest
+	(*durationpb.Duration)(nil),    // 11: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),  // 12: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),          // 13: google.protobuf.Empty
+	(*pb.SuccessResponse)(nil),     // 14: global.SuccessResponse
 }
 var file_test_proto_depIdxs = []int32{
-	7, // 0: test.TestCase.timeout:type_name -> google.protobuf.Duration
-	2, // 1: test.TestCase.tasks:type_name -> test.TestTask
-	8, // 2: test.TestCase.startTime:type_name -> google.protobuf.Timestamp
-	8, // 3: test.TestCase.endTime:type_name -> google.protobuf.Timestamp
-	7, // 4: test.TestTask.delay:type_name -> google.protobuf.Duration
-	1, // 5: test.TestCaseResponse.data:type_name -> test.TestCase
-	1, // 6: test.ListTestCasesResponse.data:type_name -> test.TestCase
-	4, // 7: test.api.ListTestCases:input_type -> test.ListTestCasesRequest
-	6, // 8: test.api.ExecuteTestCase:input_type -> test.ExecuteTestCaseRequest
-	5, // 9: test.api.ListTestCases:output_type -> test.ListTestCasesResponse
-	9, // 10: test.api.ExecuteTestCase:output_type -> global.SuccessResponse
-	9, // [9:11] is the sub-list for method output_type
-	7, // [7:9] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	11, // 0: test.TestCase.timeout:type_name -> google.protobuf.Duration
+	2,  // 1: test.TestCase.tasks:type_name -> test.TestTask
+	12, // 2: test.TestCase.startTime:type_name -> google.protobuf.Timestamp
+	12, // 3: test.TestCase.endTime:type_name -> google.protobuf.Timestamp
+	11, // 4: test.TestTask.delay:type_name -> google.protobuf.Duration
+	1,  // 5: test.TestCaseResponse.data:type_name -> test.TestCase
+	1,  // 6: test.ListTestCasesResponse.data:type_name -> test.TestCase
+	7,  // 7: test.CountResponse.data:type_name -> test.CountResponseData
+	4,  // 8: test.api.ListTestCases:input_type -> test.ListTestCasesRequest
+	6,  // 9: test.api.ExecuteTestCase:input_type -> test.ExecuteTestCaseRequest
+	9,  // 10: test.api.StartPush:input_type -> test.PushRequest
+	10, // 11: test.api.StartPull:input_type -> test.PullRequest
+	13, // 12: test.api.GetCount:input_type -> google.protobuf.Empty
+	13, // 13: test.api.StopPush:input_type -> google.protobuf.Empty
+	13, // 14: test.api.StopPull:input_type -> google.protobuf.Empty
+	5,  // 15: test.api.ListTestCases:output_type -> test.ListTestCasesResponse
+	14, // 16: test.api.ExecuteTestCase:output_type -> global.SuccessResponse
+	14, // 17: test.api.StartPush:output_type -> global.SuccessResponse
+	14, // 18: test.api.StartPull:output_type -> global.SuccessResponse
+	8,  // 19: test.api.GetCount:output_type -> test.CountResponse
+	14, // 20: test.api.StopPush:output_type -> global.SuccessResponse
+	14, // 21: test.api.StopPull:output_type -> global.SuccessResponse
+	15, // [15:22] is the sub-list for method output_type
+	8,  // [8:15] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_test_proto_init() }
@@ -645,7 +935,7 @@ func file_test_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_test_proto_rawDesc), len(file_test_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

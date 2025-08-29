@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+
 	"m7s.live/v5"
 	_ "m7s.live/v5/plugin/cascade"
 	_ "m7s.live/v5/plugin/debug"
@@ -11,7 +12,7 @@ import (
 	_ "m7s.live/v5/plugin/monitor"
 	_ "m7s.live/v5/plugin/rtmp"
 	_ "m7s.live/v5/plugin/rtsp"
-	_ "m7s.live/v5/plugin/stress"
+	_ "m7s.live/v5/plugin/test"
 	_ "m7s.live/v5/plugin/webrtc"
 )
 

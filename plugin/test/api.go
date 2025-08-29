@@ -2,16 +2,27 @@ package plugin_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/mcuadros/go-defaults"
+	"golang.org/x/exp/slices"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"m7s.live/v5"
 	pb "m7s.live/v5/pb"
+	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
+	flv "m7s.live/v5/plugin/flv/pkg"
+	mp4 "m7s.live/v5/plugin/mp4/pkg"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
+	rtsp "m7s.live/v5/plugin/rtsp/pkg"
+	srt "m7s.live/v5/plugin/srt/pkg"
 	testpb "m7s.live/v5/plugin/test/pb"
 )
 
@@ -123,4 +134,124 @@ func (p *TestPlugin) GetTestCaseSSE(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	})
+}
+
+// ========== Stress 测试相关 API 实现 ========== //
+
+func (p *TestPlugin) pull(count int, url string, testMode int32, puller m7s.PullerFactory) (err error) {
+	hasPlaceholder := strings.Contains(url, "%d")
+	if i := p.pullers.Length; count > i {
+		for j := i; j < count; j++ {
+			conf := config.Pull{}
+			defaults.SetDefaults(&conf)
+			conf.TestMode = int(testMode)
+			if hasPlaceholder {
+				conf.URL = fmt.Sprintf(url, j)
+			} else {
+				conf.URL = url
+			}
+			puller := puller(conf)
+			ctx := puller.GetPullJob().Init(puller, &p.Plugin, fmt.Sprintf("stress/%d", j), conf, nil)
+			if err = ctx.WaitStarted(); err != nil {
+				return
+			}
+			if p.pullers.AddUnique(ctx) {
+				ctx.OnDispose(func() {
+					p.pullers.Remove(ctx)
+				})
+			} else {
+				ctx.Stop(task.ErrExist)
+			}
+		}
+	} else if count < i {
+		clone := slices.Clone(p.pullers.Items)
+		for j := i; j > count; j-- {
+			clone[j-1].Stop(task.ErrStopByUser)
+		}
+	}
+	return
+}
+
+func (p *TestPlugin) push(count int, streamPath, url string, pusher m7s.PusherFactory) (err error) {
+	if i := p.pushers.Length; count > i {
+		for j := i; j < count; j++ {
+			pusher := pusher()
+			conf := config.Push{URL: fmt.Sprintf(url, j)}
+			defaults.SetDefaults(&conf)
+			ctx := pusher.GetPushJob().Init(pusher, &p.Plugin, streamPath, conf, nil)
+			if err = ctx.WaitStarted(); err != nil {
+				return
+			}
+			if p.pushers.AddUnique(ctx) {
+				ctx.OnDispose(func() {
+					p.pushers.Remove(ctx)
+				})
+			} else {
+				ctx.Stop(task.ErrExist)
+			}
+		}
+	} else if count < i {
+		clone := slices.Clone(p.pushers.Items)
+		for j := i; j > count; j-- {
+			clone[j-1].Stop(task.ErrStopByUser)
+		}
+	}
+	return
+}
+
+func (p *TestPlugin) StartPush(ctx context.Context, req *testpb.PushRequest) (res *pb.SuccessResponse, err error) {
+	var pusher m7s.PusherFactory
+	switch req.Protocol {
+	case "rtmp":
+		pusher = rtmp.NewPusher
+	case "rtsp":
+		pusher = rtsp.NewPusher
+	case "srt":
+		pusher = srt.NewPusher
+	default:
+		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
+	}
+	return &pb.SuccessResponse{}, p.push(int(req.PushCount), req.StreamPath, req.RemoteURL, pusher)
+}
+
+func (p *TestPlugin) StartPull(ctx context.Context, req *testpb.PullRequest) (res *pb.SuccessResponse, err error) {
+	var puller m7s.PullerFactory
+	switch req.Protocol {
+	case "rtmp":
+		puller = rtmp.NewPuller
+	case "rtsp":
+		puller = rtsp.NewPuller
+	case "srt":
+		puller = srt.NewPuller
+	case "flv":
+		puller = flv.NewPuller
+	case "mp4":
+		puller = mp4.NewPuller
+	default:
+		return nil, fmt.Errorf("unsupport protocol %s", req.Protocol)
+	}
+	return &pb.SuccessResponse{}, p.pull(int(req.PullCount), req.RemoteURL, req.TestMode, puller)
+}
+
+func (p *TestPlugin) StopPush(ctx context.Context, req *emptypb.Empty) (res *pb.SuccessResponse, err error) {
+	for _, pusher := range slices.Clone(p.pushers.Items) {
+		pusher.Stop(task.ErrStopByUser)
+	}
+	return &pb.SuccessResponse{}, nil
+}
+
+func (p *TestPlugin) StopPull(ctx context.Context, req *emptypb.Empty) (res *pb.SuccessResponse, err error) {
+	for _, puller := range slices.Clone(p.pullers.Items) {
+		puller.Stop(task.ErrStopByUser)
+	}
+	return &pb.SuccessResponse{}, nil
+}
+
+func (p *TestPlugin) GetCount(ctx context.Context, req *emptypb.Empty) (res *testpb.CountResponse, err error) {
+	return &testpb.CountResponse{
+		Data: &testpb.CountResponseData{
+			PullCount: uint32(p.pullers.Length),
+			PushCount: uint32(p.pushers.Length),
+		},
+	}, nil
 }

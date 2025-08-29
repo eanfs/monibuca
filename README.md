@@ -61,7 +61,7 @@ Monibuca is a powerful streaming server framework written entirely in Go. It's d
 - 🔄 **Cluster Capability** - Built-in cascade and room management
 - 🎮 **Preview Features** - Supports video preview, multi-screen preview, custom screen layouts
 - 🔐 **Security** - Provides encrypted transmission and stream authentication
-- 📊 **Performance Monitoring** - Supports stress testing and performance metrics collection
+- 📊 **Performance Monitoring** - Supports stress testing and performance metrics collection (integrated in test plugin)
 - 📝 **Log Management** - Log rotation, auto cleanup, custom extensions
 - 🎬 **Recording & Playback** - Supports MP4, HLS, FLV formats, speed control, seeking, pause
 - ⏱️ **Dynamic Time-Shift** - Dynamic cache design, supports live time-shift playback

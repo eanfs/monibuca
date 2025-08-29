@@ -12,6 +12,7 @@ import (
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg/util"
 	"m7s.live/v5/plugin/test/pb"
 )
 
@@ -79,6 +80,9 @@ type (
 		Cases     map[string]TestConfig
 		testCases map[string]*TestCase
 		flushSSE  chan struct{}
+		// Stress 测试相关字段
+		pushers util.Collection[string, *m7s.PushJob]
+		pullers util.Collection[string, *m7s.PullJob]
 	}
 	TestBaseTask struct {
 		task.Task

@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	pb "m7s.live/v5/pb"
 )
 
@@ -22,6 +23,11 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Api_ListTestCases_FullMethodName   = "/test.api/ListTestCases"
 	Api_ExecuteTestCase_FullMethodName = "/test.api/ExecuteTestCase"
+	Api_StartPush_FullMethodName       = "/test.api/StartPush"
+	Api_StartPull_FullMethodName       = "/test.api/StartPull"
+	Api_GetCount_FullMethodName        = "/test.api/GetCount"
+	Api_StopPush_FullMethodName        = "/test.api/StopPush"
+	Api_StopPull_FullMethodName        = "/test.api/StopPull"
 )
 
 // ApiClient is the client API for Api service.
@@ -31,6 +37,12 @@ type ApiClient interface {
 	// 测试用例查询
 	ListTestCases(ctx context.Context, in *ListTestCasesRequest, opts ...grpc.CallOption) (*ListTestCasesResponse, error)
 	ExecuteTestCase(ctx context.Context, in *ExecuteTestCaseRequest, opts ...grpc.CallOption) (*pb.SuccessResponse, error)
+	// Stress 测试相关 API
+	StartPush(ctx context.Context, in *PushRequest, opts ...grpc.CallOption) (*pb.SuccessResponse, error)
+	StartPull(ctx context.Context, in *PullRequest, opts ...grpc.CallOption) (*pb.SuccessResponse, error)
+	GetCount(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CountResponse, error)
+	StopPush(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*pb.SuccessResponse, error)
+	StopPull(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*pb.SuccessResponse, error)
 }
 
 type apiClient struct {
@@ -61,6 +73,56 @@ func (c *apiClient) ExecuteTestCase(ctx context.Context, in *ExecuteTestCaseRequ
 	return out, nil
 }
 
+func (c *apiClient) StartPush(ctx context.Context, in *PushRequest, opts ...grpc.CallOption) (*pb.SuccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(pb.SuccessResponse)
+	err := c.cc.Invoke(ctx, Api_StartPush_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) StartPull(ctx context.Context, in *PullRequest, opts ...grpc.CallOption) (*pb.SuccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(pb.SuccessResponse)
+	err := c.cc.Invoke(ctx, Api_StartPull_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetCount(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CountResponse)
+	err := c.cc.Invoke(ctx, Api_GetCount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) StopPush(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*pb.SuccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(pb.SuccessResponse)
+	err := c.cc.Invoke(ctx, Api_StopPush_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) StopPull(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*pb.SuccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(pb.SuccessResponse)
+	err := c.cc.Invoke(ctx, Api_StopPull_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility.
@@ -68,6 +130,12 @@ type ApiServer interface {
 	// 测试用例查询
 	ListTestCases(context.Context, *ListTestCasesRequest) (*ListTestCasesResponse, error)
 	ExecuteTestCase(context.Context, *ExecuteTestCaseRequest) (*pb.SuccessResponse, error)
+	// Stress 测试相关 API
+	StartPush(context.Context, *PushRequest) (*pb.SuccessResponse, error)
+	StartPull(context.Context, *PullRequest) (*pb.SuccessResponse, error)
+	GetCount(context.Context, *emptypb.Empty) (*CountResponse, error)
+	StopPush(context.Context, *emptypb.Empty) (*pb.SuccessResponse, error)
+	StopPull(context.Context, *emptypb.Empty) (*pb.SuccessResponse, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -83,6 +151,21 @@ func (UnimplementedApiServer) ListTestCases(context.Context, *ListTestCasesReque
 }
 func (UnimplementedApiServer) ExecuteTestCase(context.Context, *ExecuteTestCaseRequest) (*pb.SuccessResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExecuteTestCase not implemented")
+}
+func (UnimplementedApiServer) StartPush(context.Context, *PushRequest) (*pb.SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartPush not implemented")
+}
+func (UnimplementedApiServer) StartPull(context.Context, *PullRequest) (*pb.SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartPull not implemented")
+}
+func (UnimplementedApiServer) GetCount(context.Context, *emptypb.Empty) (*CountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCount not implemented")
+}
+func (UnimplementedApiServer) StopPush(context.Context, *emptypb.Empty) (*pb.SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StopPush not implemented")
+}
+func (UnimplementedApiServer) StopPull(context.Context, *emptypb.Empty) (*pb.SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StopPull not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 func (UnimplementedApiServer) testEmbeddedByValue()             {}
@@ -141,6 +224,96 @@ func _Api_ExecuteTestCase_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_StartPush_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PushRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StartPush(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_StartPush_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StartPush(ctx, req.(*PushRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_StartPull_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PullRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StartPull(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_StartPull_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StartPull(ctx, req.(*PullRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_GetCount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetCount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_GetCount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetCount(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_StopPush_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StopPush(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_StopPush_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StopPush(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_StopPull_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StopPull(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_StopPull_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StopPull(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -155,6 +328,26 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExecuteTestCase",
 			Handler:    _Api_ExecuteTestCase_Handler,
+		},
+		{
+			MethodName: "StartPush",
+			Handler:    _Api_StartPush_Handler,
+		},
+		{
+			MethodName: "StartPull",
+			Handler:    _Api_StartPull_Handler,
+		},
+		{
+			MethodName: "GetCount",
+			Handler:    _Api_GetCount_Handler,
+		},
+		{
+			MethodName: "StopPush",
+			Handler:    _Api_StopPush_Handler,
+		},
+		{
+			MethodName: "StopPull",
+			Handler:    _Api_StopPull_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -4,6 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
 	"m7s.live/v5"
 	_ "m7s.live/v5/plugin/debug"
 	_ "m7s.live/v5/plugin/flv"
@@ -17,12 +21,9 @@ import (
 	_ "m7s.live/v5/plugin/rtsp"
 	_ "m7s.live/v5/plugin/sei"
 	_ "m7s.live/v5/plugin/srt"
-	_ "m7s.live/v5/plugin/stress"
+	_ "m7s.live/v5/plugin/test"
 	_ "m7s.live/v5/plugin/transcode"
 	_ "m7s.live/v5/plugin/webrtc"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
 func main() {
