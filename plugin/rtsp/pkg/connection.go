@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,10 +50,7 @@ type NetConnection struct {
 	sequence    int
 	Session     string
 	sdp         string
-	uri         string
 	writing     atomic.Bool
-	state       State
-	stateMu     sync.Mutex
 	SDP         string
 	keepaliveTS time.Time
 }

@@ -75,7 +75,15 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 }
 
 func (c *Stream) Options() error {
-	req := &util.Request{Method: MethodOptions, URL: c.URL}
+	req := &util.Request{
+		Method: MethodOptions, 
+		URL: c.URL,
+		Header: map[string][]string{},
+	}
+
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
 
 	res, err := c.Do(req)
 	if err != nil {
