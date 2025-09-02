@@ -157,6 +157,29 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 func (r *Recorder) Dispose() {
 	if r.muxer != nil {
 		r.writeTailer(time.Now())
+
+		// 获取MP4插件实例
+		if mp4Plugin, ok := r.RecordJob.Plugin.(*plugin_mp4.MP4Plugin); ok && mp4Plugin.MinioClient != nil {
+			// 上传文件到Minio
+			filePath := r.Event.FilePath
+			objectName := filepath.Base(filePath)
+			err := mp4Plugin.MinioClient.UploadFile(filePath, objectName)
+			if err != nil {
+				mp4Plugin.Error("Failed to upload file to Minio", "error", err, "file", filePath)
+			} else {
+				mp4Plugin.Info("Successfully uploaded file to Minio", "file", filePath, "object", objectName)
+
+				// 如果配置了上传后删除本地文件，则删除本地文件
+				if mp4Plugin.MinioConfig.DeleteAfterUpload {
+					err := os.Remove(filePath)
+					if err != nil {
+						mp4Plugin.Error("Failed to delete local file", "error", err, "file", filePath)
+					} else {
+						mp4Plugin.Info("Successfully deleted local file", "file", filePath)
+					}
+				}
+			}
+		}
 	}
 }
 
