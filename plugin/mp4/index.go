@@ -26,8 +26,6 @@ type MP4Plugin struct {
 	AutoRecovery             bool          `default:"false" desc:"是否自动恢复"`
 	ExceptionPostUrl         string        `desc:"第三方异常上报地址"`
 	EventRecordFilePath      string        `desc:"事件录像存放地址"`
-	MinioConfig              MinioConfig   `desc:"Minio配置"`
-	MinioClient              *MinioClient
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
@@ -74,17 +72,6 @@ func (p *MP4Plugin) Start() (err error) {
 			p.AddTask(&recoveryTask)
 		}
 	}
-	
-	// 初始化Minio客户端
-	if p.MinioConfig.Enable && p.MinioConfig.Endpoint != "" && p.MinioConfig.AccessKeyID != "" && p.MinioConfig.SecretAccessKey != "" && p.MinioConfig.Bucket != "" {
-		p.MinioClient, err = NewMinioClient(&p.MinioConfig)
-		if err != nil {
-			p.Error("Failed to initialize Minio client", "error", err)
-			return
-		}
-		p.Info("Minio client initialized successfully")
-	}
-	
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {
 	// 		p.SendToThirdPartyAPI(exception)
