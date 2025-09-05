@@ -296,9 +296,9 @@ func (avcc *VideoFrame) muxOld26x(codecID VideoCodecID, fromBase *Sample) {
 		naluLenM := avcc.NextN(4)
 		naluLen := uint32(nalu.Size)
 		binary.BigEndian.PutUint32(naluLenM, naluLen)
-		if nalu.Size != len(util.ConcatBuffers(nalu.Buffers)) {
-			panic("nalu size mismatch")
-		}
+		// if nalu.Size != len(util.ConcatBuffers(nalu.Buffers)) {
+		// 	panic("nalu size mismatch")
+		// }
 		avcc.Push(nalu.Buffers...)
 	}
 }

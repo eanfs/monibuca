@@ -92,10 +92,10 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 			switch nalType {
 			case h264parser.NALU_SPS:
 				sps = nalu.ToBytes()
-				//TODO: defer nalus.Remove(nalu)
+				defer nalus.Remove(nalu)
 			case h264parser.NALU_PPS:
 				pps = nalu.ToBytes()
-				//TODO: defer nalus.Remove(nalu)
+				defer nalus.Remove(nalu)
 			case codec.NALU_IDR_Picture:
 				r.IDR = true
 			}
