@@ -286,8 +286,8 @@ func (avcc *VideoFrame) Demux() error {
 }
 
 func (avcc *VideoFrame) muxOld26x(codecID VideoCodecID, fromBase *Sample) {
-	nalus := fromBase.Raw.(*Nalus)
-	avcc.InitRecycleIndexes(len(*nalus)) // Recycle partial data
+	nalus := fromBase.GetNalus()
+	avcc.InitRecycleIndexes(nalus.Count()) // Recycle partial data
 	head := avcc.NextN(5)
 	head[0] = util.Conditional[byte](fromBase.IDR, 0x10, 0x20) | byte(codecID)
 	head[1] = 1
@@ -296,6 +296,9 @@ func (avcc *VideoFrame) muxOld26x(codecID VideoCodecID, fromBase *Sample) {
 		naluLenM := avcc.NextN(4)
 		naluLen := uint32(nalu.Size)
 		binary.BigEndian.PutUint32(naluLenM, naluLen)
+		if nalu.Size != len(util.ConcatBuffers(nalu.Buffers)) {
+			panic("nalu size mismatch")
+		}
 		avcc.Push(nalu.Buffers...)
 	}
 }

@@ -114,9 +114,11 @@ func (s *ReuseArray[T]) Reduce() ReuseArray[T] {
 }
 
 func (s *ReuseArray[T]) Remove(item *T) bool {
-	for i := range *s {
+	count := s.Count()
+	for i := range count {
 		if &(*s)[i] == item {
 			*s = append((*s)[:i], (*s)[i+1:]...)
+			*s = append(*s, *item)[:count-1]
 			return true
 		}
 	}

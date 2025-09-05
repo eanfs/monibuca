@@ -61,12 +61,6 @@ const (
 	MTUSize      = 1460
 )
 
-func (r *VideoFrame) Parse(data IAVFrame) (err error) {
-	input := data.(*VideoFrame)
-	r.Packets = append(r.Packets[:0], input.Packets...)
-	return
-}
-
 func (r *VideoFrame) Recycle() {
 	r.RecyclableMemory.Recycle()
 	r.Packets.Reset()
@@ -98,10 +92,10 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 			switch nalType {
 			case h264parser.NALU_SPS:
 				sps = nalu.ToBytes()
-				defer nalus.Remove(nalu)
+				//TODO: defer nalus.Remove(nalu)
 			case h264parser.NALU_PPS:
 				pps = nalu.ToBytes()
-				defer nalus.Remove(nalu)
+				//TODO: defer nalus.Remove(nalu)
 			case codec.NALU_IDR_Picture:
 				r.IDR = true
 			}
@@ -377,13 +371,8 @@ func (r *VideoFrame) Demux() (err error) {
 	switch c := r.ICodecCtx.(type) {
 	case *H264Ctx:
 		nalus := r.GetNalus()
-		nalu := nalus.GetNextPointer()
+		var nalu *util.Memory
 		var naluType codec.H264NALUType
-		gotNalu := func() {
-			if nalu.Size > 0 {
-				nalu = nalus.GetNextPointer()
-			}
-		}
 		for packet := range r.Packets.RangePoint {
 			if len(packet.Payload) < 2 {
 				continue
@@ -393,8 +382,7 @@ func (r *VideoFrame) Demux() (err error) {
 			}
 			b0 := packet.Payload[0]
 			if t := codec.ParseH264NALUType(b0); t < 24 {
-				nalu.PushOne(packet.Payload)
-				gotNalu()
+				nalus.GetNextPointer().PushOne(packet.Payload)
 			} else {
 				offset := t.Offset()
 				switch t {
@@ -404,8 +392,7 @@ func (r *VideoFrame) Demux() (err error) {
 					}
 					for buffer := util.Buffer(packet.Payload[offset:]); buffer.CanRead(); {
 						if nextSize := int(buffer.ReadUint16()); buffer.Len() >= nextSize {
-							nalu.PushOne(buffer.ReadN(nextSize))
-							gotNalu()
+							nalus.GetNextPointer().PushOne(buffer.ReadN(nextSize))
 						} else {
 							return fmt.Errorf("invalid nalu size %d", nextSize)
 						}
@@ -413,23 +400,23 @@ func (r *VideoFrame) Demux() (err error) {
 				case codec.NALU_FUA, codec.NALU_FUB:
 					b1 := packet.Payload[1]
 					if util.Bit1(b1, 0) {
+						nalu = nalus.GetNextPointer()
 						naluType.Parse(b1)
 						nalu.PushOne([]byte{naluType.Or(b0 & 0x60)})
 					}
 					if nalu.Size > 0 {
 						nalu.PushOne(packet.Payload[offset:])
+						if util.Bit1(b1, 1) {
+							// 结束位
+						}
 					} else {
 						continue
-					}
-					if util.Bit1(b1, 1) {
-						gotNalu()
 					}
 				default:
 					return fmt.Errorf("unsupported nalu type %d", t)
 				}
 			}
 		}
-		nalus.Reduce()
 		return nil
 	case *H265Ctx:
 		nalus := r.GetNalus()

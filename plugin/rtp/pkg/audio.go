@@ -320,9 +320,8 @@ func (r *AudioFrame) Mux(from *Sample) (err error) {
 			ctx.PayloadType = 8
 			ctx.ClockRate = uint32(ctx.SampleRate)
 			r.ICodecCtx = &ctx
-		} else {
-			ctx = &r.ICodecCtx.(*PCMACtx).RTPCtx
 		}
+		ctx = &r.ICodecCtx.(*PCMACtx).RTPCtx
 	case *codec.PCMUCtx:
 		if r.ICodecCtx == nil {
 			var ctx PCMUCtx
@@ -332,9 +331,8 @@ func (r *AudioFrame) Mux(from *Sample) (err error) {
 			ctx.PayloadType = 0
 			ctx.ClockRate = uint32(ctx.SampleRate)
 			r.ICodecCtx = &ctx
-		} else {
-			ctx = &r.ICodecCtx.(*PCMUCtx).RTPCtx
 		}
+		ctx = &r.ICodecCtx.(*PCMUCtx).RTPCtx
 	}
 	pts := uint32(from.Timestamp * time.Duration(ctx.ClockRate) / time.Second)
 	if reader := data.NewReader(); reader.Length > MTUSize {
