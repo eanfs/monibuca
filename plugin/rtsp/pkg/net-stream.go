@@ -171,12 +171,12 @@ func (c *Stream) Announce(medias []*Media) (err error) {
 	return
 }
 
-func (c *Stream) SetupMedia(media *Media, index int) (byte, error) {
+func (c *Stream) SetupMedia(media *Media, mode string, index int) (byte, error) {
 	var transport string
 	transport = fmt.Sprintf(
 		// i   - RTP (data channel)
 		// i+1 - RTCP (control channel)
-		"RTP/AVP/TCP;unicast;interleaved=%d-%d", index*2, index*2+1,
+		"RTP/AVP/TCP;unicast;mode=%s;interleaved=%d-%d", mode, index*2, index*2+1,
 	)
 	if transport == "" {
 		return 0, fmt.Errorf("wrong media: %v", media)

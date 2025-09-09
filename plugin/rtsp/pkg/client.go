@@ -101,7 +101,7 @@ func (c *Client) Run() (err error) {
 		for i, media := range medias {
 			switch media.Kind {
 			case "audio", "video":
-				_, err = c.SetupMedia(media, i)
+				_, err = c.SetupMedia(media, "play", i)
 				if err != nil {
 					return
 				}
@@ -134,7 +134,7 @@ func (c *Client) Run() (err error) {
 		for i, media := range medias {
 			switch media.Kind {
 			case "audio", "video":
-				_, err = c.SetupMedia(media, i)
+				_, err = c.SetupMedia(media, "record", i)
 				if err != nil {
 					return
 				}

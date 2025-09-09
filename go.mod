@@ -13,7 +13,7 @@ require (
 	github.com/cloudwego/goref v0.0.0-20240724113447-685d2a9523c8
 	github.com/deepch/vdk v0.0.27
 	github.com/disintegration/imaging v1.6.2
-	github.com/emiago/sipgo v0.33.0
+	github.com/emiago/sipgo v1.0.0-alpha
 	github.com/go-delve/delve v1.23.0
 	github.com/gobwas/ws v1.3.2
 	github.com/golang-jwt/jwt/v5 v5.2.1
@@ -37,7 +37,6 @@ require (
 	github.com/pion/webrtc/v4 v4.1.4
 	github.com/quic-go/qpack v0.5.1
 	github.com/quic-go/quic-go v0.50.1
-	github.com/rs/zerolog v1.33.0
 	github.com/samber/slog-common v0.17.1
 	github.com/shirou/gopsutil/v4 v4.24.8
 	github.com/stretchr/testify v1.10.0
@@ -89,7 +88,6 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/marcboeker/go-duckdb v1.0.5 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
