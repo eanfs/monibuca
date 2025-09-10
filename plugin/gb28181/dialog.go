@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -136,7 +135,8 @@ func (d *Dialog) Start() (err error) {
 	d.pullCtx.GoToStepConst(StepSIPPrepare)
 
 	//defer d.gb.dialogs.Remove(d)
-	if d.StreamMode == mrtp.StreamModeTCPPassive {
+	switch d.StreamMode {
+	case mrtp.StreamModeTCPPassive:
 		if d.gb.tcpPort > 0 {
 			d.MediaPort = d.gb.tcpPort
 		} else {
@@ -151,7 +151,7 @@ func (d *Dialog) Start() (err error) {
 				d.MediaPort = d.gb.MediaPort[0]
 			}
 		}
-	} else if d.StreamMode == mrtp.StreamModeUDP {
+	case mrtp.StreamModeUDP:
 		if d.gb.udpPort > 0 {
 			d.MediaPort = d.gb.udpPort
 		} else {
@@ -367,10 +367,6 @@ func (d *Dialog) Run() (err error) {
 			d.session.InviteResponse.Contact().Address = d.session.InviteRequest.Recipient
 		}
 	}
-	err = d.session.Ack(d.gb)
-	if err != nil {
-		d.gb.Error("ack session err", err)
-	}
 
 	// 移动到流数据接收步骤
 	d.pullCtx.GoToStepConst(pkg.StepStreaming)
@@ -383,31 +379,41 @@ func (d *Dialog) Run() (err error) {
 	case mrtp.StreamModeTCPPassive:
 		if d.gb.tcpPort > 0 {
 			d.Info("into single port mode,use gb.tcpPort", d.gb.tcpPort)
-			if d.gb.netListener != nil {
-				d.Info("use gb.netListener", d.gb.netListener.Addr())
-				pub.Listener = d.gb.netListener
-			} else {
-				d.Info("listen tcp4", fmt.Sprintf(":%d", d.gb.tcpPort))
-				pub.Listener, _ = net.Listen("tcp4", fmt.Sprintf(":%d", d.gb.tcpPort))
-				d.gb.netListener = pub.Listener
+			reader := &gb28181.SinglePortReader{
+				SSRC:  d.SSRC,
+				Mouth: make(chan []byte, 1),
 			}
-			pub.SSRC = d.SSRC
+			reader, _ = d.gb.singlePorts.LoadOrStore(reader)
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
 		}
 		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
 	case mrtp.StreamModeUDP:
 		if d.gb.udpPort > 0 {
 			d.Info("into single port mode, use gb.udpPort", d.gb.udpPort)
-			if d.gb.netUDPListener != nil {
-				d.Info("use gb.netUDPListener", d.gb.netUDPListener.LocalAddr())
-			} else {
-				d.Info("listen udp4", fmt.Sprintf(":%d", d.gb.udpPort))
-				d.gb.netUDPListener, _ = util.ListenUDP(fmt.Sprintf(":%d", d.gb.udpPort), 1024*1024*4)
+			reader := &gb28181.SinglePortReader{
+				SSRC:  d.SSRC,
+				Mouth: make(chan []byte, 100),
 			}
+			reader, _ = d.gb.singlePorts.LoadOrStore(reader)
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
 		}
-		pub.SSRC = d.SSRC
 		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
 	}
 	pub.StreamMode = d.StreamMode
+
+	err = d.session.Ack(d.gb)
+	if err != nil {
+		d.gb.Error("ack session err", err)
+	}
+
 	return d.RunTask(&pub)
 }
 

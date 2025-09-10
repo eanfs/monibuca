@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	"github.com/pion/rtp"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
@@ -54,7 +52,7 @@ type GB28181Plugin struct {
 	ua                    *sipgo.UserAgent
 	server                *sipgo.Server
 	devices               task.WorkCollection[string, *Device]
-	dialogs               task.WorkCollection[string, *Dialog]
+	dialogs               util.Collection[string, *Dialog]
 	forwardDialogs        util.Collection[uint32, *ForwardDialog]
 	platforms             task.WorkCollection[string, *Platform]
 	tcpPorts              chan uint16
@@ -65,10 +63,9 @@ type GB28181Plugin struct {
 	deviceRegisterManager task.WorkCollection[string, *DeviceRegisterQueueTask]
 	Platforms             []*gb28181.PlatformModel
 	channels              util.Collection[string, *Channel]
-	netListener           net.Listener
 	udpPorts              chan uint16
 	udpPort               uint16
-	netUDPListener        *net.UDPConn
+	singlePorts           util.Collection[uint32, *gb28181.SinglePortReader]
 }
 
 var _ = m7s.InstallPlugin[GB28181Plugin](m7s.PluginMeta{
@@ -82,26 +79,6 @@ var _ = m7s.InstallPlugin[GB28181Plugin](m7s.PluginMeta{
 	},
 	NewPullProxy: NewPullProxy,
 })
-
-func (gb *GB28181Plugin) Dispose() {
-	if gb.netListener != nil {
-		gb.Info("gb28181 plugin dispose")
-		err := gb.netListener.Close()
-		if err != nil {
-			gb.Error("Close netListener error", "error", err)
-		} else {
-			gb.Info("netListener closed")
-		}
-	}
-	if gb.netUDPListener != nil {
-		err := gb.netUDPListener.Close()
-		if err != nil {
-			gb.Error("Close netUDPListener error", "error", err)
-		} else {
-			gb.Info("netUDPListener closed")
-		}
-	}
-}
 
 func init() {
 	sip.SIPDebug = true
@@ -176,9 +153,10 @@ func (gb *GB28181Plugin) Start() (err error) {
 		gb.AddTask(&catalogHandlerQueueTask)
 		gb.AddTask(&gb.devices)
 		gb.AddTask(&gb.platforms)
-		gb.AddTask(&gb.dialogs)
 		gb.AddTask(&gb.deviceRegisterManager)
+		gb.dialogs.L = new(sync.RWMutex)
 		gb.forwardDialogs.L = new(sync.RWMutex)
+		gb.singlePorts.L = new(sync.RWMutex)
 		gb.server, _ = sipgo.NewServer(gb.ua, sipgo.WithServerLogger(logger)) // Creating server handle for ua
 		gb.server.OnMessage(gb.OnMessage)
 		gb.server.OnRegister(gb.OnRegister)
@@ -188,39 +166,21 @@ func (gb *GB28181Plugin) Start() (err error) {
 		gb.server.OnNotify(gb.OnNotify)
 
 		if gb.MediaPort.Valid() {
-			gb.SetDescription("tcp", fmt.Sprintf("%d-%d", gb.MediaPort[0], gb.MediaPort[1]))
-			gb.tcpPorts = make(chan uint16, gb.MediaPort.Size())
-			gb.udpPorts = make(chan uint16, gb.MediaPort.Size())
+			gb.SetDescription("media port", fmt.Sprintf("%d-%d", gb.MediaPort[0], gb.MediaPort[1]))
 			if gb.MediaPort.Size() == 0 {
 				gb.tcpPort = gb.MediaPort[0]
-				gb.netListener, _ = net.Listen("tcp4", fmt.Sprintf(":%d", gb.tcpPort))
-				//support udp
-				{
-					gb.udpPort = gb.MediaPort[0]
-					gb.netUDPListener, err = util.ListenUDP(fmt.Sprintf(":%d", gb.udpPort), 1024*1024*4)
-
-					if err != nil {
-						gb.Error("start listen", "err", err)
-						return errors.New("start udp listen, err" + err.Error())
-					}
-					go gb.ReadUdpInsinglePort()
-				}
-			} else if gb.MediaPort.Size() == 1 {
-				gb.tcpPort = gb.MediaPort[0] + 1
-				gb.netListener, _ = net.Listen("tcp4", fmt.Sprintf(":%d", gb.tcpPort))
-				//support udp
-				{
-					gb.udpPort = gb.MediaPort[0] + 1
-					gb.netUDPListener, err = util.ListenUDP(fmt.Sprintf(":%d", gb.udpPort), 1024*1024*4)
-
-					if err != nil {
-						gb.Error("start listen", "err", err)
-						return errors.New("start udp listen, err" + err.Error())
-					}
-
-					go gb.ReadUdpInsinglePort()
-				}
+				gb.AddTask(&gb28181.SinglePortTCP{
+					Port:       gb.tcpPort,
+					Collection: &gb.singlePorts,
+				})
+				gb.udpPort = gb.MediaPort[0]
+				gb.AddTask(&gb28181.SinglePortUDP{
+					Port:       gb.udpPort,
+					Collection: &gb.singlePorts,
+				})
 			} else {
+				gb.tcpPorts = make(chan uint16, gb.MediaPort.Size())
+				gb.udpPorts = make(chan uint16, gb.MediaPort.Size())
 				for i := range gb.MediaPort.Size() {
 					gb.tcpPorts <- gb.MediaPort[0] + i
 					gb.udpPorts <- gb.MediaPort[0] + i
@@ -1056,21 +1016,5 @@ func (gb *GB28181Plugin) OnAck(req *sip.Request, tx sip.ServerTransaction) {
 	} else {
 		gb.Error("OnAck", "error", "forwardDialog not found", "callID", callID)
 		return
-	}
-}
-
-func (gb *GB28181Plugin) ReadUdpInsinglePort() (err error) {
-	buffer := make(util.Buffer, 1024*1024)
-	var rtpPacket rtp.Packet
-	for {
-		n, _, err := gb.netUDPListener.ReadFromUDP(buffer)
-		if err != nil {
-			return err
-		}
-
-		ps := buffer[:n]
-		if err := rtpPacket.Unmarshal(ps); err != nil {
-			continue
-		}
 	}
 }
