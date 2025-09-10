@@ -39,12 +39,12 @@ func (r *RecyclableMemory) Recycle() {
 
 func (r *RecyclableMemory) NextN(size int) (memory []byte) {
 	memory = make([]byte, size)
-	r.AppendOne(memory)
+	r.PushOne(memory)
 	return memory
 }
 
 func (r *RecyclableMemory) AddRecycleBytes(b []byte) {
-	r.AppendOne(b)
+	r.PushOne(b)
 }
 
 type MemoryAllocator struct {

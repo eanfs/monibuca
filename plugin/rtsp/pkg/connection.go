@@ -23,7 +23,7 @@ const Timeout = time.Second * 10
 func NewNetConnection(conn net.Conn) *NetConnection {
 	return &NetConnection{
 		Conn:            conn,
-		BufReader:       util.NewBufReader(conn),
+		BufReader:       util.NewBufReaderWithTimeout(conn, Timeout),
 		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
@@ -187,9 +187,6 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 }
 
 func (c *NetConnection) ReadRequest() (req *util.Request, err error) {
-	if err = c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return
-	}
 	req, err = util.ReadRequest(c.BufReader)
 	if err != nil {
 		return
@@ -243,9 +240,6 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 }
 
 func (c *NetConnection) ReadResponse() (res *util.Response, err error) {
-	if err := c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return nil, err
-	}
 	res, err = util.ReadResponse(c.BufReader)
 	if err == nil {
 		c.Debug("<-", "res", res.String())
