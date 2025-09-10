@@ -106,10 +106,10 @@ rtsp:
   # pull:
   # live/test: rtsp://admin:1qaz2wsx3EDC@58.212.158.30/Streaming/Channels/101
   # live/test: rtsp://admin:1qaz2wsx3EDC@localhost:8554/live/test
-webrtc:
-  publish:
-    pubaudio: false
-  port: udp:9000-9100
+# webrtc:
+#   publish:
+#     pubaudio: false
+#   port: udp:9000-9100
 snap:
   enable: false
   onpub:

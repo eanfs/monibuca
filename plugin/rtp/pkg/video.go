@@ -404,10 +404,10 @@ func (r *VideoFrame) Demux() (err error) {
 						naluType.Parse(b1)
 						nalu.PushOne([]byte{naluType.Or(b0 & 0x60)})
 					}
-					if nalu.Size > 0 {
+					if nalu != nil && nalu.Size > 0 {
 						nalu.PushOne(packet.Payload[offset:])
 						if util.Bit1(b1, 1) {
-							// 结束位
+							nalu = nil
 						}
 					} else {
 						continue
@@ -455,9 +455,13 @@ func (r *VideoFrame) Demux() (err error) {
 						nalu = nalus.GetNextPointer()
 						nalu.PushOne([]byte{first3[0]&0b10000001 | (naluType << 1), first3[1]})
 					}
-					nalu.PushOne(buffer)
-					if util.Bit1(fuHeader, 1) {
-						// 结束标志
+					if nalu != nil && nalu.Size > 0 {
+						nalu.PushOne(buffer)
+						if util.Bit1(fuHeader, 1) {
+							nalu = nil
+						}
+					} else {
+						continue
 					}
 				default:
 					return fmt.Errorf("unsupported nalu type %d", t)
