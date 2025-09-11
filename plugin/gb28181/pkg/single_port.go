@@ -23,13 +23,14 @@ func (s *SinglePortReader) GetKey() uint32 {
 
 func (s *SinglePortReader) Read(buf []byte) (n int, err error) {
 	if s.buffered.Len() > 0 {
-		return s.buffered.Read(buf)
+		n, _ = s.buffered.Read(buf)
+		return
 	}
 	if s.ReadCloser != nil {
 		return s.ReadCloser.Read(buf)
 	}
 	s.buffered = <-s.Mouth
-	return s.buffered.Read(buf)
+	return s.Read(buf)
 }
 
 func (s *SinglePortReader) Close() error {
