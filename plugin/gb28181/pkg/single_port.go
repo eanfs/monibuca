@@ -11,8 +11,8 @@ import (
 )
 
 type SinglePortReader struct {
-	SSRC uint32
-	io.ReadCloser
+	SSRC     uint32
+	conn     io.ReadCloser
 	buffered util.Buffer
 	Mouth    chan []byte
 }
@@ -26,16 +26,16 @@ func (s *SinglePortReader) Read(buf []byte) (n int, err error) {
 		n, _ = s.buffered.Read(buf)
 		return
 	}
-	if s.ReadCloser != nil {
-		return s.ReadCloser.Read(buf)
+	if s.conn != nil {
+		return s.conn.Read(buf)
 	}
 	s.buffered = <-s.Mouth
 	return s.Read(buf)
 }
 
 func (s *SinglePortReader) Close() error {
-	if s.ReadCloser != nil {
-		return s.ReadCloser.Close()
+	if s.conn != nil {
+		return s.conn.Close()
 	}
 	return nil
 }
@@ -134,7 +134,8 @@ func (s *SinglePortTCP) Go() (err error) {
 			SSRC:  packet.SSRC,
 			Mouth: make(chan []byte, 10),
 		})
+		r.buffered = packetBytes
+		r.conn = conn
 		r.Mouth <- packetBytes
-		r.ReadCloser = conn
 	}
 }
