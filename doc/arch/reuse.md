@@ -321,26 +321,39 @@ func (r *VideoFrame) Demux() error {
 ```
 
 **Scenario 2: SEI Insertion Processing**
+
+SEI insertion achieves efficient processing through object reuse:
+
 ```go
-func (t *Transformer) processVideo(video *format.H26xFrame) {
-    nalus := writer.VideoFrame.GetNalus()
+func (t *Transformer) Run() (err error) {
+    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    defer allocator.Recycle()
+    writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
     
-    for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
-        // Get reused NALU object
-        p := nalus.GetNextPointer()  // Reuse object, auto Reset()
-        mem := writer.VideoFrame.NextN(nalu.Size)
-        nalu.CopyTo(mem)
-        
-        // Handle SEI insertion
-        if seiCount > 0 {
-            for _, sei := range seis {
-                p.Push(append([]byte{byte(codec.NALU_SEI)}, sei...))
+    return m7s.PlayBlock(t.TransformJob.Subscriber, 
+        func(video *format.H26xFrame) (err error) {
+            nalus := writer.VideoFrame.GetNalus()  // Reuse NALU array
+            
+            // Process each NALU, reuse NALU objects
+            for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
+                p := nalus.GetNextPointer()  // Reuse object, auto Reset()
+                mem := writer.VideoFrame.NextN(nalu.Size)
+                nalu.CopyTo(mem)
+                
+                // Insert SEI data
+                if len(seis) > 0 {
+                    for _, sei := range seis {
+                        p.Push(append([]byte{byte(codec.NALU_SEI)}, sei...))
+                    }
+                }
+                p.PushOne(mem)
             }
-        }
-        p.PushOne(mem)
-    }
+            return writer.NextVideo()  // Reuse VideoFrame object
+        })
 }
 ```
+
+**Key Advantage**: Through `nalus.GetNextPointer()` reusing NALU objects, avoiding creating new objects for each NALU, significantly reducing GC pressure.
 
 **Scenario 3: RTP Packet Processing**
 ```go

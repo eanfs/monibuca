@@ -321,26 +321,39 @@ func (r *VideoFrame) Demux() error {
 ```
 
 **场景2：SEI插入处理**
+
+SEI插入通过对象复用实现高效处理：
+
 ```go
-func (t *Transformer) processVideo(video *format.H26xFrame) {
-    nalus := writer.VideoFrame.GetNalus()
+func (t *Transformer) Run() (err error) {
+    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    defer allocator.Recycle()
+    writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
     
-    for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
-        // 获取复用的NALU对象
-        p := nalus.GetNextPointer()  // 复用对象，自动Reset()
-        mem := writer.VideoFrame.NextN(nalu.Size)
-        nalu.CopyTo(mem)
-        
-        // 处理SEI插入
-        if seiCount > 0 {
-            for _, sei := range seis {
-                p.Push(append([]byte{byte(codec.NALU_SEI)}, sei...))
+    return m7s.PlayBlock(t.TransformJob.Subscriber, 
+        func(video *format.H26xFrame) (err error) {
+            nalus := writer.VideoFrame.GetNalus()  // 复用NALU数组
+            
+            // 处理每个NALU，复用NALU对象
+            for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
+                p := nalus.GetNextPointer()  // 复用对象，自动Reset()
+                mem := writer.VideoFrame.NextN(nalu.Size)
+                nalu.CopyTo(mem)
+                
+                // 插入SEI数据
+                if len(seis) > 0 {
+                    for _, sei := range seis {
+                        p.Push(append([]byte{byte(codec.NALU_SEI)}, sei...))
+                    }
+                }
+                p.PushOne(mem)
             }
-        }
-        p.PushOne(mem)
-    }
+            return writer.NextVideo()  // 复用VideoFrame对象
+        })
 }
 ```
+
+**关键优势**：通过`nalus.GetNextPointer()`复用NALU对象，避免为每个NALU创建新对象，显著降低GC压力。
 
 **场景3：RTP包处理**
 ```go
@@ -697,7 +710,6 @@ func pullFLVNew(publisher *Publisher, file *os.File) {
     }
 }
 ```
-
 ## 7. 总结
 
 ### 7.1 核心优势
