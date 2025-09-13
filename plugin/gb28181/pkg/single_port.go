@@ -1,6 +1,7 @@
 package gb28181
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ type SinglePortReader struct {
 	conn     io.ReadCloser
 	buffered util.Buffer
 	Mouth    chan []byte
+	Context  context.Context
 }
 
 func (s *SinglePortReader) GetKey() uint32 {
@@ -23,14 +25,18 @@ func (s *SinglePortReader) GetKey() uint32 {
 
 func (s *SinglePortReader) Read(buf []byte) (n int, err error) {
 	if s.buffered.Len() > 0 {
-		n, _ = s.buffered.Read(buf)
-		return
+		return s.buffered.Read(buf)
 	}
 	if s.conn != nil {
 		return s.conn.Read(buf)
 	}
-	s.buffered = <-s.Mouth
-	return s.Read(buf)
+	// 添加对 Context 的检查，如果上下文已取消则返回 EOF
+	select {
+	case s.buffered = <-s.Mouth:
+		return s.Read(buf)
+	case <-s.Context.Done():
+		return 0, s.Context.Err()
+	}
 }
 
 func (s *SinglePortReader) Close() error {

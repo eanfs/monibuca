@@ -379,11 +379,17 @@ func (d *Dialog) Run() (err error) {
 	case mrtp.StreamModeTCPPassive:
 		if d.gb.tcpPort > 0 {
 			d.Info("into single port mode,use gb.tcpPort", d.gb.tcpPort)
+			// 创建一个可取消的上下文
 			reader := &gb28181.SinglePortReader{
-				SSRC:  d.SSRC,
-				Mouth: make(chan []byte, 1),
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 1),
+				Context: d,
 			}
-			reader, _ = d.gb.singlePorts.LoadOrStore(reader)
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
 			pub.SinglePort = reader
 			d.OnStop(func() {
 				reader.Close()
@@ -395,10 +401,15 @@ func (d *Dialog) Run() (err error) {
 		if d.gb.udpPort > 0 {
 			d.Info("into single port mode, use gb.udpPort", d.gb.udpPort)
 			reader := &gb28181.SinglePortReader{
-				SSRC:  d.SSRC,
-				Mouth: make(chan []byte, 100),
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 100),
+				Context: d,
 			}
-			reader, _ = d.gb.singlePorts.LoadOrStore(reader)
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
 			pub.SinglePort = reader
 			d.OnStop(func() {
 				reader.Close()

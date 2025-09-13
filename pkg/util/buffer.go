@@ -130,11 +130,13 @@ func (Buffer) Reuse() bool {
 }
 
 func (b *Buffer) Read(buf []byte) (n int, err error) {
+	if n = b.Len(); n == 0 {
+		return 0, io.EOF
+	}
 	if !b.CanReadN(len(buf)) {
 		copy(buf, *b)
-		n = b.Len()
 		*b = (*b)[n:]
-		return n, io.EOF
+		return
 	}
 	ret := b.ReadN(len(buf))
 	copy(buf, ret)
