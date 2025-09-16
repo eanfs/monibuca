@@ -117,6 +117,7 @@ The following build tags can be used to customize your build:
 | duckdb | Enables the duckdb DB |
 | taskpanic | Throws panic, for testing |
 | fasthttp | Enables the fasthttp server instead of net/http |
+| enable_buddy | Enables the buddy memory pre-allocation |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -166,7 +167,7 @@ Contributions are what make the open source community such an amazing place to l
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the AGPL License. See `LICENSE` for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
