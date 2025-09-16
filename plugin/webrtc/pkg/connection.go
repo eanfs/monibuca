@@ -137,7 +137,7 @@ func (IO *MultipleConnection) Receive() {
 			}
 			packet := frame.Packets.GetNextPointer()
 			for {
-				buf := mem.Malloc(mrtp.MTUSize)
+				buf := mem.Malloc(mrtp.ReceiveMTU)
 				if n, _, err = track.Read(buf); err == nil {
 					mem.FreeRest(&buf, n)
 					err = packet.Unmarshal(buf)
@@ -200,7 +200,7 @@ func (IO *MultipleConnection) Receive() {
 					lastPLISent = time.Now()
 				}
 
-				buf := mem.Malloc(mrtp.MTUSize)
+				buf := mem.Malloc(mrtp.ReceiveMTU)
 				if n, _, err = track.Read(buf); err == nil {
 					mem.FreeRest(&buf, n)
 					err = packet.Unmarshal(buf)
@@ -212,6 +212,7 @@ func (IO *MultipleConnection) Receive() {
 					mem.Free(buf)
 					continue
 				}
+
 				if packet.Timestamp == writer.VideoFrame.Packets[0].Timestamp {
 					writer.VideoFrame.AddRecycleBytes(buf)
 					packet = writer.VideoFrame.Packets.GetNextPointer()

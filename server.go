@@ -17,7 +17,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/shirou/gopsutil/v4/cpu"
-	"google.golang.org/protobuf/proto"
 
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/task"
@@ -234,16 +233,6 @@ func (s *Server) Start() (err error) {
 	var httpMux http.Handler = httpConf.CreateHttpMux()
 	mux := runtime.NewServeMux(
 		runtime.WithMarshalerOption("text/plain", &pb.TextPlain{}),
-		runtime.WithForwardResponseOption(func(ctx context.Context, w http.ResponseWriter, m proto.Message) error {
-			header := w.Header()
-			header.Set("Access-Control-Allow-Credentials", "true")
-			header.Set("Cross-Origin-Resource-Policy", "cross-origin")
-			header.Set("Access-Control-Allow-Headers", "Content-Type,Access-Token,Authorization")
-			header.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-			header.Set("Access-Control-Allow-Private-Network", "true")
-			header.Set("Access-Control-Allow-Origin", "*")
-			return nil
-		}),
 		runtime.WithRoutingErrorHandler(func(_ context.Context, _ *runtime.ServeMux, _ runtime.Marshaler, w http.ResponseWriter, r *http.Request, _ int) {
 			httpMux.ServeHTTP(w, r)
 		}),
@@ -658,7 +647,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// Rewrite the URL path and handle locally
 				r.URL.Path = pattern.ReplaceAllString(r.URL.Path, target)
 				// Forward to local handler
-				s.config.HTTP.GetHandler().ServeHTTP(w, r)
+				s.config.HTTP.GetHandler(s.Logger).ServeHTTP(w, r)
 				return
 			}
 		}

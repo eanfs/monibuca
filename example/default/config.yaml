@@ -1,7 +1,7 @@
 global:
   location:
     "^/hdl/(.*)": "/flv/$1" # 兼容 v4
-    "^/stress/(.*)": "/test/$1" # 5.0.x
+    "^/stress/api/(.*)": "/test/api/stress/$1" # 5.0.x
     "^/monitor/(.*)": "/debug/$1" # 5.0.x
   loglevel: debug
   admin:

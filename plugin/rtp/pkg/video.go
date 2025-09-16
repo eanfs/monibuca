@@ -59,6 +59,7 @@ const (
 	startBit     = 1 << 7
 	endBit       = 1 << 6
 	MTUSize      = 1460
+	ReceiveMTU   = 1500
 )
 
 func (r *VideoFrame) Recycle() {

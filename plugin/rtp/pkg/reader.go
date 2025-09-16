@@ -29,7 +29,7 @@ func (r *RTPUDPReader) Read(packet *rtp.Packet) error {
 		if ordered != nil {
 			break
 		}
-		var buf [MTUSize]byte
+		var buf [ReceiveMTU]byte
 		var pack rtp.Packet
 		n, err := r.Reader.Read(buf[:])
 		if err != nil {

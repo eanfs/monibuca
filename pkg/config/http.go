@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"net/http"
 
 	"m7s.live/v5/pkg/util"
@@ -9,8 +10,6 @@ import (
 
 	"time"
 )
-
-var _ HTTPConfig = (*HTTP)(nil)
 
 type Middleware func(string, http.Handler) http.Handler
 type HTTP struct {
@@ -28,16 +27,27 @@ type HTTP struct {
 	grpcMux       *runtime.ServeMux
 	middlewares   []Middleware
 }
-type HTTPConfig interface {
-	GetHTTPConfig() *HTTP
-	// Handle(string, http.Handler)
-	// Handler(*http.Request) (http.Handler, string)
-	// AddMiddleware(Middleware)
+
+func (config *HTTP) logHandler(logger *slog.Logger, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		logger.Debug("visit", "path", r.URL.String(), "remote", r.RemoteAddr)
+		handler.ServeHTTP(rw, r)
+	})
 }
 
-func (config *HTTP) GetHandler() http.Handler {
+func (config *HTTP) GetHandler(logger *slog.Logger) (h http.Handler) {
 	if config.grpcMux != nil {
-		return config.grpcMux
+		h = config.grpcMux
+		if logger != nil {
+			h = config.logHandler(logger, h)
+		}
+		if config.CORS {
+			h = util.CORS(h)
+		}
+		if config.UserName != "" && config.Password != "" {
+			h = util.BasicAuth(config.UserName, config.Password, h)
+		}
+		return
 	}
 	return config.mux
 }
@@ -79,11 +89,3 @@ func (config *HTTP) Handle(path string, f http.Handler, last bool) {
 	}
 	config.mux.Handle(path, f)
 }
-
-func (config *HTTP) GetHTTPConfig() *HTTP {
-	return config
-}
-
-// func (config *HTTP) Handler(r *http.Request) (h http.Handler, pattern string) {
-// 	return config.mux.Handler(r)
-// }
