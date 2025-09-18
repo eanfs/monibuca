@@ -30,14 +30,14 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 	switch res.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized:
-		switch c.auth.Method {
+		switch c.Auth.Method {
 		case util.AuthNone:
-			if c.auth.ReadNone(res) {
+			if c.Auth.ReadNone(res) {
 				return c.Do(req)
 			}
 			return nil, errors.New("user/pass not provided")
 		case util.AuthUnknown:
-			if c.auth.Read(res) {
+			if c.Auth.Read(res) {
 				return c.Do(req)
 			}
 		default:

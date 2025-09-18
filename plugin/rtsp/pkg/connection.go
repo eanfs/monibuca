@@ -44,7 +44,7 @@ type NetConnection struct {
 
 	// internal
 
-	auth        *util.Auth
+	Auth        *util.Auth
 	Conn        net.Conn
 	keepalive   int
 	sequence    int
@@ -142,10 +142,11 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	}
 	c.Conn = conn
 	c.BufReader = util.NewBufReader(conn)
-	c.URL = rtspURL
 	c.UserAgent = "monibuca" + m7s.Version
 	c.Session = ""
-	c.auth = util.NewAuth(c.URL.User)
+	c.Auth = util.NewAuth(rtspURL.User)
+	c.URL = rtspURL
+	c.URL.User = nil
 	c.SetDescription("remoteAddr", conn.RemoteAddr().String())
 	c.MemoryAllocator = util.NewScalableMemoryAllocator(1 << 12)
 	// c.Backchannel = true
@@ -166,7 +167,7 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 	// https://github.com/AlexxIT/go2rtc/issues/7
 	req.Header["CSeq"] = []string{strconv.Itoa(c.sequence)}
 
-	c.auth.Write(req)
+	c.Auth.Write(req)
 
 	if c.Session != "" {
 		req.Header.Set("Session", c.Session)

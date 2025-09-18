@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,26 +19,18 @@ type RTSPServer struct {
 	conf *RTSPPlugin
 }
 
+func (task *RTSPServer) Start() error {
+	if task.conf.UserName != "" && task.conf.Password != "" {
+		task.Auth = util.NewAuth(url.UserPassword(task.conf.UserName, task.conf.Password))
+	}
+	return nil
+}
+
 func (task *RTSPServer) Go() (err error) {
 	var receiver *Receiver
 	var sender *Sender
 	var req *util.Request
 	var sendMode bool
-
-	// 添加延迟函数在方法结束时清理资源
-	defer func() {
-		if receiver != nil {
-			receiver.Dispose()
-		}
-		if sender != nil {
-			sender.Dispose()
-		}
-		// 确保任何残留资源被清理
-		if task.NetConnection != nil {
-			task.NetConnection.Dispose()
-		}
-		task.Info("RTSP connection closed and resources cleaned up")
-	}()
 
 	for {
 		req, err = task.ReadRequest()
@@ -50,19 +43,20 @@ func (task *RTSPServer) Go() (err error) {
 			task.Logger = task.Logger.With("url", task.URL.String())
 			task.UserAgent = req.Header.Get("User-Agent")
 			task.Info("connect", "userAgent", task.UserAgent)
+			if task.Auth != nil && req.Method != MethodOptions {
+				if !task.Auth.Validate(req) {
+					task.WriteResponse(&util.Response{
+						StatusCode: 401,
+						Status:     "Unauthorized",
+						Header: textproto.MIMEHeader{
+							"Www-Authenticate": {`Basic realm="monibuca"`},
+						},
+						Request: req,
+					})
+					return
+				}
+			}
 		}
-
-		//if !c.auth.Validate(req) {
-		//	res := &tcp.Response{
-		//		Status:  "401 Unauthorized",
-		//		Header:  map[string][]string{"Www-Authenticate": {`Basic realm="go2rtc"`}},
-		//		Request: req,
-		//	}
-		//	if err = c.WriteResponse(res); err != nil {
-		//		return err
-		//	}
-		//	continue
-		//}
 
 		// Receiver: OPTIONS > DESCRIBE > SETUP... > PLAY > TEARDOWN
 		// Sender: OPTIONS > ANNOUNCE > SETUP... > RECORD > TEARDOWN
@@ -91,6 +85,7 @@ func (task *RTSPServer) Go() (err error) {
 			}
 
 			receiver = &Receiver{}
+			task.Using(receiver.Dispose)
 			receiver.NetConnection = task.NetConnection
 			if receiver.Publisher, err = task.conf.Publish(task, strings.TrimPrefix(task.URL.Path, "/")); err != nil {
 				receiver = nil
@@ -111,6 +106,7 @@ func (task *RTSPServer) Go() (err error) {
 		case MethodDescribe:
 			sendMode = true
 			sender = &Sender{}
+			task.Using(sender.Dispose)
 			sender.NetConnection = task.NetConnection
 			rawQuery := req.URL.RawQuery
 			streamPath := strings.TrimPrefix(task.URL.Path, "/")

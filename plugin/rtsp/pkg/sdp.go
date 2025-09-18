@@ -23,7 +23,13 @@ o=- 0 0 IN IP4 0.0.0.0
 s=-
 t=0 0`
 
+var reIN = regexp.MustCompile(`IN\s*\r\n`)
+
 func UnmarshalSDP(rawSDP []byte) ([]*Media, error) {
+
+	// Fix IN followed by only spaces and newlines
+	rawSDP = reIN.ReplaceAll(rawSDP, []byte("IN IP4 0.0.0.0\r\n"))
+
 	sd := &sdp.SessionDescription{}
 	if err := sd.Unmarshal(rawSDP); err != nil {
 		// fix multiple `s=` https://github.com/AlexxIT/WebRTC/issues/417
