@@ -284,6 +284,9 @@ func (task *Task) Using(resource ...any) {
 }
 
 func (task *Task) OnStop(resource any) {
+	if t, ok := resource.(ITask); ok && t.GetTask() == task {
+		panic("onStop resource is task itself")
+	}
 	task.closeOnStop = append(task.closeOnStop, resource)
 }
 
