@@ -365,6 +365,8 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 		target.Set(reflect.ValueOf(Regexp{regexp.MustCompile(regexpStr)}))
 	default:
 		switch ft.Kind() {
+		case reflect.Pointer:
+			return unmarshal(ft.Elem(), v).Addr()
 		case reflect.Struct:
 			newStruct := reflect.New(ft)
 			defaults.SetDefaults(newStruct.Interface())

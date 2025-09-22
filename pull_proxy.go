@@ -348,7 +348,8 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	pullProxyConfig.Record.Fragment = req.RecordFragment.AsDuration()
 	if req.CheckInterval != nil {
 		pullProxyConfig.CheckInterval = req.CheckInterval.AsDuration()
-	} else {
+	}
+	if pullProxyConfig.CheckInterval == 0 {
 		pullProxyConfig.CheckInterval = time.Second * 10
 	}
 	if s.DB == nil {
@@ -467,6 +468,9 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	}
 	if req.CheckInterval != nil {
 		target.CheckInterval = req.CheckInterval.AsDuration()
+	}
+	if target.CheckInterval == 0 {
+		target.CheckInterval = time.Second * 10
 	}
 	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
 	if req.Status != nil && *req.Status != uint32(PullProxyStatusDisabled) {

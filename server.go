@@ -499,6 +499,9 @@ func (s *Server) initPullProxies() {
 		if proxy.CheckInterval == 0 {
 			proxy.CheckInterval = time.Second * 10
 		}
+		if proxy.PullOnStart {
+			proxy.Pull.MaxRetry = -1
+		}
 		if proxy.Status != PullProxyStatusDisabled {
 			s.createPullProxy(proxy)
 		}
