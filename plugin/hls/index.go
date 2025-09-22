@@ -92,7 +92,8 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 		if !startTime.IsZero() {
 			if config.DB != nil {
 				var records []m7s.RecordStream
-				if recordType == "fmp4" {
+				switch recordType {
+				case "fmp4":
 					query := `stream_path = ? AND type = ? AND start_time IS NOT NULL AND end_time IS NOT NULL AND ? <= end_time AND ? >= start_time`
 					config.DB.Where(query, streamPath, "mp4", startTime, endTime).Find(&records)
 					if len(records) == 0 {
@@ -117,7 +118,7 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 					plBuffer.WriteString("#EXT-X-ENDLIST\n")
 					w.Write(plBuffer)
 					return
-				} else if recordType == "ts" {
+				case "ts":
 					playlist := hls.Playlist{
 						Version:        3,
 						Sequence:       0,

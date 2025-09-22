@@ -2,6 +2,7 @@ package hls
 
 import (
 	"container/ring"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -23,6 +24,8 @@ func NewTransform() m7s.ITransformer {
 	}
 	return ret
 }
+
+var ErrNoBodyRead = errors.New("no body read")
 
 type HLSWriter struct {
 	m7s.DefaultTransformer
@@ -47,6 +50,10 @@ func (w *HLSWriter) Start() (err error) {
 func (w *HLSWriter) GetTs(key string) (any, bool) {
 	w.lastReadTime = time.Now()
 	return w.memoryTs.Load(key)
+}
+
+func (w *HLSWriter) checkNoBodyRead() bool {
+	return time.Since(w.lastReadTime) > time.Second*15
 }
 
 func (w *HLSWriter) Run() (err error) {
@@ -86,8 +93,14 @@ func (w *HLSWriter) Run() (err error) {
 	w.ts.WritePMTPacket(audioCodec, videoCodec)
 	return m7s.PlayBlock(subscriber, func(audio *format.Mpeg2Audio) error {
 		pesAudio.Pts = uint64(subscriber.AudioReader.AbsTime) * 90
+		if w.checkNoBodyRead() {
+			return ErrNoBodyRead
+		}
 		return pesAudio.WritePESPacket(audio.Memory, &w.ts.RecyclableMemory)
 	}, func(video *mpegts.VideoFrame) (err error) {
+		if w.checkNoBodyRead() {
+			return ErrNoBodyRead
+		}
 		vr := w.TransformJob.Subscriber.VideoReader
 		if vr.Value.IDR {
 			if err = w.checkFragment(video.Timestamp); err != nil {
