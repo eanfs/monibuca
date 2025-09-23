@@ -314,10 +314,8 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 			return
 		}
 		switch u.Scheme {
-		case "srt", "rtsp", "rtmp":
+		case "srt", "rtsp", "rtmp", "webrtc":
 			pullProxyConfig.Type = u.Scheme
-		case "whep":
-			pullProxyConfig.Type = "webrtc"
 		default:
 			ext := filepath.Ext(u.Path)
 			switch ext {
@@ -422,10 +420,8 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 				return
 			}
 			switch u.Scheme {
-			case "srt", "rtsp", "rtmp":
+			case "srt", "rtsp", "rtmp", "webrtc":
 				target.Type = u.Scheme
-			case "whep":
-				target.Type = "webrtc"
 			default:
 				ext := filepath.Ext(u.Path)
 				switch ext {

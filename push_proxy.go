@@ -196,7 +196,7 @@ func (d *PushProxyConfig) InitializeWithServer(s *Server) {
 			return
 		}
 		switch u.Scheme {
-		case "srt", "rtsp", "rtmp":
+		case "srt", "rtsp", "rtmp", "webrtc":
 			d.Type = u.Scheme
 		default:
 			ext := filepath.Ext(u.Path)
@@ -272,7 +272,7 @@ func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *
 			return
 		}
 		switch u.Scheme {
-		case "srt", "rtsp", "rtmp":
+		case "srt", "rtsp", "rtmp", "webrtc":
 			device.Type = u.Scheme
 		default:
 			ext := filepath.Ext(u.Path)
