@@ -23,7 +23,7 @@ const Timeout = time.Second * 10
 func NewNetConnection(conn net.Conn) *NetConnection {
 	return &NetConnection{
 		Conn:            conn,
-		BufReader:       util.NewBufReader(conn),
+		BufReader:       util.NewBufReaderWithTimeout(conn, Timeout),
 		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
@@ -44,7 +44,7 @@ type NetConnection struct {
 
 	// internal
 
-	auth        *util.Auth
+	Auth        *util.Auth
 	Conn        net.Conn
 	keepalive   int
 	sequence    int
@@ -142,10 +142,11 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	}
 	c.Conn = conn
 	c.BufReader = util.NewBufReader(conn)
-	c.URL = rtspURL
 	c.UserAgent = "monibuca" + m7s.Version
 	c.Session = ""
-	c.auth = util.NewAuth(c.URL.User)
+	c.Auth = util.NewAuth(rtspURL.User)
+	c.URL = rtspURL
+	c.URL.User = nil
 	c.SetDescription("remoteAddr", conn.RemoteAddr().String())
 	c.MemoryAllocator = util.NewScalableMemoryAllocator(1 << 12)
 	// c.Backchannel = true
@@ -166,7 +167,7 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 	// https://github.com/AlexxIT/go2rtc/issues/7
 	req.Header["CSeq"] = []string{strconv.Itoa(c.sequence)}
 
-	c.auth.Write(req)
+	c.Auth.Write(req)
 
 	if c.Session != "" {
 		req.Header.Set("Session", c.Session)
@@ -187,9 +188,6 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 }
 
 func (c *NetConnection) ReadRequest() (req *util.Request, err error) {
-	if err = c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return
-	}
 	req, err = util.ReadRequest(c.BufReader)
 	if err != nil {
 		return
@@ -243,9 +241,6 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 }
 
 func (c *NetConnection) ReadResponse() (res *util.Response, err error) {
-	if err := c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return nil, err
-	}
 	res, err = util.ReadResponse(c.BufReader)
 	if err == nil {
 		c.Debug("<-", "res", res.String())

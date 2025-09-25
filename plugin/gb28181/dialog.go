@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -136,18 +135,35 @@ func (d *Dialog) Start() (err error) {
 	d.pullCtx.GoToStepConst(StepSIPPrepare)
 
 	//defer d.gb.dialogs.Remove(d)
-	if d.gb.tcpPort > 0 {
-		d.MediaPort = d.gb.tcpPort
-	} else {
-		if d.gb.MediaPort.Valid() {
-			select {
-			case d.MediaPort = <-d.gb.tcpPorts:
-			default:
-				d.pullCtx.Fail("no available tcp port")
-				return fmt.Errorf("no available tcp port")
-			}
+	switch d.StreamMode {
+	case mrtp.StreamModeTCPPassive:
+		if d.gb.tcpPort > 0 {
+			d.MediaPort = d.gb.tcpPort
 		} else {
-			d.MediaPort = d.gb.MediaPort[0]
+			if d.gb.MediaPort.Valid() {
+				select {
+				case d.MediaPort = <-d.gb.tcpPorts:
+				default:
+					d.pullCtx.Fail("no available tcp port")
+					return fmt.Errorf("no available tcp port")
+				}
+			} else {
+				d.MediaPort = d.gb.MediaPort[0]
+			}
+		}
+	case mrtp.StreamModeUDP:
+		if d.gb.udpPort > 0 {
+			d.MediaPort = d.gb.udpPort
+		} else {
+			if d.gb.MediaPort.Valid() {
+				select {
+				case d.MediaPort = <-d.gb.udpPorts:
+				default:
+					return fmt.Errorf("no available udp port")
+				}
+			} else {
+				d.MediaPort = d.gb.MediaPort[0]
+			}
 		}
 	}
 
@@ -214,7 +230,10 @@ func (d *Dialog) Start() (err error) {
 			"a=connection:new",
 		)
 	case mrtp.StreamModeUDP:
-		return errors.New("do not support udp mode")
+		sdpInfo = append(sdpInfo,
+			"a=setup:active",
+			"a=connection:new",
+		)
 	default:
 		sdpInfo = append(sdpInfo,
 			"a=setup:passive",
@@ -247,7 +266,7 @@ func (d *Dialog) Start() (err error) {
 	viaHeader := sip.ViaHeader{
 		ProtocolName:    "SIP",
 		ProtocolVersion: "2.0",
-		Transport:       "UDP",
+		Transport:       device.Transport,
 		Host:            device.MediaIp,
 		Port:            device.LocalPort,
 		Params:          sip.NewParams(),
@@ -279,7 +298,7 @@ func (d *Dialog) Start() (err error) {
 	fromHDR.Params.Add("tag", sip.GenerateTagN(32))
 	dialogClientCache := sipgo.NewDialogClientCache(device.client, contactHDR)
 	// 创建会话
-	d.gb.Info("start to invite,recipient:", recipient, " viaHeader:", viaHeader, " fromHDR:", fromHDR, " toHeader:", toHeader, " device.contactHDR:", device.contactHDR, "contactHDR:", contactHDR)
+	d.Info("start to invite", "recipient:", recipient, " viaHeader:", viaHeader, " fromHDR:", fromHDR, " toHeader:", toHeader, " device.contactHDR:", device.contactHDR, "contactHDR:", contactHDR)
 
 	d.pullCtx.GoToStepConst(StepInviteSend)
 
@@ -287,7 +306,11 @@ func (d *Dialog) Start() (err error) {
 	//if runtime.GOOS == "windows" {
 	//	d.session, err = dialogClientCache.Invite(d.gb, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
 	//} else {
-	d.session, err = dialogClientCache.Invite(d.gb, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
+	if strings.ToLower(device.Transport) == "tcp" {
+		d.session, err = dialogClientCache.Invite(d.gb, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &viaHeader, &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
+	} else {
+		d.session, err = dialogClientCache.Invite(d.gb, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
+	}
 	//}
 	// 最后添加Content-Length头部
 	if err != nil {
@@ -300,15 +323,15 @@ func (d *Dialog) Start() (err error) {
 }
 
 func (d *Dialog) Run() (err error) {
-	d.gb.Info("before WaitAnswer")
+	d.Info("before WaitAnswer")
 	err = d.session.WaitAnswer(d.gb, sipgo.AnswerOptions{})
-	d.gb.Info("after WaitAnswer")
+	d.Info("after WaitAnswer")
 	if err != nil {
 		d.pullCtx.Fail("等待响应错误: " + err.Error())
 		return errors.New("wait answer error" + err.Error())
 	}
 	inviteResponseBody := string(d.session.InviteResponse.Body())
-	d.gb.Info("inviteResponse", "body", inviteResponseBody)
+	d.Info("inviteResponse", "body", inviteResponseBody)
 	ds := strings.Split(inviteResponseBody, "\r\n")
 	for _, l := range ds {
 		if ls := strings.Split(l, "="); len(ls) > 1 {
@@ -344,34 +367,64 @@ func (d *Dialog) Run() (err error) {
 			d.session.InviteResponse.Contact().Address = d.session.InviteRequest.Recipient
 		}
 	}
-	err = d.session.Ack(d.gb)
-	if err != nil {
-		d.gb.Error("ack session err", err)
-	}
 
 	// 移动到流数据接收步骤
 	d.pullCtx.GoToStepConst(pkg.StepStreaming)
 
 	var pub mrtp.PSReceiver
 	pub.Publisher = d.pullCtx.Publisher
-	if d.StreamMode == mrtp.StreamModeTCPActive {
+	switch d.StreamMode {
+	case mrtp.StreamModeTCPActive:
 		pub.ListenAddr = fmt.Sprintf("%s:%d", d.targetIP, d.targetPort)
-	} else {
+	case mrtp.StreamModeTCPPassive:
 		if d.gb.tcpPort > 0 {
 			d.Info("into single port mode,use gb.tcpPort", d.gb.tcpPort)
-			if d.gb.netListener != nil {
-				d.Info("use gb.netListener", d.gb.netListener.Addr())
-				pub.Listener = d.gb.netListener
-			} else {
-				d.Info("listen tcp4", fmt.Sprintf(":%d", d.gb.tcpPort))
-				pub.Listener, _ = net.Listen("tcp4", fmt.Sprintf(":%d", d.gb.tcpPort))
-				d.gb.netListener = pub.Listener
+			// 创建一个可取消的上下文
+			reader := &gb28181.SinglePortReader{
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 1),
+				Context: d,
 			}
-			pub.SSRC = d.SSRC
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
+		}
+		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
+	case mrtp.StreamModeUDP:
+		if d.gb.udpPort > 0 {
+			d.Info("into single port mode, use gb.udpPort", d.gb.udpPort)
+			reader := &gb28181.SinglePortReader{
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 100),
+				Context: d,
+			}
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
 		}
 		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
 	}
 	pub.StreamMode = d.StreamMode
+
+	err = d.session.Ack(d.gb)
+	if err != nil {
+		d.Error("ack session err", err)
+	}
+
 	return d.RunTask(&pub)
 }
 
@@ -380,19 +433,22 @@ func (d *Dialog) GetKey() string {
 }
 
 func (d *Dialog) Dispose() {
-	if d.gb.tcpPort == 0 {
-		// 如果没有设置tcp端口，则将MediaPort设置为0，表示不再使用
-		d.gb.tcpPorts <- d.MediaPort
+	if d.StreamMode == mrtp.StreamModeUDP {
+		if d.gb.udpPort == 0 { //多端口
+			// 如果没有设置udp端口，则将MediaPort设置为0，表示不再使用
+			d.gb.udpPorts <- d.MediaPort
+		}
+	} else {
+		if d.gb.tcpPort == 0 {
+			// 如果没有设置tcp端口，则将MediaPort设置为0，表示不再使用
+			d.gb.tcpPorts <- d.MediaPort
+		}
 	}
 	d.Info("dialog dispose", "ssrc", d.SSRC, "mediaPort", d.MediaPort, "streamMode", d.StreamMode, "deviceId", d.Channel.DeviceId, "channelId", d.Channel.ChannelId)
-	if d.session != nil {
+	if d.session != nil && d.session.InviteResponse != nil {
 		err := d.session.Bye(d)
 		if err != nil {
 			d.Error("dialog bye bye err", err)
-		}
-		err = d.session.Close()
-		if err != nil {
-			d.Error("dialog close session err", err)
 		}
 	}
 }

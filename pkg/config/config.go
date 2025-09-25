@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"reflect"
 	"regexp"
@@ -239,9 +238,14 @@ func (config *Config) ParseUserFile(conf map[string]any) {
 				}
 			} else {
 				fv := prop.assign(k, v)
-				prop.File = fv.Interface()
-				if prop.Env == nil {
-					prop.Ptr.Set(fv)
+				if fv.IsValid() {
+					prop.File = fv.Interface()
+					if prop.Env == nil {
+						prop.Ptr.Set(fv)
+					}
+				} else {
+					// continue invalid field
+					slog.Error("Attempted to access invalid field during config parsing: %s", v)
 				}
 			}
 		}
@@ -360,6 +364,8 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 		target.Set(reflect.ValueOf(Regexp{regexp.MustCompile(regexpStr)}))
 	default:
 		switch ft.Kind() {
+		case reflect.Pointer:
+			return unmarshal(ft.Elem(), v).Addr()
 		case reflect.Struct:
 			newStruct := reflect.New(ft)
 			defaults.SetDefaults(newStruct.Interface())
@@ -425,5 +431,5 @@ func (config *Config) assign(k string, v any) reflect.Value {
 func Parse(target any, conf map[string]any) {
 	var c Config
 	c.Parse(target)
-	c.ParseModifyFile(maps.Clone(conf))
+	c.ParseModifyFile(conf)
 }

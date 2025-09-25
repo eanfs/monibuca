@@ -34,7 +34,7 @@ func (rt *AcceptPushTask) Start() error {
 	}
 	// 添加视频编码参数
 	if !rt.testCase.AudioOnly {
-		args = append(args, "-c:v", rt.testCase.VideoCodec)
+		args = append(args, "-c:v", rt.testCase.VideoCodec, "-b:v", "200k")
 	} else {
 		args = append(args, "-vn")
 	}

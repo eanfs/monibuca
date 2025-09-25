@@ -3,6 +3,7 @@ package rtsp
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -535,6 +536,9 @@ func (r *Receiver) Receive() (err error) {
 					}
 					if pps, err = base64.StdEncoding.DecodeString(sprops[1]); err != nil {
 						return err
+					}
+					if len(sps) < 4 {
+						return errors.New("sps too short")
 					}
 				}
 				if ctx.CodecData, err = h264parser.NewCodecDataFromSPSAndPPS(sps, pps); err != nil {

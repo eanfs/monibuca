@@ -10,6 +10,8 @@ COPY monibuca_amd64 ./monibuca_amd64
 COPY monibuca_arm64 ./monibuca_arm64
 
 COPY admin.zip ./admin.zip
+COPY example/default/test.mp4 ./test.mp4
+COPY example/default/test.flv ./test.flv
 
 # Install tcpdump
 RUN apt-get update && apt-get install -y tcpdump && rm -rf /var/lib/apt/lists/*

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/emiago/sipgo"
@@ -16,7 +16,6 @@ import (
 	"gorm.io/gorm"
 	"m7s.live/v5/pkg/util"
 
-	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5/plugin/gb28181/pb"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
@@ -41,7 +40,7 @@ func (gb *GB28181Plugin) List(ctx context.Context, req *pb.GetDevicesRequest) (*
 		}
 
 		// 如果需要筛选在线设备
-		if req.Status && !device.Online {
+		if (req.Status == 1 && !device.Online) || (req.Status == 0 && device.Online) {
 			return true // 继续遍历
 		}
 
@@ -112,25 +111,37 @@ func (gb *GB28181Plugin) List(ctx context.Context, req *pb.GetDevicesRequest) (*
 		})
 
 		pbDevices = append(pbDevices, &pb.Device{
-			DeviceId:      d.DeviceId,
-			Name:          d.CustomName,
-			Manufacturer:  d.Manufacturer,
-			Model:         d.Model,
-			Status:        string(d.Status),
-			Online:        d.Online,
-			Longitude:     d.Longitude,
-			Latitude:      d.Latitude,
-			RegisterTime:  timestamppb.New(d.RegisterTime),
-			UpdateTime:    timestamppb.New(d.UpdateTime),
-			KeepAliveTime: timestamppb.New(d.KeepaliveTime),
-			ChannelCount:  int32(d.ChannelCount),
-			Channels:      pbChannels,
-			MediaIp:       d.MediaIp,
-			SipIp:         d.SipIp,
-			Password:      d.Password,
-			StreamMode:    string(d.StreamMode),
+			DeviceId:              d.DeviceId,
+			Name:                  d.CustomName,
+			Manufacturer:          d.Manufacturer,
+			Model:                 d.Model,
+			Status:                string(d.Status),
+			Online:                d.Online,
+			Longitude:             d.Longitude,
+			Latitude:              d.Latitude,
+			RegisterTime:          timestamppb.New(d.RegisterTime),
+			UpdateTime:            timestamppb.New(d.UpdateTime),
+			KeepAliveTime:         timestamppb.New(d.KeepaliveTime),
+			ChannelCount:          int32(d.ChannelCount),
+			Channels:              pbChannels,
+			MediaIp:               d.MediaIp,
+			SipIp:                 d.SipIp,
+			Password:              d.Password,
+			StreamMode:            string(d.StreamMode),
+			Transport:             d.Transport,
+			Ip:                    d.IP,
+			Port:                  int32(d.Port),
+			BroadcastPushAfterAck: d.BroadcastPushAfterAck,
+			SubscribeCatalog:      util.Conditional(d.SubscribeCatalog == 0, false, true),
+			SubscribePosition:     util.Conditional(d.SubscribePosition == 0, false, true),
+			SubscribeAlarm:        util.Conditional(d.SubscribeAlarm == 0, false, true),
 		})
 	}
+
+	// 按deviceId对设备列表进行排序
+	sort.Slice(pbDevices, func(i, j int) bool {
+		return pbDevices[i].DeviceId < pbDevices[j].DeviceId
+	})
 
 	resp.Code = 0
 	resp.Message = "success"
@@ -175,21 +186,22 @@ func (gb *GB28181Plugin) GetDevice(ctx context.Context, req *pb.GetDeviceRequest
 			})
 		}
 		resp.Data = &pb.Device{
-			DeviceId:     d.DeviceId,
-			Name:         d.Name,
-			Manufacturer: d.Manufacturer,
-			Model:        d.Model,
-			Status:       string(d.Status),
-			Online:       d.Online,
-			Longitude:    d.Longitude,
-			Latitude:     d.Latitude,
-			RegisterTime: timestamppb.New(d.RegisterTime),
-			UpdateTime:   timestamppb.New(d.UpdateTime),
-			Channels:     channels,
-			MediaIp:      d.MediaIp,
-			SipIp:        d.SipIp,
-			Password:     d.Password,
-			StreamMode:   string(d.StreamMode),
+			DeviceId:         d.DeviceId,
+			Name:             d.Name,
+			Manufacturer:     d.Manufacturer,
+			Model:            d.Model,
+			Status:           string(d.Status),
+			Online:           d.Online,
+			Longitude:        d.Longitude,
+			Latitude:         d.Latitude,
+			RegisterTime:     timestamppb.New(d.RegisterTime),
+			UpdateTime:       timestamppb.New(d.UpdateTime),
+			Channels:         channels,
+			MediaIp:          d.MediaIp,
+			SipIp:            d.SipIp,
+			Password:         d.Password,
+			StreamMode:       string(d.StreamMode),
+			SubscribeCatalog: util.Conditional(d.SubscribeCatalog == 0, false, true),
 		}
 		resp.Code = 0
 		resp.Message = "success"
@@ -215,7 +227,7 @@ func (gb *GB28181Plugin) GetDevices(ctx context.Context, req *pb.GetDevicesReque
 		if req.Query != "" && !strings.Contains(d.DeviceId, req.Query) && !strings.Contains(d.Name, req.Query) {
 			continue
 		}
-		if req.Status && !d.Online {
+		if req.Status == 1 && !d.Online {
 			continue
 		}
 
@@ -393,64 +405,16 @@ func (gb *GB28181Plugin) SyncDevice(ctx context.Context, req *pb.SyncDeviceReque
 		Code:    404,
 		Message: "device not found",
 	}
+	var device *Device
 
 	// 先从内存中获取设备
-	d, ok := gb.devices.Get(req.DeviceId)
-	if !ok && gb.DB != nil {
-		// 如果内存中没有且数据库存在，则从数据库查询
-		var device Device
-		if err := gb.DB.Where("device_id = ?", req.DeviceId).First(&device).Error; err == nil {
-			d = &device
-			// 恢复设备的必要字段
-			d.Logger = gb.Logger.With("deviceid", req.DeviceId)
-			d.channels.L = new(sync.RWMutex)
-			d.plugin = gb
-
-			// 初始化 Task
-			var hash uint32
-			for i := 0; i < len(d.DeviceId); i++ {
-				ch := d.DeviceId[i]
-				hash = hash*31 + uint32(ch)
-			}
-			d.Task.ID = hash
-			d.Task.Logger = d.Logger
-			d.Task.Context, d.Task.CancelCauseFunc = context.WithCancelCause(context.Background())
-
-			// 初始化 SIP 相关字段
-			d.fromHDR = sip.FromHeader{
-				Address: sip.Uri{
-					User: gb.Serial,
-					Host: gb.Realm,
-				},
-				Params: sip.NewParams(),
-			}
-			d.fromHDR.Params.Add("tag", sip.GenerateTagN(16))
-
-			d.contactHDR = sip.ContactHeader{
-				Address: sip.Uri{
-					User: gb.Serial,
-					Host: d.SipIp,
-					Port: d.Port,
-				},
-			}
-
-			d.Recipient = sip.Uri{
-				Host: d.IP,
-				Port: d.Port,
-				User: d.DeviceId,
-			}
-
-			// 初始化 SIP 客户端
-			d.client, _ = sipgo.NewClient(gb.ua, sipgo.WithClientLogger(zerolog.New(os.Stdout)), sipgo.WithClientHostname(d.SipIp))
-
-			// 将设备添加到内存中
-			gb.devices.AddTask(d)
-		}
+	if d, ok := gb.devices.Get(req.DeviceId); ok {
+		device = d
 	}
 
-	if d != nil {
+	if device != nil {
 		// 发送目录查询请求
-		_, err := d.catalog()
+		_, err := device.catalog()
 		if err != nil {
 			resp.Code = 500
 			resp.Message = "catalog request failed"
@@ -458,7 +422,7 @@ func (gb *GB28181Plugin) SyncDevice(ctx context.Context, req *pb.SyncDeviceReque
 		} else {
 			resp.Code = 0
 			resp.Message = "sync request sent"
-			resp.Total = int32(d.ChannelCount)
+			resp.Total = int32(device.ChannelCount)
 			resp.Current = 0 // 初始化进度为0
 		}
 	}
@@ -581,43 +545,42 @@ func (gb *GB28181Plugin) UpdateDevice(ctx context.Context, req *pb.Device) (*pb.
 				if d.SubscribeCatalog > 0 {
 					if d.CatalogSubscribeTask != nil {
 						d.CatalogSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribeCatalog))
-						d.CatalogSubscribeTask.Tick(nil)
 					} else {
-						catalogSubTask := NewCatalogSubscribeTask(d)
-						d.AddTask(catalogSubTask)
-						d.CatalogSubscribeTask.Tick(nil)
+						d.CatalogSubscribeTask = NewCatalogSubscribeTask(d)
+						d.AddTask(d.CatalogSubscribeTask)
 					}
+					d.CatalogSubscribeTask.Tick(nil)
 				} else {
 					if d.CatalogSubscribeTask != nil {
-						d.CatalogSubscribeTask.Stop(fmt.Errorf("catalog subscription disabled"))
+						d.CatalogSubscribeTask.Tick(nil)
+						d.CatalogSubscribeTask.Ticker.Reset(time.Hour * 999999)
 					}
 				}
 				if d.SubscribePosition > 0 {
 					if d.PositionSubscribeTask != nil {
 						d.PositionSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribePosition))
-						d.PositionSubscribeTask.Tick(nil)
 					} else {
-						positionSubTask := NewPositionSubscribeTask(d)
-						d.AddTask(positionSubTask)
-						d.PositionSubscribeTask.Tick(nil)
+						d.PositionSubscribeTask = NewPositionSubscribeTask(d)
+						d.AddTask(d.PositionSubscribeTask)
 					}
+					d.PositionSubscribeTask.Tick(nil)
 				} else {
 					if d.PositionSubscribeTask != nil {
-						d.PositionSubscribeTask.Stop(fmt.Errorf("position subscription disabled"))
+						d.PositionSubscribeTask.Tick(nil)
+						d.PositionSubscribeTask.Ticker.Reset(time.Hour * 999999)
 					}
 				}
 				if d.SubscribeAlarm > 0 {
 					if d.AlarmSubscribeTask != nil {
 						d.AlarmSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribeAlarm))
-						d.AlarmSubscribeTask.Tick(nil)
 					} else {
-						alarmSubTask := NewAlarmSubscribeTask(d)
-						d.AddTask(alarmSubTask)
-						d.AlarmSubscribeTask.Tick(nil)
+						d.AlarmSubscribeTask = NewAlarmSubscribeTask(d)
+						d.AddTask(d.AlarmSubscribeTask)
 					}
+					d.AlarmSubscribeTask.Tick(nil)
 				} else {
 					if d.AlarmSubscribeTask != nil {
-						d.AlarmSubscribeTask.Stop(fmt.Errorf("alarm subscription disabled"))
+						d.AlarmSubscribeTask.Ticker.Reset(time.Hour * 999999)
 					}
 				}
 			}
@@ -1284,7 +1247,14 @@ func (gb *GB28181Plugin) TestSip(ctx context.Context, req *pb.TestSipRequest) (*
 	//    Request-URI: sip:34020000001320000006@192.168.1.102:5060
 	//    [Resent Packet: False]
 	// 初始化SIP客户端
-	device.client, _ = sipgo.NewClient(gb.ua, sipgo.WithClientLogger(zerolog.New(os.Stdout)), sipgo.WithClientHostname("192.168.1.106"))
+	opts := &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+	}
+	logHandler := slog.NewJSONHandler(os.Stdout, opts)
+	logger := slog.New(logHandler)
+	slog.SetDefault(logger) // 设置为默认日志记录器
+	device.client, _ = sipgo.NewClient(gb.ua, sipgo.WithClientLogger(logger), sipgo.WithClientHostname("192.168.1.106"))
 	if device.client == nil {
 		resp.Code = 500
 		resp.Message = "failed to create sip client"
@@ -2927,7 +2897,7 @@ func (gb *GB28181Plugin) UpdateChannel(ctx context.Context, req *pb.UpdateChanne
 	}
 
 	// 记录日志
-	gb.Info("通道信息已更新",
+	gb.Debug("通道信息已更新",
 		"通道ID", req.Id,
 		"自定义通道ID", channel.DeviceChannel.CustomChannelId,
 		"自定义名称", channel.DeviceChannel.CustomName)

@@ -13,13 +13,15 @@ bin
 *.flv
 pullcf.yaml
 *.zip
+*.mp4
 !plugin/hls/hls.js.zip
 __debug*
 .cursorrules
 example/default/*
 !example/default/main.go
 !example/default/config.yaml
+!example/default/test.flv
+!example/default/test.mp4
 shutdown.sh
 !example/test/test.db
-*.mp4
 shutdown.bat

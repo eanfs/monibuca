@@ -506,7 +506,7 @@ message GetDevicesRequest {
   int32 page = 1;
   int32 count = 2;
   string query = 3;
-  bool status = 4;
+  int32 status = 4;
 }
 
 message DevicesPageInfo {
@@ -607,6 +607,10 @@ message Device {
   bool subscribeCatalog = 18;
   bool subscribePosition = 19;
   bool subscribeAlarm = 20;
+  string transport = 21;
+  string ip = 22;
+  int32 port = 23;
+  bool broadcastPushAfterAck =24;
 }
 
 message ResponseList {

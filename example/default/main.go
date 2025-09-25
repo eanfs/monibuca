@@ -16,6 +16,7 @@ import (
 	_ "m7s.live/v5/plugin/onvif"
 	_ "m7s.live/v5/plugin/preview"
 	_ "m7s.live/v5/plugin/rtmp"
+	_ "m7s.live/v5/plugin/rtp"
 	_ "m7s.live/v5/plugin/rtsp"
 	_ "m7s.live/v5/plugin/sei"
 	_ "m7s.live/v5/plugin/snap"

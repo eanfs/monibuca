@@ -125,7 +125,7 @@ func (task *CascadeServer) Go() (err error) {
 		var receiveRequestTask cascade.ReceiveRequestTask
 		receiveRequestTask.Connection = task.Connection
 		receiveRequestTask.Plugin = &task.conf.Plugin
-		receiveRequestTask.Handler = task.conf.GetGlobalCommonConf().GetHandler()
+		receiveRequestTask.Handler = task.conf.GetGlobalCommonConf().GetHandler(task.Logger)
 		if receiveRequestTask.Stream, err = task.AcceptStream(task); err == nil {
 			task.AddTask(&receiveRequestTask)
 		}

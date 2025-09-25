@@ -161,3 +161,49 @@ func (c *Collection[K, T]) Clear() {
 	c.m = nil
 	c.Length = 0
 }
+
+// LoadOrStore 返回键的现有值(如果存在)，否则存储并返回给定的值。
+// loaded 结果表示是否找到了值，如果为 true 则表示找到了现有值，false 表示存储了新值。
+func (c *Collection[K, T]) LoadOrStore(item T) (actual T, loaded bool) {
+	key := item.GetKey()
+	if c.L != nil {
+		c.L.Lock()
+		defer c.L.Unlock()
+	}
+
+	// 先尝试获取现有值
+	if c.m != nil {
+		actual, loaded = c.m[key]
+	} else {
+		for _, v := range c.Items {
+			if v.GetKey() == key {
+				actual = v
+				loaded = true
+				break
+			}
+		}
+	}
+
+	// 如果没有找到现有值，则存储新值
+	if !loaded {
+		c.Items = append(c.Items, item)
+		if c.Length > 100 || c.m != nil {
+			if c.m == nil {
+				c.m = make(map[K]T)
+				for _, v := range c.Items {
+					c.m[v.GetKey()] = v
+				}
+			}
+			c.m[key] = item
+		}
+		c.Length++
+		actual = item
+
+		// 触发添加监听器
+		for _, listener := range c.addListeners {
+			listener(item)
+		}
+	}
+
+	return actual, loaded
+}

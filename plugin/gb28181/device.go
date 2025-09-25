@@ -47,10 +47,6 @@ func (d *DeviceKeepaliveTickTask) Tick(any) {
 	if d.device.KeepaliveInterval >= 5 {
 		keepaliveSeconds = d.device.KeepaliveInterval
 	}
-	d.Debug("keepLiveTick", "deviceID", d.device.DeviceId,
-		"keepaliveTime", d.device.KeepaliveTime,
-		"interval", d.device.KeepaliveInterval,
-		"count", d.device.KeepaliveCount)
 	if timeDiff := time.Since(d.device.KeepaliveTime); timeDiff > time.Duration(d.device.KeepaliveCount*keepaliveSeconds)*time.Second {
 		d.device.Online = false
 		d.device.Status = DeviceOfflineStatus
@@ -94,7 +90,7 @@ type Device struct {
 	Password              string          // 密码
 	SipIp                 string          // SIP交互IP（设备访问平台的IP）
 	AsMessageChannel      bool            // 是否作为消息通道
-	BroadcastPushAfterAck bool            // 控制语音对讲流程，释放收到ACK后发流
+	BroadcastPushAfterAck bool            `gorm:"default:false" default:"false"` // 控制语音对讲流程，释放收到ACK后发流
 	DeletedAt             gorm.DeletedAt  `yaml:"-"`
 	// 删除强关联字段
 	// channels              []gb28181.DeviceChannel `gorm:"foreignKey:DeviceDBID;references:ID"` // 设备通道列表
@@ -203,7 +199,6 @@ func (c *catalogHandlerTask) Run() (err error) {
 	d := c.d
 	msg := c.msg
 	catalogReq, exists := d.catalogReqs.Get(msg.SN)
-	d.Debug("into catalog", "msg.SN", msg.SN, "exists", exists)
 	if !exists {
 		// 创建新的目录请求
 		catalogReq = &CatalogRequest{
@@ -214,7 +209,6 @@ func (c *catalogHandlerTask) Run() (err error) {
 			Promise:       util.NewPromise(context.Background()),
 		}
 		d.catalogReqs.Set(catalogReq)
-		d.Debug("into catalog", "msg.SN", msg.SN, "d.catalogReqs", d.catalogReqs.Length)
 	}
 
 	// 添加响应并获取是否是第一个响应
@@ -223,14 +217,7 @@ func (c *catalogHandlerTask) Run() (err error) {
 	// 更新设备信息到数据库
 	// 如果是第一个响应，将所有通道状态标记为OFF
 	if isFirst {
-		d.Debug("将所有通道状态标记为OFF", "deviceId", d.DeviceId)
-		// 标记所有通道为OFF状态
-		d.channels.Range(func(channel *Channel) bool {
-			if channel.DeviceChannel != nil {
-				channel.DeviceChannel.Status = gb28181.ChannelOffStatus
-			}
-			return true
-		})
+		d.channels.Clear()
 	}
 
 	// 更新通道信息
@@ -242,7 +229,6 @@ func (c *catalogHandlerTask) Run() (err error) {
 		if c.CustomChannelId == "" {
 			c.CustomChannelId = c.ChannelId
 		}
-		d.Debug("msg.DeviceList.DeviceChannelList range", "c.ChannelId", c.ChannelId, "c.Status", c.Status)
 		// 使用 Save 进行 upsert 操作
 		d.addOrUpdateChannel(c)
 		catalogReq.TotalCount++
@@ -251,21 +237,9 @@ func (c *catalogHandlerTask) Run() (err error) {
 	// 更新当前设备的通道数
 	d.ChannelCount = msg.SumNum
 	d.UpdateTime = time.Now()
-	d.Debug("save channel", "deviceid", d.DeviceId, " d.channels.Length", d.channels.Length, "d.ChannelCount", d.ChannelCount, "d.UpdateTime", d.UpdateTime)
-
-	// 删除所有状态为OFF的通道
-	// d.channels.Range(func(channel *Channel) bool {
-	// 	if channel.DeviceChannel != nil && channel.DeviceChannel.Status == gb28181.ChannelOffStatus {
-	// 		d.Debug("删除不存在的通道", "channelId", channel.ID)
-	// 		d.channels.RemoveByKey(channel.ID)
-	// 		d.plugin.channels.RemoveByKey(channel.ID)
-	// 	}
-	// 	return true
-	// })
 
 	// 在所有通道都添加完成后，检查是否完成接收
 	if catalogReq.IsComplete() {
-		d.Debug("IsComplete")
 		catalogReq.Resolve()
 		d.catalogReqs.RemoveByKey(msg.SN)
 	}
@@ -273,7 +247,6 @@ func (c *catalogHandlerTask) Run() (err error) {
 }
 
 func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28181.Message) (err error) {
-	d.plugin.Debug("into onMessage", "deviceid is ", d.DeviceId, "msg is", msg)
 	source := req.Source()
 	hostname, portStr, _ := net.SplitHostPort(source)
 	port, _ := strconv.Atoi(portStr)
@@ -285,27 +258,9 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 	d.Port = port
 	d.HostAddress = hostname + ":" + portStr
 	var body []byte
-	//d.Online = true
-	//if d.Status != DeviceOnlineStatus {
-	//	d.Status = DeviceOnlineStatus
-	//}
-	//d.Debug("OnMessage", "cmdType", msg.CmdType, "body", string(req.Body()))
 	switch msg.CmdType {
 	case "Keepalive":
-		d.KeepaliveInterval = int(time.Since(d.KeepaliveTime).Seconds())
-		if d.KeepaliveInterval < 60 {
-			d.KeepaliveInterval = 60
-		}
 		d.KeepaliveTime = time.Now()
-		d.Debug("into keeplive,deviceid is ", d.DeviceId, "d.KeepaliveTime is", d.KeepaliveTime, "d.KeepaliveInterval is", d.KeepaliveInterval)
-		if d.plugin.DB != nil {
-			if err := d.plugin.DB.Model(d).Updates(map[string]interface{}{
-				"keepalive_interval": d.KeepaliveInterval,
-				"keepalive_time":     d.KeepaliveTime,
-			}).Error; err != nil {
-				d.Error("update keepalive info failed", "error", err)
-			}
-		}
 	case "Catalog":
 		catalogHandler := &catalogHandlerTask{
 			d:   d,
@@ -399,7 +354,6 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 		d.UpdateTime = time.Now()
 	case "DeviceInfo":
 		// 主设备信息
-		d.Info("DeviceInfo message", "body", req.Body(), "d.Name", d.Name, "d.DeviceId", d.DeviceId, "msg.DeviceName", msg.DeviceName)
 		if msg.DeviceName != "" {
 			d.Name = msg.DeviceName
 			if d.CustomName == "" {
@@ -410,8 +364,12 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 		d.Model = msg.Model
 		d.Firmware = msg.Firmware
 		d.UpdateTime = time.Now()
-		d.Latitude = msg.Latitude
-		d.Longitude = msg.Longitude
+		if msg.Latitude != "" {
+			d.Latitude = msg.Latitude
+		}
+		if msg.Longitude != "" {
+			d.Longitude = msg.Longitude
+		}
 	case "Alarm":
 		// 创建报警记录
 		alarm := &gb28181.DeviceAlarm{
@@ -455,6 +413,20 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 		d.Info("Broadcast message", "body", req.Body())
 	case "DeviceControl":
 		d.Info("DeviceControl message", "body", req.Body())
+	case "ConfigDownload":
+		if msg.BasicParam.Expiration > 0 {
+			d.Expires = msg.BasicParam.Expiration
+			d.KeepaliveInterval = msg.BasicParam.HeartBeatInterval
+			d.KeepaliveCount = msg.BasicParam.HeartBeatCount
+			if msg.BasicParam.Name != "" {
+				d.Name = msg.BasicParam.Name
+				if d.CustomName == "" {
+					d.CustomName = msg.BasicParam.Name
+				}
+			}
+		}
+	case "DataTransfer":
+		/*todo*/
 	default:
 		d.Warn("Not supported CmdType", "CmdType", msg.CmdType, "body", req.Body())
 		err = tx.Respond(sip.NewResponseFromRequest(req, http.StatusBadRequest, "", nil))
@@ -467,6 +439,7 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 func (d *Device) send(req *sip.Request) (*sip.Response, error) {
 	d.SN++
 	d.Trace("send", "req", req.String())
+	req.SetTransport(d.Transport)
 	return d.client.Do(context.Background(), req)
 }
 
@@ -485,6 +458,10 @@ func (d *Device) Go() (err error) {
 	if err != nil {
 		d.Error("queryDeviceStatus", "err", err)
 	}
+	response, err = d.configDownload()
+	if err != nil {
+		d.Error("configDownload", "err", err)
+	}
 	response, err = d.catalog()
 	if err != nil {
 		d.Error("catalog", "err", err)
@@ -494,12 +471,25 @@ func (d *Device) Go() (err error) {
 
 	// 创建并启动目录订阅任务
 	if d.SubscribeCatalog > 0 {
-		d.AddTask(NewCatalogSubscribeTask(d))
+		if d.CatalogSubscribeTask != nil {
+			d.CatalogSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribeCatalog))
+		} else {
+			d.CatalogSubscribeTask = NewCatalogSubscribeTask(d)
+			d.AddTask(d.CatalogSubscribeTask)
+		}
+		d.CatalogSubscribeTask.Tick(nil)
 	}
 
 	// 创建并启动位置订阅任务
 	if d.SubscribePosition > 0 {
-		d.AddTask(NewPositionSubscribeTask(d))
+		if d.PositionSubscribeTask != nil {
+			d.PositionSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribePosition))
+			d.PositionSubscribeTask.Tick(nil)
+		} else {
+			d.PositionSubscribeTask = NewPositionSubscribeTask(d)
+			d.AddTask(d.PositionSubscribeTask)
+			d.PositionSubscribeTask.Tick(nil)
+		}
 	}
 	deviceKeepaliveTickTask := &DeviceKeepaliveTickTask{
 		seconds: time.Second * 30,
@@ -551,13 +541,28 @@ func (d *Device) catalog() (*sip.Response, error) {
 func (d *Device) subscribeCatalog() (*sip.Response, error) {
 	request := d.CreateRequest(sip.SUBSCRIBE, nil)
 	request.AppendHeader(sip.NewHeader("Expires", strconv.Itoa(d.SubscribeCatalog)))
-	request.SetBody(gb28181.BuildCatalogXML(d.Charset, d.SN, d.DeviceId))
+	request.AppendHeader(sip.NewHeader("Event", "presence"))
+	request.SetBody(gb28181.BuildSubscribeCatalogXML(d.Charset, d.SN, d.DeviceId))
+	return d.send(request)
+}
+
+func (d *Device) unSubscribeCatalog() (*sip.Response, error) {
+	request := d.CreateRequest(sip.SUBSCRIBE, nil)
+	request.AppendHeader(sip.NewHeader("Expires", "0"))
+	request.AppendHeader(sip.NewHeader("Event", "presence"))
+	request.SetBody(gb28181.BuildSubscribeCatalogXML(d.Charset, d.SN, d.DeviceId))
 	return d.send(request)
 }
 
 func (d *Device) queryDeviceInfo() (*sip.Response, error) {
 	request := d.CreateRequest(sip.MESSAGE, nil)
 	request.SetBody(gb28181.BuildDeviceInfoXML(d.SN, d.DeviceId, d.Charset))
+	return d.send(request)
+}
+
+func (d *Device) configDownload() (*sip.Response, error) {
+	request := d.CreateRequest(sip.MESSAGE, nil)
+	request.SetBody(gb28181.BuildConfigDownloadXML(d.SN, d.DeviceId, d.Charset))
 	return d.send(request)
 }
 
@@ -624,9 +629,6 @@ func (d *Device) frontEndCmdString(cmdCode int32, parameter1 int32, parameter2 i
 }
 
 func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
-	// 设置通道状态为在线
-	c.Status = gb28181.ChannelOnStatus
-
 	if channel, ok := d.channels.Get(c.ID); ok {
 		// 通道已存在，保留自定义字段
 		if channel.DeviceChannel != nil {
@@ -644,10 +646,6 @@ func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
 		}
 		// 更新通道信息
 		channel.DeviceChannel = &c
-		d.channels.Range(func(channel *Channel) bool {
-			d.Debug("range d.channels", "channel.ChannelId", channel.ChannelId, "channel.status", channel.Status)
-			return true
-		})
 	} else {
 		// 创建新通道
 		channel = &Channel{
@@ -676,11 +674,11 @@ func (d *Device) Send(req *sip.Request) (*sip.Response, error) {
 	return d.send(req)
 }
 
-func (d *Device) CreateSSRC(serial string) uint16 {
+func (d *Device) CreateSSRC(serial string) uint32 {
 	// 使用简单的 hash 函数将设备 ID 转换为 uint16
-	var hash uint16
+	var hash uint32
 	for i := 0; i < len(d.DeviceId); i++ {
-		hash = hash*31 + uint16(d.DeviceId[i])
+		hash = hash*31 + uint32(d.DeviceId[i])
 	}
 	return hash
 }
@@ -772,8 +770,12 @@ func (d *Device) onNotify(req *sip.Request, tx sip.ServerTransaction, msg *gb281
 			gpsTime = gpsTime.UTC()
 
 			// 更新设备的经纬度信息
-			d.Longitude = fmt.Sprintf("%.6f", posNotify.Longitude)
-			d.Latitude = fmt.Sprintf("%.6f", posNotify.Latitude)
+			if posNotify.Longitude != 0 {
+				d.Longitude = fmt.Sprintf("%.6f", posNotify.Longitude)
+			}
+			if posNotify.Latitude != 0 {
+				d.Latitude = fmt.Sprintf("%.6f", posNotify.Latitude)
+			}
 			d.UpdateTime = time.Now()
 
 			// 如果需要，可以将更新保存到数据库

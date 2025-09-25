@@ -57,8 +57,8 @@ type Receiver struct {
 	ListenAddr string
 	net.Listener
 	StreamMode StreamMode
-	SSRC       uint32 // RTP SSRC
 	RTPMouth   chan []byte
+	SinglePort io.ReadCloser
 }
 
 type PSReceiver struct {
@@ -105,8 +105,8 @@ func (p *Receiver) Start() (err error) {
 		rtpReader = NewRTPPayloadReader(NewRTPTCPReader(conn))
 		p.BufReader = util.NewBufReader(rtpReader)
 	case StreamModeTCPPassive:
-		var conn net.Conn
-		if p.SSRC == 0 {
+		var conn io.ReadCloser
+		if p.SinglePort == nil {
 			p.Info("start new listener", "addr", p.ListenAddr)
 			p.Listener, err = net.Listen("tcp4", p.ListenAddr)
 			if err != nil {
@@ -116,8 +116,7 @@ func (p *Receiver) Start() (err error) {
 			p.OnStop(p.Listener.Close)
 			conn, err = p.Accept()
 		} else {
-			conn, err = p.Accept()
-			//TODO: 公用监听端口
+			conn = p.SinglePort
 		}
 		if err != nil {
 			p.Error("accept", "err", err)
@@ -127,16 +126,21 @@ func (p *Receiver) Start() (err error) {
 		rtpReader = NewRTPPayloadReader(NewRTPTCPReader(conn))
 		p.BufReader = util.NewBufReader(rtpReader)
 	case StreamModeUDP:
-		var udpAddr *net.UDPAddr
-		udpAddr, err = net.ResolveUDPAddr("udp4", p.ListenAddr)
-		if err != nil {
-			return
+		var conn io.ReadCloser
+		if p.SinglePort == nil {
+			var udpAddr *net.UDPAddr
+			udpAddr, err = net.ResolveUDPAddr("udp4", p.ListenAddr)
+			if err != nil {
+				return
+			}
+			conn, err = net.ListenUDP("udp4", udpAddr)
+			if err != nil {
+				return
+			}
+		} else {
+			conn = p.SinglePort
 		}
-		var conn net.Conn
-		conn, err = net.ListenUDP("udp4", udpAddr)
-		if err != nil {
-			return
-		}
+		p.OnStop(conn.Close)
 		rtpReader = NewRTPPayloadReader(NewRTPUDPReader(conn))
 		p.BufReader = util.NewBufReader(rtpReader)
 	case StreamModeManual:

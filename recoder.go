@@ -1,13 +1,13 @@
 package m7s
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 
 	"m7s.live/v5/pkg/task"
 )
@@ -33,6 +33,7 @@ type (
 		SubConf    *config.Subscribe
 		RecConf    *config.Record
 		recorder   IRecorder
+		storage    storage.Storage // 存储实例
 	}
 	DefaultRecorder struct {
 		task.Task
@@ -67,16 +68,23 @@ func (r *DefaultRecorder) Start() (err error) {
 func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*RecordJob) string) (err error) {
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
+
+	// 生成文件路径
+	filePath := customFileName(recordJob)
+
+	recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
+
+	if recordJob.storage == nil {
+		return fmt.Errorf("storage config is required")
+	}
+
 	r.Event.RecordStream = RecordStream{
 		StartTime:  start,
 		StreamPath: sub.StreamPath,
-		FilePath:   customFileName(recordJob),
+		FilePath:   filePath,
 		Type:       recordJob.RecConf.Type,
 	}
-	dir := filepath.Dir(r.Event.FilePath)
-	if err = os.MkdirAll(dir, 0755); err != nil {
-		return
-	}
+
 	if sub.Publisher.HasAudioTrack() {
 		r.Event.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
 	}
@@ -94,6 +102,23 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		}
 	}
 	return
+}
+
+// createStorage 创建存储实例
+func (r *DefaultRecorder) createStorage(storageConfig map[string]any) storage.Storage {
+	for t, conf := range storageConfig {
+		storage, err := storage.CreateStorage(t, conf)
+		if err == nil {
+			return storage
+		}
+	}
+	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
+	if err == nil {
+		return localStorage
+	} else {
+		r.Error("create storage failed", "err", err)
+	}
+	return nil
 }
 
 func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
@@ -115,6 +140,11 @@ func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
 
 func (p *RecordJob) GetKey() string {
 	return p.RecConf.FilePath
+}
+
+// GetStorage 获取存储实例
+func (p *RecordJob) GetStorage() storage.Storage {
+	return p.storage
 }
 
 func (p *RecordJob) Subscribe() (err error) {

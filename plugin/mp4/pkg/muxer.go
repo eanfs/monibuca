@@ -3,8 +3,8 @@ package mp4
 import (
 	"encoding/binary"
 	"io"
-	"os"
 
+	"m7s.live/v5/pkg/storage"
 	. "m7s.live/v5/plugin/mp4/pkg/box"
 )
 
@@ -252,7 +252,7 @@ func (m *Muxer) WriteMoov(w io.Writer) (err error) {
 	return
 }
 
-func (m *Muxer) WriteTrailer(file *os.File) (err error) {
+func (m *Muxer) WriteTrailer(file storage.Writer) (err error) {
 	if m.isFragment() {
 		// Flush any remaining samples
 		// if err = m.flushFragment(file); err != nil {

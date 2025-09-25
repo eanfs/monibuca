@@ -30,14 +30,14 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 	switch res.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized:
-		switch c.auth.Method {
+		switch c.Auth.Method {
 		case util.AuthNone:
-			if c.auth.ReadNone(res) {
+			if c.Auth.ReadNone(res) {
 				return c.Do(req)
 			}
 			return nil, errors.New("user/pass not provided")
 		case util.AuthUnknown:
-			if c.auth.Read(res) {
+			if c.Auth.Read(res) {
 				return c.Do(req)
 			}
 		default:
@@ -171,12 +171,12 @@ func (c *Stream) Announce(medias []*Media) (err error) {
 	return
 }
 
-func (c *Stream) SetupMedia(media *Media, index int) (byte, error) {
+func (c *Stream) SetupMedia(media *Media, mode string, index int) (byte, error) {
 	var transport string
 	transport = fmt.Sprintf(
 		// i   - RTP (data channel)
 		// i+1 - RTCP (control channel)
-		"RTP/AVP/TCP;unicast;interleaved=%d-%d", index*2, index*2+1,
+		"RTP/AVP/TCP;unicast;mode=%s;interleaved=%d-%d", mode, index*2, index*2+1,
 	)
 	if transport == "" {
 		return 0, fmt.Errorf("wrong media: %v", media)

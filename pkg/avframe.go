@@ -140,11 +140,11 @@ func (b *BaseSample) GetCTS32() uint32 {
 	return uint32(b.CTS / time.Millisecond)
 }
 
-func (b *BaseSample) GetNalus() *util.ReuseArray[util.Memory] {
+func (b *BaseSample) GetNalus() *Nalus {
 	if b.Raw == nil {
 		b.Raw = &Nalus{}
 	}
-	return b.Raw.(*util.ReuseArray[util.Memory])
+	return b.Raw.(*Nalus)
 }
 
 func (b *BaseSample) GetAudioData() *AudioData {

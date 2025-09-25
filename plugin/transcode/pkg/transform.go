@@ -3,6 +3,7 @@ package transcode
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -71,7 +72,7 @@ func (t *Transformer) Start() (err error) {
 		case DecodeConfig:
 			t.From = v
 		case map[string]any:
-			config.Parse(&t.TransRule.From, v)
+			config.Parse(&t.TransRule.From, maps.Clone(v))
 		case string:
 			t.From.Mode = TRANS_MODE_PIPE
 			t.From.Args = v
@@ -116,7 +117,7 @@ func (t *Transformer) Start() (err error) {
 		if to.Conf != nil {
 			switch v := to.Conf.(type) {
 			case map[string]any:
-				config.Parse(&enc, v)
+				config.Parse(&enc, maps.Clone(v))
 			case string:
 				enc.Args = v
 			}

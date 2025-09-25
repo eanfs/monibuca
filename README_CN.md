@@ -116,6 +116,7 @@ go run -tags sqlite main.go
 | duckdb | 启用 DuckDB 存储 |
 | taskpanic | 抛出 panic（用于测试） |
 | fasthttp | 使用 fasthttp 服务器代替标准库 |
+| enable_buddy | 开启 buddy 内存预申请|
 
 <p align="right">(<a href="#readme-top">返回顶部</a>)</p>
 

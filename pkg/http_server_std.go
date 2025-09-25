@@ -35,7 +35,7 @@ func (task *ListenHTTPWork) Start() (err error) {
 		ReadTimeout:  task.HTTP.ReadTimeout,
 		WriteTimeout: task.HTTP.WriteTimeout,
 		IdleTimeout:  task.HTTP.IdleTimeout,
-		Handler:      task.GetHandler(),
+		Handler:      task.GetHandler(task.Logger),
 	}
 	return
 }
@@ -61,7 +61,7 @@ func (task *ListenHTTPSWork) Start() (err error) {
 		ReadTimeout:  task.HTTP.ReadTimeout,
 		WriteTimeout: task.HTTP.WriteTimeout,
 		IdleTimeout:  task.HTTP.IdleTimeout,
-		Handler:      task.HTTP.GetHandler(),
+		Handler:      task.HTTP.GetHandler(task.Logger),
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cer},
 			CipherSuites: []uint16{

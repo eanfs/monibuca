@@ -72,7 +72,7 @@ func (task *CascadeClient) Run() (err error) {
 		if s, err = task.AcceptStream(task.Task.Context); err == nil {
 			task.AddTask(&cascade.ReceiveRequestTask{
 				Stream:     s,
-				Handler:    task.cfg.GetGlobalCommonConf().GetHandler(),
+				Handler:    task.cfg.GetGlobalCommonConf().GetHandler(task.Logger),
 				Connection: task.Connection,
 				Plugin:     &task.cfg.Plugin,
 			})
