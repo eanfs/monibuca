@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,9 +12,9 @@ import (
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/mp4/pkg/box"
-	s3plugin "m7s.live/v5/plugin/s3"
 )
 
 type WriteTrailerQueueTask struct {
@@ -25,7 +26,7 @@ var writeTrailerQueueTask WriteTrailerQueueTask
 type writeTrailerTask struct {
 	task.Task
 	muxer    *Muxer
-	file     *os.File
+	file     storage.File
 	filePath string
 }
 
@@ -104,13 +105,7 @@ func (t *writeTrailerTask) Run() (err error) {
 	if err = temp.Close(); err != nil {
 		t.Error("close temp file", "err", err)
 	}
-	
-	// MP4文件处理完成后，触发S3上传
-	if t.filePath != "" {
-		t.Info("MP4 file processing completed, triggering S3 upload", "filePath", t.filePath)
-		s3plugin.TriggerUpload(t.filePath, false) // 不删除本地文件，让用户配置决定
-	}
-	
+
 	return
 }
 
@@ -125,7 +120,7 @@ func NewRecorder(conf config.Record) m7s.IRecorder {
 type Recorder struct {
 	m7s.DefaultRecorder
 	muxer *Muxer
-	file  *os.File
+	file  storage.File
 }
 
 func (r *Recorder) writeTailer(end time.Time) {
@@ -152,21 +147,41 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	r.file, err = os.Create(r.Event.FilePath)
-	if err != nil {
-		return
+
+	// 获取存储实例
+	storage := r.RecordJob.GetStorage()
+
+	if storage != nil {
+		// 使用存储抽象层
+		r.file, err = storage.CreateFile(context.Background(), r.Event.FilePath)
+		if err != nil {
+			return
+		}
+	} else {
+		// 默认本地文件行为
+		r.file, err = os.Create(r.Event.FilePath)
+		if err != nil {
+			return
+		}
 	}
+
 	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)
 	} else {
 		r.muxer = NewMuxerWithStreamPath(0, r.Event.StreamPath)
 	}
+
 	return r.muxer.WriteInitSegment(r.file)
 }
 
 func (r *Recorder) Dispose() {
 	if r.muxer != nil {
 		r.writeTailer(time.Now())
+	}
+
+	// 关闭存储写入器
+	if r.file != nil {
+		r.file.Close()
 	}
 }
 

@@ -250,9 +250,7 @@ func (t *Transformer) Start() (err error) {
 			case SnapConfig:
 				snapConfig = v
 			case map[string]any:
-				var conf config.Config
-				conf.Parse(&snapConfig)
-				conf.ParseModifyFile(v)
+				config.Parse(&snapConfig, v)
 			}
 		}
 

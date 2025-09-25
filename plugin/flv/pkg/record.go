@@ -1,6 +1,7 @@
 package flv
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/pkg/task"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
@@ -26,7 +28,7 @@ func init() {
 
 type writeMetaTagTask struct {
 	task.Task
-	file     *os.File
+	file     storage.File
 	writer   *FlvWriter
 	flags    byte
 	metaData []byte
@@ -76,7 +78,7 @@ func (task *writeMetaTagTask) Start() (err error) {
 	}
 }
 
-func writeMetaTag(file *os.File, suber *m7s.Subscriber, filepositions []uint64, times []float64, duration *int64) {
+func writeMetaTag(file storage.File, suber *m7s.Subscriber, filepositions []uint64, times []float64, duration *int64) {
 	ar, vr := suber.AudioReader, suber.VideoReader
 	hasAudio, hasVideo := ar != nil, vr != nil
 	var amf rtmp.AMF
@@ -142,7 +144,7 @@ func NewRecorder(conf config.Record) m7s.IRecorder {
 type Recorder struct {
 	m7s.DefaultRecorder
 	writer *FlvWriter
-	file   *os.File
+	file   storage.File
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
@@ -158,11 +160,26 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	if r.file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR, 0666); err != nil {
-		return
+
+	// 获取存储实例
+	storage := r.RecordJob.GetStorage()
+
+	if storage != nil {
+		// 使用存储抽象层
+		r.file, err = storage.CreateFile(context.Background(), r.Event.FilePath)
+		if err != nil {
+			return
+		}
+		r.writer = NewFlvWriter(r.file)
+	} else {
+		// 默认本地文件行为
+		if r.file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR, 0666); err != nil {
+			return
+		}
+		r.writer = NewFlvWriter(r.file)
 	}
-	_, err = r.file.Write(FLVHead)
-	r.writer = NewFlvWriter(r.file)
+
+	_, err = r.writer.Write(FLVHead)
 	if err != nil {
 		return
 	}

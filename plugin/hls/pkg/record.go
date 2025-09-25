@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/format"
 	mpegts "m7s.live/v5/pkg/format/ts"
+	"m7s.live/v5/pkg/storage"
 )
 
 func NewRecorder(conf config.Record) m7s.IRecorder {
@@ -18,7 +20,8 @@ func NewRecorder(conf config.Record) m7s.IRecorder {
 
 type Recorder struct {
 	m7s.DefaultRecorder
-	ts           TsInFile
+	TsInMemory
+	file         storage.File
 	segmentCount uint32
 	lastTs       time.Duration
 	firstSegment bool
@@ -38,12 +41,15 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 
 func (r *Recorder) writeTailer(end time.Time) {
 	if !r.RecordJob.RecConf.RealTime {
-		if r.ts.file != nil {
-			r.ts.WriteTo(r.ts.file)
-			r.ts.Recycle()
+		defer r.TsInMemory.Recycle()
+		var err error
+		r.file, err = r.RecordJob.GetStorage().CreateFile(context.Background(), r.Event.FilePath)
+		if err != nil {
+			return
 		}
+		r.WriteTo(r.file)
 	}
-	r.ts.Close()
+	r.file.Close()
 	r.WriteTail(end, nil)
 }
 
@@ -53,11 +59,7 @@ func (r *Recorder) Dispose() {
 
 func (r *Recorder) createNewTs() (err error) {
 	if r.RecordJob.RecConf.RealTime {
-		if err = r.ts.Open(r.Event.FilePath); err != nil {
-			r.Error("create ts file failed", "err", err, "path", r.Event.FilePath)
-		}
-	} else {
-		r.ts.path = r.Event.FilePath
+		r.file, err = r.RecordJob.GetStorage().CreateFile(context.Background(), r.Event.FilePath)
 	}
 	return
 }
@@ -89,8 +91,8 @@ func (r *Recorder) writeSegment(ts time.Duration, writeTime time.Time) (err erro
 			return
 		}
 		if r.RecordJob.RecConf.RealTime {
-			r.ts.file.Write(mpegts.DefaultPATPacket)
-			r.ts.file.Write(r.ts.PMT)
+			r.file.Write(mpegts.DefaultPATPacket)
+			r.file.Write(r.PMT)
 		}
 		r.segmentCount++
 		r.lastTs = ts
@@ -121,18 +123,18 @@ func (r *Recorder) Run() (err error) {
 	if suber.Publisher.HasVideoTrack() {
 		videoCodec = suber.Publisher.VideoTrack.FourCC()
 	}
-	r.ts.WritePMTPacket(audioCodec, videoCodec)
+	r.WritePMTPacket(audioCodec, videoCodec)
 	if ctx.RecConf.RealTime {
-		r.ts.file.Write(mpegts.DefaultPATPacket)
-		r.ts.file.Write(r.ts.PMT)
+		r.file.Write(mpegts.DefaultPATPacket)
+		r.file.Write(r.PMT)
 	}
 	return m7s.PlayBlock(suber, func(audio *format.Mpeg2Audio) (err error) {
 		pesAudio.Pts = uint64(suber.AudioReader.AbsTime) * 90
-		err = pesAudio.WritePESPacket(audio.Memory, &r.ts.RecyclableMemory)
+		err = pesAudio.WritePESPacket(audio.Memory, &r.RecyclableMemory)
 		if err == nil {
 			if ctx.RecConf.RealTime {
-				r.ts.RecyclableMemory.WriteTo(r.ts.file)
-				r.ts.RecyclableMemory.Recycle()
+				r.RecyclableMemory.WriteTo(r.file)
+				r.RecyclableMemory.Recycle()
 			}
 		}
 		return
@@ -146,11 +148,11 @@ func (r *Recorder) Run() (err error) {
 		pesVideo.IsKeyFrame = video.IDR
 		pesVideo.Pts = uint64(vr.AbsTime+video.GetCTS32()) * 90
 		pesVideo.Dts = uint64(vr.AbsTime) * 90
-		err = pesVideo.WritePESPacket(video.Memory, &r.ts.RecyclableMemory)
+		err = pesVideo.WritePESPacket(video.Memory, &r.RecyclableMemory)
 		if err == nil {
 			if ctx.RecConf.RealTime {
-				r.ts.RecyclableMemory.WriteTo(r.ts.file)
-				r.ts.RecyclableMemory.Recycle()
+				r.RecyclableMemory.WriteTo(r.file)
+				r.RecyclableMemory.Recycle()
 			}
 		}
 		return

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"reflect"
 	"regexp"
@@ -432,5 +431,5 @@ func (config *Config) assign(k string, v any) reflect.Value {
 func Parse(target any, conf map[string]any) {
 	var c Config
 	c.Parse(target)
-	c.ParseModifyFile(maps.Clone(conf))
+	c.ParseModifyFile(conf)
 }

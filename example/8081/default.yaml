@@ -1,5 +1,5 @@
 global:
-  #  loglevel: debug
+  loglevel: debug
   http:
     listenaddr: :8081
     listenaddrtls: :8555
@@ -10,4 +10,4 @@ rtsp:
 rtmp:
   tcp: :1936
 webrtc:
-  enable: false
+  port: udp:9000-9100
