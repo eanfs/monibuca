@@ -77,7 +77,7 @@ func NewNetConnection(conn net.Conn) (ret *NetConnection) {
 
 func (nc *NetConnection) Init(conn net.Conn) {
 	nc.Conn = conn
-	nc.BufReader = util.NewBufReader(conn)
+	nc.BufReader = util.NewBufReaderWithTimeout(conn, 10*time.Second)
 	nc.bandwidth = RTMP_MAX_CHUNK_SIZE << 3
 	nc.ReadChunkSize = RTMP_DEFAULT_CHUNK_SIZE
 	nc.WriteChunkSize = RTMP_DEFAULT_CHUNK_SIZE
@@ -131,7 +131,6 @@ func (nc *NetConnection) ResponseCreateStream(tid uint64, streamID uint32) error
 // }
 
 func (nc *NetConnection) readChunk() (msg *Chunk, err error) {
-	nc.SetReadDeadline(time.Now().Add(time.Second * 5)) // 设置读取超时时间为5秒
 	head, err := nc.ReadByte()
 	if err != nil {
 		return nil, err

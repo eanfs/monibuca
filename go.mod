@@ -24,6 +24,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/kerberos-io/onvif v1.0.0
+	github.com/langhuihui/gotask v0.0.0-20250926063623-e8031a3bf4d2
 	github.com/mark3labs/mcp-go v0.27.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/mcuadros/go-defaults v1.2.0
@@ -90,7 +91,6 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/juju/errors v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/langhuihui/gotask v0.0.0-20250926063623-e8031a3bf4d2 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/marcboeker/go-duckdb v1.0.5 // indirect
