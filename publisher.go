@@ -69,7 +69,7 @@ func (t *AVTracks) GetOrCreate(dataType reflect.Type) *AVTrack {
 }
 
 func (t *AVTracks) CheckTimeout(timeout time.Duration) bool {
-	if t.AVTrack == nil || t.AVTrack.LastValue.WriteTime.IsZero() {
+	if t.AVTrack == nil {
 		return false
 	}
 	return time.Since(t.AVTrack.LastValue.WriteTime) > timeout

@@ -557,6 +557,12 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	if err != nil {
 		return nil, err
 	}
+
+	// 清理不重要的函数，使图形更干净明了
+	if err := profile.RemoveUninteresting(); err != nil {
+		return nil, fmt.Errorf("could not remove uninteresting functions: %v", err)
+	}
+
 	// Generate dot graph.
 	dot, err := debug.GetDotGraph(profile)
 	if err != nil {
