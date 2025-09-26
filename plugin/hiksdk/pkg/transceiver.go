@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
+	task "github.com/langhuihui/gotask"
 	mpegps "m7s.live/v5/pkg/format/ps"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

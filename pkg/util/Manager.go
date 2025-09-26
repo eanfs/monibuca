@@ -1,26 +1,8 @@
-package task
+package util
 
 import (
-	"errors"
-	"fmt"
-
-	. "m7s.live/v5/pkg/util"
+	. "github.com/langhuihui/gotask"
 )
-
-var ErrExist = errors.New("exist")
-
-type ExistTaskError struct {
-	Task ITask
-}
-
-func (e ExistTaskError) Error() string {
-	return fmt.Sprintf("%v exist", e.Task.getKey())
-}
-
-type ManagerItem[K comparable] interface {
-	ITask
-	GetKey() K
-}
 
 type Manager[K comparable, T ManagerItem[K]] struct {
 	Work
@@ -29,8 +11,12 @@ type Manager[K comparable, T ManagerItem[K]] struct {
 
 func (m *Manager[K, T]) Add(ctx T, opt ...any) *Task {
 	ctx.OnStart(func() {
-		if !m.Collection.AddUnique(ctx) {
-			ctx.Stop(ErrExist)
+		if old, ok := m.Get(ctx.GetKey()); !ok {
+			m.Add(ctx)
+		} else {
+			ctx.Stop(ExistTaskError{
+				Task: old,
+			})
 			return
 		}
 		m.Debug("add", "key", ctx.GetKey(), "count", m.Length)

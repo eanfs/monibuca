@@ -13,10 +13,10 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/google/uuid"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	. "m7s.live/v5"
 	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

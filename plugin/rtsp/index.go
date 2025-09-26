@@ -5,9 +5,8 @@ import (
 	"net"
 	"strings"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/util"
-
-	"m7s.live/v5/pkg/task"
 
 	"m7s.live/v5"
 	. "m7s.live/v5/plugin/rtsp/pkg"

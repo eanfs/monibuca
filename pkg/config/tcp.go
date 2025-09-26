@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 )
 
 //go:embed local.monibuca.com_bundle.pem

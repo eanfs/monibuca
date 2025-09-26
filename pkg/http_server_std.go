@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 )
 
 func CreateHTTPWork(conf *config.HTTP, logger *slog.Logger) *ListenHTTPWork {

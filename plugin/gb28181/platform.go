@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gotask"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"m7s.live/v5"
@@ -17,7 +18,6 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"m7s.live/v5/pkg/task"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 

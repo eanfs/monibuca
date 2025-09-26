@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/plugin/crontab/pkg"
 )
 

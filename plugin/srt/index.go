@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	srt "github.com/datarhei/gosrt"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 	srt_pkg "m7s.live/v5/plugin/srt/pkg"
 )
 

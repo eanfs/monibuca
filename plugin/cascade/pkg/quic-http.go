@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	task "github.com/langhuihui/gotask"
 	flv "m7s.live/v5/plugin/flv/pkg"
 
 	"github.com/quic-go/quic-go"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 )
 
 type RelayAPIConfig struct {

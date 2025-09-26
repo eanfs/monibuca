@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"github.com/quangngotan95/go-m3u8/m3u8"
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	mpegts "m7s.live/v5/pkg/format/ts"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

@@ -7,9 +7,9 @@ import (
 	"net"
 	"strings"
 
+	task "github.com/langhuihui/gotask"
 	"github.com/pion/rtp"
 	mpegps "m7s.live/v5/pkg/format/ps"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

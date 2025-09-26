@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	task "github.com/langhuihui/gotask"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/process"
-	"m7s.live/v5/pkg/task"
 )
 
 //go:embed static/*

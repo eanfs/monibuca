@@ -1,9 +1,9 @@
 package plugin_hiksdk
 
 import (
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 )
 
 const (
@@ -13,7 +13,7 @@ const (
 
 type ClientPlugin struct {
 	task.Job
-	conf      	*HikPlugin
+	conf *HikPlugin
 
 	pullCtx   m7s.PullJob
 	pushCtx   m7s.PushJob

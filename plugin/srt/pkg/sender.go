@@ -2,11 +2,11 @@ package srt
 
 import (
 	srt "github.com/datarhei/gosrt"
+	"github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/format"
 	mpegts "m7s.live/v5/pkg/format/ts"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	hls "m7s.live/v5/plugin/hls/pkg"
 )

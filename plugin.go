@@ -21,8 +21,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"m7s.live/v5/pkg/task"
-
 	"github.com/quic-go/quic-go"
 
 	gatewayRuntime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -30,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"gorm.io/gorm"
 
+	task "github.com/langhuihui/gotask"
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/db"

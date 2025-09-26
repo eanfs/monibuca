@@ -6,10 +6,9 @@ import (
 
 	"gorm.io/gorm"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
-
-	"m7s.live/v5/pkg/task"
 )
 
 type (

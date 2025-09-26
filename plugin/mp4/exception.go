@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"github.com/shirou/gopsutil/v4/disk"
 	"gorm.io/gorm"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 )
 
 // mysql数据库里Exception 定义异常结构体

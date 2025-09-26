@@ -5,9 +5,9 @@ import (
 	"slices"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

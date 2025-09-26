@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 )
 
 type Register struct {

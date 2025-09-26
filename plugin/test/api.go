@@ -14,10 +14,10 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	pb "m7s.live/v5/pb"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	hls "m7s.live/v5/plugin/hls/pkg"
@@ -158,12 +158,15 @@ func (p *TestPlugin) pull(count int, url string, testMode int32, puller m7s.Pull
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
-			if p.pullers.AddUnique(ctx) {
+			if old, ok := p.pullers.Get(ctx.GetKey()); ok {
+				ctx.Stop(task.ExistTaskError{
+					Task: old,
+				})
+			} else {
+				p.pullers.Add(ctx)
 				ctx.OnDispose(func() {
 					p.pullers.Remove(ctx)
 				})
-			} else {
-				ctx.Stop(task.ErrExist)
 			}
 		}
 	} else if count < i {
@@ -185,12 +188,15 @@ func (p *TestPlugin) push(count int, streamPath, url string, pusher m7s.PusherFa
 			if err = ctx.WaitStarted(); err != nil {
 				return
 			}
-			if p.pushers.AddUnique(ctx) {
+			if old, ok := p.pushers.Get(ctx.GetKey()); ok {
+				ctx.Stop(task.ExistTaskError{
+					Task: old,
+				})
+			} else {
+				p.pushers.Add(ctx)
 				ctx.OnDispose(func() {
 					p.pushers.Remove(ctx)
 				})
-			} else {
-				ctx.Stop(task.ErrExist)
 			}
 		}
 	} else if count < i {

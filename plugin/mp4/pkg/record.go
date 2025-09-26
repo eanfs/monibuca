@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 

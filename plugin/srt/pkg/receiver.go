@@ -4,8 +4,8 @@ import (
 	"bytes"
 
 	srt "github.com/datarhei/gosrt"
+	"github.com/langhuihui/gotask"
 	mpegts "m7s.live/v5/pkg/format/ts"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 

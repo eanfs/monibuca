@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/task"
 )
 
 func TestRestart(b *testing.T) {

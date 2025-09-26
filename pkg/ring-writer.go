@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/util"
 )
 
