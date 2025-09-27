@@ -12,7 +12,7 @@ type Manager[K comparable, T ManagerItem[K]] struct {
 func (m *Manager[K, T]) Add(ctx T, opt ...any) *Task {
 	ctx.OnStart(func() {
 		if old, ok := m.Get(ctx.GetKey()); !ok {
-			m.Add(ctx)
+			m.Collection.Add(ctx)
 		} else {
 			ctx.Stop(ExistTaskError{
 				Task: old,
