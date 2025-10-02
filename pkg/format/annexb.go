@@ -8,10 +8,10 @@ import (
 
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/codec/h265parser"
+	"github.com/langhuihui/gomem"
 
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/util"
 )
 
 type AnnexB struct {
@@ -104,7 +104,7 @@ func (a *AnnexB) Demux() (err error) {
 	nalus := a.GetNalus()
 	var lastFourBytes [4]byte
 	var b byte
-	var shallow util.Memory
+	var shallow gomem.Memory
 	shallow.Push(a.Buffers...)
 	reader := shallow.NewReader()
 	gotNalu := func() {
@@ -230,7 +230,7 @@ func (a *AnnexB) Parse(reader *pkg.AnnexBReader) (hasFrame bool, err error) {
 					a.ICodecCtx = &codec.H264Ctx{
 						CodecData: codecData,
 					}
-					*nalus = slices.Insert(*nalus, 0, util.NewMemory(ctx.SPS), util.NewMemory(ctx.PPS))
+					*nalus = slices.Insert(*nalus, 0, gomem.NewMemory(ctx.SPS), gomem.NewMemory(ctx.PPS))
 					delimiter2 := codec.NALU_Delimiter2[:]
 					a.Buffers = slices.Insert(a.Buffers, 0, delimiter2, ctx.SPS, delimiter2, ctx.PPS)
 					a.Size += 8 + len(ctx.SPS) + len(ctx.PPS)
@@ -243,7 +243,7 @@ func (a *AnnexB) Parse(reader *pkg.AnnexBReader) (hasFrame bool, err error) {
 					a.ICodecCtx = &codec.H265Ctx{
 						CodecData: codecData,
 					}
-					*nalus = slices.Insert(*nalus, 0, util.NewMemory(ctx.VPS), util.NewMemory(ctx.SPS), util.NewMemory(ctx.PPS))
+					*nalus = slices.Insert(*nalus, 0, gomem.NewMemory(ctx.VPS), gomem.NewMemory(ctx.SPS), gomem.NewMemory(ctx.PPS))
 					delimiter2 := codec.NALU_Delimiter2[:]
 					a.Buffers = slices.Insert(a.Buffers, 0, delimiter2, ctx.VPS, delimiter2, ctx.SPS, delimiter2, ctx.PPS)
 					a.Size += 24 + len(ctx.VPS) + len(ctx.SPS) + len(ctx.PPS)

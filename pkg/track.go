@@ -7,7 +7,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 
@@ -55,7 +56,7 @@ type (
 		Track
 		*RingWriter
 		codec.ICodecCtx
-		Allocator *util.ScalableMemoryAllocator
+		Allocator *gomem.ScalableMemoryAllocator
 		WrapIndex int
 		TsTamer
 		SpeedController

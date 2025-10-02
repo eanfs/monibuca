@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
@@ -428,7 +429,7 @@ type AnnexBPuller struct {
 }
 
 func (p *AnnexBPuller) Run() (err error) {
-	allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	defer allocator.Recycle()
 	writer := NewPublishVideoWriter[*format.AnnexB](p.PullJob.Publisher, allocator)
 	frame := writer.VideoFrame

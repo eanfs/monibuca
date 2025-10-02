@@ -1,9 +1,9 @@
 package box
 
-import "m7s.live/v5/pkg/util"
+import "github.com/langhuihui/gomem"
 
 type Sample struct {
-	util.Memory
+	gomem.Memory
 	KeyFrame  bool
 	Timestamp uint32
 	CTS       uint32

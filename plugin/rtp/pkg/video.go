@@ -11,6 +11,7 @@ import (
 
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/codec/h265parser"
+	"github.com/langhuihui/gomem"
 
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -372,7 +373,7 @@ func (r *VideoFrame) Demux() (err error) {
 	switch c := r.ICodecCtx.(type) {
 	case *H264Ctx:
 		nalus := r.GetNalus()
-		var nalu *util.Memory
+		var nalu *gomem.Memory
 		var naluType codec.H264NALUType
 		for packet := range r.Packets.RangePoint {
 			if len(packet.Payload) < 2 {
@@ -421,7 +422,7 @@ func (r *VideoFrame) Demux() (err error) {
 		return nil
 	case *H265Ctx:
 		nalus := r.GetNalus()
-		var nalu *util.Memory
+		var nalu *gomem.Memory
 		for _, packet := range r.Packets {
 			if len(packet.Payload) == 0 {
 				continue

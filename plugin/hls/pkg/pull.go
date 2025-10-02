@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	"github.com/quangngotan95/go-m3u8/m3u8"
 	"m7s.live/v5"
@@ -101,7 +102,7 @@ func (p *Puller) pull(info *M3u8Info) (err error) {
 	var tsReader *mpegts.MpegTsStream
 	if p.PullJob.PublishConfig.RelayMode != config.RelayModeRelay {
 		tsReader = &mpegts.MpegTsStream{
-			Allocator: util.NewScalableMemoryAllocator(1 << util.MinPowerOf2),
+			Allocator: gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2),
 		}
 		tsReader.Publisher = p.PullJob.Publisher
 		defer tsReader.Allocator.Recycle()

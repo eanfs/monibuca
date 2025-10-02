@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"github.com/pion/rtp"
 	"m7s.live/v5/pkg/util"
 )
@@ -61,7 +62,7 @@ func (r *RTPTCPReader) Read(packet *rtp.Packet) (err error) {
 	if err != nil {
 		return
 	}
-	var mem util.Memory
+	var mem gomem.Memory
 	mem, err = r.ReadBytes(int(rtplen))
 	if err != nil {
 		return
@@ -83,7 +84,7 @@ type RTPPayloadReader struct {
 	IRTPReader
 	rtp.Packet
 	SSRC   uint32 // RTP SSRC
-	buffer util.MemoryReader
+	buffer gomem.MemoryReader
 }
 
 // func NewTCPRTPPayloadReaderForFeed() *RTPPayloadReader {
@@ -91,14 +92,14 @@ type RTPPayloadReader struct {
 // 	r.IRTPReader = &RTPTCPReader{
 // 		BufReader: util.NewBufReaderChan(10),
 // 	}
-// 	r.buffer.Memory = &util.Memory{}
+// 	r.buffer.Memory = &gomem.Memory{}
 // 	return r
 // }
 
 func NewRTPPayloadReader(t IRTPReader) *RTPPayloadReader {
 	r := &RTPPayloadReader{}
 	r.IRTPReader = t
-	r.buffer.Memory = &util.Memory{}
+	r.buffer.Memory = &gomem.Memory{}
 	return r
 }
 

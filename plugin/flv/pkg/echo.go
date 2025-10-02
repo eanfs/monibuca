@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/util"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
@@ -13,7 +14,7 @@ func Echo(r io.Reader) (err error) {
 	reader := util.NewBufReader(r)
 	var hasAudio, hasVideo bool
 	var absTS uint32
-	var head util.Memory
+	var head gomem.Memory
 	head, err = reader.ReadBytes(13)
 	if err == nil {
 		var flvHead [3]byte
@@ -29,7 +30,7 @@ func Echo(r io.Reader) (err error) {
 	}
 	var startTs uint32
 	fmt.Println(hasAudio, hasVideo)
-	allocator := util.NewScalableMemoryAllocator(1 << 10)
+	allocator := gomem.NewScalableMemoryAllocator(1 << 10)
 	var tagSize int
 	for offsetTs := absTS; err == nil; tagSize, err = reader.ReadBE(4) {
 		fmt.Println(tagSize)

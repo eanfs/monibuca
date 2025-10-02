@@ -4,9 +4,9 @@ import (
 	"bytes"
 
 	srt "github.com/datarhei/gosrt"
-	"github.com/langhuihui/gotask"
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	mpegts "m7s.live/v5/pkg/format/ts"
-	"m7s.live/v5/pkg/util"
 )
 
 type Receiver struct {
@@ -16,7 +16,7 @@ type Receiver struct {
 }
 
 func (r *Receiver) Start() error {
-	r.Allocator = util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	r.Allocator = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	r.Using(r.Allocator, r.Publisher)
 	r.OnStop(r.Conn.Close)
 	return nil

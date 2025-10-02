@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
@@ -46,7 +47,7 @@ func (st *SnapshotTask) Run() error {
 			return fmt.Errorf("failed to read frame: %w", err)
 		}
 		annexB = reader.Value.Wraps[track.WrapIndex].(*format.AnnexB)
-		var mem util.Memory
+		var mem gomem.Memory
 		mem.CopyFrom(&annexB.Memory)
 		reader.StopRead()
 		cmd = exec.CommandContext(st, "ffmpeg", ffmpegArgs...)

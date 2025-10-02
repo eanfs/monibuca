@@ -135,7 +135,7 @@ SinglePortReader 适配了多路复用的数据流，将其转换为标准的 io
 
 在实际应用中，我们还需要考虑性能优化：
 
-1. **内存复用**：通过 `util.Buffer` 和 `util.Memory` 来减少内存分配
+1. **内存复用**：通过 `util.Buffer` 和 `gomem.Memory` 来减少内存分配
 2. **缓冲机制**：在 RTPPayloadReader 中使用缓冲区来处理不完整的数据包
 3. **错误处理**：通过 `errors.Join` 来合并多个错误信息
 

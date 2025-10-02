@@ -6,9 +6,9 @@ import (
 
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/codec/h265parser"
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/util"
 )
 
 var _ pkg.IAVFrame = (*RawAudio)(nil)
@@ -18,7 +18,7 @@ type RawAudio struct {
 }
 
 func (r *RawAudio) GetSize() int {
-	return r.Raw.(*util.Memory).Size
+	return r.Raw.(*gomem.Memory).Size
 }
 
 func (r *RawAudio) Demux() error {
@@ -28,7 +28,7 @@ func (r *RawAudio) Demux() error {
 
 func (r *RawAudio) Mux(from *pkg.Sample) (err error) {
 	r.InitRecycleIndexes(0)
-	r.Memory = *from.Raw.(*util.Memory)
+	r.Memory = *from.Raw.(*gomem.Memory)
 	r.ICodecCtx = from.GetBase()
 	return
 }

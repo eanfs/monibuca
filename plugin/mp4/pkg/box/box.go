@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"unsafe"
 
-	"m7s.live/v5/pkg/util"
+	"github.com/langhuihui/gomem"
 )
 
 type (
@@ -38,7 +38,7 @@ type (
 	}
 	MemoryBox struct {
 		BaseBox
-		Data util.Memory
+		Data gomem.Memory
 	}
 	BigBox struct {
 		BaseBox
@@ -83,7 +83,7 @@ func CreateDataBox(typ BoxType, data []byte) *DataBox {
 	}
 }
 
-func CreateMemoryBox(typ BoxType, mem util.Memory) *MemoryBox {
+func CreateMemoryBox(typ BoxType, mem gomem.Memory) *MemoryBox {
 	return &MemoryBox{
 		BaseBox: BaseBox{
 			typ:  typ,

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
@@ -49,7 +50,7 @@ func (p *RecordReader) Run() (err error) {
 	// 简化的时间戳管理变量
 	var ts int64       // 当前时间戳
 	var tsOffset int64 // 时间戳偏移量
-	allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	defer allocator.Recycle()
 	// 创建 PublishWriter
 	var writer m7s.PublishWriter[*AudioFrame, *VideoFrame]

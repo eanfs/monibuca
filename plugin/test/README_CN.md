@@ -231,7 +231,7 @@ func (ts *TestCase) Write(buf []byte) (int, error) {
 ## 性能考虑
 
 ### 内存管理
-- 使用 `util.Memory` 进行高效的缓冲区管理
+- 使用 `gomem.Memory` 进行高效的缓冲区管理
 - 为临时文件和进程实现适当的清理
 - 利用 Go 的垃圾收集器进行自动内存管理
 

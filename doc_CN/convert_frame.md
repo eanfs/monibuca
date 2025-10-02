@@ -259,7 +259,7 @@ type BaseSample struct {
 
 ### 内存池化管理
 
-通过`util.ScalableMemoryAllocator`实现内存池：
+通过`gomem.ScalableMemoryAllocator`实现内存池：
 - 预分配内存块，避免频繁的malloc/free
 - 根据负载动态调整池大小
 - 减少内存碎片和GC压力

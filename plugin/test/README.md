@@ -231,7 +231,7 @@ The Test Plugin seamlessly integrates with Monibuca's plugin architecture:
 ## Performance Considerations
 
 ### Memory Management
-- Uses `util.Memory` for efficient buffer management
+- Uses `gomem.Memory` for efficient buffer management
 - Implements proper cleanup for temporary files and processes
 - Leverages Go's garbage collector for automatic memory management
 

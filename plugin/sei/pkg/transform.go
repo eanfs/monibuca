@@ -2,6 +2,7 @@ package sei
 
 import (
 	"github.com/deepch/vdk/codec/h265parser"
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -48,7 +49,7 @@ func (t *Transformer) Run() (err error) {
 		return
 	}
 	pub := t.TransformJob.Publisher
-	allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	defer allocator.Recycle()
 	writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
 	return m7s.PlayBlock(t.TransformJob.Subscriber, func(audio *format.RawAudio) (err error) {

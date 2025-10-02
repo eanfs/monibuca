@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	mpegps "m7s.live/v5/pkg/format/ps"
 	"m7s.live/v5/pkg/util"
@@ -46,7 +47,7 @@ func (p *PSReceiver) Start() error {
 }
 
 func (p *PSReceiver) Run() error {
-	p.MpegPsDemuxer.Allocator = util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	p.MpegPsDemuxer.Allocator = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	p.Using(p.MpegPsDemuxer.Allocator)
 
 	// 确保Publisher已设置

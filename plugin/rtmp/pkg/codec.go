@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/util"
 )
 
 type (
@@ -138,7 +138,7 @@ func (p *AV1Ctx) GetInfo() string {
 	return fmt.Sprintf("% 02X", p.ConfigOBUs)
 }
 
-func (p *AV1Ctx) Unmarshal(data *util.MemoryReader) (err error) {
+func (p *AV1Ctx) Unmarshal(data *gomem.MemoryReader) (err error) {
 	if data.Length < 4 {
 		err = io.ErrShortWrite
 		return

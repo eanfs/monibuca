@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
@@ -76,7 +77,7 @@ type NetConnection struct {
 	AppName                       string
 	tmpBuf                        AMF //用来接收/发送小数据，复用内存
 	chunkHeaderBuf                util.Buffer
-	mediaDataPool                 *util.ScalableMemoryAllocator
+	mediaDataPool                 *gomem.ScalableMemoryAllocator
 	writing                       atomic.Bool // false 可写，true 不可写
 	Writers                       Writers
 	sendBuffers                   net.Buffers
@@ -97,7 +98,7 @@ func (nc *NetConnection) Init(conn net.Conn) {
 	nc.incommingChunks = make(map[uint32]*Chunk)
 	nc.tmpBuf = make(AMF, 4)
 	nc.chunkHeaderBuf = make(util.Buffer, 0, 20)
-	nc.mediaDataPool = util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	nc.mediaDataPool = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	nc.sendBuffers = make(net.Buffers, 0, 50)
 	nc.Writers = make(Writers)
 }
@@ -466,10 +467,10 @@ func (nc *NetConnection) SendMessage(t byte, msg RtmpMessage) (err error) {
 	if sid, ok := msg.(HaveStreamID); ok {
 		head.MessageStreamID = sid.GetStreamID()
 	}
-	return nc.sendChunk(util.NewMemory(nc.tmpBuf), head, RTMP_CHUNK_HEAD_12)
+	return nc.sendChunk(gomem.NewMemory(nc.tmpBuf), head, RTMP_CHUNK_HEAD_12)
 }
 
-func (nc *NetConnection) sendChunk(mem util.Memory, head *ChunkHeader, headType byte) (err error) {
+func (nc *NetConnection) sendChunk(mem gomem.Memory, head *ChunkHeader, headType byte) (err error) {
 	nc.SetWriteDeadline(time.Now().Add(time.Second * 5)) // 设置写入超时时间为5秒
 	head.WriteTo(headType, &nc.chunkHeaderBuf)
 	defer func(reuse net.Buffers) {
@@ -495,7 +496,7 @@ func (nc *NetConnection) sendChunk(mem util.Memory, head *ChunkHeader, headType 
 	return err
 }
 
-func (nc *NetConnection) GetMediaDataPool() *util.ScalableMemoryAllocator {
+func (nc *NetConnection) GetMediaDataPool() *gomem.ScalableMemoryAllocator {
 	return nc.mediaDataPool
 }
 

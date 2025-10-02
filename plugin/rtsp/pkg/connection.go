@@ -13,6 +13,7 @@ import (
 
 	"m7s.live/v5/pkg"
 
+	"github.com/langhuihui/gomem"
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
@@ -24,7 +25,7 @@ func NewNetConnection(conn net.Conn) *NetConnection {
 	return &NetConnection{
 		Conn:            conn,
 		BufReader:       util.NewBufReaderWithTimeout(conn, Timeout),
-		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
+		MemoryAllocator: gomem.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
 }
@@ -38,7 +39,7 @@ type NetConnection struct {
 	SessionName     string
 	Timeout         int
 	Transport       string // custom transport support, ex. RTSP over WebSocket
-	MemoryAllocator *util.ScalableMemoryAllocator
+	MemoryAllocator *gomem.ScalableMemoryAllocator
 	UserAgent       string
 	URL             *url.URL
 
@@ -148,7 +149,7 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	c.URL = rtspURL
 	c.URL.User = nil
 	c.SetDescription("remoteAddr", conn.RemoteAddr().String())
-	c.MemoryAllocator = util.NewScalableMemoryAllocator(1 << 12)
+	c.MemoryAllocator = gomem.NewScalableMemoryAllocator(1 << 12)
 	// c.Backchannel = true
 	return
 }

@@ -326,7 +326,7 @@ The methods serve the following purposes:
 
 ### Memory Management
 The new pattern includes built-in memory management:
-- `util.ScalableMemoryAllocator` - For efficient memory allocation
+- `gomem.ScalableMemoryAllocator` - For efficient memory allocation
 - Frame recycling through `Recycle()` method
 - Automatic memory pool management
 
@@ -375,7 +375,7 @@ func publishRawH264Stream(streamPath string, h264Frames [][]byte) error {
     }
     
     // Create memory allocator
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     
     // Create writer for H26xFrame
@@ -421,7 +421,7 @@ func continuousH264Publishing(streamPath string, frameSource <-chan []byte, stop
     defer publisher.Dispose()
     
     // Create memory allocator
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     
     // Create writer for H26xFrame
@@ -544,7 +544,7 @@ naluType := codec.ParseH265NALUType(mem[0])
 
 ```go
 // Use memory allocators for efficient operations
-allocator := util.NewScalableMemoryAllocator(1 << 20) // 1MB initial size
+allocator := gomem.NewScalableMemoryAllocator(1 << 20) // 1MB initial size
 defer allocator.Recycle()
 
 // When processing multiple frames, reuse the same allocator

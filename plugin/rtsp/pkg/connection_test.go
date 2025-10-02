@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"gopkg.in/yaml.v3"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/util"
@@ -170,7 +171,7 @@ func TestNetConnection_Pull(t *testing.T) {
 	client.NetConnection = &NetConnection{Conn: conn}
 	client.BufReader = util.NewBufReader(conn)
 	client.URL, _ = url.Parse("rtsp://127.0.0.1:8554/dump/test")
-	client.MemoryAllocator = util.NewScalableMemoryAllocator(1 << 12)
+	client.MemoryAllocator = gomem.NewScalableMemoryAllocator(1 << 12)
 	client.Logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 	client.Context, client.CancelCauseFunc = context.WithCancelCause(context.Background())
 	client.Run()
