@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/langhuihui/gomem"
 
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
