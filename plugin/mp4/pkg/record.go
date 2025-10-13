@@ -15,7 +15,6 @@ import (
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/plugin/mp4/pkg/box"
-	s3plugin "m7s.live/v5/plugin/s3"
 )
 
 type WriteTrailerQueueTask struct {
