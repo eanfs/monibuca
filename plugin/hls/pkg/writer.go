@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/format"
@@ -94,12 +95,12 @@ func (w *HLSWriter) Run() (err error) {
 	return m7s.PlayBlock(subscriber, func(audio *format.Mpeg2Audio) error {
 		pesAudio.Pts = uint64(subscriber.AudioReader.AbsTime) * 90
 		if w.checkNoBodyRead() {
-			return ErrNoBodyRead
+			return errors.Join(ErrNoBodyRead, task.ErrStopByUser)
 		}
 		return pesAudio.WritePESPacket(audio.Memory, &w.ts.RecyclableMemory)
 	}, func(video *mpegts.VideoFrame) (err error) {
 		if w.checkNoBodyRead() {
-			return ErrNoBodyRead
+			return errors.Join(ErrNoBodyRead, task.ErrStopByUser)
 		}
 		vr := w.TransformJob.Subscriber.VideoReader
 		if vr.Value.IDR {

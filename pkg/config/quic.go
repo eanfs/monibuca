@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"log/slog"
 
+	"github.com/langhuihui/gotask"
 	"github.com/quic-go/quic-go"
-	"m7s.live/v5/pkg/task"
 )
 
 type QuicConfig interface {

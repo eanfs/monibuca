@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gotask"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"m7s.live/v5"
@@ -17,7 +18,6 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"m7s.live/v5/pkg/task"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 
@@ -134,7 +134,7 @@ func (p *Platform) Keepalive() (*sipgo.DialogClientSession, error) {
 
 	csqHeader := sip.CSeqHeader{
 		SeqNo:      uint32(p.SN),
-		MethodName: "REGISTER",
+		MethodName: "MESSAGE",
 	}
 	p.SN++
 	req.AppendHeader(&csqHeader)
@@ -852,7 +852,7 @@ func (p *Platform) buildChannelItem(channel gb28181.DeviceChannel) string {
 		channel.RegisterWay, // 直接使用整数值
 		channel.Secrecy,     // 直接使用整数值
 		parentID,
-		channel.Parental,  // 直接使用整数值
+		channel.Parental, // 直接使用整数值
 		channel.SafetyWay) // 直接使用整数值
 }
 

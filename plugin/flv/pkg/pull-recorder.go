@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
@@ -51,7 +52,7 @@ func (p *RecordReader) Run() (err error) {
 	if publisher == nil {
 		return pkg.ErrDisabled
 	}
-	allocator := util.NewScalableMemoryAllocator(1 << 10)
+	allocator := gomem.NewScalableMemoryAllocator(1 << 10)
 	writer := m7s.NewPublisherWriter[*rtmp.AudioFrame, *rtmp.VideoFrame](publisher, allocator)
 	var tagHeader [11]byte
 	var ts int64
@@ -81,7 +82,7 @@ func (p *RecordReader) Run() (err error) {
 				p.reader.Recycle()
 			}
 			p.reader = util.NewBufReader(p.File)
-			var head util.Memory
+			var head gomem.Memory
 			head, err = p.reader.ReadBytes(9)
 			if err != nil {
 				return

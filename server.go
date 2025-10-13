@@ -18,8 +18,8 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 
 	sysruntime "runtime"
 
@@ -101,7 +101,7 @@ type (
 
 		ServerConfig
 		Plugins           util.Collection[string, *Plugin]
-		Streams           task.Manager[string, *Publisher]
+		Streams           util.Manager[string, *Publisher]
 		AliasStreams      util.Collection[string, *AliasStream]
 		Waiting           WaitManager
 		Pulls             task.WorkCollection[string, *PullJob]

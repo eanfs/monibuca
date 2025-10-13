@@ -133,7 +133,7 @@ Factory functions like `NewRTPTCPReader`, `NewRTPUDPReader`, etc., are used to c
 
 In practical applications, we also need to consider performance optimization:
 
-1. **Memory Reuse**: Using `util.Buffer` and `util.Memory` to reduce memory allocation
+1. **Memory Reuse**: Using `util.Buffer` and `gomem.Memory` to reduce memory allocation
 2. **Buffering Mechanism**: Using buffers in RTPPayloadReader to handle incomplete packets
 3. **Error Handling**: Using `errors.Join` to combine multiple error messages
 

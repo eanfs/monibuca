@@ -1,10 +1,10 @@
 package plugin_gb28181pro
 
 import (
-	"github.com/emiago/sipgo/sip"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/emiago/sipgo/sip"
+	"github.com/langhuihui/gotask"
 )
 
 // CatalogSubscribeTask 目录订阅任务

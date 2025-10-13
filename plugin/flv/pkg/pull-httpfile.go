@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/util"
@@ -27,7 +28,7 @@ func (p *Puller) Run() (err error) {
 	}
 	var hasAudio, hasVideo bool
 	var absTS uint32
-	var head util.Memory
+	var head gomem.Memory
 	head, err = reader.ReadBytes(13)
 	if err == nil {
 		var flvHead [3]byte
@@ -49,7 +50,7 @@ func (p *Puller) Run() (err error) {
 	if !hasVideo {
 		pubConf.PubVideo = false
 	}
-	allocator := util.NewScalableMemoryAllocator(1 << 10)
+	allocator := gomem.NewScalableMemoryAllocator(1 << 10)
 	defer allocator.Recycle()
 	writer := m7s.NewPublisherWriter[*rtmp.AudioFrame, *rtmp.VideoFrame](publisher, allocator)
 

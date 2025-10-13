@@ -7,9 +7,10 @@ import (
 	"net"
 	"strings"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"github.com/pion/rtp"
 	mpegps "m7s.live/v5/pkg/format/ps"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -75,7 +76,7 @@ func (p *PSReceiver) Start() error {
 }
 
 func (p *PSReceiver) Run() error {
-	p.MpegPsDemuxer.Allocator = util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	p.MpegPsDemuxer.Allocator = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	p.Using(p.MpegPsDemuxer.Allocator)
 	return p.MpegPsDemuxer.Feed(p.BufReader)
 }

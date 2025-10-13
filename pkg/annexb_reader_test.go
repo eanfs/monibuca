@@ -6,11 +6,11 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/util"
 )
 
-func bytesFromMemory(m util.Memory) []byte {
+func bytesFromMemory(m gomem.Memory) []byte {
 	if m.Size == 0 {
 		return nil
 	}
@@ -37,7 +37,7 @@ func TestAnnexBReader_ReadNALU_Basic(t *testing.T) {
 	reader.AppendBuffer(append(buf, codec.NALU_Delimiter2[:]...))
 
 	// 读取并校验 3 个 NALU（不包含起始码）
-	var n util.Memory
+	var n gomem.Memory
 	if err := reader.ReadNALU(nil, &n); err != nil {
 		t.Fatalf("read nalu 1: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestAnnexBReader_ReadNALU_Basic(t *testing.T) {
 		t.Fatalf("nalu1 mismatch")
 	}
 
-	n = util.Memory{}
+	n = gomem.Memory{}
 	if err := reader.ReadNALU(nil, &n); err != nil {
 		t.Fatalf("read nalu 2: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestAnnexBReader_ReadNALU_Basic(t *testing.T) {
 		t.Fatalf("nalu2 mismatch")
 	}
 
-	n = util.Memory{}
+	n = gomem.Memory{}
 	if err := reader.ReadNALU(nil, &n); err != nil {
 		t.Fatalf("read nalu 3: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestAnnexBReader_AppendBuffer_MultiChunk_Random(t *testing.T) {
 
 	// 依次读取并校验
 	for idx, expected := range expectedPayloads {
-		var n util.Memory
+		var n gomem.Memory
 		if err := reader.ReadNALU(nil, &n); err != nil {
 			t.Fatalf("read nalu %d: %v", idx+1, err)
 		}
@@ -123,7 +123,7 @@ func TestAnnexBReader_AppendBuffer_MultiChunk_Random(t *testing.T) {
 	}
 
 	// 没有更多 NALU
-	var n util.Memory
+	var n gomem.Memory
 	if err := reader.ReadNALU(nil, &n); err != nil {
 		t.Fatalf("expected nil error when no more nalu, got: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestAnnexBReader_StartCodeAcrossBuffers(t *testing.T) {
 	reader.AppendBuffer([]byte{0x00})
 	reader.AppendBuffer([]byte{0x01, 0x11, 0x22, 0x33}) // payload: 11 22 33
 	reader.AppendBuffer(codec.NALU_Delimiter2[:])
-	var n util.Memory
+	var n gomem.Memory
 	if err := reader.ReadNALU(nil, &n); err != nil {
 		t.Fatalf("read nalu: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestAnnexBReader_EmbeddedAnnexB_H265(t *testing.T) {
 	for _, size := range clipSizesH264 {
 		reader.AppendBuffer(annexbH264Sample[offset : offset+size])
 		offset += size
-		var nalu util.Memory
+		var nalu gomem.Memory
 		if err := reader.ReadNALU(nil, &nalu); err != nil {
 			t.Fatalf("read nalu: %v", err)
 		} else {

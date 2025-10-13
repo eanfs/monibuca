@@ -3,7 +3,7 @@ package plugin_gb28181pro
 import (
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 )
 
 // AlarmSubscribeTask 报警订阅任务

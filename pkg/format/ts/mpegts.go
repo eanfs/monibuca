@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/format"
@@ -108,7 +109,7 @@ type MpegTsStream struct {
 	PAT                        MpegTsPAT // PAT表信息
 	PMT                        MpegTsPMT // PMT表信息
 	Publisher                  *m7s.Publisher
-	Allocator                  *util.ScalableMemoryAllocator
+	Allocator                  *gomem.ScalableMemoryAllocator
 	writer                     m7s.PublishWriter[*format.Mpeg2Audio, *VideoFrame]
 	audioPID, videoPID, pmtPID uint16
 	tsPacket                   [TS_PACKET_SIZE]byte

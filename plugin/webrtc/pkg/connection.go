@@ -7,12 +7,12 @@ import (
 	"strings" // Add this import
 	"time"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"github.com/pion/rtcp"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/task"
-	"m7s.live/v5/pkg/util"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
 )
@@ -109,7 +109,7 @@ func (IO *MultipleConnection) Receive() {
 			if !puber.PubAudio {
 				return
 			}
-			mem := util.NewScalableMemoryAllocator(1 << 12)
+			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
 			writer := m7s.NewPublishAudioWriter[*mrtp.AudioFrame](puber, mem)
 			frame := writer.AudioFrame
@@ -169,7 +169,7 @@ func (IO *MultipleConnection) Receive() {
 				return
 			}
 			var lastPLISent time.Time
-			mem := util.NewScalableMemoryAllocator(1 << 12)
+			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
 			writer := m7s.NewPublishVideoWriter[*mrtp.VideoFrame](puber, mem)
 			// 根据编解码器类型设置上下文
@@ -385,7 +385,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 		dc.OnOpen(func() {
 			var live flv.Live
 			live.WriteFlvTag = func(buffers net.Buffers) (err error) {
-				r := util.NewReadableBuffersFromBytes(buffers...)
+				r := gomem.NewReadableBuffersFromBytes(buffers...)
 				for r.Length > 65535 {
 					r.RangeN(65535, func(buf []byte) {
 						err = dc.Send(buf)

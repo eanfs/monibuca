@@ -4,10 +4,10 @@ import (
 	"net/url"
 
 	srt "github.com/datarhei/gosrt"
+	"github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 )
 
 // Fixed steps for SRT pull workflow

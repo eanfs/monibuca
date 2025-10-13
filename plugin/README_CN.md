@@ -323,7 +323,7 @@ IAVFrame interface {
 
 ### 内存管理
 新的模式包含内置的内存管理：
-- `util.ScalableMemoryAllocator` - 用于高效的内存分配
+- `gomem.ScalableMemoryAllocator` - 用于高效的内存分配
 - 通过 `Recycle()` 方法进行帧回收
 - 自动内存池管理
 
@@ -373,7 +373,7 @@ func publishRawH264Stream(streamPath string, h264Frames [][]byte) error {
     }
     
     // 创建内存分配器
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     
     // 创建 H26xFrame 写入器
@@ -418,7 +418,7 @@ func continuousH264Publishing(streamPath string, frameSource <-chan []byte, stop
     defer publisher.Dispose()
     
     // 创建内存分配器
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     
     // 创建 H26xFrame 写入器
@@ -541,7 +541,7 @@ naluType := codec.ParseH265NALUType(mem[0])
 
 ```go
 // 使用内存分配器进行高效操作
-allocator := util.NewScalableMemoryAllocator(1 << 20) // 1MB 初始大小
+allocator := gomem.NewScalableMemoryAllocator(1 << 20) // 1MB 初始大小
 defer allocator.Recycle()
 
 // 处理多帧时重用同一个分配器

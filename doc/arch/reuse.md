@@ -57,7 +57,7 @@ The new version implements object reuse through the PublishWriter pattern:
 // New version - Object reuse approach
 func publishWithReuse(publisher *Publisher) {
     // 1. Create memory allocator with pre-allocated memory
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     // 2. Create writer with object reuse
@@ -128,7 +128,7 @@ The new version introduces a generic-based PublishWriter pattern that implements
 ```go
 // New version usage
 func publishWithNewAPI(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
@@ -153,7 +153,7 @@ audioFrame := &AudioFrame{Data: data}
 publisher.WriteAudio(audioFrame)  // Internally creates multiple wrapper objects
 
 // New version - Reuse objects
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()
 writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
 copy(writer.AudioFrame.NextN(len(data)), data)
@@ -163,7 +163,7 @@ writer.NextAudio()  // Reuse object, no new object creation
 2. **Add Memory Management**
 ```go
 // New version must add memory allocator
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()  // Ensure resource release
 ```
 
@@ -185,7 +185,7 @@ func simplePublish(publisher *Publisher, audioData, videoData []byte) {
 
 // New version
 func simplePublish(publisher *Publisher, audioData, videoData []byte) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -211,7 +211,7 @@ func transformStream(subscriber *Subscriber, publisher *Publisher) {
 
 // New version - Reuse objects to avoid repeated creation
 func transformStream(subscriber *Subscriber, publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -236,7 +236,7 @@ func handleMultiFormatOld(publisher *Publisher, data IAVFrame) {
 
 // New version - Pre-allocate and reuse
 func handleMultiFormatNew(publisher *Publisher, data IAVFrame) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -307,7 +307,7 @@ func (m *Memory) Reset() {
 **Scenario 1: Object Reuse in NALU Processing**
 ```go
 // In video frame processing, NALU array uses ReuseArray
-type Nalus = util.ReuseArray[util.Memory]
+type Nalus = util.ReuseArray[gomem.Memory]
 
 func (r *VideoFrame) Demux() error {
     nalus := r.GetNalus()  // Get NALU reuse array
@@ -326,7 +326,7 @@ SEI insertion achieves efficient processing through object reuse:
 
 ```go
 func (t *Transformer) Run() (err error) {
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
     
@@ -359,7 +359,7 @@ func (t *Transformer) Run() (err error) {
 ```go
 func (r *VideoFrame) Demux() error {
     nalus := r.GetNalus()
-    var nalu *util.Memory
+    var nalu *gomem.Memory
     
     for packet := range r.Packets.RangePoint {
         switch t := codec.ParseH264NALUType(b0); t {
@@ -390,9 +390,9 @@ func (r *VideoFrame) Demux() error {
 ```go
 // Legacy version - Create new object each time
 func processNalusOld(packets []RTPPacket) {
-    var nalus []util.Memory
+    var nalus []gomem.Memory
     for _, packet := range packets {
-        nalu := util.Memory{}  // Create new object each time
+        nalu := gomem.Memory{}  // Create new object each time
         nalu.PushOne(packet.Payload)
         nalus = append(nalus, nalu)  // Memory allocation
     }
@@ -403,7 +403,7 @@ func processNalusOld(packets []RTPPacket) {
 ```go
 // New version - Reuse objects
 func processNalusNew(packets []RTPPacket) {
-    var nalus util.ReuseArray[util.Memory]
+    var nalus util.ReuseArray[gomem.Memory]
     for _, packet := range packets {
         nalu := nalus.GetNextPointer()  // Reuse object, zero allocation
         nalu.PushOne(packet.Payload)
@@ -482,7 +482,7 @@ type AVFrame struct {
 
 type Sample struct {
     codec.ICodecCtx
-    util.RecyclableMemory  // Recyclable memory
+    gomem.RecyclableMemory  // Recyclable memory
     *BaseSample
 }
 ```
@@ -514,7 +514,7 @@ type PublishWriter[A IAVFrame, V IAVFrame] struct {
 **Usage Flow:**
 ```go
 // 1. Create allocator
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()
 
 // 2. Create writer
@@ -552,7 +552,7 @@ func BenchmarkOldVsNew(b *testing.B) {
     
     // New version test
     b.Run("NewPublishWriter", func(b *testing.B) {
-        allocator := util.NewScalableMemoryAllocator(1 << 12)
+        allocator := gomem.NewScalableMemoryAllocator(1 << 12)
         defer allocator.Recycle()
         writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
         
@@ -581,7 +581,7 @@ func BenchmarkOldVsNew(b *testing.B) {
 ```go
 // Step 1: Keep original logic, add allocator
 func migrateStep1(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     // Temporarily keep old way, but added memory management
@@ -591,7 +591,7 @@ func migrateStep1(publisher *Publisher) {
 
 // Step 2: Gradually replace with PublishWriter
 func migrateStep2(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
@@ -603,15 +603,15 @@ func migrateStep2(publisher *Publisher) {
 #### 5.1.2 Memory Allocator Selection
 ```go
 // Choose appropriate allocator size based on scenario
-var allocator *util.ScalableMemoryAllocator
+var allocator *gomem.ScalableMemoryAllocator
 
 switch scenario {
 case "high_fps":
-    allocator = util.NewScalableMemoryAllocator(1 << 14)  // 16KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 14)  // 16KB
 case "low_latency":
-    allocator = util.NewScalableMemoryAllocator(1 << 10)  // 1KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 10)  // 1KB
 case "high_throughput":
-    allocator = util.NewScalableMemoryAllocator(1 << 16)  // 64KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 16)  // 64KB
 }
 ```
 
@@ -621,13 +621,13 @@ case "high_throughput":
 ```go
 // Wrong: Forget to recycle memory
 func badExample() {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     // Forget defer allocator.Recycle()
 }
 
 // Correct: Ensure resource release
 func goodExample() {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()  // Ensure release
 }
 ```
@@ -662,7 +662,7 @@ func handleWebRTCOld(track *webrtc.TrackRemote, publisher *Publisher) {
 
 // New WebRTC processing
 func handleWebRTCNew(track *webrtc.TrackRemote, publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublishVideoWriter[*VideoFrame](publisher, allocator)
     
@@ -695,7 +695,7 @@ func pullFLVOld(publisher *Publisher, file *os.File) {
 
 // New FLV stream pulling
 func pullFLVNew(publisher *Publisher, file *os.File) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     

@@ -14,9 +14,9 @@ import (
 	"github.com/emiago/sipgo/sip"
 	myip "github.com/husanpao/ip"
 	"github.com/icholy/digest"
+	"github.com/langhuihui/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
 )
@@ -327,7 +327,7 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 		//}
 		task.gb.DB.Save(d)
 	}
-	d.catalog()
+	//d.catalog()
 	return
 }
 

@@ -3,13 +3,13 @@ package pkg
 import (
 	"fmt"
 
-	"m7s.live/v5/pkg/util"
+	"github.com/langhuihui/gomem"
 )
 
 // AnnexBReader 专门用于读取 AnnexB 格式数据的读取器
 // 模仿 MemoryReader 结构，支持跨切片读取和动态数据管理
 type AnnexBReader struct {
-	util.Memory                  // 存储数据的多段内存
+	gomem.Memory                 // 存储数据的多段内存
 	Length, offset0, offset1 int // 可读长度和当前读取位置
 }
 
@@ -99,7 +99,7 @@ func (r *AnnexBReader) getByteAt(pos int) byte {
 }
 
 type InvalidDataError struct {
-	util.Memory
+	gomem.Memory
 }
 
 func (e InvalidDataError) Error() string {
@@ -110,7 +110,7 @@ func (e InvalidDataError) Error() string {
 // withStart 用于接收“包含起始码”的内存段
 // withoutStart 用于接收“不包含起始码”的内存段
 // 允许 withStart 或 withoutStart 为 nil（表示调用方不需要该形式的数据）
-func (r *AnnexBReader) ReadNALU(withStart, withoutStart *util.Memory) error {
+func (r *AnnexBReader) ReadNALU(withStart, withoutStart *gomem.Memory) error {
 	r.ClipFront()
 	// 定位到第一个起始码
 	firstPos, startCodeLen, found := r.FindStartCode()
@@ -120,8 +120,8 @@ func (r *AnnexBReader) ReadNALU(withStart, withoutStart *util.Memory) error {
 
 	// 跳过起始码之前的无效数据
 	if firstPos > 0 {
-		var invalidData util.Memory
-		var reader util.MemoryReader
+		var invalidData gomem.Memory
+		var reader gomem.MemoryReader
 		reader.Memory = &r.Memory
 		reader.RangeN(firstPos, invalidData.PushOne)
 		return InvalidDataError{invalidData}

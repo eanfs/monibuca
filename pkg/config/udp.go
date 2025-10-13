@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	task "github.com/langhuihui/gotask"
 )
 
 type UDP struct {

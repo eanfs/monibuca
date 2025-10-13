@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -258,7 +259,7 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 	t.Run("PESGeneration", func(t *testing.T) {
 		// Create a test that simulates PES packet generation
 		// without requiring a full subscriber setup
-		
+
 		// Create test payload
 		testPayload := make([]byte, 5000)
 		for i := range testPayload {
@@ -273,11 +274,11 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 		pesFrame.Dts = 90000
 
 		// Create allocator for testing
-		allocator := util.NewScalableMemoryAllocator(1024*1024)
-		packet := util.NewRecyclableMemory(allocator)
+		allocator := gomem.NewScalableMemoryAllocator(1024 * 1024)
+		packet := gomem.NewRecyclableMemory(allocator)
 
 		// Write PES packet
-		err := pesFrame.WritePESPacket(util.NewMemory(testPayload), &packet)
+		err := pesFrame.WritePESPacket(gomem.NewMemory(testPayload), &packet)
 		if err != nil {
 			t.Fatalf("WritePESPacket failed: %v", err)
 		}
@@ -298,7 +299,7 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 
 		// Test reading back the packet
 		reader := util.NewBufReader(bytes.NewReader(packetData))
-		
+
 		// Skip PS header
 		code, err := reader.ReadBE32(4)
 		if err != nil {
@@ -324,7 +325,7 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 		// Read PES packets directly by parsing the PES structure
 		totalPayloadSize := 0
 		packetCount := 0
-		
+
 		for reader.Buffered() > 0 {
 			// Read PES packet start code (0x00000100 + stream_id)
 			pesStartCode, err := reader.ReadBE32(4)
@@ -334,46 +335,46 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 				}
 				t.Fatalf("Failed to read PES start code: %v", err)
 			}
-			
+
 			// Check if it's a PES packet (starts with 0x000001)
 			if pesStartCode&0xFFFFFF00 != 0x00000100 {
 				t.Errorf("Invalid PES start code: %x", pesStartCode)
 				break
 			}
-			
+
 			// // streamID := byte(pesStartCode & 0xFF)
 			t.Logf("PES packet %d: stream_id=0x%02x", packetCount+1, pesStartCode&0xFF)
-			
+
 			// Read PES packet length
 			pesLength, err := reader.ReadBE(2)
 			if err != nil {
 				t.Fatalf("Failed to read PES length: %v", err)
 			}
-			
+
 			// Read PES header
 			// Skip the first byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags1: %v", err)
 			}
-			
+
 			// Skip the second byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags2: %v", err)
 			}
-			
+
 			// Read header data length
 			headerDataLength, err := reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES header data length: %v", err)
 			}
-			
+
 			// Skip header data
 			if err = reader.Skip(int(headerDataLength)); err != nil {
 				t.Fatalf("Failed to skip PES header data: %v", err)
 			}
-			
+
 			// Calculate payload size
 			payloadSize := pesLength - 3 - int(headerDataLength) // 3 = flags1 + flags2 + headerDataLength
 			if payloadSize > 0 {
@@ -382,11 +383,11 @@ func TestMpegPSMuxerBasic(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to read PES payload: %v", err)
 				}
-				
+
 				totalPayloadSize += payload.Size
 				t.Logf("PES packet %d: %d bytes payload", packetCount+1, payload.Size)
 			}
-			
+
 			packetCount++
 		}
 
@@ -416,11 +417,11 @@ func TestPESPacketWriteRead(t *testing.T) {
 		pesFrame.Dts = 90000
 
 		// Create allocator for testing
-		allocator := util.NewScalableMemoryAllocator(1024)
-		packet := util.NewRecyclableMemory(allocator)
+		allocator := gomem.NewScalableMemoryAllocator(1024)
+		packet := gomem.NewRecyclableMemory(allocator)
 
 		// Write PES packet
-		err := pesFrame.WritePESPacket(util.NewMemory(testPayload), &packet)
+		err := pesFrame.WritePESPacket(gomem.NewMemory(testPayload), &packet)
 		if err != nil {
 			t.Fatalf("WritePESPacket failed: %v", err)
 		}
@@ -467,7 +468,7 @@ func TestPESPacketWriteRead(t *testing.T) {
 		// Read PES packet directly by parsing the PES structure
 		totalPayloadSize := 0
 		packetCount := 0
-		
+
 		for reader.Buffered() > 0 {
 			// Read PES packet start code (0x00000100 + stream_id)
 			pesStartCode, err := reader.ReadBE32(4)
@@ -477,46 +478,46 @@ func TestPESPacketWriteRead(t *testing.T) {
 				}
 				t.Fatalf("Failed to read PES start code: %v", err)
 			}
-			
+
 			// Check if it's a PES packet (starts with 0x000001)
 			if pesStartCode&0xFFFFFF00 != 0x00000100 {
 				t.Errorf("Invalid PES start code: %x", pesStartCode)
 				break
 			}
-			
+
 			// // streamID := byte(pesStartCode & 0xFF)
 			t.Logf("PES packet %d: stream_id=0x%02x", packetCount+1, pesStartCode&0xFF)
-			
+
 			// Read PES packet length
 			pesLength, err := reader.ReadBE(2)
 			if err != nil {
 				t.Fatalf("Failed to read PES length: %v", err)
 			}
-			
+
 			// Read PES header
 			// Skip the first byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags1: %v", err)
 			}
-			
+
 			// Skip the second byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags2: %v", err)
 			}
-			
+
 			// Read header data length
 			headerDataLength, err := reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES header data length: %v", err)
 			}
-			
+
 			// Skip header data
 			if err = reader.Skip(int(headerDataLength)); err != nil {
 				t.Fatalf("Failed to skip PES header data: %v", err)
 			}
-			
+
 			// Calculate payload size
 			payloadSize := pesLength - 3 - int(headerDataLength) // 3 = flags1 + flags2 + headerDataLength
 			if payloadSize > 0 {
@@ -525,11 +526,11 @@ func TestPESPacketWriteRead(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to read PES payload: %v", err)
 				}
-				
+
 				totalPayloadSize += payload.Size
 				t.Logf("PES packet %d: %d bytes payload", packetCount+1, payload.Size)
 			}
-			
+
 			packetCount++
 		}
 
@@ -564,12 +565,12 @@ func TestLargePESPacket(t *testing.T) {
 		pesFrame.Dts = 180000
 
 		// Create allocator for testing
-		allocator := util.NewScalableMemoryAllocator(1024*1024) // 1MB allocator
-		packet := util.NewRecyclableMemory(allocator)
+		allocator := gomem.NewScalableMemoryAllocator(1024 * 1024) // 1MB allocator
+		packet := gomem.NewRecyclableMemory(allocator)
 
 		// Write large PES packet
 		t.Logf("Writing large PES packet with %d bytes payload", len(largePayload))
-		err := pesFrame.WritePESPacket(util.NewMemory(largePayload), &packet)
+		err := pesFrame.WritePESPacket(gomem.NewMemory(largePayload), &packet)
 		if err != nil {
 			t.Fatalf("WritePESPacket failed for large payload: %v", err)
 		}
@@ -590,7 +591,7 @@ func TestLargePESPacket(t *testing.T) {
 		// Count number of PES packets (should be multiple due to size limitation)
 		pesCount := 0
 		reader := util.NewBufReader(bytes.NewReader(packetData))
-		
+
 		// Skip PS header
 		code, err := reader.ReadBE32(4)
 		if err != nil {
@@ -615,7 +616,7 @@ func TestLargePESPacket(t *testing.T) {
 
 		// Read and count PES packets
 		totalPayloadSize := 0
-		
+
 		for reader.Buffered() > 0 {
 			// Read PES packet start code (0x00000100 + stream_id)
 			pesStartCode, err := reader.ReadBE32(4)
@@ -625,45 +626,45 @@ func TestLargePESPacket(t *testing.T) {
 				}
 				t.Fatalf("Failed to read PES start code: %v", err)
 			}
-			
+
 			// Check if it's a PES packet (starts with 0x000001)
 			if pesStartCode&0xFFFFFF00 != 0x00000100 {
 				t.Errorf("Invalid PES start code: %x", pesStartCode)
 				break
 			}
-			
+
 			// streamID := byte(pesStartCode & 0xFF)
-			
+
 			// Read PES packet length
 			pesLength, err := reader.ReadBE(2)
 			if err != nil {
 				t.Fatalf("Failed to read PES length: %v", err)
 			}
-			
+
 			// Read PES header
 			// Skip the first byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags1: %v", err)
 			}
-			
+
 			// Skip the second byte (flags)
 			_, err = reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES flags2: %v", err)
 			}
-			
+
 			// Read header data length
 			headerDataLength, err := reader.ReadByte()
 			if err != nil {
 				t.Fatalf("Failed to read PES header data length: %v", err)
 			}
-			
+
 			// Skip header data
 			if err = reader.Skip(int(headerDataLength)); err != nil {
 				t.Fatalf("Failed to skip PES header data: %v", err)
 			}
-			
+
 			// Calculate payload size
 			payloadSize := pesLength - 3 - int(headerDataLength) // 3 = flags1 + flags2 + headerDataLength
 			if payloadSize > 0 {
@@ -672,11 +673,11 @@ func TestLargePESPacket(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to read PES payload: %v", err)
 				}
-				
+
 				totalPayloadSize += payload.Size
 				t.Logf("PES packet %d: %d bytes payload", pesCount+1, payload.Size)
 			}
-			
+
 			pesCount++
 		}
 
@@ -704,14 +705,14 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 	// Test PES packet boundary conditions
 	t.Run("BoundaryConditions", func(t *testing.T) {
 		testCases := []struct {
-			name     string
+			name        string
 			payloadSize int
 		}{
 			{"EmptyPayload", 0},
 			{"SmallPayload", 1},
 			{"ExactBoundary", MaxPESPayloadSize},
 			{"JustOverBoundary", MaxPESPayloadSize + 1},
-			{"MultipleBoundary", MaxPESPayloadSize * 2 + 100},
+			{"MultipleBoundary", MaxPESPayloadSize*2 + 100},
 		}
 
 		for _, tc := range testCases {
@@ -730,11 +731,11 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 				pesFrame.Dts = uint64(tc.payloadSize) * 90
 
 				// Create allocator for testing
-				allocator := util.NewScalableMemoryAllocator(1024*1024)
-				packet := util.NewRecyclableMemory(allocator)
+				allocator := gomem.NewScalableMemoryAllocator(1024 * 1024)
+				packet := gomem.NewRecyclableMemory(allocator)
 
 				// Write PES packet
-				err := pesFrame.WritePESPacket(util.NewMemory(testPayload), &packet)
+				err := pesFrame.WritePESPacket(gomem.NewMemory(testPayload), &packet)
 				if err != nil {
 					t.Fatalf("WritePESPacket failed: %v", err)
 				}
@@ -750,7 +751,7 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 				// For non-empty payloads, verify we can read them back
 				if tc.payloadSize > 0 {
 					reader := util.NewBufReader(bytes.NewReader(packetData))
-					
+
 					// Skip PS header
 					code, err := reader.ReadBE32(4)
 					if err != nil {
@@ -776,7 +777,7 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 					// Read PES packets
 					totalPayloadSize := 0
 					packetCount := 0
-					
+
 					for reader.Buffered() > 0 {
 						// Read PES packet start code (0x00000100 + stream_id)
 						pesStartCode, err := reader.ReadBE32(4)
@@ -786,45 +787,45 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 							}
 							t.Fatalf("Failed to read PES start code: %v", err)
 						}
-						
+
 						// Check if it's a PES packet (starts with 0x000001)
 						if pesStartCode&0xFFFFFF00 != 0x00000100 {
 							t.Errorf("Invalid PES start code: %x", pesStartCode)
 							break
 						}
-						
+
 						// // streamID := byte(pesStartCode & 0xFF)
-						
+
 						// Read PES packet length
 						pesLength, err := reader.ReadBE(2)
 						if err != nil {
 							t.Fatalf("Failed to read PES length: %v", err)
 						}
-						
+
 						// Read PES header
 						// Skip the first byte (flags)
 						_, err = reader.ReadByte()
 						if err != nil {
 							t.Fatalf("Failed to read PES flags1: %v", err)
 						}
-						
+
 						// Skip the second byte (flags)
 						_, err = reader.ReadByte()
 						if err != nil {
 							t.Fatalf("Failed to read PES flags2: %v", err)
 						}
-						
+
 						// Read header data length
 						headerDataLength, err := reader.ReadByte()
 						if err != nil {
 							t.Fatalf("Failed to read PES header data length: %v", err)
 						}
-						
+
 						// Skip header data
 						if err = reader.Skip(int(headerDataLength)); err != nil {
 							t.Fatalf("Failed to skip PES header data: %v", err)
 						}
-						
+
 						// Calculate payload size
 						payloadSize := pesLength - 3 - int(headerDataLength) // 3 = flags1 + flags2 + headerDataLength
 						if payloadSize > 0 {
@@ -833,10 +834,10 @@ func TestPESPacketBoundaryConditions(t *testing.T) {
 							if err != nil {
 								t.Fatalf("Failed to read PES payload: %v", err)
 							}
-							
+
 							totalPayloadSize += payload.Size
 						}
-						
+
 						packetCount++
 					}
 

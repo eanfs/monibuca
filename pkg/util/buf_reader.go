@@ -6,6 +6,7 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
+	. "github.com/langhuihui/gomem"
 )
 
 const defaultBufSize = 1 << 14

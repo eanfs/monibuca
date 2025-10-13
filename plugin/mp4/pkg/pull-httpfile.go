@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	m7s "m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/util"
@@ -25,7 +26,7 @@ func (p *HTTPReader) Run() (err error) {
 		io.Copy(io.Discard, p.ReadCloser)
 		return
 	}
-	allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	var demuxer *Demuxer
 	defer allocator.Recycle()
 	switch v := p.ReadCloser.(type) {

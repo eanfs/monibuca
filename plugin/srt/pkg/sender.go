@@ -2,12 +2,12 @@ package srt
 
 import (
 	srt "github.com/datarhei/gosrt"
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/format"
 	mpegts "m7s.live/v5/pkg/format/ts"
-	"m7s.live/v5/pkg/task"
-	"m7s.live/v5/pkg/util"
 	hls "m7s.live/v5/plugin/hls/pkg"
 )
 
@@ -26,7 +26,7 @@ func (s *Sender) Start() error {
 	if s.Subscriber.Publisher.HasVideoTrack() {
 		videoCodec = s.Subscriber.Publisher.VideoTrack.FourCC()
 	}
-	s.SetAllocator(util.NewScalableMemoryAllocator(1 << util.MinPowerOf2))
+	s.SetAllocator(gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2))
 	s.Using(s.GetAllocator(), s.Subscriber)
 	s.OnStop(s.Conn.Close)
 	s.WritePMTPacket(audioCodec, videoCodec)

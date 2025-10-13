@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gotask"
 	"github.com/mcuadros/go-defaults"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -16,7 +17,6 @@ import (
 	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 )
 
 const (

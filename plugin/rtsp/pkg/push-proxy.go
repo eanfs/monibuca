@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/util"
 )
 
 func NewPushProxy() m7s.IPushProxy {
@@ -40,7 +40,7 @@ func (d *RTSPPushProxy) Start() (err error) {
 	}
 
 	d.conn.NetConnection = &NetConnection{
-		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
+		MemoryAllocator: gomem.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
 	d.conn.Logger = d.Logger

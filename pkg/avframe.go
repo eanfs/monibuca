@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bluenviron/mediacommon/pkg/codecs/av1"
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
 )
@@ -43,12 +44,12 @@ type (
 	}
 	Sample struct {
 		codec.ICodecCtx
-		util.RecyclableMemory
+		gomem.RecyclableMemory
 		*BaseSample
 	}
-	Nalus = util.ReuseArray[util.Memory]
+	Nalus = util.ReuseArray[gomem.Memory]
 
-	AudioData = util.Memory
+	AudioData = gomem.Memory
 
 	OBUs AudioData
 
@@ -154,7 +155,7 @@ func (b *BaseSample) GetAudioData() *AudioData {
 	return b.Raw.(*AudioData)
 }
 
-func (b *BaseSample) ParseAVCC(reader *util.MemoryReader, naluSizeLen int) error {
+func (b *BaseSample) ParseAVCC(reader *gomem.MemoryReader, naluSizeLen int) error {
 	array := b.GetNalus()
 	for reader.Length > 0 {
 		l, err := reader.ReadBE(naluSizeLen)
@@ -202,7 +203,7 @@ func (df *DataFrame) Ready() {
 	df.Unlock()
 }
 
-func (obus *OBUs) ParseAVCC(reader *util.MemoryReader) error {
+func (obus *OBUs) ParseAVCC(reader *gomem.MemoryReader) error {
 	var obuHeader av1.OBUHeader
 	startLen := reader.Length
 	for reader.Length > 0 {
@@ -221,7 +222,7 @@ func (obus *OBUs) ParseAVCC(reader *util.MemoryReader) error {
 		obuSize, _, _ := reader.LEB128Unmarshal()
 		end := reader.Size - reader.Length
 		size := end - offset + int(obuSize)
-		reader = &util.MemoryReader{Memory: reader.Memory, Length: startLen - offset}
+		reader = &gomem.MemoryReader{Memory: reader.Memory, Length: startLen - offset}
 		obu, err := reader.ReadBytes(size)
 		if err != nil {
 			return err
@@ -232,9 +233,9 @@ func (obus *OBUs) ParseAVCC(reader *util.MemoryReader) error {
 }
 
 func (obus *OBUs) Reset() {
-	((*util.Memory)(obus)).Reset()
+	((*gomem.Memory)(obus)).Reset()
 }
 
 func (obus *OBUs) Count() int {
-	return (*util.Memory)(obus).Count()
+	return (*gomem.Memory)(obus).Count()
 }

@@ -258,7 +258,7 @@ This design can significantly improve performance in high-concurrency scenarios.
 
 ### Memory Pool Management
 
-Memory pooling is implemented through `util.ScalableMemoryAllocator`:
+Memory pooling is implemented through `gomem.ScalableMemoryAllocator`:
 - Pre-allocate memory blocks to avoid frequent malloc/free
 - Dynamically adjust pool size based on load
 - Reduce memory fragmentation and GC pressure

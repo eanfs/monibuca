@@ -21,10 +21,10 @@ import (
 	myproc "github.com/cloudwego/goref/pkg/proc"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
+	task "github.com/langhuihui/gotask"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/debug/pb"
 	debug "m7s.live/v5/plugin/debug/pkg"
 	"m7s.live/v5/plugin/debug/pkg/profile"
@@ -557,6 +557,12 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	if err != nil {
 		return nil, err
 	}
+
+	// 清理不重要的函数，使图形更干净明了
+	if err := profile.RemoveUninteresting(); err != nil {
+		return nil, fmt.Errorf("could not remove uninteresting functions: %v", err)
+	}
+
 	// Generate dot graph.
 	dot, err := debug.GetDotGraph(profile)
 	if err != nil {

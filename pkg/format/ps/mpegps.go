@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -40,13 +41,13 @@ const (
 type MpegPsDemuxer struct {
 	stAudio, stVideo byte
 	Publisher        *m7s.Publisher
-	Allocator        *util.ScalableMemoryAllocator
+	Allocator        *gomem.ScalableMemoryAllocator
 	writer           m7s.PublishWriter[*format.Mpeg2Audio, *format.AnnexB]
 }
 
 func (s *MpegPsDemuxer) Feed(reader *util.BufReader) (err error) {
 	writer := &s.writer
-	var payload util.Memory
+	var payload gomem.Memory
 	var pesHeader mpegts.MpegPESHeader
 	var lastVideoPts, lastAudioPts uint64
 	var annexbReader pkg.AnnexBReader
@@ -153,7 +154,7 @@ func (s *MpegPsDemuxer) Feed(reader *util.BufReader) (err error) {
 			})
 			// reader.Range(pes.PushOne)
 		case StartCodeMAP:
-			var psm util.Memory
+			var psm gomem.Memory
 			psm, err = s.ReadPayload(reader)
 			if err != nil {
 				return errors.Join(err, fmt.Errorf("failed to read program stream map"))
@@ -172,7 +173,7 @@ func (s *MpegPsDemuxer) Feed(reader *util.BufReader) (err error) {
 	}
 }
 
-func (s *MpegPsDemuxer) ReadPayload(reader *util.BufReader) (payload util.Memory, err error) {
+func (s *MpegPsDemuxer) ReadPayload(reader *util.BufReader) (payload gomem.Memory, err error) {
 	payloadlen, err := reader.ReadBE(2)
 	if err != nil {
 		return
@@ -180,7 +181,7 @@ func (s *MpegPsDemuxer) ReadPayload(reader *util.BufReader) (payload util.Memory
 	return reader.ReadBytes(payloadlen)
 }
 
-func (s *MpegPsDemuxer) decProgramStreamMap(psm util.Memory) (err error) {
+func (s *MpegPsDemuxer) decProgramStreamMap(psm gomem.Memory) (err error) {
 	var programStreamInfoLen, programStreamMapLen, elementaryStreamInfoLength uint32
 	var streamType, elementaryStreamID byte
 	reader := psm.NewReader()
@@ -206,7 +207,7 @@ func (s *MpegPsDemuxer) decProgramStreamMap(psm util.Memory) (err error) {
 
 type MpegPSMuxer struct {
 	*m7s.Subscriber
-	Packet *util.RecyclableMemory
+	Packet *gomem.RecyclableMemory
 }
 
 func (muxer *MpegPSMuxer) Mux(onPacket func() error) {

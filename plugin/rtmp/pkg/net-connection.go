@@ -8,8 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -50,6 +51,19 @@ type Writers = map[uint32]*struct {
 	*m7s.Publisher
 }
 
+type PingTask struct {
+	task.TickTask
+	NetConnection *NetConnection
+}
+
+func (t *PingTask) GetTickInterval() time.Duration {
+	return time.Second * 10
+}
+
+func (t *PingTask) Tick(any) {
+	t.NetConnection.SendPingRequest()
+}
+
 type NetConnection struct {
 	task.Job
 	*util.BufReader
@@ -63,7 +77,7 @@ type NetConnection struct {
 	AppName                       string
 	tmpBuf                        AMF //用来接收/发送小数据，复用内存
 	chunkHeaderBuf                util.Buffer
-	mediaDataPool                 *util.ScalableMemoryAllocator
+	mediaDataPool                 *gomem.ScalableMemoryAllocator
 	writing                       atomic.Bool // false 可写，true 不可写
 	Writers                       Writers
 	sendBuffers                   net.Buffers
@@ -77,16 +91,22 @@ func NewNetConnection(conn net.Conn) (ret *NetConnection) {
 
 func (nc *NetConnection) Init(conn net.Conn) {
 	nc.Conn = conn
-	nc.BufReader = util.NewBufReader(conn)
+	nc.BufReader = util.NewBufReaderWithTimeout(conn, 30*time.Second)
 	nc.bandwidth = RTMP_MAX_CHUNK_SIZE << 3
 	nc.ReadChunkSize = RTMP_DEFAULT_CHUNK_SIZE
 	nc.WriteChunkSize = RTMP_DEFAULT_CHUNK_SIZE
 	nc.incommingChunks = make(map[uint32]*Chunk)
 	nc.tmpBuf = make(AMF, 4)
 	nc.chunkHeaderBuf = make(util.Buffer, 0, 20)
-	nc.mediaDataPool = util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	nc.mediaDataPool = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	nc.sendBuffers = make(net.Buffers, 0, 50)
 	nc.Writers = make(Writers)
+}
+
+func (nc *NetConnection) OnConnected() {
+	nc.AddTask(&PingTask{
+		NetConnection: nc,
+	})
 }
 
 func (nc *NetConnection) Dispose() {
@@ -131,7 +151,6 @@ func (nc *NetConnection) ResponseCreateStream(tid uint64, streamID uint32) error
 // }
 
 func (nc *NetConnection) readChunk() (msg *Chunk, err error) {
-	nc.SetReadDeadline(time.Now().Add(time.Second * 5)) // 设置读取超时时间为5秒
 	head, err := nc.ReadByte()
 	if err != nil {
 		return nil, err
@@ -430,7 +449,6 @@ func (nc *NetConnection) SendMessage(t byte, msg RtmpMessage) (err error) {
 		nc.totalWrite += nc.writeSeqNum
 		nc.writeSeqNum = 0
 		err = nc.SendMessage(RTMP_MSG_ACK, Uint32Message(nc.totalWrite))
-		err = nc.SendPingRequest()
 	}
 	for !nc.writing.CompareAndSwap(false, true) {
 		runtime.Gosched()
@@ -449,10 +467,10 @@ func (nc *NetConnection) SendMessage(t byte, msg RtmpMessage) (err error) {
 	if sid, ok := msg.(HaveStreamID); ok {
 		head.MessageStreamID = sid.GetStreamID()
 	}
-	return nc.sendChunk(util.NewMemory(nc.tmpBuf), head, RTMP_CHUNK_HEAD_12)
+	return nc.sendChunk(gomem.NewMemory(nc.tmpBuf), head, RTMP_CHUNK_HEAD_12)
 }
 
-func (nc *NetConnection) sendChunk(mem util.Memory, head *ChunkHeader, headType byte) (err error) {
+func (nc *NetConnection) sendChunk(mem gomem.Memory, head *ChunkHeader, headType byte) (err error) {
 	nc.SetWriteDeadline(time.Now().Add(time.Second * 5)) // 设置写入超时时间为5秒
 	head.WriteTo(headType, &nc.chunkHeaderBuf)
 	defer func(reuse net.Buffers) {
@@ -478,7 +496,7 @@ func (nc *NetConnection) sendChunk(mem util.Memory, head *ChunkHeader, headType 
 	return err
 }
 
-func (nc *NetConnection) GetMediaDataPool() *util.ScalableMemoryAllocator {
+func (nc *NetConnection) GetMediaDataPool() *gomem.ScalableMemoryAllocator {
 	return nc.mediaDataPool
 }
 

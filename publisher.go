@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
 
 	. "m7s.live/v5/pkg"
@@ -69,7 +70,7 @@ func (t *AVTracks) GetOrCreate(dataType reflect.Type) *AVTrack {
 }
 
 func (t *AVTracks) CheckTimeout(timeout time.Duration) bool {
-	if t.AVTrack == nil || t.AVTrack.LastValue.WriteTime.IsZero() {
+	if t.AVTrack == nil {
 		return false
 	}
 	return time.Since(t.AVTrack.LastValue.WriteTime) > timeout
@@ -621,11 +622,11 @@ func (p *Publisher) GetPosition() (t time.Time) {
 type PublishAudioWriter[A IAVFrame] struct {
 	AudioFrame A
 	*Publisher
-	*util.ScalableMemoryAllocator
+	*gomem.ScalableMemoryAllocator
 	audioTrack *AVTrack
 }
 
-func NewPublishAudioWriter[A IAVFrame](puber *Publisher, allocator *util.ScalableMemoryAllocator) *PublishAudioWriter[A] {
+func NewPublishAudioWriter[A IAVFrame](puber *Publisher, allocator *gomem.ScalableMemoryAllocator) *PublishAudioWriter[A] {
 	if !puber.PubAudio {
 		return nil
 	}
@@ -673,11 +674,11 @@ func (pw *PublishAudioWriter[A]) NextAudio() (err error) {
 type PublishVideoWriter[V IAVFrame] struct {
 	VideoFrame V
 	*Publisher
-	*util.ScalableMemoryAllocator
+	*gomem.ScalableMemoryAllocator
 	videoTrack *AVTrack
 }
 
-func NewPublishVideoWriter[V IAVFrame](puber *Publisher, allocator *util.ScalableMemoryAllocator) *PublishVideoWriter[V] {
+func NewPublishVideoWriter[V IAVFrame](puber *Publisher, allocator *gomem.ScalableMemoryAllocator) *PublishVideoWriter[V] {
 	if !puber.PubVideo {
 		return nil
 	}
@@ -727,7 +728,7 @@ type PublishWriter[A IAVFrame, V IAVFrame] struct {
 	*PublishVideoWriter[V]
 }
 
-func NewPublisherWriter[A IAVFrame, V IAVFrame](puber *Publisher, allocator *util.ScalableMemoryAllocator) *PublishWriter[A, V] {
+func NewPublisherWriter[A IAVFrame, V IAVFrame](puber *Publisher, allocator *gomem.ScalableMemoryAllocator) *PublishWriter[A, V] {
 	return &PublishWriter[A, V]{
 		PublishAudioWriter: NewPublishAudioWriter[A](puber, allocator),
 		PublishVideoWriter: NewPublishVideoWriter[V](puber, allocator),

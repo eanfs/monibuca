@@ -279,6 +279,9 @@ func (plugin *HLSPlugin) processTsFiles(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Length", strconv.FormatUint(totalSize, 10))
 	w.WriteHeader(http.StatusOK)
 
+	// 创建可重用的缓冲区，避免重复分配
+	buffer := make([]byte, 64*1024) // 64KB 缓冲区
+
 	// 第二次遍历：写入数据
 	for i, info := range fileInfoList {
 		if r.Context().Err() != nil {
@@ -296,11 +299,11 @@ func (plugin *HLSPlugin) processTsFiles(w http.ResponseWriter, r *http.Request, 
 		reader := bufio.NewReader(file)
 
 		if i == 0 {
-			// 第一个文件，直接拷贝
-			_, err = io.Copy(writer, reader)
+			// 第一个文件，使用 io.CopyBuffer 重用缓冲区
+			_, err = io.CopyBuffer(writer, reader, buffer)
 		} else {
 			// 后续文件，跳过PAT/PMT包，只拷贝媒体数据
-			err = plugin.copyTsFileSkipHeaders(writer, reader)
+			err = plugin.copyTsFileSkipHeadersWithBuffer(writer, reader, buffer[:mpegts.TS_PACKET_SIZE])
 		}
 
 		file.Close()
@@ -314,12 +317,10 @@ func (plugin *HLSPlugin) processTsFiles(w http.ResponseWriter, r *http.Request, 
 	plugin.Info("TS download completed")
 }
 
-// copyTsFileSkipHeaders 拷贝TS文件，跳过PAT/PMT包
-func (plugin *HLSPlugin) copyTsFileSkipHeaders(writer io.Writer, reader *bufio.Reader) error {
-	buffer := make([]byte, mpegts.TS_PACKET_SIZE)
-
+// copyTsFileSkipHeadersWithBuffer 拷贝TS文件，跳过PAT/PMT包，使用提供的缓冲区
+func (plugin *HLSPlugin) copyTsFileSkipHeadersWithBuffer(writer io.Writer, reader *bufio.Reader, tsBuffer []byte) error {
 	for {
-		n, err := io.ReadFull(reader, buffer)
+		n, err := io.ReadFull(reader, tsBuffer)
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
@@ -332,12 +333,12 @@ func (plugin *HLSPlugin) copyTsFileSkipHeaders(writer io.Writer, reader *bufio.R
 		}
 
 		// 检查同步字节
-		if buffer[0] != 0x47 {
+		if tsBuffer[0] != 0x47 {
 			continue
 		}
 
 		// 提取PID
-		pid := uint16(buffer[1]&0x1f)<<8 | uint16(buffer[2])
+		pid := uint16(tsBuffer[1]&0x1f)<<8 | uint16(tsBuffer[2])
 
 		// 跳过PAT(PID=0)和PMT(PID=256)包
 		if pid == mpegts.PID_PAT || pid == mpegts.PID_PMT {
@@ -345,7 +346,7 @@ func (plugin *HLSPlugin) copyTsFileSkipHeaders(writer io.Writer, reader *bufio.R
 		}
 
 		// 写入媒体数据包
-		_, err = writer.Write(buffer)
+		_, err = writer.Write(tsBuffer)
 		if err != nil {
 			return err
 		}

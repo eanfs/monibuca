@@ -57,7 +57,7 @@ for i := 0; i < 30; i++ {
 // 新版本 - 对象复用方式
 func publishWithReuse(publisher *Publisher) {
     // 1. 创建内存分配器，预分配内存
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     // 2. 创建写入器，复用对象
@@ -128,7 +128,7 @@ for i, track := range p.AudioTrack.Items[1:] {
 ```go
 // 新版本用法
 func publishWithNewAPI(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
@@ -153,7 +153,7 @@ audioFrame := &AudioFrame{Data: data}
 publisher.WriteAudio(audioFrame)  // 内部会创建多个包装对象
 
 // 新版本 - 复用对象
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()
 writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
 copy(writer.AudioFrame.NextN(len(data)), data)
@@ -163,7 +163,7 @@ writer.NextAudio()  // 复用对象，无新对象创建
 2. **添加内存管理**
 ```go
 // 新版本必须添加内存分配器
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()  // 确保资源释放
 ```
 
@@ -185,7 +185,7 @@ func simplePublish(publisher *Publisher, audioData, videoData []byte) {
 
 // 新版本
 func simplePublish(publisher *Publisher, audioData, videoData []byte) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -211,7 +211,7 @@ func transformStream(subscriber *Subscriber, publisher *Publisher) {
 
 // 新版本 - 复用对象，避免重复创建
 func transformStream(subscriber *Subscriber, publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -236,7 +236,7 @@ func handleMultiFormatOld(publisher *Publisher, data IAVFrame) {
 
 // 新版本 - 预分配和复用
 func handleMultiFormatNew(publisher *Publisher, data IAVFrame) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     
@@ -307,7 +307,7 @@ func (m *Memory) Reset() {
 **场景1：NALU处理中的对象复用**
 ```go
 // 在视频帧处理中，NALU数组使用ReuseArray
-type Nalus = util.ReuseArray[util.Memory]
+type Nalus = util.ReuseArray[gomem.Memory]
 
 func (r *VideoFrame) Demux() error {
     nalus := r.GetNalus()  // 获取NALU复用数组
@@ -326,7 +326,7 @@ SEI插入通过对象复用实现高效处理：
 
 ```go
 func (t *Transformer) Run() (err error) {
-    allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+    allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
     
@@ -359,7 +359,7 @@ func (t *Transformer) Run() (err error) {
 ```go
 func (r *VideoFrame) Demux() error {
     nalus := r.GetNalus()
-    var nalu *util.Memory
+    var nalu *gomem.Memory
     
     for packet := range r.Packets.RangePoint {
         switch t := codec.ParseH264NALUType(b0); t {
@@ -390,9 +390,9 @@ func (r *VideoFrame) Demux() error {
 ```go
 // 老版本 - 每次创建新对象
 func processNalusOld(packets []RTPPacket) {
-    var nalus []util.Memory
+    var nalus []gomem.Memory
     for _, packet := range packets {
-        nalu := util.Memory{}  // 每次创建新对象
+        nalu := gomem.Memory{}  // 每次创建新对象
         nalu.PushOne(packet.Payload)
         nalus = append(nalus, nalu)  // 内存分配
     }
@@ -403,7 +403,7 @@ func processNalusOld(packets []RTPPacket) {
 ```go
 // 新版本 - 复用对象
 func processNalusNew(packets []RTPPacket) {
-    var nalus util.ReuseArray[util.Memory]
+    var nalus util.ReuseArray[gomem.Memory]
     for _, packet := range packets {
         nalu := nalus.GetNextPointer()  // 复用对象，零分配
         nalu.PushOne(packet.Payload)
@@ -482,7 +482,7 @@ type AVFrame struct {
 
 type Sample struct {
     codec.ICodecCtx
-    util.RecyclableMemory  // 可回收内存
+    gomem.RecyclableMemory  // 可回收内存
     *BaseSample
 }
 ```
@@ -514,7 +514,7 @@ type PublishWriter[A IAVFrame, V IAVFrame] struct {
 **使用流程：**
 ```go
 // 1. 创建分配器
-allocator := util.NewScalableMemoryAllocator(1 << 12)
+allocator := gomem.NewScalableMemoryAllocator(1 << 12)
 defer allocator.Recycle()
 
 // 2. 创建写入器
@@ -552,7 +552,7 @@ func BenchmarkOldVsNew(b *testing.B) {
     
     // 新版本测试
     b.Run("NewPublishWriter", func(b *testing.B) {
-        allocator := util.NewScalableMemoryAllocator(1 << 12)
+        allocator := gomem.NewScalableMemoryAllocator(1 << 12)
         defer allocator.Recycle()
         writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
         
@@ -581,7 +581,7 @@ func BenchmarkOldVsNew(b *testing.B) {
 ```go
 // 第一步：保持原有逻辑，添加分配器
 func migrateStep1(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     // 暂时保持老方式，但添加了内存管理
@@ -591,7 +591,7 @@ func migrateStep1(publisher *Publisher) {
 
 // 第二步：逐步替换为PublishWriter
 func migrateStep2(publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
@@ -603,15 +603,15 @@ func migrateStep2(publisher *Publisher) {
 #### 5.1.2 内存分配器选择
 ```go
 // 根据场景选择合适的分配器大小
-var allocator *util.ScalableMemoryAllocator
+var allocator *gomem.ScalableMemoryAllocator
 
 switch scenario {
 case "high_fps":
-    allocator = util.NewScalableMemoryAllocator(1 << 14)  // 16KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 14)  // 16KB
 case "low_latency":
-    allocator = util.NewScalableMemoryAllocator(1 << 10)  // 1KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 10)  // 1KB
 case "high_throughput":
-    allocator = util.NewScalableMemoryAllocator(1 << 16)  // 64KB
+    allocator = gomem.NewScalableMemoryAllocator(1 << 16)  // 64KB
 }
 ```
 
@@ -621,13 +621,13 @@ case "high_throughput":
 ```go
 // 错误：忘记回收内存
 func badExample() {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     // 忘记 defer allocator.Recycle()
 }
 
 // 正确：确保资源释放
 func goodExample() {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()  // 确保释放
 }
 ```
@@ -662,7 +662,7 @@ func handleWebRTCOld(track *webrtc.TrackRemote, publisher *Publisher) {
 
 // 新版本WebRTC处理
 func handleWebRTCNew(track *webrtc.TrackRemote, publisher *Publisher) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublishVideoWriter[*VideoFrame](publisher, allocator)
     
@@ -695,7 +695,7 @@ func pullFLVOld(publisher *Publisher, file *os.File) {
 
 // 新版本FLV拉流
 func pullFLVNew(publisher *Publisher, file *os.File) {
-    allocator := util.NewScalableMemoryAllocator(1 << 12)
+    allocator := gomem.NewScalableMemoryAllocator(1 << 12)
     defer allocator.Recycle()
     writer := m7s.NewPublisherWriter[*AudioFrame, *VideoFrame](publisher, allocator)
     

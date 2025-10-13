@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/hiksdk/pkg"
 
+	task "github.com/langhuihui/gotask"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -53,7 +53,6 @@ func (d *HikDevice) Run() (err error) {
 	d.AutoPullStream()
 	return
 }
-
 
 func (d *HikDevice) AutoPullStream() {
 	deviceInfo, _ := d.Device.GetDeiceInfo()     // 获取设备参数

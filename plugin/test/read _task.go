@@ -3,9 +3,9 @@ package plugin_test
 import (
 	"fmt"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	hls "m7s.live/v5/plugin/hls/pkg"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"

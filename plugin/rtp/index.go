@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/langhuihui/gomem"
 	"github.com/pion/rtp"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
 	mpegps "m7s.live/v5/pkg/format/ps"
-	"m7s.live/v5/pkg/util"
 	pb "m7s.live/v5/plugin/rtp/pb"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
 )
@@ -121,8 +121,8 @@ func (p *RTPPlugin) SendPS(ctx context.Context, req *pb.SendPSRequest) (*pb.Send
 
 	var w io.WriteCloser
 	var writeRTP func() error
-	var mem util.RecyclableMemory
-	allocator := util.NewScalableMemoryAllocator(1 << util.MinPowerOf2)
+	var mem gomem.RecyclableMemory
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	mem.SetAllocator(allocator)
 	defer allocator.Recycle()
 	var headerBuf [14]byte

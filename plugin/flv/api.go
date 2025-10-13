@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/gobwas/ws"
+	"github.com/langhuihui/gomem"
 	"google.golang.org/protobuf/types/known/emptypb"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pb"
-	"m7s.live/v5/pkg/util"
 	flvpb "m7s.live/v5/plugin/flv/pb"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
@@ -123,7 +123,7 @@ func (plugin *FLVPlugin) jessica(rw http.ResponseWriter, r *http.Request) {
 	var _sendBuffer = net.Buffers{}
 	sendBuffer := _sendBuffer
 	var head [5]byte
-	write := func(typ byte, ts uint32, mem util.Memory) (err error) {
+	write := func(typ byte, ts uint32, mem gomem.Memory) (err error) {
 		head[0] = typ
 		binary.BigEndian.PutUint32(head[1:], ts)
 		err = ws.WriteHeader(conn, ws.Header{

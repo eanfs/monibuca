@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"m7s.live/v5/pkg/task"
+	task "github.com/langhuihui/gotask"
 )
 
 func init() {

@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/langhuihui/gomem"
 
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -159,7 +160,7 @@ func (r *AudioFrame) Demux() (err error) {
 	}
 	switch mimeType {
 	case "audio/MP4A-LATM":
-		var fragments util.Memory
+		var fragments gomem.Memory
 		var fragmentsExpected int
 		var fragmentsSize int
 		for packet := range r.Packets.RangePoint {
@@ -184,7 +185,7 @@ func (r *AudioFrame) Demux() (err error) {
 					// there could be other data, due to otherDataPresent. Ignore it.
 				} else {
 					if pl > 5*1024 {
-						fragments = util.Memory{} // discard pending fragments
+						fragments = gomem.Memory{} // discard pending fragments
 						return fmt.Errorf("access unit size (%d) is too big, maximum is %d",
 							pl, 5*1024)
 					}
@@ -209,11 +210,11 @@ func (r *AudioFrame) Demux() (err error) {
 				if fragments.Size != fragmentsSize {
 					return fmt.Errorf("fragmented AU size is not correct %d != %d", data.Size, fragmentsSize)
 				}
-				fragments = util.Memory{}
+				fragments = gomem.Memory{}
 			}
 		}
 	case "audio/MPEG4-GENERIC":
-		var fragments util.Memory
+		var fragments gomem.Memory
 		for packet := range r.Packets.RangePoint {
 			if len(packet.Payload) < 2 {
 				continue
@@ -259,7 +260,7 @@ func (r *AudioFrame) Demux() (err error) {
 						return fmt.Errorf("fragmented AU size is not correct %d != %d", dataLens[0], fragments.Size)
 					}
 					data.Push(fragments.Buffers...)
-					fragments = util.Memory{}
+					fragments = gomem.Memory{}
 				}
 			}
 			break

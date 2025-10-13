@@ -1,6 +1,7 @@
 package mpegps
 
 import (
+	"github.com/langhuihui/gomem"
 	mpegts "m7s.live/v5/pkg/format/ts"
 	"m7s.live/v5/pkg/util"
 )
@@ -10,7 +11,7 @@ type MpegpsPESFrame struct {
 	mpegts.MpegPESHeader
 }
 
-func (frame *MpegpsPESFrame) WritePESPacket(payload util.Memory, allocator *util.RecyclableMemory) (err error) {
+func (frame *MpegpsPESFrame) WritePESPacket(payload gomem.Memory, allocator *gomem.RecyclableMemory) (err error) {
 	frame.DataAlignmentIndicator = 1
 
 	pesReader := payload.NewReader()

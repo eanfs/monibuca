@@ -3,6 +3,7 @@ package hls
 import (
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
 	mpegts "m7s.live/v5/pkg/format/ts"
 	"m7s.live/v5/pkg/util"
@@ -10,7 +11,7 @@ import (
 
 type TsInMemory struct {
 	PMT util.Buffer
-	util.RecyclableMemory
+	gomem.RecyclableMemory
 }
 
 func (ts *TsInMemory) WritePMTPacket(audio, video codec.FourCC) {

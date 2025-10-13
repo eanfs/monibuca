@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -411,13 +412,13 @@ func (header *MpegPESHeader) WritePESHeader(esSize int) (w util.Buffer, err erro
 	return
 }
 
-func (frame *MpegtsPESFrame) WritePESPacket(payload util.Memory, allocator *util.RecyclableMemory) (err error) {
+func (frame *MpegtsPESFrame) WritePESPacket(payload gomem.Memory, allocator *gomem.RecyclableMemory) (err error) {
 	var pesHeadItem util.Buffer
 	pesHeadItem, err = frame.WritePESHeader(payload.Size)
 	if err != nil {
 		return
 	}
-	pesBuffers := util.NewMemory(pesHeadItem)
+	pesBuffers := gomem.NewMemory(pesHeadItem)
 	payload.Range(pesBuffers.PushOne)
 	pesPktLength := int64(pesBuffers.Size)
 	pesReader := pesBuffers.NewReader()

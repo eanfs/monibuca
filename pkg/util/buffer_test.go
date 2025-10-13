@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+
+	. "github.com/langhuihui/gomem"
 )
 
 func TestBuffer(t *testing.T) {

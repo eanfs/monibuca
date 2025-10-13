@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/util"
 
 	m7s "m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 )
 
 const VIRTUAL_IFACE = "virtual"

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 
 	myip "github.com/husanpao/ip"
 	"github.com/shirou/gopsutil/v4/cpu"

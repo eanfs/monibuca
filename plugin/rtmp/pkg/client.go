@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
+	task "github.com/langhuihui/gotask"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 
 	"m7s.live/v5"
 )
@@ -180,6 +180,7 @@ func (c *Client) Run() (err error) {
 					err = c.SendMessage(RTMP_MSG_AMF0_COMMAND, &CommandMessage{"createStream", 2})
 					if err == nil {
 						c.Info("connected")
+						c.OnConnected()
 					}
 				}
 			case *ResponseCreateStreamMessage:

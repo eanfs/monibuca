@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/deepch/vdk/codec/h264parser"
+	"github.com/langhuihui/gomem"
 
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -21,7 +22,7 @@ func (avcc *VideoFrame) filterH264(naluSizeLen int) {
 	reader := avcc.NewReader()
 	lenReader := reader.NewReader()
 	reader.Skip(5)
-	var afterFilter util.Memory
+	var afterFilter gomem.Memory
 	lenReader.RangeN(5, afterFilter.PushOne)
 	allocator := avcc.GetAllocator()
 	var hasBadNalu bool
@@ -198,15 +199,15 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 	return
 }
 
-func (avcc *VideoFrame) parseH264(ctx *H264Ctx, reader *util.MemoryReader) (err error) {
+func (avcc *VideoFrame) parseH264(ctx *H264Ctx, reader *gomem.MemoryReader) (err error) {
 	return avcc.ParseAVCC(reader, int(ctx.RecordInfo.LengthSizeMinusOne)+1)
 }
 
-func (avcc *VideoFrame) parseH265(ctx *H265Ctx, reader *util.MemoryReader) (err error) {
+func (avcc *VideoFrame) parseH265(ctx *H265Ctx, reader *gomem.MemoryReader) (err error) {
 	return avcc.ParseAVCC(reader, int(ctx.RecordInfo.LengthSizeMinusOne)+1)
 }
 
-func (avcc *VideoFrame) parseAV1(reader *util.MemoryReader) error {
+func (avcc *VideoFrame) parseAV1(reader *gomem.MemoryReader) error {
 	var obus OBUs
 	if err := obus.ParseAVCC(reader); err != nil {
 		return err
