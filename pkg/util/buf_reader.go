@@ -6,6 +6,7 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
+
 	. "github.com/langhuihui/gomem"
 )
 
@@ -18,13 +19,24 @@ type BufReader struct {
 	BufLen    int
 	Mouth     chan []byte
 	feedData  func() error
+	timeout   time.Duration
+}
+
+func (r *BufReader) SetTimeout(timeout time.Duration) {
+	r.timeout = timeout
 }
 
 func NewBufReaderWithBufLen(reader io.Reader, bufLen int) (r *BufReader) {
+	conn, _ := reader.(net.Conn)
 	r = &BufReader{
 		Allocator: NewScalableMemoryAllocator(bufLen),
 		BufLen:    bufLen,
 		feedData: func() error {
+			if conn != nil && r.timeout > 0 {
+				if err := conn.SetReadDeadline(time.Now().Add(r.timeout)); err != nil {
+					return err
+				}
+			}
 			buf, err := r.Allocator.Read(reader, r.BufLen)
 			if err != nil {
 				return err
@@ -39,34 +51,6 @@ func NewBufReaderWithBufLen(reader io.Reader, bufLen int) (r *BufReader) {
 	}
 	r.buf.Memory = &Memory{}
 	//fmt.Println("NewBufReaderWithBufLen", uintptr(unsafe.Pointer(r.allocator)))
-	return
-}
-
-// NewBufReaderWithTimeout 创建一个具有指定读取超时时间的 BufReader
-func NewBufReaderWithTimeout(conn net.Conn, timeout time.Duration) (r *BufReader) {
-	r = &BufReader{
-		Allocator: NewScalableMemoryAllocator(defaultBufSize),
-		BufLen:    defaultBufSize,
-		feedData: func() error {
-			// 设置读取超时
-			if conn != nil && timeout > 0 {
-				if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-					return err
-				}
-			}
-			buf, err := r.Allocator.Read(conn, r.BufLen)
-			if err != nil {
-				return err
-			}
-			n := len(buf)
-			r.totalRead += n
-			r.buf.Buffers = append(r.buf.Buffers, buf)
-			r.buf.Size += n
-			r.buf.Length += n
-			return nil
-		},
-	}
-	r.buf.Memory = &Memory{}
 	return
 }
 

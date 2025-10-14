@@ -91,7 +91,8 @@ func NewNetConnection(conn net.Conn) (ret *NetConnection) {
 
 func (nc *NetConnection) Init(conn net.Conn) {
 	nc.Conn = conn
-	nc.BufReader = util.NewBufReaderWithTimeout(conn, 30*time.Second)
+	nc.BufReader = util.NewBufReader(conn)
+	nc.BufReader.SetTimeout(time.Second * 30)
 	nc.bandwidth = RTMP_MAX_CHUNK_SIZE << 3
 	nc.ReadChunkSize = RTMP_DEFAULT_CHUNK_SIZE
 	nc.WriteChunkSize = RTMP_DEFAULT_CHUNK_SIZE

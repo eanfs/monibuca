@@ -152,8 +152,8 @@ func (task *RTSPServer) Go() (err error) {
 				Request: req,
 			}
 
-			// TCP传输模式
-			const tcpTransport = "RTP/AVP/TCP;unicast;interleaved="
+			// TCP传输模式 - 适配包含mode字段的格式
+			const tcpTransport = "RTP/AVP/TCP"
 			// UDP传输模式前缀
 			const udpTransport = "RTP/AVP"
 
@@ -164,13 +164,13 @@ func (task *RTSPServer) Go() (err error) {
 
 				if sendMode {
 					if i := reqTrackID(req); i >= 0 {
-						tr = fmt.Sprintf("RTP/AVP/TCP;unicast;interleaved=%d-%d", i*2, i*2+1)
+						tr = fmt.Sprintf("RTP/AVP/TCP;unicast;mode=record;interleaved=%d-%d", i*2, i*2+1)
 						res.Header.Set("Transport", tr)
 					} else {
 						res.Status = "400 Bad Request"
 					}
 				} else {
-					res.Header.Set("Transport", tr[:len(tcpTransport)+3])
+					res.Header.Set("Transport", tr)
 				}
 			} else if strings.HasPrefix(tr, udpTransport) && strings.Contains(tr, "unicast") && strings.Contains(tr, "client_port=") {
 				task.Debug("into udp play")
