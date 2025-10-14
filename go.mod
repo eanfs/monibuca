@@ -9,7 +9,6 @@ require (
 	github.com/beevik/etree v1.4.1
 	github.com/bluenviron/gohlslib v1.4.0
 	github.com/c0deltin/duckdb-driver v0.1.0
-	github.com/cilium/ebpf v0.15.0
 	github.com/cloudwego/goref v0.0.0-20240724113447-685d2a9523c8
 	github.com/deepch/vdk v0.0.27
 	github.com/disintegration/imaging v1.6.2
@@ -24,7 +23,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/kerberos-io/onvif v1.0.0
-	github.com/langhuihui/gotask v1.0.0
+	github.com/langhuihui/gotask v1.0.1
 	github.com/mark3labs/mcp-go v0.27.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/mcuadros/go-defaults v1.2.0
@@ -44,7 +43,6 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.69
 	github.com/valyala/fasthttp v1.61.0
-	github.com/vishvananda/netlink v1.1.0
 	github.com/yapingcat/gomedia v0.0.0-20240601043430-920523f8e5c7
 	golang.org/x/image v0.22.0
 	golang.org/x/text v0.27.0
@@ -70,6 +68,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chromedp/cdproto v0.0.0-20240202021202-6d0b6a386732 // indirect
 	github.com/chromedp/sysutil v1.0.0 // indirect
+	github.com/cilium/ebpf v0.15.0 // indirect
 	github.com/clbanning/mxj v1.8.4 // indirect
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -128,7 +127,6 @@ require (
 	github.com/valyala/gozstd v1.21.1 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	github.com/valyala/quicktemplate v1.8.0 // indirect
-	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
@@ -157,7 +155,7 @@ require (
 	golang.org/x/exp v0.0.0-20240716175740-e3f259677ff7
 	golang.org/x/mod v0.25.0 // indirect
 	golang.org/x/net v0.41.0
-	golang.org/x/sys v0.34.0
+	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/tools v0.34.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
