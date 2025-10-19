@@ -10,7 +10,7 @@
 ## TL;DR (核心要点)
 
 **核心创新**：非连续内存缓冲传递机制
-- 数据以**内存块链表**形式存储，非连续布局
+- 数据以**内存块切片**形式存储，非连续布局
 - 通过 **ReadRange 回调**逐块传递引用，零拷贝
 - 内存块从**对象池复用**，避免分配和 GC
 
@@ -97,11 +97,12 @@ func handleStream(conn net.Conn) {
 
 ### 2.1 设计理念
 
-BufReader 采用**非连续内存块链表**：
+BufReader 采用**非连续内存块切片**：
+
 
 ```
 不再要求数据在连续内存中，而是：
-1. 数据分散在多个内存块中（链表）
+1. 数据分散在多个内存块中（切片）
 2. 每个块独立管理和复用
 3. 通过引用传递，不拷贝数据
 ```
@@ -111,7 +112,7 @@ BufReader 采用**非连续内存块链表**：
 ```go
 type BufReader struct {
     Allocator *ScalableMemoryAllocator  // 对象池分配器
-    buf       MemoryReader               // 内存块链表
+    buf       MemoryReader               // 内存块切片
 }
 
 type MemoryReader struct {
@@ -145,7 +146,7 @@ BufReader（非连续内存）：
 - 处理完立即回收
 ```
 
-#### 内存块链表的工作流程
+#### 内存块切片的工作流程
 
 ```mermaid
 sequenceDiagram
@@ -192,7 +193,7 @@ func (r *BufReader) ReadRange(n int, yield func([]byte)) error
 func (r *BufReader) ReadRange(n int, yield func([]byte)) error {
     remaining := n
     
-    // 遍历内存块链表
+    // 遍历内存块切片
     for _, block := range r.buf.Buffers {
         if remaining <= 0 {
             break
@@ -250,11 +251,11 @@ bufio.Reader（连续内存方案）：
 必须分配 10KB 连续缓冲区
 
 BufReader（非连续内存方案）：
-1. 读取 2KB → Block1，追加到链表
-2. 读取 1.5KB → Block2，追加到链表
-3. 读取 2KB → Block3，追加到链表
-4. 读取 2KB → Block4，追加到链表
-5. 读取 2.5KB → Block5，追加到链表
+1. 读取 2KB → Block1，追加到切片
+2. 读取 1.5KB → Block2，追加到切片
+3. 读取 2KB → Block3，追加到切片
+4. 读取 2KB → Block4，追加到切片
+5. 读取 2.5KB → Block5，追加到切片
 6. ReadRange(10KB)：
    → yield(Block1) - 2KB
    → yield(Block2) - 1.5KB
@@ -315,8 +316,8 @@ func forwardStream_BufReader(reader *BufReader, subscribers []net.Conn) {
 stateDiagram-v2
     [*] --> 从对象池获取
     从对象池获取 --> 读取网络数据
-    读取网络数据 --> 追加到链表
-    追加到链表 --> 传递给用户
+    读取网络数据 --> 追加到切片
+    追加到切片 --> 传递给用户
     传递给用户 --> 用户处理
     用户处理 --> 回收到对象池
     回收到对象池 --> 从对象池获取
@@ -355,7 +356,7 @@ func NewBufReader(reader io.Reader) *BufReader {
             if err != nil {
                 return err
             }
-            // 追加到链表（只是添加引用）
+            // 追加到切片（只是添加引用）
             r.buf.Buffers = append(r.buf.Buffers, buf)
             r.buf.Length += len(buf)
             return nil
@@ -681,17 +682,13 @@ BufReader（非连续内存）:
 sh scripts/benchmark_bufreader.sh
 ```
 
-**详细文档**：
-- 中文：`doc_CN/bufreader_analysis.md`
-- English: `doc/bufreader_analysis.md`
-- 非连续内存专题：`doc/bufreader_non_contiguous_buffer.md`
 
 ## 参考资料
 
 - [GoMem 项目](https://github.com/langhuihui/gomem) - 内存对象池实现
-- [Monibuca v5](https://m7s.live) - 流媒体服务器
+- [Monibuca v5](https://monibuca.com) - 流媒体服务器
 - 测试代码：`pkg/util/buf_reader_benchmark_test.go`
 
 ---
 
-**核心思想**：通过非连续内存块链表和零拷贝引用传递，消除传统连续缓冲区的拷贝开销，实现高性能网络数据处理。
+**核心思想**：通过非连续内存块切片和零拷贝引用传递，消除传统连续缓冲区的拷贝开销，实现高性能网络数据处理。

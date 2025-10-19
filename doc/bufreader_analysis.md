@@ -10,7 +10,7 @@
 ## TL;DR (Key Takeaways)
 
 **Core Innovation**: Non-Contiguous Memory Buffer Passing Mechanism
-- Data stored as **chained memory blocks**, non-contiguous layout
+- Data stored as **sliced memory blocks**, non-contiguous layout
 - Pass references via **ReadRange callback**, zero-copy
 - Memory blocks **reused from object pool**, avoiding allocation and GC
 
@@ -97,11 +97,11 @@ func handleStream(conn net.Conn) {
 
 ### 2.1 Design Philosophy
 
-BufReader uses **non-contiguous memory block chains**:
+BufReader uses **non-contiguous memory block slices**:
 
 ```
 No longer require data in contiguous memory:
-1. Data scattered across multiple memory blocks (linked list)
+1. Data scattered across multiple memory blocks (slice)
 2. Each block independently managed and reused
 3. Pass by reference, no data copying
 ```
@@ -111,7 +111,7 @@ No longer require data in contiguous memory:
 ```go
 type BufReader struct {
     Allocator *ScalableMemoryAllocator  // Object pool allocator
-    buf       MemoryReader               // Memory block chain
+    buf       MemoryReader               // Memory block slice
 }
 
 type MemoryReader struct {
@@ -192,7 +192,7 @@ func (r *BufReader) ReadRange(n int, yield func([]byte)) error
 func (r *BufReader) ReadRange(n int, yield func([]byte)) error {
     remaining := n
     
-    // Iterate through memory block chain
+    // Iterate through memory block slice
     for _, block := range r.buf.Buffers {
         if remaining <= 0 {
             break
@@ -250,11 +250,11 @@ Total: Multiple network reads + Multiple memory copies
 Must allocate 10KB contiguous buffer
 
 BufReader (Non-Contiguous Memory):
-1. Read 2KB → Block1, append to chain
-2. Read 1.5KB → Block2, append to chain
-3. Read 2KB → Block3, append to chain
-4. Read 2KB → Block4, append to chain
-5. Read 2.5KB → Block5, append to chain
+1. Read 2KB → Block1, append to slice
+2. Read 1.5KB → Block2, append to slice
+3. Read 2KB → Block3, append to slice
+4. Read 2KB → Block4, append to slice
+5. Read 2.5KB → Block5, append to slice
 6. ReadRange(10KB):
    → yield(Block1) - 2KB
    → yield(Block2) - 1.5KB
@@ -315,8 +315,8 @@ func forwardStream_BufReader(reader *BufReader, subscribers []net.Conn) {
 stateDiagram-v2
     [*] --> Get from Pool
     Get from Pool --> Read Network Data
-    Read Network Data --> Append to Chain
-    Append to Chain --> Pass to User
+    Read Network Data --> Append to Slice
+    Append to Slice --> Pass to User
     Pass to User --> User Processing
     User Processing --> Recycle to Pool
     Recycle to Pool --> Get from Pool
@@ -355,7 +355,7 @@ func NewBufReader(reader io.Reader) *BufReader {
             if err != nil {
                 return err
             }
-            // Append to chain (only add reference)
+            // Append to slice (only add reference)
             r.buf.Buffers = append(r.buf.Buffers, buf)
             r.buf.Length += len(buf)
             return nil
@@ -681,11 +681,6 @@ BufReader (Non-Contiguous Memory):
 sh scripts/benchmark_bufreader.sh
 ```
 
-**Complete Documentation**:
-- Chinese: `doc_CN/bufreader_analysis.md`
-- English: `doc/bufreader_analysis.md`
-- Non-Contiguous Memory Guide: `doc/bufreader_non_contiguous_buffer.md`
-
 ## References
 
 - [GoMem Project](https://github.com/langhuihui/gomem) - Memory object pool implementation
@@ -694,4 +689,4 @@ sh scripts/benchmark_bufreader.sh
 
 ---
 
-**Core Idea**: Eliminate traditional contiguous buffer copying overhead through non-contiguous memory block chains and zero-copy reference passing, achieving high-performance network data processing.
+**Core Idea**: Eliminate traditional contiguous buffer copying overhead through non-contiguous memory block slices and zero-copy reference passing, achieving high-performance network data processing.
