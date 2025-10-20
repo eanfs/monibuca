@@ -32,6 +32,10 @@ func (v *VideoFrame) Demux() (err error) {
 		if err := v.ParseAVCC(&reader, int(ctx.RecordInfo.LengthSizeMinusOne)+1); err != nil {
 			return fmt.Errorf("failed to parse H.265 AVCC: %w", err)
 		}
+	case *codec.AV1Ctx:
+		if err := v.ParseAV1OBUs(&reader); err != nil {
+			return fmt.Errorf("failed to parse AV1 OBUs: %w", err)
+		}
 	default:
 		// 对于其他格式，尝试默认的 AVCC 解析（4字节长度前缀）
 		if err := v.ParseAVCC(&reader, 4); err != nil {
@@ -48,17 +52,21 @@ func (v *VideoFrame) Mux(sample *pkg.Sample) (err error) {
 	v.ICodecCtx = sample.GetBase()
 	switch rawData := sample.Raw.(type) {
 	case *pkg.Nalus:
-		// 根据编解码器类型确定 NALU 长度字段的大小
-		var naluSizeLen int = 4 // 默认使用 4 字节
+		var naluSizeLen int = 4
 		switch ctx := sample.ICodecCtx.(type) {
+		case *codec.AV1Ctx:
+			for obu := range rawData.RangePoint {
+				util.PutBE(v.NextN(4), obu.Size)
+				v.Push(obu.Buffers...)
+			}
+			return
 		case *codec.H264Ctx:
 			naluSizeLen = int(ctx.RecordInfo.LengthSizeMinusOne) + 1
 		case *codec.H265Ctx:
 			naluSizeLen = int(ctx.RecordInfo.LengthSizeMinusOne) + 1
 		}
-		// 为每个 NALU 添加长度前缀
 		for nalu := range rawData.RangePoint {
-			util.PutBE(v.NextN(naluSizeLen), nalu.Size) // 写入 NALU 长度
+			util.PutBE(v.NextN(naluSizeLen), nalu.Size)
 			v.Push(nalu.Buffers...)
 		}
 	}
