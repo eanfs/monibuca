@@ -45,9 +45,7 @@ func (v *VideoFrame) Demux() (err error) {
 // Mux implements pkg.IAVFrame.
 func (v *VideoFrame) Mux(sample *pkg.Sample) (err error) {
 	v.InitRecycleIndexes(0)
-	if v.ICodecCtx == nil {
-		v.ICodecCtx = sample.GetBase()
-	}
+	v.ICodecCtx = sample.GetBase()
 	switch rawData := sample.Raw.(type) {
 	case *pkg.Nalus:
 		// 根据编解码器类型确定 NALU 长度字段的大小

@@ -258,8 +258,8 @@ func (av1 *AV1Ctx) GetInfo() string {
 func (r *VideoFrame) Mux(baseFrame *Sample) error {
 	// 获取编解码器上下文
 	codecCtx := r.ICodecCtx
-	if codecCtx == nil {
-		switch base := baseFrame.GetBase().(type) {
+	if baseCtx := baseFrame.GetBase(); codecCtx == nil || codecCtx.GetBase() != baseCtx {
+		switch base := baseCtx.(type) {
 		case *codec.H264Ctx:
 			var ctx H264Ctx
 			ctx.H264Ctx = base

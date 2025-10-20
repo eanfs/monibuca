@@ -309,7 +309,7 @@ func (avcc *VideoFrame) Mux(fromBase *Sample) (err error) {
 	case *AV1Ctx:
 		panic(c)
 	case *codec.H264Ctx:
-		if avcc.ICodecCtx == nil {
+		if avcc.ICodecCtx == nil || avcc.GetBase() != c {
 			ctx := &H264Ctx{H264Ctx: c}
 			ctx.SequenceFrame.PushOne(append([]byte{0x17, 0, 0, 0, 0}, c.Record...))
 			ctx.SequenceFrame.BaseSample = &BaseSample{}
@@ -318,7 +318,7 @@ func (avcc *VideoFrame) Mux(fromBase *Sample) (err error) {
 		avcc.muxOld26x(CodecID_H264, fromBase)
 	case *codec.H265Ctx:
 		if true {
-			if avcc.ICodecCtx == nil {
+			if avcc.ICodecCtx == nil || avcc.GetBase() != c {
 				ctx := &H265Ctx{H265Ctx: c, Enhanced: true}
 				b := make(util.Buffer, len(ctx.Record)+5)
 				if ctx.Enhanced {

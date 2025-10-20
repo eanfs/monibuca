@@ -161,9 +161,7 @@ func (a *AnnexB) Demux() (err error) {
 }
 
 func (a *AnnexB) Mux(fromBase *pkg.Sample) (err error) {
-	if a.ICodecCtx == nil {
-		a.ICodecCtx = fromBase.GetBase()
-	}
+	a.ICodecCtx = fromBase.GetBase()
 	a.InitRecycleIndexes(0)
 	delimiter2 := codec.NALU_Delimiter2[:]
 	a.PushOne(delimiter2)
