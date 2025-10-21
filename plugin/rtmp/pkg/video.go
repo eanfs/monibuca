@@ -108,12 +108,12 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 				avcc.ICodecCtx = old
 				break
 			}
-			newCtx := &H264Ctx{}
+			newCtx := H264Ctx{}
 			newCtx.SequenceFrame.CopyFrom(&avcc.Memory)
 			newCtx.SequenceFrame.BaseSample = &BaseSample{}
 			newCtx.H264Ctx, err = codec.NewH264CtxFromRecord(newCtx.SequenceFrame.Buffers[0][reader.Offset():])
 			if err == nil {
-				avcc.ICodecCtx = newCtx
+				avcc.ICodecCtx = &newCtx
 			} else {
 				return
 			}
@@ -129,7 +129,7 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 			newCtx.SequenceFrame.BaseSample = &BaseSample{}
 			newCtx.H265Ctx, err = codec.NewH265CtxFromRecord(newCtx.SequenceFrame.Buffers[0][reader.Offset():])
 			if err == nil {
-				avcc.ICodecCtx = newCtx
+				avcc.ICodecCtx = &newCtx
 			} else {
 				return
 			}
