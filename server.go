@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -674,6 +675,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Handle root path redirect to HomePage
 		if r.URL.Path == "/" {
 			http.Redirect(w, r, "/admin/#/"+s.Admin.HomePage, http.StatusFound)
+			return
+		}
+
+		// For .map files, set correct content-type before serving
+		if strings.HasSuffix(r.URL.Path, ".map") {
+			filePath := strings.TrimPrefix(r.URL.Path, "/admin/")
+			file, err := s.Admin.zipReader.Open(filePath)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer file.Close()
+			w.Header().Set("Content-Type", "application/json")
+			io.Copy(w, file)
 			return
 		}
 

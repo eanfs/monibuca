@@ -3,7 +3,6 @@ package rtmp
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
 	"time"
 
@@ -86,7 +85,7 @@ func (avcc *VideoFrame) filterH265(naluSizeLen int) {
 func (avcc *VideoFrame) CheckCodecChange() (err error) {
 	old := avcc.ICodecCtx
 	if avcc.Size <= 10 {
-		err = io.ErrShortBuffer
+		err = ErrSkip
 		return
 	}
 	reader := avcc.NewReader()

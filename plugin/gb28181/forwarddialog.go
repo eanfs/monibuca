@@ -79,12 +79,9 @@ func (d *ForwardDialog) Start() (err error) {
 
 	if device.StreamMode != mrtp.StreamModeTCPActive {
 		if d.gb.MediaPort.Valid() {
-			select {
-			case d.MediaPort = <-d.gb.tcpPorts:
-				defer func() {
-					d.gb.tcpPorts <- d.MediaPort
-				}()
-			default:
+			var ok bool
+			d.MediaPort, ok = d.gb.tcpPB.Allocate()
+			if !ok {
 				return fmt.Errorf("no available tcp port")
 			}
 		} else {
@@ -283,6 +280,12 @@ func (d *ForwardDialog) Run() (err error) {
 
 // Dispose 释放会话资源
 func (d *ForwardDialog) Dispose() {
+	// 回收端口（如果是多端口模式）
+	if d.MediaPort > 0 && d.gb.tcpPort == 0 {
+		if !d.gb.tcpPB.Release(d.MediaPort) {
+			d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
+		}
+	}
 	if d.session != nil && d.session.InviteResponse != nil {
 		err := d.session.Bye(d)
 		if err != nil {

@@ -127,7 +127,7 @@ func (r *H26xFrame) GetSize() (ret int) {
 }
 
 func (h *H26xFrame) String() string {
-	return fmt.Sprintf("H26xFrame{FourCC: %s, Timestamp: %s, CTS: %s}", h.FourCC, h.Timestamp, h.CTS)
+	return fmt.Sprintf("H26xFrame{FourCC: %s, Timestamp: %s, CTS: %s}", h.FourCC(), h.Timestamp, h.CTS)
 }
 
 var _ pkg.IAVFrame = (*AV1Frame)(nil)
@@ -168,5 +168,5 @@ func (a *AV1Frame) Mux(from *pkg.Sample) (err error) {
 }
 
 func (a *AV1Frame) String() string {
-	return fmt.Sprintf("AV1Frame{FourCC: %s, Timestamp: %s, CTS: %s}", a.FourCC, a.Timestamp, a.CTS)
+	return fmt.Sprintf("AV1Frame{FourCC: %s, Timestamp: %s, CTS: %s}", a.FourCC(), a.Timestamp, a.CTS)
 }

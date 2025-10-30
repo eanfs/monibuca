@@ -47,30 +47,31 @@ type PositionConfig struct {
 type GB28181Plugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
-	Serial                string `default:"34020000002000000001" desc:"sip 服务 id"` //sip 服务器 id, 默认 34020000002000000001
-	Realm                 string `default:"3402000000" desc:"sip 服务域"`             //sip 服务器域，默认 3402000000
-	Password              string
-	Sip                   SipConfig
-	MediaPort             util.Range[uint16] `default:"10001-20000" desc:"媒体端口范围"` //媒体端口范围
-	Position              PositionConfig
-	Parent                string `desc:"父级设备"`
-	AutoMigrate           bool   `default:"true" desc:"自动迁移数据库结构并初始化根组织"`
-	ua                    *sipgo.UserAgent
-	server                *sipgo.Server
-	devices               task.WorkCollection[string, *Device]
-	dialogs               util.Collection[string, *Dialog]
-	forwardDialogs        util.Collection[uint32, *ForwardDialog]
-	platforms             task.WorkCollection[string, *Platform]
-	tcpPorts              chan uint16
-	tcpPort               uint16
+	Serial         string `default:"34020000002000000001" desc:"sip 服务 id"` //sip 服务器 id, 默认 34020000002000000001
+	Realm          string `default:"3402000000" desc:"sip 服务域"`             //sip 服务器域，默认 3402000000
+	Password       string
+	Sip            SipConfig
+	MediaPort      util.Range[uint16] `default:"10001-20000" desc:"媒体端口范围"` //媒体端口范围
+	Position       PositionConfig
+	Parent         string `desc:"父级设备"`
+	AutoMigrate    bool   `default:"true" desc:"自动迁移数据库结构并初始化根组织"`
+	ua             *sipgo.UserAgent
+	server         *sipgo.Server
+	devices        task.WorkCollection[string, *Device]
+	dialogs        util.Collection[string, *Dialog]
+	forwardDialogs util.Collection[uint32, *ForwardDialog]
+	platforms      task.WorkCollection[string, *Platform]
+	tcpPort        uint16 // 单端口模式下的 TCP 端口
+	udpPort        uint16 // 单端口模式下的 UDP 端口
+	// 端口位图管理（多端口模式）
+	tcpPB                 PortBitmap
+	udpPB                 PortBitmap
 	sipPorts              []int
 	SipIP                 string `desc:"sip发送命令的IP，一般是本地IP，多网卡时需要配置正确的IP"`
 	MediaIP               string `desc:"流媒体IP，用于接收流"`
 	deviceRegisterManager task.WorkCollection[string, *DeviceRegisterQueueTask]
 	Platforms             []*gb28181.PlatformModel
 	channels              util.Collection[string, *Channel]
-	udpPorts              chan uint16
-	udpPort               uint16
 	singlePorts           util.Collection[uint32, *gb28181.SinglePortReader]
 }
 
@@ -185,12 +186,9 @@ func (gb *GB28181Plugin) Start() (err error) {
 					Collection: &gb.singlePorts,
 				})
 			} else {
-				gb.tcpPorts = make(chan uint16, gb.MediaPort.Size())
-				gb.udpPorts = make(chan uint16, gb.MediaPort.Size())
-				for i := range gb.MediaPort.Size() {
-					gb.tcpPorts <- gb.MediaPort[0] + i
-					gb.udpPorts <- gb.MediaPort[0] + i
-				}
+				// 初始化位图
+				gb.tcpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
+				gb.udpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
 			}
 		} else {
 			gb.SetDescription("tcp", fmt.Sprintf("%d", gb.MediaPort[0]))
@@ -849,15 +847,14 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 	mediaPort := uint16(0)
 	if inviteInfo.StreamMode != mrtp.StreamModeTCPPassive {
 		if gb.MediaPort.Valid() {
-			select {
-			case port := <-gb.tcpPorts:
-				mediaPort = port
-				gb.Debug("OnInvite", "action", "allocate port", "port", port)
-			default:
+			var ok bool
+			mediaPort, ok = gb.tcpPB.Allocate()
+			if !ok {
 				gb.Error("OnInvite", "error", "no available port")
 				_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "No Available Port", nil))
 				return
 			}
+			gb.Debug("OnInvite", "action", "allocate port", "port", mediaPort)
 		} else {
 			mediaPort = gb.MediaPort[0]
 			gb.Debug("OnInvite", "action", "use default port", "port", mediaPort)
