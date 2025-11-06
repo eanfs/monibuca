@@ -26,9 +26,9 @@ var (
 	defaultYaml m7s.DefaultYaml
 	reg_level   = regexp.MustCompile("profile-level-id=(4.+f)")
 	_           = m7s.InstallPlugin[WebRTCPlugin](m7s.PluginMeta{
-		DefaultYaml: defaultYaml,
-		NewPuller:   NewPuller,
-		NewPusher:   NewPusher,
+		DefaultYaml:  defaultYaml,
+		NewPuller:    NewPuller,
+		NewPusher:    NewPusher,
 		NewPullProxy: NewPullProxy,
 	})
 )
@@ -37,9 +37,9 @@ type WebRTCPlugin struct {
 	m7s.Plugin
 	ICEServers []ICEServer   `desc:"ice服务器配置"`
 	Port       string        `default:"tcp:9000" desc:"监听端口"`
-	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"`         // 视频流丢包后，发送PLI请求
-	EnableDC   bool          `default:"true" desc:"是否启用DataChannel"` // 在不支持编码格式的情况下是否启用DataChannel传输
-	MimeType   []string      `desc:"MimeType过滤列表，为空则不过滤"`            // MimeType过滤列表，支持的格式如：video/H264, audio/opus
+	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"` // 视频流丢包后，发送PLI请求
+	EnableDC   bool          `desc:"是否启用DataChannel"`        // 在不支持编码格式的情况下是否启用DataChannel传输
+	MimeType   []string      `desc:"MimeType过滤列表，为空则不过滤"`    // MimeType过滤列表，支持的格式如：video/H264, audio/opus
 	s          SettingEngine
 }
 

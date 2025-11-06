@@ -89,6 +89,10 @@ func (p *PSReceiver) Start() error {
 }
 
 func (p *PSReceiver) Run() error {
+	err := p.Receiver.Run()
+	if err != nil {
+		return err
+	}
 	p.MpegPsDemuxer.Allocator = gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	p.Using(p.MpegPsDemuxer.Allocator)
 	return p.MpegPsDemuxer.Feed(p.BufReader)
@@ -97,7 +101,7 @@ func (p *PSReceiver) Run() error {
 // UpdateRtpTimestamp 更新 RTP 时间戳（从 RTP 包中调用）
 func (p *PSReceiver) UpdateRtpTimestamp(timestamp uint32) {
 	now := time.Now()
-	
+
 	if !p.hasFirstTimestamp {
 		p.firstRtpTimestamp = timestamp
 		p.hasFirstTimestamp = true
@@ -108,12 +112,12 @@ func (p *PSReceiver) UpdateRtpTimestamp(timestamp uint32) {
 			p.ProgressUpdatePeriod = time.Second
 		}
 	}
-	
+
 	// 检测时间戳是否变化
 	if timestamp != p.currentRtpTimestamp {
 		p.currentRtpTimestamp = timestamp
 		p.lastTimestampUpdate = now
-		
+
 		// 定期触发进度更新回调（避免过于频繁）
 		if p.OnProgressUpdate != nil && now.Sub(p.lastProgressUpdate) >= p.ProgressUpdatePeriod {
 			p.lastProgressUpdate = now
@@ -184,7 +188,7 @@ func (p *Receiver) Start() (err error) {
 				return errors.New("start listen,err" + err.Error())
 			}
 			p.OnStop(p.Listener.Close)
-			conn, err = p.Accept()
+			return
 		} else {
 			conn = p.SinglePort
 		}
@@ -223,4 +227,18 @@ func (p *Receiver) Start() (err error) {
 	}
 	p.Using(rtpReader, p.BufReader)
 	return
+}
+
+func (p *Receiver) Run() error {
+	if p.Listener != nil {
+		conn, err := p.Accept()
+		if err != nil {
+			return err
+		}
+		p.OnStop(conn.Close)
+		rtpReader := NewRTPPayloadReader(NewRTPTCPReader(conn))
+		p.rtpReader = rtpReader
+		p.BufReader = util.NewBufReader(rtpReader)
+	}
+	return nil
 }
