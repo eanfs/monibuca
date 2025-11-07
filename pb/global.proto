@@ -852,6 +852,7 @@ message GlobalPullRequest {
   string protocol = 2;
   int32 testMode = 3; // 0: pull, 1: pull without publish
   string streamPath = 4; // 流路径
+  optional int32 loop = 22; // 拉流循环次数,-1:无限循环
   
   // Publish configuration
   optional bool pubAudio = 5;

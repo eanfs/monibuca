@@ -2,6 +2,7 @@ package plugin_gb28181pro
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -131,7 +132,7 @@ func (d *Device) Dispose() {
 		// 保存当前内存中的channels
 		if d.channels.Length > 0 {
 			d.channels.Range(func(channel *Channel) bool {
-				if err := d.plugin.DB.Create(channel.DeviceChannel).Error; err != nil {
+				if err := d.plugin.DB.Save(channel.DeviceChannel).Error; err != nil {
 					d.Error("保存设备通道记录失败", "error", err)
 				}
 				if channel.PullProxyTask != nil {
@@ -144,6 +145,9 @@ func (d *Device) Dispose() {
 		}
 		// 保存设备信息
 		d.plugin.DB.Save(d)
+		if deviceRegisterQueueTask, ok := d.plugin.deviceRegisterManager.Get(d.DeviceId); ok {
+			deviceRegisterQueueTask.Stop(errors.New("设备注销"))
+		}
 	}
 }
 
@@ -230,6 +234,7 @@ func (c *catalogHandlerTask) Run() (err error) {
 			c.CustomChannelId = c.ChannelId
 		}
 		// 使用 Save 进行 upsert 操作
+		d.Debug("ready to addOrUpdateChannel", "channel.ID is", c.ID, "channel.Status is", c.Status)
 		d.addOrUpdateChannel(c)
 		catalogReq.TotalCount++
 	}
@@ -631,7 +636,8 @@ func (d *Device) frontEndCmdString(cmdCode int32, parameter1 int32, parameter2 i
 }
 
 func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
-	if channel, ok := d.channels.Get(c.ID); ok {
+	var resultChannel *Channel
+	if channel, ok := d.plugin.channels.Get(c.ID); ok {
 		// 通道已存在，保留自定义字段
 		if channel.DeviceChannel != nil {
 			// 保存原有的自定义字段
@@ -648,16 +654,18 @@ func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
 		}
 		// 更新通道信息
 		channel.DeviceChannel = &c
+		resultChannel = channel
+		d.Debug("addOrUpdateChannel, get channel from d.plugin.channels", "channel.ID is ", c.ID, "channel.Status is", c.Status)
 	} else {
 		// 创建新通道
-		channel = &Channel{
+		resultChannel = &Channel{
 			Device:        d,
 			Logger:        d.Logger.With("channel", c.ID),
 			DeviceChannel: &c,
 		}
-		d.channels.Set(channel)
-		d.plugin.channels.Set(channel)
 	}
+	d.channels.Set(resultChannel)
+	d.plugin.channels.Set(resultChannel)
 }
 
 func (d *Device) GetID() string {

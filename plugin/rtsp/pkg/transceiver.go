@@ -378,7 +378,7 @@ func (s *Sender) Send() (err error) {
 			}
 		}()
 	}
-
+	s.BufReader.SetTimeout(60 * time.Second)
 	// 接收处理（处理客户端发来的消息）
 	return s.NetConnection.Receive(true, nil, nil)
 }

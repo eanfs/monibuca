@@ -76,7 +76,7 @@ func (avcc *AudioFrame) Mux(fromBase *Sample) (err error) {
 	avcc.InitRecycleIndexes(1)
 	switch c := fromBase.GetBase().(type) {
 	case *codec.AACCtx:
-		if avcc.ICodecCtx == nil {
+		if avcc.ICodecCtx == nil || avcc.ICodecCtx.GetBase() != c {
 			ctx := &AACCtx{
 				AACCtx: c,
 			}
@@ -88,9 +88,7 @@ func (avcc *AudioFrame) Mux(fromBase *Sample) (err error) {
 		head[0], head[1] = 0xAF, 0x01
 		avcc.Push(audioData.Buffers...)
 	default:
-		if avcc.ICodecCtx == nil {
-			avcc.ICodecCtx = c
-		}
+		avcc.ICodecCtx = c
 		head := avcc.NextN(1)
 		head[0] = byte(ParseAudioCodec(c.FourCC()))<<4 | (1 << 1)
 		avcc.Push(audioData.Buffers...)

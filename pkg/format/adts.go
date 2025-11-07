@@ -61,9 +61,7 @@ func (A *Mpeg2Audio) Demux() (err error) {
 }
 
 func (A *Mpeg2Audio) Mux(frame *pkg.Sample) (err error) {
-	if A.ICodecCtx == nil {
-		A.ICodecCtx = frame.GetBase()
-	}
+	A.ICodecCtx = frame.GetBase()
 	raw := frame.Raw.(*pkg.AudioData)
 	aacCtx, ok := A.ICodecCtx.(*codec.AACCtx)
 	if ok {

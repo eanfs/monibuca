@@ -147,17 +147,19 @@ snap:
     transform:
       .+:
         output:
-          - watermark:
-              text: "abcd" # 水印文字内容
-              fontpath: /Users/dexter/Library/Fonts/MapleMono-NF-CN-Medium.ttf # 水印字体文件路径
-              fontcolor: "rgba(255,165,0,1)" # 水印字体颜色，支持rgba格式
-              fontsize: 36 # 水印字体大小
-              offsetx: 0 # 水印位置X偏移
-              offsety: 0 # 水印位置Y偏移
-            timeinterval: 1s # 截图时间间隔
-            savepath: "snaps" # 截图保存路径
-            iframeinterval: 3 # 间隔多少帧截图
-            querytimedelta: 3 # 查询截图时允许的最大时间差（秒）
+          - 
+            conf:
+              watermark:
+                text: "abcd" # 水印文字内容
+                fontpath: /Users/dexter/Library/Fonts/MapleMono-NF-CN-Medium.ttf # 水印字体文件路径
+                fontcolor: "rgba(255,165,0,1)" # 水印字体颜色，支持rgba格式
+                fontsize: 36 # 水印字体大小
+                offsetx: 0 # 水印位置X偏移
+                offsety: 0 # 水印位置Y偏移
+              timeinterval: 1s # 截图时间间隔
+              savepath: "snaps" # 截图保存路径
+              iframeinterval: 3 # 间隔多少帧截图
+              querytimedelta: 3 # 查询截图时允许的最大时间差（秒）
 onvif:
   enable: false
   discoverinterval: 3 # 发现设备的间隔，单位秒，默认30秒，建议比rtsp插件的重连间隔大点

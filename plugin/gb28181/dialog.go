@@ -11,7 +11,7 @@ import (
 
 	sipgo "github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	"github.com/langhuihui/gotask"
+	task "github.com/langhuihui/gotask"
 	m7s "m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/util"
@@ -141,9 +141,9 @@ func (d *Dialog) Start() (err error) {
 			d.MediaPort = d.gb.tcpPort
 		} else {
 			if d.gb.MediaPort.Valid() {
-				select {
-				case d.MediaPort = <-d.gb.tcpPorts:
-				default:
+				var ok bool
+				d.MediaPort, ok = d.gb.tcpPB.Allocate()
+				if !ok {
 					d.pullCtx.Fail("no available tcp port")
 					return fmt.Errorf("no available tcp port")
 				}
@@ -156,9 +156,10 @@ func (d *Dialog) Start() (err error) {
 			d.MediaPort = d.gb.udpPort
 		} else {
 			if d.gb.MediaPort.Valid() {
-				select {
-				case d.MediaPort = <-d.gb.udpPorts:
-				default:
+				var ok bool
+				d.MediaPort, ok = d.gb.udpPB.Allocate()
+				if !ok {
+					d.pullCtx.Fail("no available udp port")
 					return fmt.Errorf("no available udp port")
 				}
 			} else {
@@ -424,15 +425,20 @@ func (d *Dialog) GetKey() string {
 }
 
 func (d *Dialog) Dispose() {
-	if d.StreamMode == mrtp.StreamModeUDP {
-		if d.gb.udpPort == 0 { //多端口
-			// 如果没有设置udp端口，则将MediaPort设置为0，表示不再使用
-			d.gb.udpPorts <- d.MediaPort
+	switch d.StreamMode {
+	case mrtp.StreamModeUDP:
+		if d.gb.udpPort == 0 { //多端口模式
+			// 回收端口，防止重复回收
+			if !d.gb.udpPB.Release(d.MediaPort) {
+				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "udp")
+			}
 		}
-	} else {
-		if d.gb.tcpPort == 0 {
-			// 如果没有设置tcp端口，则将MediaPort设置为0，表示不再使用
-			d.gb.tcpPorts <- d.MediaPort
+	case mrtp.StreamModeTCPPassive:
+		if d.gb.tcpPort == 0 { //多端口模式
+			// 回收端口，防止重复回收
+			if !d.gb.tcpPB.Release(d.MediaPort) {
+				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
+			}
 		}
 	}
 	d.Info("dialog dispose", "ssrc", d.SSRC, "mediaPort", d.MediaPort, "streamMode", d.StreamMode, "deviceId", d.Channel.DeviceId, "channelId", d.Channel.ChannelId)

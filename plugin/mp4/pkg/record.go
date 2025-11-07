@@ -134,10 +134,8 @@ func (r *Recorder) writeTailer(end time.Time) {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	if job.RecConf.Fragment == 0 {
-		return fmt.Sprintf("%s.mp4", job.RecConf.FilePath)
-	}
-	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.mp4", time.Now().Unix()))
+	now := time.Now()
+	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%s_%09d.mp4", time.Now().Local().Format("2006-01-02-15-04-05"), now.Nanosecond()))
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
@@ -292,18 +290,18 @@ func (r *Recorder) Run() (err error) {
 
 		if vt == nil {
 			vt = sub.VideoReader.Track
-			switch vt.ICodecCtx.GetBase().(type) {
+			switch video.ICodecCtx.GetBase().(type) {
 			case *codec.H264Ctx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
 				videoTrack = track
-				track.ICodecCtx = vt.ICodecCtx
+				track.ICodecCtx = video.ICodecCtx
 			case *codec.H265Ctx:
 				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
 				videoTrack = track
-				track.ICodecCtx = vt.ICodecCtx
+				track.ICodecCtx = video.ICodecCtx
 			}
 		}
-		ctx := vt.ICodecCtx.(pkg.IVideoCodecCtx)
+		ctx := video.ICodecCtx.(pkg.IVideoCodecCtx)
 		if videoTrackCtx, ok := videoTrack.ICodecCtx.(pkg.IVideoCodecCtx); ok && videoTrackCtx != ctx {
 			width, height := uint32(ctx.Width()), uint32(ctx.Height())
 			oldWidth, oldHeight := uint32(videoTrackCtx.Width()), uint32(videoTrackCtx.Height())
@@ -318,6 +316,17 @@ func (r *Recorder) Run() (err error) {
 			at, vt = nil, nil
 			if vr := sub.VideoReader; vr != nil {
 				vr.ResetAbsTime()
+				vt = vr.Track
+				switch video.ICodecCtx.GetBase().(type) {
+				case *codec.H264Ctx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+					videoTrack = track
+					track.ICodecCtx = video.ICodecCtx
+				case *codec.H265Ctx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+					videoTrack = track
+					track.ICodecCtx = video.ICodecCtx
+				}
 			}
 			if ar := sub.AudioReader; ar != nil {
 				ar.ResetAbsTime()

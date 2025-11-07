@@ -22,12 +22,14 @@ import (
 const Timeout = time.Second * 10
 
 func NewNetConnection(conn net.Conn) *NetConnection {
-	return &NetConnection{
+	c := &NetConnection{
 		Conn:            conn,
-		BufReader:       util.NewBufReaderWithTimeout(conn, Timeout),
+		BufReader:       util.NewBufReader(conn),
 		MemoryAllocator: gomem.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
+	c.BufReader.SetTimeout(Timeout)
+	return c
 }
 
 type NetConnection struct {
@@ -143,6 +145,7 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	}
 	c.Conn = conn
 	c.BufReader = util.NewBufReader(conn)
+	c.BufReader.SetTimeout(Timeout)
 	c.UserAgent = "monibuca" + m7s.Version
 	c.Session = ""
 	c.Auth = util.NewAuth(rtspURL.User)
@@ -255,9 +258,7 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 			return
 		}
 		ts := time.Now()
-		if err = c.Conn.SetReadDeadline(ts.Add(util.Conditional(sendMode, time.Second*60, time.Second*15))); err != nil {
-			return
-		}
+
 		var magic []byte
 		// we can read:
 		// 1. RTP interleaved: `$` + 1B channel number + 2B size

@@ -3,7 +3,6 @@ package rtmp
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
 	"time"
 
@@ -86,7 +85,7 @@ func (avcc *VideoFrame) filterH265(naluSizeLen int) {
 func (avcc *VideoFrame) CheckCodecChange() (err error) {
 	old := avcc.ICodecCtx
 	if avcc.Size <= 10 {
-		err = io.ErrShortBuffer
+		err = ErrSkip
 		return
 	}
 	reader := avcc.NewReader()
@@ -108,12 +107,12 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 				avcc.ICodecCtx = old
 				break
 			}
-			newCtx := &H264Ctx{}
+			newCtx := H264Ctx{}
 			newCtx.SequenceFrame.CopyFrom(&avcc.Memory)
 			newCtx.SequenceFrame.BaseSample = &BaseSample{}
 			newCtx.H264Ctx, err = codec.NewH264CtxFromRecord(newCtx.SequenceFrame.Buffers[0][reader.Offset():])
 			if err == nil {
-				avcc.ICodecCtx = newCtx
+				avcc.ICodecCtx = &newCtx
 			} else {
 				return
 			}
@@ -129,7 +128,7 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 			newCtx.SequenceFrame.BaseSample = &BaseSample{}
 			newCtx.H265Ctx, err = codec.NewH265CtxFromRecord(newCtx.SequenceFrame.Buffers[0][reader.Offset():])
 			if err == nil {
-				avcc.ICodecCtx = newCtx
+				avcc.ICodecCtx = &newCtx
 			} else {
 				return
 			}
@@ -187,12 +186,12 @@ func (avcc *VideoFrame) CheckCodecChange() (err error) {
 		} else {
 			// switch ctx := old.(type) {
 			// case *codec.H264Ctx:
-			// 	avcc.filterH264(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
+			//     avcc.filterH264(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
 			// case *H265Ctx:
-			// 	avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
+			//     avcc.filterH265(int(ctx.RecordInfo.LengthSizeMinusOne) + 1)
 			// }
 			// if avcc.Size <= 5 {
-			// 	return old, ErrSkip
+			//     return old, ErrSkip
 			// }
 		}
 	}
@@ -208,12 +207,7 @@ func (avcc *VideoFrame) parseH265(ctx *H265Ctx, reader *gomem.MemoryReader) (err
 }
 
 func (avcc *VideoFrame) parseAV1(reader *gomem.MemoryReader) error {
-	var obus OBUs
-	if err := obus.ParseAVCC(reader); err != nil {
-		return err
-	}
-	avcc.Raw = &obus
-	return nil
+	return avcc.ParseAV1OBUs(reader)
 }
 
 func (avcc *VideoFrame) Demux() error {
@@ -298,7 +292,7 @@ func (avcc *VideoFrame) muxOld26x(codecID VideoCodecID, fromBase *Sample) {
 		naluLen := uint32(nalu.Size)
 		binary.BigEndian.PutUint32(naluLenM, naluLen)
 		// if nalu.Size != len(util.ConcatBuffers(nalu.Buffers)) {
-		// 	panic("nalu size mismatch")
+		//     panic("nalu size mismatch")
 		// }
 		avcc.Push(nalu.Buffers...)
 	}
@@ -306,10 +300,31 @@ func (avcc *VideoFrame) muxOld26x(codecID VideoCodecID, fromBase *Sample) {
 
 func (avcc *VideoFrame) Mux(fromBase *Sample) (err error) {
 	switch c := fromBase.GetBase().(type) {
-	case *AV1Ctx:
-		panic(c)
+	case *codec.AV1Ctx:
+		if avcc.ICodecCtx == nil || avcc.GetBase() != c {
+			ctx := &AV1Ctx{AV1Ctx: c}
+			configBytes := make([]byte, 5+len(c.ConfigOBUs))
+			configBytes[0] = 0b1001_0000 | byte(PacketTypeSequenceStart)
+			copy(configBytes[1:], codec.FourCC_AV1[:])
+			copy(configBytes[5:], c.ConfigOBUs)
+			ctx.SequenceFrame.PushOne(configBytes)
+			ctx.SequenceFrame.BaseSample = &BaseSample{}
+			avcc.ICodecCtx = ctx
+		}
+		obus := fromBase.Raw.(*OBUs)
+		avcc.InitRecycleIndexes(obus.Count())
+		head := avcc.NextN(5)
+		if fromBase.IDR {
+			head[0] = 0b1001_0000 | byte(PacketTypeCodedFrames)
+		} else {
+			head[0] = 0b1010_0000 | byte(PacketTypeCodedFrames)
+		}
+		copy(head[1:], codec.FourCC_AV1[:])
+		for obu := range obus.RangePoint {
+			avcc.Push(obu.Buffers...)
+		}
 	case *codec.H264Ctx:
-		if avcc.ICodecCtx == nil {
+		if avcc.ICodecCtx == nil || avcc.GetBase() != c {
 			ctx := &H264Ctx{H264Ctx: c}
 			ctx.SequenceFrame.PushOne(append([]byte{0x17, 0, 0, 0, 0}, c.Record...))
 			ctx.SequenceFrame.BaseSample = &BaseSample{}
@@ -318,7 +333,7 @@ func (avcc *VideoFrame) Mux(fromBase *Sample) (err error) {
 		avcc.muxOld26x(CodecID_H264, fromBase)
 	case *codec.H265Ctx:
 		if true {
-			if avcc.ICodecCtx == nil {
+			if avcc.ICodecCtx == nil || avcc.GetBase() != c {
 				ctx := &H265Ctx{H265Ctx: c, Enhanced: true}
 				b := make(util.Buffer, len(ctx.Record)+5)
 				if ctx.Enhanced {

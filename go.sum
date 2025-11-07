@@ -160,8 +160,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/langhuihui/gomem v0.0.0-20251001011839-023923cf7683 h1:lITBgMb71ad6OUU9gycsheCw9PpMbXy3/QA8T0V0dVM=
 github.com/langhuihui/gomem v0.0.0-20251001011839-023923cf7683/go.mod h1:BTPq1+4YUP4i7w8VHzs5AUIdn3T5gXjIUXbxgHW9TIQ=
-github.com/langhuihui/gotask v1.0.0 h1:UOs7IQQ5XVZyj1XRiHuHW2o/aQQV3s2LN/DiJyd6DPw=
-github.com/langhuihui/gotask v1.0.0/go.mod h1:2zNqwV8M1pHoO0b5JC/A37oYpdtXrfL10Qof9AvR5IE=
+github.com/langhuihui/gotask v1.0.2 h1:vcQ/9yD0+x2DkSrDBkYpufOyJxXs7i5fd7wUD8gvLLs=
+github.com/langhuihui/gotask v1.0.2/go.mod h1:2zNqwV8M1pHoO0b5JC/A37oYpdtXrfL10Qof9AvR5IE=
 github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80 h1:6Yzfa6GP0rIo/kULo2bwGEkFvCePZ3qHDDTC3/J9Swo=
 github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80/go.mod h1:imJHygn/1yfhB7XSJJKlFZKl/J+dCPAknuiaGOshXAs=
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 h1:6E+4a0GO5zZEnZ81pIr0yLvtUWk2if982qA3F3QD6H4=

@@ -1,3 +1,97 @@
+/*
+Package config provides a flexible, multi-source configuration system with priority-based value resolution.
+
+## Overview
+
+The config package implements a hierarchical configuration system that allows values to be set from
+multiple sources with a defined priority order. This enables powerful features like:
+- Environment variable overrides
+- Dynamic runtime modifications
+- Global and per-instance defaults
+- Type-safe configuration using Go structs
+
+## Configuration Priority
+
+The system resolves values using the following priority order (highest to lowest):
+ 1. Modify  - Dynamic runtime modifications
+ 2. Env     - Environment variables
+ 3. File    - Values from config file
+ 4. defaultYaml - Embedded default YAML configs
+ 5. Global  - Global/shared configuration
+ 6. Default - Struct tag defaults or zero values
+
+## Core Workflow
+
+The configuration resolution follows a 5-step initialization process:
+
+### Step 1: Parse
+- Initialize the configuration tree from Go struct definitions
+- Apply default values using struct tags
+- Build the property map for all exported fields
+- Set up environment variable prefixes
+
+### Step 2: ParseGlobal
+- Apply global/shared configuration values
+- Useful for settings that should be consistent across instances
+
+### Step 3: ParseDefaultYaml
+- Load embedded default YAML configurations
+- Provides sensible defaults without hardcoding in Go
+
+### Step 4: ParseUserFile
+- Read and apply user-provided configuration files
+- Normalizes key names (removes hyphens, underscores, lowercases)
+- Handles both struct mappings and single-value assignments
+
+### Step 5: ParseModifyFile
+- Apply dynamic runtime modifications
+- Tracks changes separately for API purposes
+- Automatically cleans up empty/unchanged values
+
+## Key Features
+
+### Type Conversion
+The unmarshal function handles automatic conversion between different types:
+- Basic types (int, string, bool, etc.)
+- Duration strings with unit validation
+- Regexp patterns
+- Nested structs (with special handling for single non-struct values)
+- Pointers, maps, slices, and arrays
+- Fallback to YAML marshaling for unknown types
+
+### Special Behaviors
+- Single non-struct values are automatically assigned to the first field of struct types
+- Key names are normalized (lowercase, remove hyphens/underscores)
+- Environment variables use underscore-separated uppercase prefixes
+- The "plugin" field is always skipped during parsing
+- Fields with yaml:"-" tag are ignored
+
+## Usage Example
+
+```go
+
+	type Config struct {
+	    Host    string `yaml:"host" default:"localhost"`
+	    Port    int    `yaml:"port" default:"8080"`
+	    Timeout time.Duration `yaml:"timeout" default:"30s"`
+	}
+
+cfg := &Config{}
+var c Config
+c.Parse(cfg)
+// Load from various sources...
+config := c.GetValue().(*Config)
+```
+
+## API Structure
+
+The main types and functions:
+- Config: Core configuration node with value priority tracking
+- Parse: Initialize configuration from struct
+- ParseGlobal/ParseDefaultYaml/ParseUserFile/ParseModifyFile: Load from sources
+- GetValue/GetMap: Retrieve resolved values
+- MarshalJSON: Serialize configuration for API responses
+*/
 package config
 
 import (
@@ -16,17 +110,17 @@ import (
 )
 
 type Config struct {
-	Ptr     reflect.Value //指向配置结构体值,优先级：动态修改值>环境变量>配置文件>defaultYaml>全局配置>默认值
-	Modify  any           //动态修改的值
-	Env     any           //环境变量中的值
-	File    any           //配置文件中的值
-	Global  *Config       //全局配置中的值,指针类型
-	Default any           //默认值
+	Ptr     reflect.Value // Points to config struct value, priority: Modify > Env > File > defaultYaml > Global > Default
+	Modify  any           // Dynamic modified value
+	Env     any           // Value from environment variable
+	File    any           // Value from config file
+	Global  *Config       // Value from global config (pointer type)
+	Default any           // Default value
 	Enum    []struct {
 		Label string `json:"label"`
 		Value any    `json:"value"`
 	}
-	name     string // 小写
+	name     string // Lowercase key name
 	propsMap map[string]*Config
 	props    []*Config
 	tag      reflect.StructTag
@@ -102,7 +196,7 @@ func (config *Config) GetValue() any {
 	return config.Ptr.Interface()
 }
 
-// Parse 第一步读取配置结构体的默认值
+// Parse step 1: Read default values from config struct
 func (config *Config) Parse(s any, prefix ...string) {
 	var t reflect.Type
 	var v reflect.Value
@@ -123,15 +217,14 @@ func (config *Config) Parse(s any, prefix ...string) {
 		fmt.Println("parse to ", prefix, config.name, s, "is not valid")
 		return
 	}
-	if l := len(prefix); l > 0 { // 读取环境变量
-		name := strings.ToLower(prefix[l-1])
+	if l := len(prefix); l > 0 { // Read environment variables
 		_, isUnmarshaler := v.Addr().Interface().(yaml.Unmarshaler)
 		tag := config.tag.Get("default")
 		if tag != "" && isUnmarshaler {
-			v.Set(config.assign(name, tag))
+			v.Set(config.assign(tag))
 		}
 		if envValue := os.Getenv(strings.Join(prefix, "_")); envValue != "" {
-			v.Set(config.assign(name, envValue))
+			v.Set(config.assign(envValue))
 			config.Env = v.Interface()
 		}
 	}
@@ -145,23 +238,23 @@ func (config *Config) Parse(s any, prefix ...string) {
 			}
 			name := strings.ToLower(ft.Name)
 			if name == "plugin" {
-				continue
+				continue // Skip plugin field
 			}
 			if tag := ft.Tag.Get("yaml"); tag != "" {
 				if tag == "-" {
-					continue
+					continue // Skip field if tag is "-"
 				}
-				name, _, _ = strings.Cut(tag, ",")
+				name, _, _ = strings.Cut(tag, ",") // Use yaml tag name, ignore options
 			}
 			prop := config.Get(name)
 
 			prop.tag = ft.Tag
 			if len(prefix) > 0 {
-				prop.Parse(fv, append(prefix, strings.ToUpper(ft.Name))...)
+				prop.Parse(fv, append(prefix, strings.ToUpper(ft.Name))...) // Recursive parse with env prefix
 			} else {
 				prop.Parse(fv)
 			}
-			for _, kv := range strings.Split(ft.Tag.Get("enum"), ",") {
+			for _, kv := range strings.Split(ft.Tag.Get("enum"), ",") { // Parse enum options from tag
 				kvs := strings.Split(kv, ":")
 				if len(kvs) != 2 {
 					continue
@@ -182,7 +275,7 @@ func (config *Config) Parse(s any, prefix ...string) {
 	}
 }
 
-// ParseDefaultYaml 第二步读取全局配置
+// ParseGlobal step 2: Read global config
 func (config *Config) ParseGlobal(g *Config) {
 	config.Global = g
 	if config.propsMap != nil {
@@ -190,11 +283,11 @@ func (config *Config) ParseGlobal(g *Config) {
 			v.ParseGlobal(g.Get(k))
 		}
 	} else {
-		config.Ptr.Set(g.Ptr)
+		config.Ptr.Set(g.Ptr) // If no sub-properties, copy value directly
 	}
 }
 
-// ParseDefaultYaml 第三步读取内嵌默认配置
+// ParseDefaultYaml step 3: Read embedded default config
 func (config *Config) ParseDefaultYaml(defaultYaml map[string]any) {
 	if defaultYaml == nil {
 		return
@@ -206,9 +299,9 @@ func (config *Config) ParseDefaultYaml(defaultYaml map[string]any) {
 					prop.ParseDefaultYaml(v.(map[string]any))
 				}
 			} else {
-				dv := prop.assign(k, v)
+				dv := prop.assign(v)
 				prop.Default = dv.Interface()
-				if prop.Env == nil {
+				if prop.Env == nil { // Only set if no env var override
 					prop.Ptr.Set(dv)
 				}
 			}
@@ -216,15 +309,15 @@ func (config *Config) ParseDefaultYaml(defaultYaml map[string]any) {
 	}
 }
 
-// ParseFile 第四步读取用户配置文件
+// ParseFile step 4: Read user config file
 func (config *Config) ParseUserFile(conf map[string]any) {
 	if conf == nil {
 		return
 	}
 	config.File = conf
 	for k, v := range conf {
-		k = strings.ReplaceAll(k, "-", "")
-		k = strings.ReplaceAll(k, "_", "")
+		k = strings.ReplaceAll(k, "-", "") // Normalize key name: remove hyphens
+		k = strings.ReplaceAll(k, "_", "") // Normalize key name: remove underscores
 		k = strings.ToLower(k)
 		if config.Has(k) {
 			if prop := config.Get(k); prop.props != nil {
@@ -233,18 +326,19 @@ func (config *Config) ParseUserFile(conf map[string]any) {
 					case map[string]any:
 						prop.ParseUserFile(vv)
 					default:
+						// If the value is not a map (single non-struct value), assign it to the first field
 						prop.props[0].Ptr.Set(reflect.ValueOf(v))
 					}
 				}
 			} else {
-				fv := prop.assign(k, v)
+				fv := prop.assign(v)
 				if fv.IsValid() {
 					prop.File = fv.Interface()
-					if prop.Env == nil {
+					if prop.Env == nil { // Only set if no env var override
 						prop.Ptr.Set(fv)
 					}
 				} else {
-					// continue invalid field
+					// Continue with invalid field
 					slog.Error("Attempted to access invalid field during config parsing: %s", v)
 				}
 			}
@@ -252,7 +346,7 @@ func (config *Config) ParseUserFile(conf map[string]any) {
 	}
 }
 
-// ParseModifyFile 第五步读取动态修改配置文件
+// ParseModifyFile step 5: Read dynamic modified config
 func (config *Config) ParseModifyFile(conf map[string]any) {
 	if conf == nil {
 		return
@@ -264,15 +358,15 @@ func (config *Config) ParseModifyFile(conf map[string]any) {
 				if v != nil {
 					vmap := v.(map[string]any)
 					prop.ParseModifyFile(vmap)
-					if len(vmap) == 0 {
+					if len(vmap) == 0 { // Remove empty map
 						delete(conf, k)
 					}
 				}
 			} else {
-				mv := prop.assign(k, v)
+				mv := prop.assign(v)
 				v = mv.Interface()
-				vwm := prop.valueWithoutModify()
-				if equal(vwm, v) {
+				vwm := prop.valueWithoutModify() // Get value without modify
+				if equal(vwm, v) {               // No change, remove from modify
 					delete(conf, k)
 					if prop.Modify != nil {
 						prop.Modify = nil
@@ -285,12 +379,13 @@ func (config *Config) ParseModifyFile(conf map[string]any) {
 			}
 		}
 	}
-	if len(conf) == 0 {
+	if len(conf) == 0 { // Clear modify if empty
 		config.Modify = nil
 	}
 }
 
 func (config *Config) valueWithoutModify() any {
+	// Return value with priority: Env > File > Global > Default (excluding Modify)
 	if config.Env != nil {
 		return config.Env
 	}
@@ -317,13 +412,14 @@ func equal(vwm, v any) bool {
 }
 
 func (config *Config) GetMap() map[string]any {
+	// Convert config tree to map representation
 	m := make(map[string]any)
 	for k, v := range config.propsMap {
-		if v.props != nil {
+		if v.props != nil { // Has sub-properties
 			if vv := v.GetMap(); vv != nil {
 				m[k] = vv
 			}
-		} else if v.GetValue() != nil {
+		} else if v.GetValue() != nil { // Leaf value
 			m[k] = v.GetValue()
 		}
 	}
@@ -337,6 +433,7 @@ var regexPureNumber = regexp.MustCompile(`^\d+$`)
 
 func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 	source := reflect.ValueOf(v)
+	// Fast path: directly return if both are basic types
 	for _, t := range basicTypes {
 		if source.Kind() == t && ft.Kind() == t {
 			return source
@@ -351,6 +448,7 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 			target.SetInt(0)
 		} else {
 			timeStr := source.String()
+			// Parse duration string, but reject pure numbers (must have unit)
 			if d, err := time.ParseDuration(timeStr); err == nil && !regexPureNumber.MatchString(timeStr) {
 				target.SetInt(int64(d))
 			} else {
@@ -365,11 +463,12 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 	default:
 		switch ft.Kind() {
 		case reflect.Pointer:
-			return unmarshal(ft.Elem(), v).Addr()
+			return unmarshal(ft.Elem(), v).Addr() // Recurse to element type
 		case reflect.Struct:
 			newStruct := reflect.New(ft)
 			defaults.SetDefaults(newStruct.Interface())
 			if value, ok := v.(map[string]any); ok {
+				// If the value is a map, unmarshal each field by matching keys
 				for i := 0; i < ft.NumField(); i++ {
 					key := strings.ToLower(ft.Field(i).Name)
 					if vv, ok := value[key]; ok {
@@ -377,6 +476,7 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 					}
 				}
 			} else {
+				// If the value is not a map (single non-struct value), assign it to the first field
 				newStruct.Elem().Field(0).Set(unmarshal(ft.Field(0).Type, v))
 			}
 			return newStruct.Elem()
@@ -384,6 +484,7 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 			if v != nil {
 				target = reflect.MakeMap(ft)
 				for k, v := range v.(map[string]any) {
+					// Unmarshal key and value recursively
 					target.SetMapIndex(unmarshal(ft.Key(), k), unmarshal(ft.Elem(), v))
 				}
 			}
@@ -392,11 +493,12 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 				s := v.([]any)
 				target = reflect.MakeSlice(ft, len(s), len(s))
 				for i, v := range s {
-					target.Index(i).Set(unmarshal(ft.Elem(), v))
+					target.Index(i).Set(unmarshal(ft.Elem(), v)) // Unmarshal each element
 				}
 			}
 		default:
 			if v != nil {
+				// For unknown types, use YAML marshal/unmarshal as fallback
 				var out []byte
 				var err error
 				if vv, ok := v.(string); ok {
@@ -407,6 +509,7 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 						panic(err)
 					}
 				}
+				// Create temporary struct with single Value field
 				tmpValue := reflect.New(reflect.StructOf([]reflect.StructField{
 					{
 						Name: "Value",
@@ -424,7 +527,8 @@ func unmarshal(ft reflect.Type, v any) (target reflect.Value) {
 	return
 }
 
-func (config *Config) assign(k string, v any) reflect.Value {
+func (config *Config) assign(v any) reflect.Value {
+	// Convert value to the same type as Ptr
 	return unmarshal(config.Ptr.Type(), v)
 }
 

@@ -9,6 +9,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/pkg/codecs/av1"
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/codec/h265parser"
 	"github.com/langhuihui/gomem"
@@ -37,6 +39,7 @@ type (
 	}
 	AV1Ctx struct {
 		RTPCtx
+		seq uint16
 		*codec.AV1Ctx
 	}
 	VP9Ctx struct {
@@ -61,6 +64,10 @@ const (
 	endBit       = 1 << 6
 	MTUSize      = 1460
 	ReceiveMTU   = 1500
+
+	// AV1 RTP payload descriptor bits (subset used)
+	av1ZBit = 1 << 7 // start of OBU
+	av1YBit = 1 << 6 // end of OBU
 )
 
 func (r *VideoFrame) Recycle() {
@@ -79,9 +86,9 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 	}
 	// 处理时间戳和序列号
 	pts := r.Packets[0].Timestamp
-	nalus := r.Raw.(*Nalus)
 	switch ctx := old.(type) {
 	case *H264Ctx:
+		nalus := r.Raw.(*Nalus)
 		dts := ctx.dtsEst.Feed(pts)
 		r.SetDTS(time.Duration(dts))
 		r.SetPTS(time.Duration(pts))
@@ -153,10 +160,10 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 			ctx.seq++
 		}
 	case *H265Ctx:
+		nalus := r.Raw.(*Nalus)
 		dts := ctx.dtsEst.Feed(pts)
 		r.SetDTS(time.Duration(dts))
 		r.SetPTS(time.Duration(pts))
-		// 检查 VPS、SPS、PPS 和 IDR 帧
 		var vps, sps, pps []byte
 		var hasVPSSPSPPS bool
 		for nalu := range nalus.RangePoint {
@@ -179,8 +186,6 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 				r.IDR = true
 			}
 		}
-
-		// 如果发现新的 VPS/SPS/PPS，更新编解码器上下文
 		if hasVPSSPSPPS = vps != nil && sps != nil && pps != nil; hasVPSSPSPPS && (len(ctx.Record) == 0 || !bytes.Equal(vps, ctx.VPS()) || !bytes.Equal(sps, ctx.SPS()) || !bytes.Equal(pps, ctx.PPS())) {
 			var newCodecData h265parser.CodecData
 			if newCodecData, err = h265parser.NewCodecDataFromVPSAndSPSAndPPS(vps, sps, pps); err != nil {
@@ -192,13 +197,11 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 					CodecData: newCodecData,
 				},
 			}
-			// 保持原有的 RTP 参数
 			if oldCtx, ok := old.(*H265Ctx); ok {
 				newCtx.RTPCtx = oldCtx.RTPCtx
 			}
 			r.ICodecCtx = newCtx
 		} else {
-			// 如果是 IDR 帧但没有 VPS/SPS/PPS，需要插入
 			if r.IDR && len(ctx.VPS()) > 0 && len(ctx.SPS()) > 0 && len(ctx.PPS()) > 0 {
 				vpsRTP := rtp.Packet{
 					Header: rtp.Header{
@@ -233,7 +236,17 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 				r.Packets = slices.Insert(r.Packets, 0, vpsRTP, spsRTP, ppsRTP)
 			}
 		}
-
+		for p := range r.Packets.RangePoint {
+			p.SequenceNumber = ctx.seq
+			ctx.seq++
+		}
+	case *AV1Ctx:
+		r.SetPTS(time.Duration(pts))
+		r.SetDTS(time.Duration(pts))
+		// detect keyframe from OBUs
+		if obus, ok := r.Raw.(*OBUs); ok {
+			r.IDR = ctx.IsKeyFrame(obus)
+		}
 		// 更新序列号
 		for p := range r.Packets.RangePoint {
 			p.SequenceNumber = ctx.seq
@@ -241,6 +254,72 @@ func (r *VideoFrame) CheckCodecChange() (err error) {
 		}
 	}
 	return
+}
+
+// AV1 helper to detect keyframe (KEY_FRAME or INTRA_ONLY)
+func (av1Ctx *AV1Ctx) IsKeyFrame(obus *OBUs) bool {
+	for o := range obus.RangePoint {
+		reader := o.NewReader()
+		if reader.Length < 2 { // need at least header + leb
+			continue
+		}
+		var first byte
+		if b, err := reader.ReadByte(); err == nil {
+			first = b
+		} else {
+			continue
+		}
+		var header av1.OBUHeader
+		if err := header.Unmarshal([]byte{first}); err != nil {
+			continue
+		}
+		// read leb128 size to move to payload start
+		_, _, _ = reader.LEB128Unmarshal()
+		// only inspect frame header or frame obu
+		// OBU_FRAME_HEADER = 3, OBU_FRAME = 6
+		switch header.Type {
+		case 3, 6:
+			// try parse a minimal frame header: show_existing_frame (1), frame_type (2)
+			payload := reader
+			var pos int
+			// read show_existing_frame
+			showExisting, ok := utilReadBits(&payload, &pos, 1)
+			if !ok {
+				continue
+			}
+			if showExisting == 1 {
+				return false
+			}
+			// attempt to read frame_type (2 bits)
+			ft, ok := utilReadBits(&payload, &pos, 2)
+			if !ok {
+				continue
+			}
+			if ft == 0 || ft == 2 { // KEY_FRAME(0) or INTRA_ONLY(2)
+				return true
+			}
+		case av1.OBUTypeSequenceHeader:
+			// sequence header often precedes keyframes; treat as keyframe
+			return true
+		}
+	}
+	return false
+}
+
+// utilReadBits reads nbits from MemoryReader, returns value and ok
+func utilReadBits(r *gomem.MemoryReader, pos *int, nbits int) (uint64, bool) {
+	// use mediacommon bits reader on a copy of remaining bytes
+	data, err := r.ReadBytes(r.Length)
+	if err != nil {
+		return 0, false
+	}
+	v, err2 := av1ReadBits(data, pos, nbits)
+	return v, err2 == nil
+}
+
+// av1ReadBits uses mediacommon bits helper
+func av1ReadBits(buf []byte, pos *int, nbits int) (uint64, error) {
+	return bits.ReadBits(buf, pos, nbits)
 }
 
 func (h264 *H264Ctx) GetInfo() string {
@@ -258,8 +337,8 @@ func (av1 *AV1Ctx) GetInfo() string {
 func (r *VideoFrame) Mux(baseFrame *Sample) error {
 	// 获取编解码器上下文
 	codecCtx := r.ICodecCtx
-	if codecCtx == nil {
-		switch base := baseFrame.GetBase().(type) {
+	if baseCtx := baseFrame.GetBase(); codecCtx == nil || codecCtx.GetBase() != baseCtx {
+		switch base := baseCtx.(type) {
 		case *codec.H264Ctx:
 			var ctx H264Ctx
 			ctx.H264Ctx = base
@@ -362,6 +441,43 @@ func (r *VideoFrame) Mux(baseFrame *Sample) error {
 			}
 		}
 		lastPacket.Header.Marker = true
+	case *AV1Ctx:
+		ctx := &c.RTPCtx
+		var lastPacket *rtp.Packet
+		for obu := range baseFrame.Raw.(*OBUs).RangePoint {
+			reader := obu.NewReader()
+			payloadCap := MTUSize - 1
+			if reader.Length+1 <= MTUSize {
+				mem := r.NextN(reader.Length + 1)
+				mem[0] = av1ZBit | av1YBit
+				reader.Read(mem[1:])
+				lastPacket = r.Append(ctx, pts, mem)
+				continue
+			}
+			// fragmented OBU
+			first := true
+			for reader.Length > 0 {
+				chunk := payloadCap
+				if reader.Length < chunk {
+					chunk = reader.Length
+				}
+				mem := r.NextN(chunk + 1)
+				head := byte(0)
+				if first {
+					head |= av1ZBit
+					first = false
+				}
+				reader.Read(mem[1:])
+				if reader.Length == 0 {
+					head |= av1YBit
+				}
+				mem[0] = head
+				lastPacket = r.Append(ctx, pts, mem)
+			}
+		}
+		if lastPacket != nil {
+			lastPacket.Header.Marker = true
+		}
 	}
 	return nil
 }
@@ -467,6 +583,28 @@ func (r *VideoFrame) Demux() (err error) {
 					}
 				default:
 					return fmt.Errorf("unsupported nalu type %d", t)
+				}
+			}
+		}
+		return nil
+	case *AV1Ctx:
+		obus := r.GetOBUs()
+		obus.Reset()
+		var cur *gomem.Memory
+		for _, packet := range r.Packets {
+			if len(packet.Payload) <= 1 {
+				continue
+			}
+			desc := packet.Payload[0]
+			payload := packet.Payload[1:]
+			if desc&av1ZBit != 0 {
+				// start of OBU
+				cur = obus.GetNextPointer()
+			}
+			if cur != nil {
+				cur.PushOne(payload)
+				if desc&av1YBit != 0 {
+					cur = nil
 				}
 			}
 		}

@@ -23,40 +23,28 @@ var rtmpPullSteps = []pkg.StepDef{
 	{Name: pkg.StepStreaming, Description: "Receiving media stream"},
 }
 
-func (c *Client) Start() (err error) {
-	var addr string
-	if c.direction == DIRECTION_PULL {
-		// Initialize progress tracking for pull operations
-		c.pullCtx.SetProgressStepsDefs(rtmpPullSteps)
+type Client struct {
+	NetStream
+	chunkSize int
+	u         *url.URL
+}
 
-		addr = c.pullCtx.Connection.RemoteURL
-		err = c.pullCtx.Publish()
-		if err != nil {
-			c.pullCtx.Fail(err.Error())
-			return
-		}
+func (c *Client) GetPullJob() *m7s.PullJob {
+	return nil
+}
 
-		c.pullCtx.GoToStepConst(pkg.StepURLParsing)
-	} else {
-		addr = c.pushCtx.Connection.RemoteURL
-	}
+func (c *Client) GetPushJob() *m7s.PushJob {
+	return nil
+}
+
+func (c *Client) commonStart(addr string) (err error) {
 	c.u, err = url.Parse(addr)
 	if err != nil {
-		if c.direction == DIRECTION_PULL {
-			c.pullCtx.Fail(err.Error())
-		}
 		return
 	}
 	ps := strings.Split(c.u.Path, "/")
 	if len(ps) < 2 {
-		if c.direction == DIRECTION_PULL {
-			c.pullCtx.Fail("illegal rtmp url")
-		}
 		return errors.New("illegal rtmp url")
-	}
-
-	if c.direction == DIRECTION_PULL {
-		c.pullCtx.GoToStepConst(pkg.StepConnection)
 	}
 
 	isRtmps := c.u.Scheme == "rtmps"
@@ -78,14 +66,7 @@ func (c *Client) Start() (err error) {
 		conn, err = net.Dial("tcp", c.u.Host)
 	}
 	if err != nil {
-		if c.direction == DIRECTION_PULL {
-			c.pullCtx.Fail(err.Error())
-		}
 		return err
-	}
-
-	if c.direction == DIRECTION_PULL {
-		c.pullCtx.GoToStepConst(pkg.StepHandshake)
 	}
 
 	c.Init(conn)
@@ -94,56 +75,10 @@ func (c *Client) Start() (err error) {
 	c.WriteChunkSize = c.chunkSize
 	c.AppName = strings.Join(ps[1:len(ps)-1], "/")
 
-	if c.direction == DIRECTION_PULL {
-		c.pullCtx.GoToStepConst(pkg.StepStreaming)
-	}
-
 	return err
 }
 
-const (
-	DIRECTION_PULL = "pull"
-	DIRECTION_PUSH = "push"
-)
-
-type Client struct {
-	NetStream
-	chunkSize int
-	pullCtx   m7s.PullJob
-	pushCtx   m7s.PushJob
-	direction string
-	u         *url.URL
-}
-
-func (c *Client) GetPullJob() *m7s.PullJob {
-	return &c.pullCtx
-}
-
-func (c *Client) GetPushJob() *m7s.PushJob {
-	return &c.pushCtx
-}
-
-func NewPuller(_ config.Pull) m7s.IPuller {
-	ret := &Client{
-		direction: DIRECTION_PULL,
-		chunkSize: 4096,
-	}
-	ret.NetConnection = &NetConnection{}
-	ret.SetDescription(task.OwnerTypeKey, "RTMPPuller")
-	return ret
-}
-
-func NewPusher() m7s.IPusher {
-	ret := &Client{
-		direction: DIRECTION_PUSH,
-		chunkSize: 4096,
-	}
-	ret.NetConnection = &NetConnection{}
-	ret.SetDescription(task.OwnerTypeKey, "RTMPPusher")
-	return ret
-}
-
-func (c *Client) Run() (err error) {
+func (c *Client) commonRun(handler func(commander Commander) error) (err error) {
 	if err = c.ClientHandshake(); err != nil {
 		return
 	}
@@ -171,6 +106,7 @@ func (c *Client) Run() (err error) {
 			return err
 		}
 		cmd := commander.GetCommand()
+		c.Debug(cmd.CommandName)
 		switch cmd.CommandName {
 		case Response_Result, Response_OnStatus:
 			switch response := commander.(type) {
@@ -185,66 +121,149 @@ func (c *Client) Run() (err error) {
 				}
 			case *ResponseCreateStreamMessage:
 				c.StreamID = response.StreamId
-				if c.direction == DIRECTION_PULL {
-					m := &PlayMessage{}
-					m.StreamId = response.StreamId
-					m.TransactionId = 4
-					m.CommandMessage.CommandName = "play"
-					URL, _ := url.Parse(c.pullCtx.Connection.RemoteURL)
-					ps := strings.Split(URL.Path, "/")
-					args := URL.Query()
-					m.StreamName = ps[len(ps)-1]
-					if len(args) > 0 {
-						m.StreamName += "?" + args.Encode()
+				if handler != nil {
+					if err = handler(commander); err != nil {
+						return err
 					}
-					if c.pullCtx.Publisher != nil {
-						c.Writers[response.StreamId] = &struct {
-							m7s.PublishWriter[*AudioFrame, *VideoFrame]
-							*m7s.Publisher
-						}{Publisher: c.pullCtx.Publisher}
-					}
-					err = c.SendMessage(RTMP_MSG_AMF0_COMMAND, m)
-					// if response, ok := msg.MsgData.(*ResponsePlayMessage); ok {
-					// 	if response.Object["code"] == "NetStream.Play.Start" {
-
-					// 	} else if response.Object["level"] == Level_Error {
-					// 		return errors.New(response.Object["code"].(string))
-					// 	}
-					// } else {
-					// 	return errors.New("pull faild")
-					// }
-				} else {
-					err = c.pushCtx.Subscribe()
-					if err != nil {
-						return
-					}
-					URL, _ := url.Parse(c.pushCtx.Connection.RemoteURL)
-					_, streamPath, _ := strings.Cut(URL.Path, "/")
-					_, streamPath, _ = strings.Cut(streamPath, "/")
-					args := URL.Query()
-					if len(args) > 0 {
-						streamPath += "?" + args.Encode()
-					}
-					err = c.SendMessage(RTMP_MSG_AMF0_COMMAND, &PublishMessage{
-						CURDStreamMessage{
-							CommandMessage{
-								"publish",
-								1,
-							},
-							response.StreamId,
-						},
-						streamPath,
-						"live",
-					})
-				}
-			case *ResponsePublishMessage:
-				if response.Infomation["code"] == NetStream_Publish_Start {
-					c.Subscribe(c.pushCtx.Subscriber)
-				} else {
-					return errors.New(response.Infomation["code"].(string))
 				}
 			}
 		}
 	}
 	return
+}
+
+type Puller struct {
+	Client
+	pullCtx m7s.PullJob
+}
+
+func (p *Puller) GetPullJob() *m7s.PullJob {
+	return &p.pullCtx
+}
+
+func (p *Puller) Start() (err error) {
+	// Initialize progress tracking for pull operations
+	p.pullCtx.SetProgressStepsDefs(rtmpPullSteps)
+
+	addr := p.pullCtx.Connection.RemoteURL
+	err = p.pullCtx.Publish()
+	if err != nil {
+		p.pullCtx.Fail(err.Error())
+		return
+	}
+
+	p.pullCtx.GoToStepConst(pkg.StepURLParsing)
+
+	err = p.commonStart(addr)
+	if err != nil {
+		p.pullCtx.Fail(err.Error())
+		return
+	}
+
+	p.pullCtx.GoToStepConst(pkg.StepConnection)
+	p.pullCtx.GoToStepConst(pkg.StepHandshake)
+	p.pullCtx.GoToStepConst(pkg.StepStreaming)
+
+	return
+}
+
+func (p *Puller) Run() (err error) {
+	return p.commonRun(func(commander Commander) error {
+		switch response := commander.(type) {
+		case *ResponseCreateStreamMessage:
+			p.StreamID = response.StreamId
+			m := &PlayMessage{}
+			m.StreamId = response.StreamId
+			m.TransactionId = 4
+			m.CommandMessage.CommandName = "play"
+			URL, _ := url.Parse(p.pullCtx.Connection.RemoteURL)
+			ps := strings.Split(URL.Path, "/")
+			args := URL.Query()
+			m.StreamName = ps[len(ps)-1]
+			if len(args) > 0 {
+				m.StreamName += "?" + args.Encode()
+			}
+			if p.pullCtx.Publisher != nil {
+				p.Writers[response.StreamId] = &struct {
+					m7s.PublishWriter[*AudioFrame, *VideoFrame]
+					*m7s.Publisher
+				}{Publisher: p.pullCtx.Publisher}
+			}
+			return p.SendMessage(RTMP_MSG_AMF0_COMMAND, m)
+		}
+		return nil
+	})
+}
+
+type Pusher struct {
+	Client
+	pushCtx m7s.PushJob
+}
+
+func (p *Pusher) GetPushJob() *m7s.PushJob {
+	return &p.pushCtx
+}
+
+func (p *Pusher) Start() (err error) {
+	return p.commonStart(p.pushCtx.Connection.RemoteURL)
+}
+
+func (p *Pusher) Run() (err error) {
+	return p.commonRun(func(commander Commander) error {
+		switch response := commander.(type) {
+		case *ResponseCreateStreamMessage:
+			p.StreamID = response.StreamId
+			err = p.pushCtx.Subscribe()
+			if err != nil {
+				return err
+			}
+			URL, _ := url.Parse(p.pushCtx.Connection.RemoteURL)
+			_, streamPath, _ := strings.Cut(URL.Path, "/")
+			_, streamPath, _ = strings.Cut(streamPath, "/")
+			args := URL.Query()
+			if len(args) > 0 {
+				streamPath += "?" + args.Encode()
+			}
+			return p.SendMessage(RTMP_MSG_AMF0_COMMAND, &PublishMessage{
+				CURDStreamMessage{
+					CommandMessage{
+						"publish",
+						1,
+					},
+					response.StreamId,
+				},
+				streamPath,
+				"live",
+			})
+		case *ResponsePublishMessage:
+			if response.Infomation["code"] == NetStream_Publish_Start {
+				p.Subscribe(p.pushCtx.Subscriber)
+			} else {
+				return errors.New(response.Infomation["code"].(string))
+			}
+		}
+		return nil
+	})
+}
+
+func NewPuller(_ config.Pull) m7s.IPuller {
+	ret := &Puller{
+		Client: Client{
+			chunkSize: 4096,
+		},
+	}
+	ret.NetConnection = &NetConnection{}
+	ret.SetDescription(task.OwnerTypeKey, "RTMPPuller")
+	return ret
+}
+
+func NewPusher() m7s.IPusher {
+	ret := &Pusher{
+		Client: Client{
+			chunkSize: 4096,
+		},
+	}
+	ret.NetConnection = &NetConnection{}
+	ret.SetDescription(task.OwnerTypeKey, "RTMPPusher")
+	return ret
 }
