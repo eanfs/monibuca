@@ -113,6 +113,21 @@ func (task *RTSPServer) Go() (err error) {
 			if rawQuery != "" {
 				streamPath += "?" + rawQuery
 			}
+			if advisor := task.conf.findRedirectAdvisor(); advisor != nil {
+				if location, ok := advisor.ShouldRedirectRTSP(streamPath, task.URL.Host); ok {
+					res := &util.Response{
+						StatusCode: http.StatusFound,
+						Status:     "Found",
+						Header: textproto.MIMEHeader{
+							"Location": {location},
+						},
+						Request: req,
+					}
+					task.Info("RTSP redirect issued", "location", location, "streamPath", streamPath)
+					_ = task.WriteResponse(res)
+					return nil
+				}
+			}
 			sender.Subscriber, err = task.conf.Subscribe(task, streamPath)
 			if err != nil {
 				res := &util.Response{

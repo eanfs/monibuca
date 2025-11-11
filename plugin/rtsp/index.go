@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/util"
@@ -23,10 +24,16 @@ var _ = m7s.InstallPlugin[RTSPPlugin](m7s.PluginMeta{
 
 type RTSPPlugin struct {
 	m7s.Plugin
-	UserName string             `desc:"用户名"`
-	Password string             `desc:"密码"`
-	UdpPort  util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
-	udpPorts chan uint16
+	UserName        string             `desc:"用户名"`
+	Password        string             `desc:"密码"`
+	UdpPort         util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
+	udpPorts        chan uint16
+	advisorOnce     sync.Once
+	redirectAdvisor rtspRedirectAdvisor
+}
+
+type rtspRedirectAdvisor interface {
+	ShouldRedirectRTSP(streamPath, currentHost string) (string, bool)
 }
 
 func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
@@ -50,6 +57,18 @@ func (p *RTSPPlugin) Start() (err error) {
 	// 初始化UDP端口池
 	p.initUDPPortPool()
 	return
+}
+
+func (p *RTSPPlugin) findRedirectAdvisor() rtspRedirectAdvisor {
+	p.advisorOnce.Do(func() {
+		for plugin := range p.Server.Plugins.Range {
+			if advisor, ok := plugin.GetHandler().(rtspRedirectAdvisor); ok {
+				p.redirectAdvisor = advisor
+				break
+			}
+		}
+	})
+	return p.redirectAdvisor
 }
 
 // 初始化UDP端口池
