@@ -472,7 +472,7 @@ func (nc *NetConnection) SendMessage(t byte, msg RtmpMessage) (err error) {
 }
 
 func (nc *NetConnection) sendChunk(mem gomem.Memory, head *ChunkHeader, headType byte) (err error) {
-	nc.SetWriteDeadline(time.Now().Add(time.Second * 5)) // 设置写入超时时间为5秒
+	nc.SetWriteDeadline(time.Now().Add(time.Second * 10)) // 设置写入超时时间为5秒
 	head.WriteTo(headType, &nc.chunkHeaderBuf)
 	defer func(reuse net.Buffers) {
 		nc.sendBuffers = reuse
