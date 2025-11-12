@@ -207,6 +207,11 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 }
 
 func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if config.Server.RedirectIfNeeded(w, r, "http", redirectPath) {
+		config.Debug("redirect issued", "protocol", "http", "path", redirectPath)
+		return
+	}
 	fileName := strings.TrimPrefix(r.URL.Path, "/")
 	query := r.URL.Query()
 	waitTimeout, err := time.ParseDuration(query.Get("timeout"))
