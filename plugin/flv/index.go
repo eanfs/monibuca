@@ -47,7 +47,12 @@ func (plugin *FLVPlugin) Start() (err error) {
 }
 
 func (plugin *FLVPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".flv")
+	rawPath := strings.TrimPrefix(r.URL.Path, "/")
+	if plugin.Server != nil && plugin.Server.RedirectIfNeeded(w, r, "http", rawPath) {
+		plugin.Debug("redirect issued", "protocol", "http", "path", rawPath)
+		return
+	}
+	streamPath := strings.TrimSuffix(rawPath, ".flv")
 	var err error
 	defer func() {
 		if err != nil {

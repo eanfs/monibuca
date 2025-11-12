@@ -10,8 +10,7 @@ import (
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
 	"m7s.live/v5/plugin/mp4/pb"
-	mp4 "m7s.live/v5/plugin/mp4/pkg"
-	pkg "m7s.live/v5/plugin/mp4/pkg"
+	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
@@ -37,8 +36,8 @@ var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
 	DefaultYaml:         defaultConfig,
 	ServiceDesc:         &pb.Api_ServiceDesc,
 	RegisterGRPCHandler: pb.RegisterApiHandler,
-	NewPuller:           pkg.NewPuller,
-	NewRecorder:         pkg.NewRecorder,
+	NewPuller:           mp4pkg.NewPuller,
+	NewRecorder:         mp4pkg.NewRecorder,
 	NewPullProxy:        m7s.NewHTTPPullPorxy,
 })
 
@@ -57,7 +56,7 @@ func (p *MP4Plugin) Start() (err error) {
 		if err != nil {
 			return
 		}
-		err = p.DB.AutoMigrate(&mp4.TagModel{})
+		err = p.DB.AutoMigrate(&mp4pkg.TagModel{})
 		if err != nil {
 			return
 		}
@@ -99,7 +98,12 @@ func (p *MP4Plugin) Start() (err error) {
 }
 
 func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".mp4")
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if p.Server != nil && p.Server.RedirectIfNeeded(w, r, "http", redirectPath) {
+		p.Debug("redirect issued", "protocol", "http", "path", redirectPath)
+		return
+	}
+	streamPath := strings.TrimSuffix(redirectPath, ".mp4")
 	if r.URL.RawQuery != "" {
 		streamPath += "?" + r.URL.RawQuery
 	}
@@ -118,13 +122,13 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx.ContentType = "video/mp4"
 	ctx.ServeHTTP(w, r)
 
-	muxer := pkg.NewMuxer(pkg.FLAG_FRAGMENT)
+	muxer := mp4pkg.NewMuxer(mp4pkg.FLAG_FRAGMENT)
 	err = muxer.WriteInitSegment(&ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var audio, video *pkg.Track
+	var audio, video *mp4pkg.Track
 	var nextFragmentId uint32
 	if sub.Publisher.HasVideoTrack() && sub.SubVideo {
 		v := sub.Publisher.VideoTrack.AVTrack
@@ -181,7 +185,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx.Flush()
-	m7s.PlayBlock(sub, func(frame *mp4.AudioFrame) (err error) {
+	m7s.PlayBlock(sub, func(frame *mp4pkg.AudioFrame) (err error) {
 		if audio.Samplelist[0].Buffers != nil {
 			audio.Samplelist[0].Duration = sub.AudioReader.AbsTime - audio.Samplelist[0].Timestamp
 			nextFragmentId++
@@ -195,7 +199,7 @@ func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		audio.Samplelist[0].Timestamp = sub.AudioReader.AbsTime
 		audio.Samplelist[0].Memory = frame.Memory
 		return
-	}, func(frame *mp4.VideoFrame) (err error) {
+	}, func(frame *mp4pkg.VideoFrame) (err error) {
 		if video.Samplelist[0].Buffers != nil {
 			video.Samplelist[0].Duration = sub.VideoReader.AbsTime - video.Samplelist[0].Timestamp
 			nextFragmentId++

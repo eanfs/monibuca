@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -57,6 +58,9 @@ var (
 )
 
 type (
+	RedirectAdvisor interface {
+		GetRedirectTarget(protocol, streamPath, currentHost string) (targetHost string, statusCode int, ok bool)
+	}
 	ServerConfig struct {
 		FatalDir      string                   `default:"fatal" desc:""`
 		PulseInterval time.Duration            `default:"5s" desc:"心跳事件间隔"`    //心跳事件间隔
@@ -113,6 +117,8 @@ type (
 		PushProxies       PushProxyManager
 		Subscribers       SubscriberCollection
 		LogHandler        MultiLogHandler
+		redirectAdvisor   RedirectAdvisor
+		redirectOnce      sync.Once
 		apiList           []string
 		grpcServer        *grpc.Server
 		grpcClientConn    *grpc.ClientConn
@@ -164,6 +170,77 @@ func NewServer(conf any) (s *Server) {
 	//s.Transforms.PublishEvent = make(chan *Publisher, 10)
 	s.prometheusDesc.init()
 	return
+}
+
+func (s *Server) GetRedirectAdvisor() RedirectAdvisor {
+	if s == nil {
+		return nil
+	}
+	s.redirectOnce.Do(func() {
+		s.Plugins.Range(func(plugin *Plugin) bool {
+			if advisor, ok := plugin.GetHandler().(RedirectAdvisor); ok {
+				s.redirectAdvisor = advisor
+				return false
+			}
+			return true
+		})
+	})
+	return s.redirectAdvisor
+}
+
+// RedirectIfNeeded evaluates redirect advice for HTTP-based protocols and issues redirects when appropriate.
+func (s *Server) RedirectIfNeeded(w http.ResponseWriter, r *http.Request, protocol, redirectPath string) bool {
+	if s == nil {
+		return false
+	}
+	advisor := s.GetRedirectAdvisor()
+	if advisor == nil {
+		return false
+	}
+	targetHost, statusCode, ok := advisor.GetRedirectTarget(protocol, redirectPath, r.Host)
+	if !ok || targetHost == "" {
+		return false
+	}
+	if statusCode == 0 {
+		statusCode = http.StatusFound
+	}
+	redirectURL := buildRedirectURL(r, targetHost)
+	http.Redirect(w, r, redirectURL, statusCode)
+	return true
+}
+
+func buildRedirectURL(r *http.Request, host string) string {
+	scheme := requestScheme(r)
+	if isWebSocketRequest(r) {
+		switch scheme {
+		case "https":
+			scheme = "wss"
+		case "http":
+			scheme = "ws"
+		}
+	}
+	target := &url.URL{
+		Scheme:   scheme,
+		Host:     host,
+		Path:     r.URL.Path,
+		RawQuery: r.URL.RawQuery,
+	}
+	return target.String()
+}
+
+func requestScheme(r *http.Request) string {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func isWebSocketRequest(r *http.Request) bool {
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	return strings.Contains(connection, "upgrade") && strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
 func Run(ctx context.Context, conf any) (err error) {

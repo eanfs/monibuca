@@ -12,6 +12,11 @@ import (
 
 // https://datatracker.ietf.org/doc/html/draft-ietf-wish-whip
 func (conf *WebRTCPlugin) servePush(w http.ResponseWriter, r *http.Request) {
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if conf.Server.RedirectIfNeeded(w, r, "webrtc", redirectPath) {
+		conf.Debug("redirect issued", "protocol", "webrtc", "path", redirectPath)
+		return
+	}
 	streamPath := r.PathValue("streamPath")
 	rawQuery := r.URL.RawQuery
 	auth := r.Header.Get("Authorization")
@@ -71,6 +76,11 @@ func (conf *WebRTCPlugin) servePush(w http.ResponseWriter, r *http.Request) {
 }
 
 func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if conf.Server.RedirectIfNeeded(w, r, "webrtc", redirectPath) {
+		conf.Debug("redirect issued", "protocol", "webrtc", "path", redirectPath)
+		return
+	}
 	w.Header().Set("Content-Type", "application/sdp")
 	streamPath := r.PathValue("streamPath")
 	rawQuery := r.URL.RawQuery
