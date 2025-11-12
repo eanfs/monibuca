@@ -315,7 +315,7 @@ func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) 
     var fileName string
     var fragment = time.Minute
     query := r.URL.Query()
-	streamPath := r.PathValue("streamPath")
+    streamPath := r.PathValue("streamPath")
 	if streamPath == "" {
 		http.Error(w, "streamPath is required", http.StatusBadRequest)
 		return
@@ -329,6 +329,7 @@ func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) 
     if query.Get("fileName") != "" {
         fileName = query.Get("fileName")
     }
+    conf.Debug("hls record start", "streamPath", streamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	_, recordExists = conf.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == streamPath && job.RecConf.FilePath == filePath
 	})

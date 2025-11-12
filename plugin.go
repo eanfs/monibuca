@@ -491,6 +491,7 @@ func (p *Plugin) OnPublish(pub *Publisher) {
 		for r, recConf := range onPublish.Record {
 			recConf.FileName = r.Replace(pub.StreamPath, recConf.FileName)
 			if recConf.FilePath = r.Replace(pub.StreamPath, recConf.FilePath); recConf.FilePath != "" {
+				p.Debug("onPublish record", "streamPath", pub.StreamPath, "filePath", recConf.FilePath, "fileName", recConf.FileName)
 				p.Record(pub, recConf, nil)
 			}
 		}

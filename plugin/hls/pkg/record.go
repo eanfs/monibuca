@@ -42,8 +42,13 @@ var CustomFileName = func(job *m7s.RecordJob) string {
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
-	r.RecordJob.RecConf.Type = "ts"
-	return r.CreateStream(start, CustomFileName)
+    r.RecordJob.RecConf.Type = "ts"
+    err = r.CreateStream(start, CustomFileName)
+    if err != nil {
+        return err
+    }
+    r.Debug("ts create file", "filePath", r.Event.FilePath)
+    return nil
 }
 
 func (r *Recorder) writeTailer(end time.Time) {

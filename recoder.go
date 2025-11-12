@@ -73,11 +73,15 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
     // 生成文件路径
     filePath := customFileName(recordJob)
     fileName := filepath.Base(filePath)
+    r.Debug("create stream", "streamPath", sub.StreamPath, "filePath", filePath, "fileName", fileName)
 
 	// 记录存储配置日志
 	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
 
-	recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
+    recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
+    if recordJob.storage != nil {
+        r.Debug("storage init", "type", fmt.Sprintf("%T", recordJob.storage))
+    }
 
 	if recordJob.storage == nil {
 		return fmt.Errorf("storage config is required")

@@ -445,6 +445,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
     if req.FilePath != "" {
         filePath = req.FilePath
     }
+    p.Debug("mp4 start record", "streamPath", req.StreamPath, "filePath", filePath, "fragment", fragment)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
@@ -474,10 +475,11 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 			return
 		}
 	}
-	job := p.Record(stream, recordConf, nil)
-	res.Data = uint64(job.GetTaskPointer())
-	err = job.WaitStarted()
-	return
+    job := p.Record(stream, recordConf, nil)
+    p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
+    res.Data = uint64(job.GetTaskPointer())
+    err = job.WaitStarted()
+    return
 }
 
 func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (res *mp4pb.ResponseStopRecord, err error) {

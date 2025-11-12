@@ -146,13 +146,14 @@ var CustomFileName = func(job *m7s.RecordJob) string {
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
-	if r.RecordJob.RecConf.Type == "" {
-		r.RecordJob.RecConf.Type = "mp4"
-	}
-	err = r.CreateStream(start, CustomFileName)
-	if err != nil {
-		return
-	}
+    if r.RecordJob.RecConf.Type == "" {
+        r.RecordJob.RecConf.Type = "mp4"
+    }
+    err = r.CreateStream(start, CustomFileName)
+    if err != nil {
+        return
+    }
+    r.Debug("mp4 create file", "filePath", r.Event.FilePath)
 
 	// 注意: 不要在这里关闭旧文件,因为它已经被传递给 writeTrailerTask
 	// writeTrailerTask 会负责关闭旧文件
@@ -161,20 +162,21 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	// 获取存储实例
 	storage := r.RecordJob.GetStorage()
 
-	if storage != nil {
-		// 使用存储抽象层
-		r.file, err = storage.CreateFile(context.Background(), r.Event.FilePath)
-		if err != nil {
-			return
-		}
-	} else {
+    if storage != nil {
+        // 使用存储抽象层
+        r.file, err = storage.CreateFile(context.Background(), r.Event.FilePath)
+        if err != nil {
+            return
+        }
+    } else {
 		// 默认本地文件行为
 		// 使用 OpenFile 以读写模式打开,因为 writeTrailerTask.Run() 需要读取文件内容
-		r.file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
-		if err != nil {
-			return
-		}
-	}
+        r.file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+        if err != nil {
+            return
+        }
+    }
+    r.Debug("mp4 init segment", "streamPath", r.Event.StreamPath)
 
 	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)
@@ -182,7 +184,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 		r.muxer = NewMuxerWithStreamPath(0, r.Event.StreamPath)
 	}
 
-	return r.muxer.WriteInitSegment(r.file)
+    return r.muxer.WriteInitSegment(r.file)
 }
 
 func (r *Recorder) Dispose() {
