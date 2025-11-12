@@ -1,12 +1,13 @@
 package flv
 
 import (
-	"context"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"time"
+    "context"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+    "time"
 
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
@@ -148,10 +149,16 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	if job.RecConf.Fragment == 0 || job.RecConf.Append {
-		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
-	}
-	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
+    if fn := job.RecConf.FileName; fn != "" {
+        if !strings.HasSuffix(strings.ToLower(fn), ".flv") {
+            fn = fn + ".flv"
+        }
+        return filepath.Join(job.RecConf.FilePath, fn)
+    }
+    if job.RecConf.Fragment == 0 || job.RecConf.Append {
+        return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
+    }
+    return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {

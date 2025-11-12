@@ -489,6 +489,7 @@ func (p *Plugin) OnPublish(pub *Publisher) {
 	}
 	if p.Meta.NewRecorder != nil {
 		for r, recConf := range onPublish.Record {
+			recConf.FileName = r.Replace(pub.StreamPath, recConf.FileName)
 			if recConf.FilePath = r.Replace(pub.StreamPath, recConf.FilePath); recConf.FilePath != "" {
 				p.Record(pub, recConf, nil)
 			}

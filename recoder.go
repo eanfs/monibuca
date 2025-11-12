@@ -1,14 +1,15 @@
 package m7s
 
 import (
-	"fmt"
-	"time"
+    "fmt"
+    "path/filepath"
+    "time"
 
-	"gorm.io/gorm"
+    "gorm.io/gorm"
 
-	task "github.com/langhuihui/gotask"
-	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/storage"
+    task "github.com/langhuihui/gotask"
+    "m7s.live/v5/pkg/config"
+    "m7s.live/v5/pkg/storage"
 )
 
 type (
@@ -66,11 +67,12 @@ func (r *DefaultRecorder) Start() (err error) {
 }
 
 func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*RecordJob) string) (err error) {
-	recordJob := &r.RecordJob
-	sub := recordJob.Subscriber
+    recordJob := &r.RecordJob
+    sub := recordJob.Subscriber
 
-	// 生成文件路径
-	filePath := customFileName(recordJob)
+    // 生成文件路径
+    filePath := customFileName(recordJob)
+    fileName := filepath.Base(filePath)
 
 	// 记录存储配置日志
 	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
@@ -81,13 +83,14 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		return fmt.Errorf("storage config is required")
 	}
 
-	r.Event.RecordStream = RecordStream{
-		StartTime:    start,
-		StreamPath:   sub.StreamPath,
-		FilePath:     filePath,
-		Type:         recordJob.RecConf.Type,
-		StorageLevel: 1, // 默认为主存储
-	}
+    r.Event.RecordStream = RecordStream{
+        StartTime:    start,
+        StreamPath:   sub.StreamPath,
+        FilePath:     filePath,
+        Filename:     fileName,
+        Type:         recordJob.RecConf.Type,
+        StorageLevel: 1, // 默认为主存储
+    }
 
 	if sub.Publisher.HasAudioTrack() {
 		r.Event.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()

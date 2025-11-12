@@ -436,15 +436,15 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) (res *mp4pb.ResponseStartRecord, err error) {
-	var recordExists bool
-	var filePath = "."
-	var fragment = time.Minute
-	if req.Fragment != nil {
-		fragment = req.Fragment.AsDuration()
-	}
-	if req.FilePath != "" {
-		filePath = req.FilePath
-	}
+    var recordExists bool
+    var filePath = "."
+    var fragment = time.Minute
+    if req.Fragment != nil {
+        fragment = req.Fragment.AsDuration()
+    }
+    if req.FilePath != "" {
+        filePath = req.FilePath
+    }
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
@@ -454,11 +454,11 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		return
 	}
 
-	recordConf := config.Record{
-		Append:   false,
-		Fragment: fragment,
-		FilePath: filePath,
-	}
+    recordConf := config.Record{
+        Append:   false,
+        Fragment: fragment,
+        FilePath: filePath,
+    }
 	var stream *m7s.Publisher
 	var ok bool
 	if stream, ok = p.Server.Streams.SafeGet(req.StreamPath); !ok {

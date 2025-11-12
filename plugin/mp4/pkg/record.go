@@ -1,12 +1,13 @@
 package mp4
 
 import (
-	"context"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"time"
+    "context"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+    "time"
 
 	task "github.com/langhuihui/gotask"
 	m7s "m7s.live/v5"
@@ -134,8 +135,14 @@ func (r *Recorder) writeTailer(end time.Time) {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	now := time.Now()
-	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%s_%09d.mp4", time.Now().Local().Format("2006-01-02-15-04-05"), now.Nanosecond()))
+    if fn := job.RecConf.FileName; fn != "" {
+        if !strings.HasSuffix(strings.ToLower(fn), ".mp4") {
+            fn = fn + ".mp4"
+        }
+        return filepath.Join(job.RecConf.FilePath, fn)
+    }
+    now := time.Now()
+    return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%s_%09d.mp4", time.Now().Local().Format("2006-01-02-15-04-05"), now.Nanosecond()))
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
