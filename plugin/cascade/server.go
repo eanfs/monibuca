@@ -59,23 +59,23 @@ var _ = m7s.InstallPlugin[CascadeServerPlugin](m7s.PluginMeta{
 
 type CascadeServer struct {
 	task.Work
-	quic.Connection
+	*quic.Conn
 	conf   *CascadeServerPlugin
 	client *cascade.Instance
 }
 
-func (c *CascadeServerPlugin) OnQUICConnect(conn quic.Connection) task.ITask {
+func (c *CascadeServerPlugin) OnQUICConnect(conn *quic.Conn) task.ITask {
 	ret := &CascadeServer{
-		Connection: conn,
-		conf:       c,
+		Conn: conn,
+		conf: c,
 	}
 	ret.Logger = c.Logger.With("remoteAddr", conn.RemoteAddr().String())
 	return ret
 }
 
 func (task *CascadeServer) Go() (err error) {
-	remoteAddr := task.Connection.RemoteAddr().String()
-	var stream quic.Stream
+	remoteAddr := task.Conn.RemoteAddr().String()
+	var stream *quic.Stream
 	if stream, err = task.AcceptStream(task); err != nil {
 		task.Error("AcceptStream", "err", err)
 		return
@@ -116,14 +116,14 @@ func (task *CascadeServer) Go() (err error) {
 		child.Name = remoteAddr
 	}
 	err = task.conf.DB.Updates(child).Error
-	child.Connection = task.Connection
+	child.Conn = task.Conn
 	task.client = child
 	_, err = stream.Write([]byte{0, 0})
 	err = stream.Close()
 	task.Info("client register:", "remoteAddr", remoteAddr)
 	for err == nil {
 		var receiveRequestTask cascade.ReceiveRequestTask
-		receiveRequestTask.Connection = task.Connection
+		receiveRequestTask.Conn = task.Conn
 		receiveRequestTask.Plugin = &task.conf.Plugin
 		receiveRequestTask.Handler = task.conf.GetGlobalCommonConf().GetHandler(task.Logger)
 		if receiveRequestTask.Stream, err = task.AcceptStream(task); err == nil {
@@ -134,8 +134,8 @@ func (task *CascadeServer) Go() (err error) {
 }
 
 func (task *CascadeServer) Dispose() {
-	if task.Connection != nil {
-		task.Connection.CloseWithError(quic.ApplicationErrorCode(0), task.StopReason().Error())
+	if task.Conn != nil {
+		task.Conn.CloseWithError(quic.ApplicationErrorCode(0), task.StopReason().Error())
 	}
 	if task.client != nil {
 		task.client.Online = false

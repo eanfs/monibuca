@@ -518,7 +518,7 @@ func (s *Server) Start() (err error) {
 			}
 			if plugin.Meta.NewTransformer != nil {
 				for streamPath := range plugin.config.Transform {
-					plugin.OnSubscribe(streamPath, url.Values{}) //按需转换
+					plugin.onSubscribe(streamPath, url.Values{}) //按需转换
 					// transformer := plugin.Meta.Transformer()
 					// transformer.GetTransformJob().Init(transformer, plugin, streamPath, conf)
 				}
@@ -699,7 +699,7 @@ func (s *Server) GetPublisher(streamPath string) (publisher *Publisher, err erro
 
 func (s *Server) OnPublish(p *Publisher) {
 	for plugin := range s.Plugins.Range {
-		plugin.OnPublish(p)
+		plugin.onPublish(p)
 	}
 	for pushProxy := range s.PushProxies.Range {
 		conf := pushProxy.GetConfig()
@@ -711,7 +711,7 @@ func (s *Server) OnPublish(p *Publisher) {
 
 func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 	for plugin := range s.Plugins.Range {
-		plugin.OnSubscribe(streamPath, args)
+		plugin.onSubscribe(streamPath, args)
 	}
 	for pullProxy := range s.PullProxies.Range {
 		conf := pullProxy.GetConfig()
