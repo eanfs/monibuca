@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"sync"
 	"time"
 
@@ -112,6 +111,7 @@ type Publisher struct {
 	OnGetPosition          func() time.Time
 	PullProxyConfig        *PullProxyConfig
 	dropAfterTs            time.Duration
+	bufferTimeCounts       map[time.Duration]int
 }
 
 type PublishParam struct {
@@ -134,6 +134,7 @@ func (p *Publisher) Start() (err error) {
 	if p.MaxCount > 0 && s.Streams.Length >= p.MaxCount {
 		return ErrPublishMaxCount
 	}
+	p.bufferTimeCounts = make(map[time.Duration]int)
 	p.Info("publish")
 	p.processPullProxyOnStart()
 	p.audioReady = util.NewPromiseWithTimeout(p, p.PublishTimeout)
@@ -200,14 +201,25 @@ func (p *Publisher) Go() error {
 
 func (p *Publisher) RemoveSubscriber(subscriber *Subscriber) {
 	p.Subscribers.Remove(subscriber)
+	p.bufferTimeCounts[subscriber.BufferTime]--
+	if p.bufferTimeCounts[subscriber.BufferTime] == 0 {
+		delete(p.bufferTimeCounts, subscriber.BufferTime)
+	}
 	p.Info("subscriber -1", "count", p.Subscribers.Length)
 	if p.Plugin == nil {
 		return
 	}
-	if subscriber.BufferTime == p.BufferTime && p.Subscribers.Length > 0 {
-		p.BufferTime = slices.MaxFunc(p.Subscribers.Items, func(a, b *Subscriber) int {
-			return int(a.BufferTime - b.BufferTime)
-		}).BufferTime
+	if p.Subscribers.Length > 0 {
+		var maxBuf time.Duration
+		for k := range p.bufferTimeCounts {
+			if k > maxBuf {
+				maxBuf = k
+			}
+		}
+		if defaultBuf := p.Plugin.GetCommonConf().Publish.BufferTime; maxBuf < defaultBuf {
+			maxBuf = defaultBuf
+		}
+		p.BufferTime = maxBuf
 	} else {
 		p.BufferTime = p.Plugin.GetCommonConf().Publish.BufferTime
 	}
@@ -235,6 +247,7 @@ func (p *Publisher) AddSubscriber(subscriber *Subscriber) {
 	}
 	subscriber.waitStartTime = time.Time{}
 	if p.Subscribers.AddUnique(subscriber) {
+		p.bufferTimeCounts[subscriber.BufferTime]++
 		p.Info("subscriber +1", "count", p.Subscribers.Length)
 		if subscriber.BufferTime > p.BufferTime {
 			p.BufferTime = subscriber.BufferTime

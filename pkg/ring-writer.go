@@ -2,18 +2,83 @@ package pkg
 
 import (
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/util"
 )
 
+type IDRNode struct {
+	Value *util.Ring[AVFrame]
+	next  atomic.Pointer[IDRNode]
+	prev  atomic.Pointer[IDRNode]
+}
+
+func (n *IDRNode) Next() *IDRNode {
+	return n.next.Load()
+}
+
+func (n *IDRNode) Prev() *IDRNode {
+	return n.prev.Load()
+}
+
+type IDRList struct {
+	head atomic.Pointer[IDRNode]
+	tail atomic.Pointer[IDRNode]
+	len  atomic.Int32
+}
+
+func (l *IDRList) Init() {
+	l.head.Store(nil)
+	l.tail.Store(nil)
+	l.len.Store(0)
+}
+
+func (l *IDRList) Len() int {
+	return int(l.len.Load())
+}
+
+func (l *IDRList) Front() *IDRNode {
+	return l.head.Load()
+}
+
+func (l *IDRList) Back() *IDRNode {
+	return l.tail.Load()
+}
+
+func (l *IDRList) PushBack(v *util.Ring[AVFrame]) {
+	node := &IDRNode{Value: v}
+	l.len.Add(1)
+	tail := l.tail.Load()
+	node.prev.Store(tail)
+	if tail != nil {
+		tail.next.Store(node)
+	}
+	l.tail.Store(node)
+	if l.head.Load() == nil {
+		l.head.Store(node)
+	}
+}
+
+func (l *IDRList) Remove(node *IDRNode) {
+	head := l.head.Load()
+	if head != node {
+		return
+	}
+	next := head.next.Load()
+	l.head.Store(next)
+	if next != nil {
+		next.prev.Store(nil)
+	} else {
+		l.tail.Store(nil)
+	}
+	l.len.Add(-1)
+}
+
 type RingWriter struct {
 	*util.Ring[AVFrame]
-	sync.RWMutex
-	IDRingList  util.List[*util.Ring[AVFrame]] // 关键帧链表
+	IDRingList  IDRList // 关键帧链表
 	BufferRange util.Range[time.Duration]
 	SizeRange   util.Range[int]
 	pool        *util.Ring[AVFrame]
@@ -98,8 +163,6 @@ func (rb *RingWriter) Dispose() {
 }
 
 func (rb *RingWriter) GetIDR() *util.Ring[AVFrame] {
-	rb.RLock()
-	defer rb.RUnlock()
 	if latest := rb.IDRingList.Back(); latest != nil {
 		return latest.Value
 	}
@@ -107,8 +170,6 @@ func (rb *RingWriter) GetIDR() *util.Ring[AVFrame] {
 }
 
 func (rb *RingWriter) GetOldestIDR() *util.Ring[AVFrame] {
-	rb.RLock()
-	defer rb.RUnlock()
 	if latest := rb.IDRingList.Front(); latest != nil {
 		return latest.Value
 	}
@@ -116,8 +177,6 @@ func (rb *RingWriter) GetOldestIDR() *util.Ring[AVFrame] {
 }
 
 func (rb *RingWriter) GetHistoryIDR(bufTime time.Duration) *util.Ring[AVFrame] {
-	rb.RLock()
-	defer rb.RUnlock()
 	for item := rb.IDRingList.Back(); item != nil; item = item.Prev() {
 		if rb.LastValue.Timestamp-item.Value.Value.Timestamp >= bufTime {
 			return item.Value
@@ -135,9 +194,7 @@ func (rb *RingWriter) CurrentBufferTime() time.Duration {
 }
 
 func (rb *RingWriter) PushIDR() {
-	rb.Lock()
 	rb.IDRingList.PushBack(rb.Ring)
-	rb.Unlock()
 }
 
 func (rb *RingWriter) Step() (normal bool) {
@@ -159,9 +216,7 @@ func (rb *RingWriter) Step() (normal bool) {
 		} else if next == oldIDR.Value {
 			if nextOld := oldIDR.Next(); nextOld != nil && rb.durationFrom(nextOld.Value) > rb.BufferRange[0] {
 				rb.SLogger.Log(nil, task.TraceLevel, "remove old idr")
-				rb.Lock()
 				rb.IDRingList.Remove(oldIDR)
-				rb.Unlock()
 			} else {
 				rb.glow(5, "not enough buffer")
 				next = rb.Next()
