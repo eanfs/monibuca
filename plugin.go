@@ -349,7 +349,6 @@ var webHookQueueTask WebHookQueueTask
 type WebHookTask struct {
 	task.Task
 	plugin   *Plugin
-	hookType config.HookType
 	conf     config.Webhook
 	data     any
 	jsonData []byte
@@ -523,8 +522,8 @@ func (p *Plugin) onPublish(pub *Publisher) {
 			}
 		}
 	}
-	if p.handler.(IPublishHookPlugin) != nil {
-		p.handler.(IPublishHookPlugin).OnPublish(pub)
+	if publishHookPlugin, ok := p.handler.(IPublishHookPlugin); ok {
+		publishHookPlugin.OnPublish(pub)
 	}
 }
 
@@ -564,8 +563,8 @@ func (p *Plugin) onSubscribe(streamPath string, args url.Values) {
 			}
 		}
 	}
-	if p.handler.(ISubscribeHookPlugin) != nil {
-		p.handler.(ISubscribeHookPlugin).OnSubscribe(streamPath, args)
+	if subscribeHookPlugin, ok := p.handler.(ISubscribeHookPlugin); ok {
+		subscribeHookPlugin.OnSubscribe(streamPath, args)
 	}
 	//if !avoidTrans {
 	//	for reg, conf := range plugin.GetCommonConf().OnSub.Transform {
