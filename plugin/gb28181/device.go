@@ -49,10 +49,12 @@ func (d *DeviceKeepaliveTickTask) Tick(any) {
 		keepaliveSeconds = d.device.KeepaliveInterval
 	}
 	if timeDiff := time.Since(d.device.KeepaliveTime); timeDiff > time.Duration(d.device.KeepaliveCount*keepaliveSeconds)*time.Second {
+		d.device.Debug("keeplive time out", "timediff", timeDiff, "currettime", time.Now(), "d.device.KeepaliveTime", d.device.KeepaliveTime, "timeout time", time.Duration(d.device.KeepaliveCount*keepaliveSeconds)*time.Second)
 		d.device.Online = false
 		d.device.Status = DeviceOfflineStatus
 		// 设置所有通道状态为off
 		d.device.channels.Range(func(channel *Channel) bool {
+			d.device.Debug("keeplive time out", "timediff", timeDiff, "offline channeid", channel.ChannelId)
 			channel.Status = "OFF"
 			return true
 		})
@@ -82,11 +84,11 @@ type Device struct {
 	CreateTime            time.Time       `gorm:"primaryKey"` // 创建时间
 	UpdateTime            time.Time       // 更新时间
 	Charset               string          // 字符集, 支持 UTF-8 与 GB2312
-	SubscribeCatalog      int             `gorm:"default:0"` // 目录订阅周期，0为不订阅
-	SubscribePosition     int             `gorm:"default:0"` // 移动设备位置订阅周期，0为不订阅
-	PositionInterval      int             `gorm:"default:6"` // 移动设备位置信息上报时间间隔,单位:秒,默认值6
-	SubscribeAlarm        int             `gorm:"default:0"` // 报警订阅周期，0为不订阅
-	SSRCCheck             bool            // 是否开启ssrc校验，默认关闭，开启可以防止串流
+	SubscribeCatalog      int             `gorm:"default:0"`                     // 目录订阅周期，0为不订阅
+	SubscribePosition     int             `gorm:"default:0"`                     // 移动设备位置订阅周期，0为不订阅
+	PositionInterval      int             `gorm:"default:6"`                     // 移动设备位置信息上报时间间隔,单位:秒,默认值6
+	SubscribeAlarm        int             `gorm:"default:0"`                     // 报警订阅周期，0为不订阅
+	SSRCCheck             bool            `gorm:"default:false" default:"false"` // 是否开启ssrc校验，默认关闭，开启可以防止串流
 	GeoCoordSys           string          // 地理坐标系， 目前支持 WGS84,GCJ02
 	Password              string          // 密码
 	SipIp                 string          // SIP交互IP（设备访问平台的IP）
@@ -114,6 +116,7 @@ type Device struct {
 	CatalogSubscribeTask  *CatalogSubscribeTask  `gorm:"-:all"`
 	PositionSubscribeTask *PositionSubscribeTask `gorm:"-:all"`
 	AlarmSubscribeTask    *AlarmSubscribeTask    `gorm:"-:all"`
+	Cataloging            bool                   `gorm:"-:all" default:"false"`
 }
 
 func (d *Device) TableName() string {
@@ -201,6 +204,7 @@ type catalogHandlerTask struct {
 func (c *catalogHandlerTask) Run() (err error) {
 	// 处理目录信息
 	d := c.d
+	d.Cataloging = true
 	msg := c.msg
 	catalogReq, exists := d.catalogReqs.Get(msg.SN)
 	if !exists {
@@ -250,6 +254,7 @@ func (c *catalogHandlerTask) Run() (err error) {
 	if catalogReq.IsComplete() {
 		catalogReq.Resolve()
 		d.catalogReqs.RemoveByKey(msg.SN)
+		d.Cataloging = false
 	}
 	return
 }

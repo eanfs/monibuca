@@ -5,12 +5,12 @@ import (
 	"crypto/tls"
 	"log/slog"
 
-	"github.com/langhuihui/gotask"
+	task "github.com/langhuihui/gotask"
 	"github.com/quic-go/quic-go"
 )
 
 type QuicConfig interface {
-	ListenQuic(context.Context, func(connection quic.Connection)) error
+	ListenQuic(context.Context, func(connection *quic.Conn)) error
 }
 
 type Quic struct {
@@ -20,7 +20,7 @@ type Quic struct {
 	AutoListen bool   `default:"true" desc:"是否自动监听"`
 }
 
-func (q *Quic) CreateQUICWork(logger *slog.Logger, handler func(connection quic.Connection) task.ITask) *ListenQuicWork {
+func (q *Quic) CreateQUICWork(logger *slog.Logger, handler func(connection *quic.Conn) task.ITask) *ListenQuicWork {
 	ret := &ListenQuicWork{
 		Quic:    q,
 		handler: handler,
@@ -33,7 +33,7 @@ type ListenQuicWork struct {
 	task.Work
 	*Quic
 	*quic.Listener
-	handler func(connection quic.Connection) task.ITask
+	handler func(connection *quic.Conn) task.ITask
 }
 
 func (task *ListenQuicWork) Start() (err error) {

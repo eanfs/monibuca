@@ -74,7 +74,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleSession(ctx context.Context, sess quic.Connection) {
+func (s *Server) handleSession(ctx context.Context, sess *quic.Conn) {
 	serverControlStream, err := sess.OpenUniStream()
 	if err != nil {
 		return
@@ -215,7 +215,7 @@ func (s *Server) validateOrigin(origin string) bool {
 
 // ReceiveStream wraps a quic.ReceiveStream providing a unidirectional WebTransport client->server stream, including a Read function.
 type ReceiveStream struct {
-	quic.ReceiveStream
+	*quic.ReceiveStream
 	readHeaderBeforeData bool
 	headerRead           bool
 	requestSessionID     uint64
@@ -223,14 +223,14 @@ type ReceiveStream struct {
 
 // SendStream wraps a quic.SendStream providing a unidirectional WebTransport server->client stream, including a Write function.
 type SendStream struct {
-	quic.SendStream
+	*quic.SendStream
 	writeHeaderBeforeData bool
 	headerWritten         bool
 	requestSessionID      uint64
 }
 
 // Stream wraps a quic.Stream providing a bidirectional server<->client stream, including Read and Write functions.
-type WtStream quic.Stream
+type WtStream *quic.Stream
 
 // Read reads up to len(p) bytes from a WebTransport unidirectional stream, returning the actual number of bytes read.
 func (s *ReceiveStream) Read(p []byte) (int, error) {
@@ -267,10 +267,10 @@ func (s *SendStream) Write(p []byte) (int, error) {
 
 // Session is a WebTransport session (and the Body of a WebTransport http.Request) wrapping the request stream (a quic.Stream), the two control streams and a quic.Session.
 type Session struct {
-	quic.Stream
-	Session             quic.Connection
-	ClientControlStream quic.ReceiveStream
-	ServerControlStream quic.SendStream
+	*quic.Stream
+	Session             *quic.Conn
+	ClientControlStream *quic.ReceiveStream
+	ServerControlStream *quic.SendStream
 	responseWriter      *h3.ResponseWriter
 	context             context.Context
 	cancel              context.CancelFunc
@@ -337,10 +337,10 @@ func (s *Session) SendMessage(msg []byte) error {
 
 // AcceptStream accepts an incoming (that is, client-initated) bidirectional stream, blocking if necessary until one is available. Supply your own context, or use the WebTransport
 // session's Context() so that ending the WebTransport session automatically cancels this call.
-func (s *Session) AcceptStream() (WtStream, error) {
+func (s *Session) AcceptStream() (*quic.Stream, error) {
 	stream, err := s.Session.AcceptStream(s.context)
 	if err != nil {
-		return stream, err
+		return nil, err
 	}
 
 	streamFrame := h3.Frame{}
@@ -351,13 +351,13 @@ func (s *Session) AcceptStream() (WtStream, error) {
 
 // AcceptStream accepts an incoming (that is, client-initated) unidirectional stream, blocking if necessary until one is available. Supply your own context, or use the WebTransport
 // session's Context() so that ending the WebTransport session automatically cancels this call.
-func (s *Session) AcceptUniStream(ctx context.Context) (ReceiveStream, error) {
+func (s *Session) AcceptUniStream(ctx context.Context) (*ReceiveStream, error) {
 	stream, err := s.Session.AcceptUniStream(ctx)
-	return ReceiveStream{ReceiveStream: stream, readHeaderBeforeData: true, headerRead: false}, err
+	return &ReceiveStream{ReceiveStream: stream, readHeaderBeforeData: true, headerRead: false}, err
 }
 
-func (s *Session) internalOpenStream(ctx *context.Context, sync bool) (WtStream, error) {
-	var stream quic.Stream
+func (s *Session) internalOpenStream(ctx *context.Context, sync bool) (*quic.Stream, error) {
+	var stream *quic.Stream
 	var err error
 
 	if sync {
@@ -377,8 +377,8 @@ func (s *Session) internalOpenStream(ctx *context.Context, sync bool) (WtStream,
 	return stream, err
 }
 
-func (s *Session) internalOpenUniStream(ctx *context.Context, sync bool) (SendStream, error) {
-	var stream quic.SendStream
+func (s *Session) internalOpenUniStream(ctx *context.Context, sync bool) (*SendStream, error) {
+	var stream *quic.SendStream
 	var err error
 
 	if sync {
@@ -386,30 +386,30 @@ func (s *Session) internalOpenUniStream(ctx *context.Context, sync bool) (SendSt
 	} else {
 		stream, err = s.Session.OpenUniStream()
 	}
-	return SendStream{SendStream: stream, writeHeaderBeforeData: true, headerWritten: false, requestSessionID: uint64(s.StreamID())}, err
+	return &SendStream{SendStream: stream, writeHeaderBeforeData: true, headerWritten: false, requestSessionID: uint64(s.StreamID())}, err
 }
 
 // OpenStream creates an outgoing (that is, server-initiated) bidirectional stream. It returns immediately.
-func (s *Session) OpenStream() (WtStream, error) {
+func (s *Session) OpenStream() (*quic.Stream, error) {
 	return s.internalOpenStream(nil, false)
 }
 
 // OpenStream creates an outgoing (that is, server-initiated) bidirectional stream. It generally returns immediately, but if the session's maximum number of streams
 // has been exceeded, it will block until a slot is available. Supply your own context, or use the WebTransport
 // session's Context() so that ending the WebTransport session automatically cancels this call.
-func (s *Session) OpenStreamSync(ctx context.Context) (WtStream, error) {
+func (s *Session) OpenStreamSync(ctx context.Context) (*quic.Stream, error) {
 	return s.internalOpenStream(&ctx, true)
 }
 
 // OpenUniStream creates an outgoing (that is, server-initiated) bidirectional stream. It returns immediately.
-func (s *Session) OpenUniStream() (SendStream, error) {
+func (s *Session) OpenUniStream() (*SendStream, error) {
 	return s.internalOpenUniStream(nil, false)
 }
 
 // OpenUniStreamSync creates an outgoing (that is, server-initiated) unidirectional stream. It generally returns immediately, but if the session's maximum number of streams
 // has been exceeded, it will block until a slot is available. Supply your own context, or use the WebTransport
 // session's Context() so that ending the WebTransport session automatically cancels this call.
-func (s *Session) OpenUniStreamSync(ctx context.Context) (SendStream, error) {
+func (s *Session) OpenUniStreamSync(ctx context.Context) (*SendStream, error) {
 	return s.internalOpenUniStream(&ctx, true)
 }
 

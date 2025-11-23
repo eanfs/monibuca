@@ -3,8 +3,7 @@ package webrtc
 import (
 	"errors"
 	"fmt"
-	"net"     // Add this import
-	"strings" // Add this import
+	"net"
 	"time"
 
 	"github.com/langhuihui/gomem"
@@ -12,6 +11,7 @@ import (
 	"github.com/pion/rtcp"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/aacopus"
 	"m7s.live/v5/pkg/codec"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
@@ -256,6 +256,9 @@ func (IO *MultipleConnection) Receive() {
 func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioSender, videoSender *RTPSender, err error) {
 	var useDC bool
 	var audioTLSRTP, videoTLSRTP *TrackLocalStaticRTP
+	var aacTranscoder *aacopus.AACToOpus
+	var opusCtx mrtp.RTPCtx
+	var opusTimestamp uint32
 	vctx, actx := subscriber.Publisher.GetVideoCodecCtx(), subscriber.Publisher.GetAudioCodecCtx()
 	if IO.EnableDC {
 		// If H265 is supported by the client, we do NOT use DataChannel for H265 video.
@@ -326,47 +329,48 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 			}
 		}()
 	}
-	if actx != nil && !useDC && actx.FourCC() != codec.FourCC_MP4A {
-		audioCodec := actx.FourCC()
+	if actx != nil && !useDC {
 		var rcc RTPCodecParameters
-		if ctx, ok := actx.(mrtp.IRTPCtx); ok {
-			rcc = ctx.GetRTPCodecParameter()
-		} else {
-			switch vctx.GetBase().(type) {
-			case *codec.PCMACtx:
-				rcc.PayloadType = 8
-				rcc.MimeType = MimeTypePCMA
-				rcc.ClockRate = 8000
-			case *codec.PCMUCtx:
-				rcc.PayloadType = 0
-				rcc.MimeType = MimeTypePCMU
-				rcc.ClockRate = 8000
-			case *codec.OPUSCtx:
-				rcc.PayloadType = 111
-				rcc.MimeType = MimeTypeOpus
-				rcc.ClockRate = 48000
-				rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
-			}
-		}
-		// Transform SDPFmtpLine for WebRTC compatibility (primarily for video codecs, but general logic)
-		mimeTypeLower := strings.ToLower(rcc.RTPCodecCapability.MimeType)
-		if strings.Contains(mimeTypeLower, "h264") || strings.Contains(mimeTypeLower, "h265") { // This condition will likely not match for typical audio codecs
-			originalFmtpLine := rcc.RTPCodecCapability.SDPFmtpLine
-			parts := strings.Split(originalFmtpLine, ";")
-			var newParts []string
-			for _, part := range parts {
-				trimmedPart := strings.TrimSpace(part)
-				if !strings.HasPrefix(trimmedPart, "sprop-parameter-sets=") {
-					newParts = append(newParts, trimmedPart)
+		var audioCodec codec.FourCC
+		if actx.FourCC() == codec.FourCC_MP4A {
+			// AAC source, create Opus codec parameters for WebRTC
+			audioCodec = codec.FourCC_OPUS
+			rcc.PayloadType = 111
+			rcc.MimeType = MimeTypeOpus
+			rcc.ClockRate = 48000
+			rcc.Channels = 2
+			rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
+			if base, ok := actx.GetBase().(*codec.AACCtx); ok {
+				if aacTranscoder, err = aacopus.NewAACToOpus(base, 64000); err != nil {
+					IO.Error("create AAC->Opus transcoder failed", "error", err)
+					// fallback to existing behavior: no RTP audio track for AAC
+					goto audioDone
 				}
 			}
-			transformedFmtpLine := strings.Join(newParts, ";")
-			if transformedFmtpLine != originalFmtpLine {
-				rcc.RTPCodecCapability.SDPFmtpLine = transformedFmtpLine
-				IO.Info("Adjusted SDPFmtpLine for WebRTC (audio track context)", "codec", rcc.RTPCodecCapability.MimeType, "from", originalFmtpLine, "to", transformedFmtpLine)
+		} else {
+			audioCodec = actx.FourCC()
+			if ctx, ok := actx.(mrtp.IRTPCtx); ok {
+				rcc = ctx.GetRTPCodecParameter()
+			} else {
+				switch actx.GetBase().(type) {
+				case *codec.PCMACtx:
+					rcc.PayloadType = 8
+					rcc.MimeType = MimeTypePCMA
+					rcc.ClockRate = 8000
+				case *codec.PCMUCtx:
+					rcc.PayloadType = 0
+					rcc.MimeType = MimeTypePCMU
+					rcc.ClockRate = 8000
+				case *codec.OPUSCtx:
+					rcc.PayloadType = 111
+					rcc.MimeType = MimeTypeOpus
+					rcc.ClockRate = 48000
+					rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
+				}
 			}
 		}
 
+		// Create audio track for WebRTC
 		audioTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, audioCodec.String(), subscriber.StreamPath)
 		if err != nil {
 			return
@@ -375,7 +379,15 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 		if err != nil {
 			return
 		}
+		if aacTranscoder != nil {
+			// Initialize Opus RTP context
+			opusCtx.PayloadType = rcc.PayloadType
+			opusCtx.ClockRate = rcc.ClockRate
+			opusCtx.SSRC = uint32(time.Now().UnixNano())
+		}
 	}
+
+audioDone:
 	var dc *DataChannel
 	if useDC {
 		dc, err = IO.CreateDataChannel(subscriber.StreamPath, nil)
@@ -414,6 +426,38 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 			subscriber.SubVideo = false
 		}
 		go m7s.PlayBlock(subscriber, func(frame *mrtp.AudioFrame) (err error) {
+			if audioTLSRTP == nil {
+				return nil
+			}
+			// If we have an AAC->Opus transcoder, transcode AAC AUs to Opus RTP packets.
+			if aacTranscoder != nil {
+				if err = frame.Demux(); err != nil {
+					IO.Error("demux audio frame failed", "error", err)
+					return err
+				}
+				data := frame.GetAudioData()
+				frame.Packets.Reset()
+				const opusFrameSamples = 960
+				for _, buf := range data.Buffers {
+					if len(buf) == 0 {
+						continue
+					}
+					pkts, err2 := aacTranscoder.Transcode(buf)
+					if err2 != nil {
+						IO.Error("aac->opus transcode failed", "error", err2)
+						return err2
+					}
+					for _, payload := range pkts {
+						opusTimestamp += opusFrameSamples
+						pkt := frame.Append(&opusCtx, opusTimestamp, payload)
+						if err = audioTLSRTP.WriteRTP(pkt); err != nil {
+							return
+						}
+					}
+				}
+				return
+			}
+			// Default pass-through for non-AAC codecs
 			for p := range frame.Packets.RangePoint {
 				if err = audioTLSRTP.WriteRTP(p); err != nil {
 					return

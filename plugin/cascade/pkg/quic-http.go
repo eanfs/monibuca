@@ -43,8 +43,8 @@ func (c *RelayAPIConfig) Check(path string) bool {
 type ReceiveRequestTask struct {
 	task.Task
 	Plugin *m7s.Plugin
-	quic.Connection
-	quic.Stream
+	*quic.Conn
+	*quic.Stream
 	http.Handler
 	*RelayAPIConfig
 }

@@ -125,11 +125,11 @@ func (d *Dialog) Start() (err error) {
 			d.Channel = channel
 		} else {
 			d.pullCtx.Fail(fmt.Sprintf("channel %s not found", channelId))
-			return fmt.Errorf("channel %s not found", channelId)
+			return errors.Join(fmt.Errorf("channel %s not found", channelId))
 		}
 	} else {
 		d.pullCtx.Fail(fmt.Sprintf("device %s not found", deviceId))
-		return fmt.Errorf("device %s not found", deviceId)
+		return errors.Join(fmt.Errorf("device %s not found", deviceId))
 	}
 
 	d.pullCtx.GoToStepConst(StepSIPPrepare)
@@ -145,7 +145,7 @@ func (d *Dialog) Start() (err error) {
 				d.MediaPort, ok = d.gb.tcpPB.Allocate()
 				if !ok {
 					d.pullCtx.Fail("no available tcp port")
-					return fmt.Errorf("no available tcp port")
+					return errors.Join(fmt.Errorf("no available tcp port"))
 				}
 			} else {
 				d.MediaPort = d.gb.MediaPort[0]
@@ -171,7 +171,6 @@ func (d *Dialog) Start() (err error) {
 	d.pullCtx.GoToStepConst(StepSDPBuild)
 
 	ssrc := d.CreateSSRC(d.gb.Serial)
-	d.Info("MediaIp is ", device.MediaIp)
 
 	// 构建 SDP 内容
 	sdpInfo := []string{
@@ -244,23 +243,18 @@ func (d *Dialog) Start() (err error) {
 	// 设置必需的头部
 	contentTypeHeader := sip.ContentTypeHeader("APPLICATION/SDP")
 	subjectHeader := sip.NewHeader("Subject", fmt.Sprintf("%s:%s,%s:0", channelId, ssrc, d.gb.Serial))
-	//allowHeader := sip.NewHeader("Allow", "INVITE, ACK, CANCEL, REGISTER, MESSAGE, NOTIFY, BYE")
-	//Toheader里需要放入目录通道的id
 	toHeader := sip.ToHeader{
 		Address: sip.Uri{User: channelId, Host: channelId[0:10]},
 	}
 	userAgentHeader := sip.NewHeader("User-Agent", "M7S/"+m7s.Version)
 
-	//customCallID := fmt.Sprintf("%s-%s-%d@%s", device.DeviceId, channelId, time.Now().Unix(), device.SipIp)
 	customCallID := fmt.Sprintf("%s@%s", GenerateCallID(32), device.MediaIp)
 	callID := sip.CallIDHeader(customCallID)
 	maxforward := sip.MaxForwardsHeader(70)
-	//contentLengthHeader := sip.ContentLengthHeader(len(strings.Join(sdpInfo, "\r\n") + "\r\n"))
 	csqHeader := sip.CSeqHeader{
 		SeqNo:      uint32(device.SN),
 		MethodName: "INVITE",
 	}
-	//request.AppendHeader(&contentLengthHeader)
 	contactHDR := sip.ContactHeader{
 		Address: sip.Uri{
 			User: d.gb.Serial,
@@ -278,14 +272,8 @@ func (d *Dialog) Start() (err error) {
 		Params: sip.NewParams(),
 	}
 	fromHDR.Params.Add("tag", sip.GenerateTagN(32))
-	
-	// 输出设备Transport信息用于调试
-	d.Info("准备发送INVITE", "deviceId", device.DeviceId, "device.Transport", device.Transport, "device.SipIp", device.SipIp, "device.LocalPort", device.LocalPort)
-	
+
 	dialogClientCache := sipgo.NewDialogClientCache(device.client, contactHDR)
-	// 创建会话，不传递Via头部，让Client自动创建
-	d.Info("start to invite", "recipient:", recipient, " fromHDR:", fromHDR, " toHeader:", toHeader, " device.contactHDR:",
-		device.contactHDR, "contactHDR:", contactHDR, "sdpInfo:", strings.Join(sdpInfo, "\r\n")+"\r\n")
 
 	d.pullCtx.GoToStepConst(StepInviteSend)
 
@@ -300,32 +288,142 @@ func (d *Dialog) Start() (err error) {
 		Params:          sip.HeaderParams(sip.NewParams()),
 	}
 	viaHeader.Params.Add("branch", sip.GenerateBranchN(16))
-	
-	d.Info("发送INVITE使用Transport", "transport", device.Transport, "via", viaHeader)
-	
+
+	d.Info("start to invite", "recipient:", recipient, " fromHDR:", fromHDR, " toHeader:", toHeader, " device.contactHDR:",
+		device.contactHDR, "contactHDR:", contactHDR, "sdpInfo:", strings.Join(sdpInfo, "|||"), "viaHeader:", viaHeader, "transport", device.Transport)
 	// Via头部必须是第一个参数！这样即使用AppendHeader，Via也会在最前面
 	// 这样Client检查req.Via()时就能找到我们的Via头部，不会再创建默认的UDP Via
-	d.session, err = dialogClientCache.Invite(d.gb, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), viaHeader, &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
+	d.session, err = dialogClientCache.Invite(d, recipient, []byte(strings.Join(sdpInfo, "\r\n")+"\r\n"), viaHeader, &callID, &csqHeader, &fromHDR, &toHeader, &maxforward, userAgentHeader, subjectHeader, &contentTypeHeader)
 	// 最后添加Content-Length头部
 	if err != nil {
 		d.pullCtx.Fail("dialog invite error: " + err.Error())
-		return errors.New("dialog invite error" + err.Error())
+		return errors.Join(fmt.Errorf("dialog invite error:%s", err.Error()))
 	}
 
+	d.SetDescriptions(task.Description{
+		"streamPath":            d.StreamPath,
+		"streamMode":            d.StreamMode,
+		"mediaPort":             d.MediaPort,
+		"mediaIP":               device.MediaIp,
+		"sipIP":                 device.SipIp,
+		"transport":             device.Transport,
+		"ssrc":                  ssrc,
+		"callID":                customCallID,
+		"deviceID":              device.DeviceId,
+		"channelID":             channelId,
+		"deviceIP":              device.IP,
+		"devicePort":            device.Port,
+		"localPort":             device.LocalPort,
+		"startTime":             time.Now(),
+		"from":                  fromHDR.Address.String(),
+		"to":                    toHeader.Address.String(),
+		"contact":               contactHDR.Address.String(),
+		"subject":               fmt.Sprintf("%s:%s,%s:0", channelId, ssrc, d.gb.Serial),
+		"recipient":             recipient.String(),
+		"sdp":                   strings.Join(sdpInfo, "\r\n"),
+		"via":                   viaHeader.String(),
+		"viaBranch":             func() string { v, _ := viaHeader.Params.Get("branch"); return v }(),
+		"broadcastPushAfterAck": device.BroadcastPushAfterAck,
+	})
 	d.pullCtx.GoToStepConst(StepResponseWait)
 	return
 }
 
+// setupReceiver 配置 PSReceiver 的网络参数（单端口模式、监听地址等）
+func (d *Dialog) setupReceiver(pub *mrtp.PSReceiver) {
+	switch d.StreamMode {
+	case mrtp.StreamModeTCPPassive:
+		if d.gb.tcpPort > 0 {
+			d.Info("into single port mode,use gb.tcpPort", d.gb.tcpPort)
+			reader := &gb28181.SinglePortReader{
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 1),
+				Context: d,
+			}
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
+		} else {
+			// 多端口模式：根据SSRCCheck配置决定是否启用SSRC过滤
+			if d.Channel.Device.SSRCCheck {
+				pub.ExpectedSSRC = d.SSRC
+				d.Info("multi-port mode, SSRC filtering enabled", "expectedSSRC", d.SSRC)
+			} else {
+				d.Info("multi-port mode, SSRC filtering disabled")
+			}
+		}
+		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
+	case mrtp.StreamModeUDP:
+		if d.gb.udpPort > 0 {
+			d.Info("into single port mode, use gb.udpPort", d.gb.udpPort)
+			reader := &gb28181.SinglePortReader{
+				SSRC:    d.SSRC,
+				Mouth:   make(chan []byte, 100),
+				Context: d,
+			}
+			var loaded bool
+			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
+			if loaded {
+				reader.Context = d
+			}
+			pub.SinglePort = reader
+			d.OnStop(func() {
+				reader.Close()
+				d.gb.singlePorts.Remove(reader)
+			})
+		}
+		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
+	}
+	pub.StreamMode = d.StreamMode
+}
+
 func (d *Dialog) Run() (err error) {
+	var pub mrtp.PSReceiver
+	pub.Publisher = d.pullCtx.Publisher
+	pub.Logger = d.gb.Logger.With("streamPath", d.StreamPath)
+
+	// 如果不是 BroadcastPushAfterAck 模式，提前创建监听器（多端口模式需要）
+	if !d.Channel.Device.BroadcastPushAfterAck {
+		d.Info("creating listener before WaitAnswer", "broadcastPushAfterAck", false, "addr", d.MediaPort)
+		d.setupReceiver(&pub)
+
+		// 提前启动监听器
+		err = pub.Receiver.Start()
+		if err != nil {
+			d.Error("start listener before WaitAnswer failed", "err", err)
+			return err
+		}
+	}
+
 	d.Info("before WaitAnswer")
-	err = d.session.WaitAnswer(d.gb, sipgo.AnswerOptions{})
+	err = d.session.WaitAnswer(d, sipgo.AnswerOptions{})
 	d.Info("after WaitAnswer")
 	if err != nil {
 		d.pullCtx.Fail("等待响应错误: " + err.Error())
-		return errors.New("wait answer error" + err.Error())
+		return errors.Join(errors.New("wait answer error"), err)
 	}
 	inviteResponseBody := string(d.session.InviteResponse.Body())
 	d.Info("inviteResponse", "body", inviteResponseBody)
+
+	// 添加响应信息到 Description
+	d.SetDescriptions(task.Description{
+		"responseStatus": d.session.InviteResponse.StatusCode,
+		"responseReason": d.session.InviteResponse.Reason,
+		"responseSDP":    inviteResponseBody,
+		"responseContact": func() string {
+			if c := d.session.InviteResponse.Contact(); c != nil {
+				return c.Address.String()
+			}
+			return ""
+		}(),
+	})
 	ds := strings.Split(inviteResponseBody, "\r\n")
 	for _, l := range ds {
 		if ls := strings.Split(l, "="); len(ls) > 1 {
@@ -356,65 +454,35 @@ func (d *Dialog) Run() (err error) {
 			}
 		}
 	}
+	// 修复 Contact 地址：某些设备响应的 Contact 包含错误的域名，导致 ACK 发送失败
+	// 强制使用原始的 Recipient 地址确保 ACK 能正确发送到设备
 	if d.session.InviteResponse.Contact() != nil {
-		if &d.session.InviteRequest.Recipient != &d.session.InviteResponse.Contact().Address {
-			d.session.InviteResponse.Contact().Address = d.session.InviteRequest.Recipient
-		}
+		d.session.InviteResponse.Contact().Address = d.session.InviteRequest.Recipient
 	}
+
+	// 添加解析后的响应参数到 Description
+	d.SetDescriptions(task.Description{
+		"responseSSRC":       d.SSRC,
+		"responseTargetIP":   d.targetIP,
+		"responseTargetPort": d.targetPort,
+	})
 
 	// 移动到流数据接收步骤
 	d.pullCtx.GoToStepConst(pkg.StepStreaming)
 
-	var pub mrtp.PSReceiver
-	pub.Publisher = d.pullCtx.Publisher
-	switch d.StreamMode {
-	case mrtp.StreamModeTCPActive:
+	// TCP-ACTIVE 模式需要在解析 targetIP 后设置连接地址
+	if d.StreamMode == mrtp.StreamModeTCPActive {
 		pub.ListenAddr = fmt.Sprintf("%s:%d", d.targetIP, d.targetPort)
-	case mrtp.StreamModeTCPPassive:
-		if d.gb.tcpPort > 0 {
-			d.Info("into single port mode,use gb.tcpPort", d.gb.tcpPort)
-			// 创建一个可取消的上下文
-			reader := &gb28181.SinglePortReader{
-				SSRC:    d.SSRC,
-				Mouth:   make(chan []byte, 1),
-				Context: d,
-			}
-			var loaded bool
-			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
-			if loaded {
-				reader.Context = d
-			}
-			pub.SinglePort = reader
-			d.OnStop(func() {
-				reader.Close()
-				d.gb.singlePorts.Remove(reader)
-			})
-		}
-		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
-	case mrtp.StreamModeUDP:
-		if d.gb.udpPort > 0 {
-			d.Info("into single port mode, use gb.udpPort", d.gb.udpPort)
-			reader := &gb28181.SinglePortReader{
-				SSRC:    d.SSRC,
-				Mouth:   make(chan []byte, 100),
-				Context: d,
-			}
-			var loaded bool
-			reader, loaded = d.gb.singlePorts.LoadOrStore(reader)
-			if loaded {
-				reader.Context = d
-			}
-			pub.SinglePort = reader
-			d.OnStop(func() {
-				reader.Close()
-				d.gb.singlePorts.Remove(reader)
-			})
-		}
-		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
+		d.Info("set TCP-ACTIVE connect address", "addr", pub.ListenAddr)
 	}
-	pub.StreamMode = d.StreamMode
 
-	err = d.session.Ack(d.gb)
+	// 如果是 BroadcastPushAfterAck 模式，在 Ack 后创建监听器配置
+	if d.Channel.Device.BroadcastPushAfterAck {
+		d.Info("setup receiver after Ack", "broadcastPushAfterAck", true)
+		d.setupReceiver(&pub)
+	}
+
+	err = d.session.Ack(d)
 	if err != nil {
 		d.Error("ack session err", err)
 	}
@@ -427,27 +495,31 @@ func (d *Dialog) GetKey() string {
 }
 
 func (d *Dialog) Dispose() {
-	switch d.StreamMode {
-	case mrtp.StreamModeUDP:
-		if d.gb.udpPort == 0 { //多端口模式
-			// 回收端口，防止重复回收
-			if !d.gb.udpPB.Release(d.MediaPort) {
-				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "udp")
+	go func() {
+		time.Sleep(90 * time.Second)
+		switch d.StreamMode {
+		case mrtp.StreamModeUDP:
+			if d.gb.udpPort == 0 { //多端口模式
+				// 回收端口，防止重复回收
+				if !d.gb.udpPB.Release(d.MediaPort) {
+					d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "udp")
+				}
+			}
+		case mrtp.StreamModeTCPPassive:
+			if d.gb.tcpPort == 0 { //多端口模式
+				// 回收端口，防止重复回收
+				if !d.gb.tcpPB.Release(d.MediaPort) {
+					d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
+				}
 			}
 		}
-	case mrtp.StreamModeTCPPassive:
-		if d.gb.tcpPort == 0 { //多端口模式
-			// 回收端口，防止重复回收
-			if !d.gb.tcpPB.Release(d.MediaPort) {
-				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
-			}
-		}
-	}
-	d.Info("dialog dispose", "ssrc", d.SSRC, "mediaPort", d.MediaPort, "streamMode", d.StreamMode, "deviceId", d.Channel.DeviceId, "channelId", d.Channel.ChannelId)
+		d.Info("listener port release", "port", d.MediaPort)
+	}()
+	d.Info("dialog dispose", "ssrc", d.SSRC, "listener", d.MediaPort, "streamMode", d.StreamMode, "deviceId", d.Channel.DeviceId, "channelId", d.Channel.ChannelId)
 	if d.session != nil && d.session.InviteResponse != nil {
 		err := d.session.Bye(d)
 		if err != nil {
-			d.Error("dialog bye bye err", err)
+			d.Error("listener dialog bye bye", " err", err)
 		}
 	}
 }

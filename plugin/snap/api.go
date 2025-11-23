@@ -450,7 +450,6 @@ func (p *SnapPlugin) calculateSnapTimes(publisher *m7s.Publisher, startTime, end
 			}
 
 			// 遍历IDRingList获取关键帧
-			videoTrack.RLock()
 			if videoTrack.IDRingList.Len() > 0 {
 				// 从头开始遍历所有关键帧
 				for idrElem := videoTrack.IDRingList.Front(); idrElem != nil; idrElem = idrElem.Next() {
@@ -467,7 +466,6 @@ func (p *SnapPlugin) calculateSnapTimes(publisher *m7s.Publisher, startTime, end
 					}
 				}
 			}
-			videoTrack.RUnlock()
 
 			// 如果没有找到关键帧，但有GOP信息，则使用估算的GOP间隔生成时间点
 			if len(snapTimes) == 0 && gopDuration > 0 {

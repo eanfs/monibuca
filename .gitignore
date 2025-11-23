@@ -24,4 +24,4 @@ example/default/*
 !example/default/test.mp4
 shutdown.sh
 !example/test/test.db
-shutdown.bat
+shutdown.bat3rd/ffmpeg6

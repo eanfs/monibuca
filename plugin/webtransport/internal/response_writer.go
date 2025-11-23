@@ -18,11 +18,11 @@ import (
 //
 // After a call to DataStream, the original Request.Body must not be used.
 type DataStreamer interface {
-	DataStream() quic.Stream
+	DataStream() *quic.Stream
 }
 
 type ResponseWriter struct {
-	stream         quic.Stream // needed for DataStream()
+	stream         *quic.Stream // needed for DataStream()
 	bufferedStream *bufio.Writer
 
 	header         http.Header
@@ -31,7 +31,7 @@ type ResponseWriter struct {
 	dataStreamUsed bool // set when DataSteam() is called
 }
 
-func NewResponseWriter(stream quic.Stream) *ResponseWriter {
+func NewResponseWriter(stream *quic.Stream) *ResponseWriter {
 	return &ResponseWriter{
 		header:         http.Header{},
 		stream:         stream,
@@ -89,7 +89,7 @@ func (w *ResponseWriter) usedDataStream() bool {
 	return w.dataStreamUsed
 }
 
-func (w *ResponseWriter) DataStream() quic.Stream {
+func (w *ResponseWriter) DataStream() *quic.Stream {
 	w.dataStreamUsed = true
 	w.Flush()
 	return w.stream

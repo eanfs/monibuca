@@ -11,7 +11,7 @@ import (
 
 type Puller struct {
 	flv.Puller
-	quic.Connection
+	*quic.Conn
 }
 
 func (p *Puller) GetPullJob() *m7s.PullJob {
@@ -26,8 +26,8 @@ func (p *Puller) Start() (err error) {
 	if err = p.PullJob.Publish(); err != nil {
 		return
 	}
-	var stream quic.Stream
-	stream, err = p.Connection.OpenStream()
+	var stream *quic.Stream
+	stream, err = p.Conn.OpenStream()
 	if err != nil {
 		return
 	}
