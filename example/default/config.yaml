@@ -1,4 +1,6 @@
 global:
+  http:
+    listenaddr: :8081
   location:
     "^/hdl/(.*)": "/flv/$1" # 兼容 v4
     "^/stress/api/(.*)": "/test/api/stress/$1" # 5.0.x

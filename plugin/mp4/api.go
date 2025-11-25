@@ -449,6 +449,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	if req.FileName != "" {
 		fileName = req.FileName
 	}
+
 	p.Debug("mp4 start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
