@@ -6,6 +6,15 @@ global:
   loglevel: debug
   admin:
     enablelogin: false
+  storage:
+    s3:
+      endpoint: "storage-dev.xiding.tech"
+      accessKeyId: "xidinguser"
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c="
+      bucket: "vidu-media-bucket"
+      pathPrefix: ""
+      forcePathStyle: true
+      useSSL: true    
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
   #     name: "camera-1"             # 拉流代理名称

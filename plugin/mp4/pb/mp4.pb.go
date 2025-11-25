@@ -7,15 +7,16 @@
 package pb
 
 import (
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
+
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	pb "m7s.live/v5/pb"
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
 )
 
 const (
@@ -366,6 +367,7 @@ type ReqStartRecord struct {
 	StreamPath    string                 `protobuf:"bytes,1,opt,name=streamPath,proto3" json:"streamPath,omitempty"`
 	Fragment      *durationpb.Duration   `protobuf:"bytes,2,opt,name=fragment,proto3" json:"fragment,omitempty"`
 	FilePath      string                 `protobuf:"bytes,3,opt,name=filePath,proto3" json:"filePath,omitempty"`
+	FileName      string                 `protobuf:"bytes,4,opt,name=fileName,proto3" json:"fileName,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -417,6 +419,13 @@ func (x *ReqStartRecord) GetFragment() *durationpb.Duration {
 func (x *ReqStartRecord) GetFilePath() string {
 	if x != nil {
 		return x.FilePath
+	}
+	return ""
+}
+
+func (x *ReqStartRecord) GetFileName() string {
+	if x != nil {
+		return x.FileName
 	}
 	return ""
 }
