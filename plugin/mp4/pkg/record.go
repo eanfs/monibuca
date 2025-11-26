@@ -108,7 +108,6 @@ func (t *writeTrailerTask) Run() (err error) {
 	if err = temp.Close(); err != nil {
 		t.Error("close temp file", "err", err)
 	}
-
 	return
 }
 
@@ -157,6 +156,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
+	r.Debug("mp4 create file", "filePath", r.Event.FilePath)
 
 	// 注意: 不要在这里关闭旧文件,因为它已经被传递给 writeTrailerTask
 	// writeTrailerTask 会负责关闭旧文件
@@ -179,6 +179,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 			return
 		}
 	}
+	r.Debug("mp4 init segment", "streamPath", r.Event.StreamPath)
 
 	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)

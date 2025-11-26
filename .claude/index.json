@@ -1,0 +1,122 @@
+{
+  "timestamp": "2025-01-13T10:30:00Z",
+  "version": "5.0.0",
+  "coverage": {
+    "totalEstimatedFiles": 150,
+    "scannedFiles": 12,
+    "coveragePercentage": 8.0,
+    "truncated": false
+  },
+  "modules": {
+    "root": {
+      "path": "./",
+      "description": "服务器核心模块",
+      "entryPoints": ["server.go", "main.go"],
+      "keyInterfaces": ["Server", "Publisher", "Subscriber", "Plugin"],
+      "coverage": "complete",
+      "keyFiles": [
+        "server.go",
+        "plugin.go",
+        "publisher.go",
+        "subscriber.go",
+        "go.mod"
+      ]
+    },
+    "config": {
+      "path": "pkg/config/",
+      "description": "分层配置系统",
+      "entryPoints": ["config.go"],
+      "keyInterfaces": ["Config"],
+      "coverage": "complete",
+      "configPriority": "动态修改 > 环境变量 > 配置文件 > 默认值"
+    },
+    "auth": {
+      "path": "pkg/auth/",
+      "description": "JWT认证系统",
+      "entryPoints": ["auth.go"],
+      "keyInterfaces": ["TokenValidator"],
+      "coverage": "partial"
+    },
+    "codec": {
+      "path": "pkg/codec/",
+      "description": "音视频编解码器",
+      "entryPoints": ["index.go"],
+      "supportedCodecs": ["H264", "H265", "AV1", "AAC", "MP3"],
+      "coverage": "partial"
+    },
+    "util": {
+      "path": "pkg/util/",
+      "description": "通用工具库",
+      "entryPoints": ["index.go"],
+      "keyFeatures": ["集合管理", "环形缓冲区", "内存池"],
+      "coverage": "partial"
+    },
+    "storage": {
+      "path": "pkg/storage/",
+      "description": "存储抽象层",
+      "entryPoints": ["factory.go"],
+      "supportedBackends": ["S3", "OSS", "COS", "Local"],
+      "coverage": "partial"
+    },
+    "plugins": {
+      "path": "plugin/",
+      "description": "插件系统",
+      "discoveredPlugins": {
+        "rtmp": { "status": "detected", "coverage": "minimal" },
+        "rtsp": { "status": "detected", "coverage": "minimal" },
+        "hls": { "status": "detected", "coverage": "minimal" },
+        "webrtc": { "status": "detected", "coverage": "minimal" },
+        "gb28181": { "status": "detected", "coverage": "minimal" },
+        "mp4": { "status": "detected", "coverage": "minimal" },
+        "debug": { "status": "detected", "coverage": "minimal" },
+        "crontab": { "status": "scanned", "coverage": "partial" },
+        "cascade": { "status": "detected", "coverage": "minimal" }
+      }
+    },
+    "examples": {
+      "path": "example/",
+      "description": "示例配置",
+      "configFiles": ["example/default/config.yaml"],
+      "coverage": "complete"
+    }
+  },
+  "architecture": {
+    "corePattern": "插件化架构",
+    "taskSystem": "异步队列处理 (Work/Job/Task)",
+    "streamProcessing": "Publisher/Subscriber 模式",
+    "configSystem": "分层配置系统",
+    "communication": "全局实例模式 + 事件驱动"
+  },
+  "gaps": [
+    "plugin/ 目录下的具体插件实现需要深入扫描",
+    "pkg/ 目录下的各个工具包需要更详细的分析",
+    "任务系统的具体实现细节需要补充",
+    "流媒体处理管道的详细实现",
+    "数据库模型和迁移逻辑"
+  ],
+  "ignoreRules": [
+    ".history",
+    ".vscode",
+    "logs",
+    "fatal",
+    ".idea",
+    "victoria-logs-data",
+    "dump",
+    "record",
+    "bin",
+    ".DS_Store",
+    "*.db",
+    "*.flv",
+    "*.zip",
+    "*.mp4",
+    "__debug*",
+    ".cursorrules"
+  ],
+  "nextSteps": [
+    "深度扫描 plugin/ 目录下的各个插件实现",
+    "分析 pkg/util/ 中的核心工具类",
+    "深入研究任务系统的实现机制",
+    "分析音视频处理管道的详细实现",
+    "研究配置系统的高级特性"
+  ]
+}

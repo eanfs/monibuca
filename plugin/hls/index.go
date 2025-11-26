@@ -310,11 +310,12 @@ func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) {
-	var recordExists bool
-	var filePath = "."
-	var fragment = time.Minute
-	query := r.URL.Query()
-	streamPath := r.PathValue("streamPath")
+    var recordExists bool
+    var filePath = "."
+    var fileName string
+    var fragment = time.Minute
+    query := r.URL.Query()
+    streamPath := r.PathValue("streamPath")
 	if streamPath == "" {
 		http.Error(w, "streamPath is required", http.StatusBadRequest)
 		return
@@ -322,9 +323,13 @@ func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) 
 	if query.Get("fragment") != "" {
 		fragment, _ = time.ParseDuration(query.Get("fragment"))
 	}
-	if query.Get("filePath") != "" {
-		filePath = query.Get("filePath")
-	}
+    if query.Get("filePath") != "" {
+        filePath = query.Get("filePath")
+    }
+    if query.Get("fileName") != "" {
+        fileName = query.Get("fileName")
+    }
+    conf.Debug("hls record start", "streamPath", streamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	_, recordExists = conf.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == streamPath && job.RecConf.FilePath == filePath
 	})
@@ -338,11 +343,12 @@ func (conf *HLSPlugin) API_record_start(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	stream := pub
-	recordConf := config.Record{
-		Append:   false,
-		Fragment: fragment,
-		FilePath: filePath,
-	}
+    recordConf := config.Record{
+        Append:   false,
+        Fragment: fragment,
+        FilePath: filePath,
+        FileName: fileName,
+    }
 	job := conf.Server.Record(stream, recordConf, nil)
 	util.ReturnValue(uint64(uintptr(unsafe.Pointer(job.GetTask()))), w, r)
 }

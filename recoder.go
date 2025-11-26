@@ -76,7 +76,13 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 
 	// 记录存储配置日志
 
+	// 记录存储配置日志
+	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
+
 	recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
+	if recordJob.storage != nil {
+		r.Debug("storage init", "type", fmt.Sprintf("%T", recordJob.storage))
+	}
 
 	if recordJob.storage == nil {
 		return fmt.Errorf("storage config is required")
@@ -113,17 +119,21 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 
 // createStorage 创建存储实例
 func (r *DefaultRecorder) createStorage(storageConfig map[string]any) storage.Storage {
-
+	r.Info("createStorage called with config", "config", storageConfig)
 	for t, conf := range storageConfig {
+		r.Info("trying to create storage", "type", t, "config", conf)
 		storage, err := storage.CreateStorage(t, conf)
 		if err == nil {
+			r.Info("storage created successfully", "type", t)
 			return storage
 		}
+		r.Warn("failed to create storage", "type", t, "error", err)
 	}
 
 	// 配置的存储都失败了，尝试本地存储
 	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
 	if err == nil {
+		r.Info("local storage created successfully")
 		return localStorage
 	}
 

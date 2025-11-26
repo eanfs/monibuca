@@ -485,6 +485,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		}
 	}
 	job := p.Record(stream, recordConf, nil)
+	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
 	res.Data = uint64(job.GetTaskPointer())
 	err = job.WaitStarted()
 	return

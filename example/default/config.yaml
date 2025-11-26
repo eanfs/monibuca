@@ -20,6 +20,17 @@ global:
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
       timeout: "30s"                        # 上传超时时间
+  # storage:
+  #   s3:
+  #     endpoint: "s3.amazonaws.com"          # S3服务端点
+  #     region: "us-east-1"                   # AWS区域
+  #     accessKeyID: "your-access-key-id"     # 访问密钥ID
+  #     secretAccessKey: "your-secret-access-key" # 秘密访问密钥
+  #     bucket: "your-bucket-name"            # 存储桶名称
+  #     pathPrefix: "monibuca/recordings"     # 文件路径前缀
+  #     forcePathStyle: false                 # 强制路径样式（MinIO需要设为true）
+  #     useSSL: true                          # 是否使用SSL
+  #     timeout: "30s"                        # 上传超时时间
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
   #     name: "camera-1"             # 拉流代理名称
@@ -104,8 +115,16 @@ flv:
   # onpub:
   #   record:
   #     ^live/.+:
-  #         fragment: 1m
   #         filepath: record/$0
+  #         storage:
+  #           s3:
+  #             endpoint: "s3.amazonaws.com"
+  #             accessKeyId: "your-access-key-id"
+  #             secretAccessKey: "your-secret-access-key"
+  #             bucket: "your-bucket-name"
+  #             pathPrefix: "flv-recordings"
+  #             forcePathStyle: false
+  #             useSSL: true
   publish:
     delayclosetimeout: 3s
   onsub:
