@@ -42,7 +42,6 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		p.Info("read", "file", file.Name())
 		demuxer := mp4.NewDemuxer(file)
 		err = demuxer.Demux()
 		if err != nil {
@@ -267,7 +266,6 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		p.Info("read", "file", file.Name())
 
 		// 创建解复用器并解析文件
 		demuxer := mp4.NewDemuxer(file)
@@ -450,7 +448,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		fileName = req.FileName
 	}
 
-	p.Info("mp4 start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
+	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath && job.RecConf.FileName == req.FileName
@@ -487,7 +485,6 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		}
 	}
 	job := p.Record(stream, recordConf, nil)
-	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
 	res.Data = uint64(job.GetTaskPointer())
 	err = job.WaitStarted()
 	return

@@ -70,25 +70,15 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
 
-	r.Info("=== CreateStream 开始 ===", "streamPath", sub.StreamPath)
-
 	// 生成文件路径
 	filePath := customFileName(recordJob)
 	fileName := filepath.Base(filePath)
-	r.Info("create stream from Subscriber", "streamPath", sub.StreamPath, "filePath", filePath, "fileName", fileName)
 
 	// 记录存储配置日志
-	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
 
 	recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
-	if recordJob.storage != nil {
-		r.Info("storage init success", "type", fmt.Sprintf("%T", recordJob.storage))
-	} else {
-		r.Warn("storage init failed, will return error")
-	}
 
 	if recordJob.storage == nil {
-		r.Error("storage is nil, returning error")
 		return fmt.Errorf("storage config is required")
 	}
 
@@ -100,67 +90,43 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		Type:         recordJob.RecConf.Type,
 		StorageLevel: 1, // 默认为主存储
 	}
-	r.Info("RecordStream 创建完成", "StreamPath", sub.StreamPath, "FilePath", filePath, "Type", recordJob.RecConf.Type)
 
 	if sub.Publisher.HasAudioTrack() {
 		r.Event.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
-		r.Info("音频轨道信息", "AudioCodec", r.Event.AudioCodec)
 	}
 	if sub.Publisher.HasVideoTrack() {
 		r.Event.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.String()
-		r.Info("视频轨道信息", "VideoCodec", r.Event.VideoCodec)
 	}
 
 	if recordJob.Plugin.DB != nil && recordJob.RecConf.Mode != config.RecordModeTest {
-		r.Info("保存录像记录到数据库", "hasEvent", recordJob.Event != nil)
 		if recordJob.Event != nil {
 			r.Event.RecordEvent = recordJob.Event
 			r.Event.RecordLevel = recordJob.Event.EventLevel
-			r.Info("保存 EventRecordStream 和 Event")
 			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
 			recordJob.Plugin.DB.Save(&r.Event)
 		} else {
-			r.Info("仅保存 RecordStream")
 			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
 		}
-	} else {
-		r.Info("跳过数据库保存", "hasDB", recordJob.Plugin.DB != nil, "mode", recordJob.RecConf.Mode)
 	}
-
-	r.Info("=== CreateStream 完成 ===", "streamPath", sub.StreamPath)
 	return
 }
 
 // createStorage 创建存储实例
 func (r *DefaultRecorder) createStorage(storageConfig map[string]any) storage.Storage {
-	r.Info("=== createStorage 开始 ===", "config", storageConfig)
-
-	if len(storageConfig) == 0 {
-		r.Info("storageConfig 为空，将尝试使用本地存储")
-	} else {
-		r.Info("storageConfig 包含 %d 个存储类型", len(storageConfig))
-	}
 
 	for t, conf := range storageConfig {
-		r.Info("尝试创建存储", "type", t, "config", conf)
 		storage, err := storage.CreateStorage(t, conf)
 		if err == nil {
-			r.Info("存储创建成功", "type", t, "storageType", fmt.Sprintf("%T", storage))
 			return storage
 		}
-		r.Warn("存储创建失败", "type", t, "error", err)
 	}
 
-	r.Info("配置的存储都失败了，尝试本地存储", "filePath", r.RecordJob.RecConf.FilePath)
+	// 配置的存储都失败了，尝试本地存储
 	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
 	if err == nil {
-		r.Info("本地存储创建成功")
 		return localStorage
-	} else {
-		r.Error("本地存储创建失败", "err", err)
 	}
 
-	r.Error("=== createStorage 失败，返回 nil ===")
 	return nil
 }
 
