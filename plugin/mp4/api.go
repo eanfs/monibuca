@@ -450,10 +450,10 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		fileName = req.FileName
 	}
 
-	p.Debug("mp4 start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
+	p.Info("mp4 start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath
+		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath && job.RecConf.FileName == req.FileName
 	})
 	if recordExists {
 		err = pkg.ErrRecordExists
@@ -465,6 +465,11 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		Fragment: fragment,
 		FilePath: filePath,
 		FileName: fileName,
+	}
+
+	// 如果全局配置中有 storage 配置，则使用它
+	if p.Server != nil && p.Server.Storage != nil {
+		recordConf.Storage = p.Server.Storage
 	}
 	var stream *m7s.Publisher
 	var ok bool
@@ -482,6 +487,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		}
 	}
 	job := p.Record(stream, recordConf, nil)
+	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
 	res.Data = uint64(job.GetTaskPointer())
 	err = job.WaitStarted()
 	return

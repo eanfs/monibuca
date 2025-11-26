@@ -60,6 +60,7 @@ type (
 		DisableAll    bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
+		Storage       map[string]any           `desc:"全局存储配置"`               // 全局存储配置
 		PullProxy     []*PullProxyConfig
 		PushProxy     []*PushProxyConfig
 		Admin         struct {

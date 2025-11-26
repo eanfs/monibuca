@@ -25,3 +25,4 @@ example/default/*
 shutdown.sh
 !example/test/test.db
 shutdown.bat3rd/ffmpeg6
+/.spec-workflow
