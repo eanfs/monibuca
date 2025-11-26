@@ -1,8 +1,6 @@
 module m7s.live/v5
 
-go 1.24
-
-toolchain go1.24.10
+go 1.24.10
 
 require (
 	github.com/VictoriaMetrics/VictoriaMetrics v1.102.0
