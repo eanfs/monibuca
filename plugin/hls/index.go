@@ -208,7 +208,7 @@ func (config *HLSPlugin) vod(w http.ResponseWriter, r *http.Request) {
 
 func (config *HLSPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
-	if config.Server.RedirectIfNeeded(w, r, "http", redirectPath) {
+	if config.Server.RedirectIfNeeded(w, r, "hls", redirectPath) {
 		config.Debug("redirect issued", "protocol", "http", "path", redirectPath)
 		return
 	}
