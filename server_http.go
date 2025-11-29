@@ -34,7 +34,10 @@ func (s *Server) GetRedirectAdvisor() RedirectAdvisor {
 }
 
 // RedirectIfNeeded evaluates redirect advice for HTTP-based protocols and issues redirects when appropriate.
-func (s *Server) RedirectIfNeeded(w http.ResponseWriter, r *http.Request, protocol, redirectPath string) bool {
+// The prefix parameter is the plugin name (e.g., "flv", "mp4", "hls", "webrtc") used to restore the path prefix.
+// The redirectPath parameter is the stream path without prefix, used for matching redirect rules.
+// This function automatically restores the path prefix (e.g., /flv/, /mp4/) for building the redirect URL.
+func (s *Server) RedirectIfNeeded(w http.ResponseWriter, r *http.Request, prefix, redirectPath string) bool {
 	if s == nil {
 		return false
 	}
@@ -42,13 +45,35 @@ func (s *Server) RedirectIfNeeded(w http.ResponseWriter, r *http.Request, protoc
 	if advisor == nil {
 		return false
 	}
-	targetHost, statusCode, ok := advisor.GetRedirectTarget(protocol, redirectPath, r.Host)
+
+	// Save current path and restore it with the prefix for building redirect URL
+	currentPath := r.URL.Path
+	pathRestored := false
+
+	// Restore path with prefix if needed
+	if prefix != "" {
+		pathPrefix := "/" + prefix + "/"
+		if !strings.HasPrefix(currentPath, pathPrefix) {
+			r.URL.Path = pathPrefix + redirectPath
+			pathRestored = true
+		}
+	}
+
+	// Restore original path after redirect (if it was modified)
+	defer func() {
+		if pathRestored {
+			r.URL.Path = currentPath
+		}
+	}()
+
+	targetHost, statusCode, ok := advisor.GetRedirectTarget(prefix, redirectPath, r.Host)
 	if !ok || targetHost == "" {
 		return false
 	}
 	if statusCode == 0 {
 		statusCode = http.StatusFound
 	}
+	// Use r.URL.Path (which has been restored with prefix) to build redirect URL
 	redirectURL := buildRedirectURL(r, targetHost)
 	http.Redirect(w, r, redirectURL, statusCode)
 	return true
@@ -183,4 +208,3 @@ func (s *Server) annexB(w http.ResponseWriter, r *http.Request) {
 		return ctx.Flush()
 	})
 }
-

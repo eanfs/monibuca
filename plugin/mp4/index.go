@@ -99,7 +99,7 @@ func (p *MP4Plugin) Start() (err error) {
 
 func (p *MP4Plugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
-	if p.Server != nil && p.Server.RedirectIfNeeded(w, r, "http", redirectPath) {
+	if p.Server != nil && p.Server.RedirectIfNeeded(w, r, "mp4", redirectPath) {
 		p.Debug("redirect issued", "protocol", "http", "path", redirectPath)
 		return
 	}
