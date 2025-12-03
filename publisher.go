@@ -163,33 +163,33 @@ func (p *Publisher) Go() error {
 			switch p.State {
 			case PublisherStateInit:
 				if p.HasAudioTrack() || p.HasVideoTrack() {
-					if p.Publish.IdleTimeout > 0 && time.Since(p.StartTime) > p.Publish.IdleTimeout {
-						p.Stop(ErrPublishIdleTimeout)
-					}
 				} else {
-					p.Stop(ErrPublishTimeout)
+					return ErrPublishTimeout
 				}
 			case PublisherStateSubscribed:
 			case PublisherStateWaitSubscriber:
 				if p.Publish.DelayCloseTimeout > 0 {
-					p.Stop(ErrPublishDelayCloseTimeout)
+					return ErrPublishDelayCloseTimeout
 				}
 			}
 		case <-noDataCheck.C:
 			if p.Paused != nil {
 				continue
 			}
+			if p.State == PublisherStateInit && p.Publish.IdleTimeout > 0 && time.Since(p.StartTime) > p.Publish.IdleTimeout {
+				return ErrPublishIdleTimeout
+			}
 			if p.PubVideo && p.VideoTrack.CheckTimeout(p.PublishTimeout) {
 				p.Error("video timeout", "writeTime", p.VideoTrack.LastValue.WriteTime)
 				if !p.HasAudioTrack() {
-					p.Stop(ErrPublishTimeout)
+					return ErrPublishTimeout
 				}
 				p.NoVideo()
 			}
 			if p.PubAudio && p.AudioTrack.CheckTimeout(p.PublishTimeout) {
 				p.Error("audio timeout", "writeTime", p.AudioTrack.LastValue.WriteTime)
 				if !p.HasVideoTrack() {
-					p.Stop(ErrPublishTimeout)
+					return ErrPublishTimeout
 				}
 				p.NoAudio()
 			}
