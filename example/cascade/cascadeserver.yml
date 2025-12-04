@@ -1,0 +1,18 @@
+# 级联服务器配置
+general:
+  http:
+    listenaddr: :8080  # 主HTTP服务端口
+  quic:
+    listenaddr: :44944  # QUIC服务端口，用于级联通信
+
+# 级联服务器插件配置
+cascadeserver:
+  automigrate: true    # 自动数据库迁移
+  autoregister: true   # 允许下级自动注册
+  relayapi:
+    secret: "server-secret-123"  # 级联API密钥
+
+# 数据库配置
+database:
+  type: sqlite
+  dsn: ./cascadeserver.db

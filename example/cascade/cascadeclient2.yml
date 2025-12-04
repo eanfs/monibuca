@@ -1,0 +1,20 @@
+# 级联客户端2配置
+general:
+  http:
+    listenaddr: :8082  # 客户端2HTTP服务端口
+  quic:
+    listenaddr: :44946  # 客户端2QUIC服务端口
+
+# 级联客户端插件配置
+cascadeclient:
+  autostart: true
+  server: "127.0.0.1:44944"  # 上级服务器地址
+  secret: "client-secret-123"
+  autopush: true
+  relayapi:
+    secret: "client-secret-123"
+
+# 数据库配置
+database:
+  type: sqlite
+  dsn: ./cascadeclient2.db
