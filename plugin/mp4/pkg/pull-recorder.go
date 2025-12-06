@@ -113,6 +113,8 @@ func (p *RecordReader) Run() (err error) {
 		// 更新实时时间
 		realTime = time.Now() // 这里可以根据需要调整为更精确的时间计算
 		frame.SetTS32(uint32(ts))
+		frame.IDR = v.KeyFrame
+		frame.CTS = time.Duration(v.CTS) * time.Millisecond
 		return writer.NextVideo()
 	}
 

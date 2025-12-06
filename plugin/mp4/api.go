@@ -20,6 +20,7 @@ import (
 	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/pkg/util"
 	mp4pb "m7s.live/v5/plugin/mp4/pb"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
@@ -27,21 +28,100 @@ import (
 )
 
 type ContentPart struct {
-	*os.File
+	file   storage.File
 	Start  int64
 	Size   int
 	boxies []box.IBox
 }
 
+func (c *ContentPart) Read(p []byte) (n int, err error) {
+	return c.file.Read(p)
+}
+
+func (c *ContentPart) Seek(offset int64, whence int) (int64, error) {
+	return c.file.Seek(offset, whence)
+}
+
+func (c *ContentPart) Close() error {
+	return c.file.Close()
+}
+
 func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
-	if flag == 0 {
-		http.ServeFile(w, r, stream.FilePath)
-	} else if flag == mp4.FLAG_FRAGMENT {
-		file, err := os.Open(stream.FilePath)
+	// 获取文件（本地或远程）
+	var file storage.File
+	var err error
+
+	if stream.StorageType != "" && stream.StorageType != "local" {
+		// 远程存储：从 S3/OSS/COS 获取文件
+		var storageConfig map[string]any
+
+		// 遍历所有录像配置规则，查找包含该 storage 类型的配置
+		commonConf := p.GetCommonConf()
+		for _, recConf := range commonConf.OnPub.Record {
+			if recConf.Storage != nil {
+				if cfg, ok := recConf.Storage[stream.StorageType]; ok {
+					if cfgMap, ok := cfg.(map[string]any); ok {
+						storageConfig = cfgMap
+						break
+					}
+				}
+			}
+		}
+
+		if storageConfig == nil {
+			http.Error(w, "storage config not found", http.StatusInternalServerError)
+			p.Error("storage config not found", "storageType", stream.StorageType)
+			return
+		}
+
+		// 创建 storage 实例
+		storageInstance, err := storage.CreateStorage(stream.StorageType, storageConfig)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to create storage: %v", err), http.StatusInternalServerError)
+			p.Error("failed to create storage", "err", err)
+			return
+		}
+
+		// 对于普通 MP4，直接重定向到预签名 URL
+		if flag == 0 {
+			url, err := storageInstance.GetURL(context.Background(), stream.FilePath)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("failed to get URL: %v", err), http.StatusInternalServerError)
+				p.Error("failed to get URL", "err", err)
+				return
+			}
+			p.Info("redirect to storage URL", "storageType", stream.StorageType, "url", url)
+			http.Redirect(w, r, url, http.StatusFound)
+			return
+		}
+
+		// 对于 fmp4，需要读取文件进行转换（只读模式，不会上传）
+		file, err = storageInstance.OpenFile(context.Background(), stream.FilePath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to open remote file: %v", err), http.StatusInternalServerError)
+			p.Error("failed to open remote file", "err", err)
+			return
+		}
+		defer file.Close()
+		p.Info("reading remote file for fmp4 conversion", "storageType", stream.StorageType, "path", stream.FilePath)
+	} else {
+		// 本地存储
+		if flag == 0 {
+			http.ServeFile(w, r, stream.FilePath)
+			return
+		}
+		// 本地文件用于 fmp4 转换
+		file, err = os.Open(stream.FilePath)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer file.Close()
+	}
+
+	// fmp4 转换处理（本地和远程文件统一处理）
+	if flag == mp4.FLAG_FRAGMENT {
+		p.Info("converting to fmp4", "file", file.Name())
 		demuxer := mp4.NewDemuxer(file)
 		err = demuxer.Demux()
 		if err != nil {
@@ -61,7 +141,7 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		for track, sample := range demuxer.RangeSample {
 			if part == nil {
 				part = &ContentPart{
-					File:  file,
+					file:  file,
 					Start: sample.Offset,
 				}
 				parts = append(parts, part)
@@ -225,34 +305,18 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				// 首次添加音频轨道
 				addAudioTrack(track)
 			} else if !bytes.Equal(lastAudioTrack.ExtraData, trackExtraData) {
-				// 音频编码参数发生变化，检查是否已存在相同参数的轨道
-				for _, history := range audioHistory {
-					if bytes.Equal(history.ExtraData, trackExtraData) {
-						// 找到相同参数的轨道，重用它
-						audioTrack = history.Track
-						audioTrack.Samplelist = audioHistory[len(audioHistory)-1].Track.Samplelist
-						return
-					}
-				}
-				// 创建新的音频轨道
-				addAudioTrack(track)
+				// 音频编码参数发生变化，不再创建新轨道，直接重用最后一个轨道
+				audioTrack = lastAudioTrack.Track
+				audioTrack.Samplelist = lastAudioTrack.Track.Samplelist
 			}
 		} else if track.Cid.IsVideo() {
 			if lastVideoTrack == nil {
 				// 首次添加视频轨道
 				addVideoTrack(track)
 			} else if !bytes.Equal(lastVideoTrack.ExtraData, trackExtraData) {
-				// 视频编码参数发生变化，检查是否已存在相同参数的轨道
-				for _, history := range videoHistory {
-					if bytes.Equal(history.ExtraData, trackExtraData) {
-						// 找到相同参数的轨道，重用它
-						videoTrack = history.Track
-						videoTrack.Samplelist = videoHistory[len(videoHistory)-1].Track.Samplelist
-						return
-					}
-				}
-				// 创建新的视频轨道
-				addVideoTrack(track)
+				// 视频编码参数发生变化，不再创建新轨道，直接重用最后一个轨道
+				videoTrack = lastVideoTrack.Track
+				videoTrack.Samplelist = lastVideoTrack.Track.Samplelist
 			}
 		}
 	}
@@ -274,21 +338,13 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		trackCount := len(demuxer.Tracks)
+		//trackCount := len(demuxer.Tracks)
 
 		// 处理轨道信息
 		if i == 0 || flag == mp4.FLAG_FRAGMENT {
 			// 第一个文件或分片模式，添加所有轨道
 			for _, track := range demuxer.Tracks {
 				addTrack(track)
-			}
-		}
-
-		// 检查轨道数量是否发生变化
-		if trackCount != len(muxer.Tracks) {
-			if flag == mp4.FLAG_FRAGMENT {
-				// 分片模式下重新生成 MOOV box
-				moov = muxer.MakeMoov()
 			}
 		}
 
@@ -317,7 +373,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			// 创建内容片段
 			if part == nil {
 				part = &ContentPart{
-					File:  file,
+					file:  file,
 					Start: sample.Offset,
 				}
 			}
@@ -402,7 +458,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		// 写入所有内容片段的数据
 		for _, part := range parts {
 			part.Seek(part.Start, io.SeekStart)
-			written, err = io.CopyN(w, part.File, int64(part.Size))
+			written, err = io.CopyN(w, part, int64(part.Size))
 			if err != nil {
 				return
 			}
@@ -410,6 +466,15 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			part.Close()
 		}
 	} else {
+
+		// 检查轨道数量是否发生变化
+		//if trackCount != len(muxer.Tracks) {
+		if flag == mp4.FLAG_FRAGMENT {
+			// 分片模式下重新生成 MOOV box
+			moov = muxer.MakeMoov()
+		}
+		//}
+
 		// 分片 MP4 模式：输出分片格式
 		var children []box.IBox
 		var totalSize uint64

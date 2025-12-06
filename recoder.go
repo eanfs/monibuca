@@ -55,6 +55,7 @@ type (
 		DeletedAt    gorm.DeletedAt    `gorm:"index" yaml:"-"`
 		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
 		StorageLevel int               `json:"storageLevel" desc:"存储级别" gorm:"comment:存储级别,1=主存储,2=次级存储;default:1"`
+		StorageType  string            `json:"storageType" desc:"存储类型" gorm:"type:varchar(20);comment:存储类型(local/s3/oss/cos);default:'local'"`
 	}
 )
 
@@ -79,10 +80,8 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	// 记录存储配置日志
 	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
 
-	recordJob.storage = r.createStorage(recordJob.RecConf.Storage)
-	if recordJob.storage != nil {
-		r.Debug("storage init", "type", fmt.Sprintf("%T", recordJob.storage))
-	}
+	var storageType string
+	recordJob.storage, storageType = r.createStorage(recordJob.RecConf.Storage)
 
 	if recordJob.storage == nil {
 		return fmt.Errorf("storage config is required")
@@ -95,6 +94,7 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		Filename:     fileName,
 		Type:         recordJob.RecConf.Type,
 		StorageLevel: 1, // 默认为主存储
+		StorageType:  storageType,
 	}
 
 	if sub.Publisher.HasAudioTrack() {
@@ -117,27 +117,25 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	return
 }
 
-// createStorage 创建存储实例
-func (r *DefaultRecorder) createStorage(storageConfig map[string]any) storage.Storage {
-	r.Info("createStorage called with config", "config", storageConfig)
+// createStorage 创建存储实例，返回 storage 和存储类型
+func (r *DefaultRecorder) createStorage(storageConfig map[string]any) (storage.Storage, string) {
 	for t, conf := range storageConfig {
 		r.Info("trying to create storage", "type", t, "config", conf)
 		storage, err := storage.CreateStorage(t, conf)
 		if err == nil {
 			r.Info("storage created successfully", "type", t)
-			return storage
+			return storage, t
 		}
-		r.Warn("failed to create storage", "type", t, "error", err)
+		r.Error("create storage failed", "type", t, "err", err)
 	}
-
-	// 配置的存储都失败了，尝试本地存储
+	r.Warn("falling back to local storage", "path", r.RecordJob.RecConf.FilePath)
 	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
 	if err == nil {
-		r.Info("local storage created successfully")
-		return localStorage
+		return localStorage, "local"
+	} else {
+		r.Error("create local storage failed", "err", err)
 	}
-
-	return nil
+	return nil, ""
 }
 
 func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
