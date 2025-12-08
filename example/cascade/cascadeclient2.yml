@@ -1,20 +1,49 @@
-# 级联客户端2配置
+# 级联客户端1配置
 global:
   http:
-    listenaddr: :8082  # 客户端2HTTP服务端口
+    listenaddr: :8082
+    listenaddrtls: :8556
+  tcp:
+    listenaddr: :50056
   quic:
-    listenaddr: :44946  # 客户端2QUIC服务端口
+    listenaddr: :44946  # 客户端1QUIC服务端口
+
+cascadeserver:
+  enable: false
+  quic:
+    listenaddr: :44946
 
 # 级联客户端插件配置
 cascadeclient:
-  autostart: true
-  server: "127.0.0.1:44944"  # 上级服务器地址
-  secret: "client-secret-123"
-  autopush: true
-  relayapi:
-    secret: "client-secret-123"
+  enable: true
+  server: 127.0.0.1:44944  # 上级服务器地址
+  secret: client-secret-123  # 连接密钥
+  onsub:
+    pull:
+      .*: m7s://$0
+
+rtsp:
+  enable: true
+  tcp:
+    listenaddr: :50057 # 监听地址，格式为ip:port，ip 可省略默认监听所有网卡    
+rtmp:
+  enable: true
+  tcp: :1937
+
+webrtc:
+  port: udp:9301-9400
+
+webtransport:
+  enable: false
+
+gb28181:
+  enable: false
+  autoinvite: true
+  sip:
+    listenaddr:
+          - udp::5060  
 
 # 数据库配置
 database:
   type: sqlite
-  dsn: ./cascadeclient2.db
+  dsn: ./cascadeclient1.db

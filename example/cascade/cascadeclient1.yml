@@ -1,6 +1,5 @@
 # 级联客户端1配置
 global:
-  disableall: true
   http:
     listenaddr: :8081
     listenaddrtls: :8555
@@ -9,16 +8,19 @@ global:
   quic:
     listenaddr: :44945  # 客户端1QUIC服务端口
 
-
+cascadeserver:
+  enable: false
+  quic:
+    listenaddr: :44945
 
 # 级联客户端插件配置
 cascadeclient:
   enable: true
   server: 127.0.0.1:44944  # 上级服务器地址
   secret: client-secret-123  # 连接密钥
-  # onsub:
-  #   pull:
-  #     .*: m7s://$0
+  onsub:
+    pull:
+      .*: m7s://$0
 
 rtsp:
   enable: true
@@ -27,8 +29,19 @@ rtsp:
 rtmp:
   enable: true
   tcp: :1936
+
 webrtc:
-  port: udp:9000-9100
+  port: udp:9201-9300
+
+webtransport:
+  enable: false
+
+gb28181:
+  enable: false
+  autoinvite: true
+  sip:
+    listenaddr:
+          - udp::5060  
 
 # 数据库配置
 database:

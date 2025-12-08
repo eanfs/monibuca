@@ -5,7 +5,7 @@ global:
     listenaddr: :8080
     listenaddrtls: :8443
   tcp:
-    listenaddr: :50053
+    listenaddr: :50050
 
 # 级联服务器插件配置
 cascadeserver:
@@ -19,6 +19,14 @@ cascadeserver:
 rtsp:
   enable: true
 
+webrtc:
+  port: udp:9000-9100
+
+gb28181:
+  autoinvite: true
+  sip:
+    listenaddr:
+      - udp::5060
 # 数据库配置
 database:
   type: sqlite
