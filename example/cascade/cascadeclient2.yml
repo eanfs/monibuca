@@ -1,5 +1,5 @@
 # 级联客户端2配置
-general:
+global:
   http:
     listenaddr: :8082  # 客户端2HTTP服务端口
   quic:

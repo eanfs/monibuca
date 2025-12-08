@@ -1,18 +1,34 @@
 # 级联客户端1配置
-general:
+global:
+  disableall: true
   http:
-    listenaddr: :8081  # 客户端1HTTP服务端口
+    listenaddr: :8081
+    listenaddrtls: :8555
+  tcp:
+    listenaddr: :50054
   quic:
     listenaddr: :44945  # 客户端1QUIC服务端口
 
+
+
 # 级联客户端插件配置
 cascadeclient:
-  autostart: true      # 自动启动
-  server: "127.0.0.1:44944"  # 上级服务器地址
-  secret: "client-secret-123"  # 连接密钥
-  autopush: true       # 自动推流到上级
-  relayapi:
-    secret: "client-secret-123"
+  enable: true
+  server: 127.0.0.1:44944  # 上级服务器地址
+  secret: client-secret-123  # 连接密钥
+  # onsub:
+  #   pull:
+  #     .*: m7s://$0
+
+rtsp:
+  enable: true
+  tcp:
+    listenaddr: :50055 # 监听地址，格式为ip:port，ip 可省略默认监听所有网卡    
+rtmp:
+  enable: true
+  tcp: :1936
+webrtc:
+  port: udp:9000-9100
 
 # 数据库配置
 database:

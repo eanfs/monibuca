@@ -20,15 +20,15 @@ func main() {
 
 	// 三个级联客户端配置文件路径
 	client1Conf := flag.String("client1", "./cascadeclient1.yml", "cascade client1 config file")
-	client2Conf := flag.String("client2", "./cascadeclient2.yml", "cascade client2 config file")
-	client3Conf := flag.String("client3", "./cascadeclient3.yml", "cascade client3 config file")
+	// client2Conf := flag.String("client2", "./cascadeclient2.yml", "cascade client2 config file")
+	// client3Conf := flag.String("client3", "./cascadeclient3.yml", "cascade client3 config file")
 
 	flag.Parse()
 
 	// 启动三个客户端实例（使用goroutine异步运行）
-	go startInstance(ctx, *client1Conf, "Client 1")
-	go startInstance(ctx, *client2Conf, "Client 2")
-	go startInstance(ctx, *client3Conf, "Client 3")
+	go startInstance(ctx, *client1Conf, "Client1")
+	// go startInstance(ctx, *client2Conf, "Client 2")
+	// go startInstance(ctx, *client3Conf, "Client 3")
 
 	// 最后启动服务器实例（主进程运行）
 	startInstance(ctx, *serverConf, "Server")

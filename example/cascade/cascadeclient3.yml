@@ -1,5 +1,5 @@
 # 级联客户端3配置
-general:
+global:
   http:
     listenaddr: :8083  # 客户端3HTTP服务端口
   quic:
