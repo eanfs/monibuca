@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -28,7 +29,7 @@ type S3StorageConfig struct {
 	PathPrefix      string        `desc:"文件路径前缀"`
 	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
 	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
-	Timeout         time.Duration `desc:"上传超时时间" default:"30s"`
+	Timeout         time.Duration `desc:"上传超时时间(0表示不超时)" default:"0s"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -252,6 +253,10 @@ type S3File struct {
 	filePath  string   // 临时文件路径
 	readOnly  bool     // 只读模式，不上传到S3
 
+	// 状态标记，避免重复上传
+	dirty    bool // 有未上传的数据
+	uploaded bool // 最近一次上传已完成，无新写入
+
 	mu sync.Mutex // 保护并发访问
 }
 
@@ -276,6 +281,9 @@ func (w *S3File) Write(p []byte) (n int, err error) {
 	if err != nil {
 		return n, fmt.Errorf("failed to write to temp file: %w", err)
 	}
+	// 标记脏数据，表示需要上传
+	w.dirty = true
+	w.uploaded = false
 
 	// fmt.Printf("S3File.Write: wrote %d bytes\n", n)
 	return n, nil
@@ -316,7 +324,14 @@ func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 
 	// 写入到临时文件的指定位置
-	return w.tempFile.WriteAt(p, off)
+	n, err = w.tempFile.WriteAt(p, off)
+	if err != nil {
+		return n, err
+	}
+	// 标记脏数据
+	w.dirty = true
+	w.uploaded = false
+	return n, nil
 }
 
 func (w *S3File) ReadAt(p []byte, off int64) (n int, err error) {
@@ -358,22 +373,33 @@ func (w *S3File) syncNoLock() error {
 		}
 		return nil
 	}
-	// 如果使用临时文件，先同步到磁盘
-	if w.tempFile != nil {
-		fmt.Printf("S3File.Sync: syncing temp file to disk\n")
-		if err := w.tempFile.Sync(); err != nil {
-			return fmt.Errorf("failed to sync temp file to disk: %w", err)
-		}
-		// 获取文件大小用于日志
-		if stat, err := w.tempFile.Stat(); err == nil {
-			fmt.Printf("[S3File.Sync] tempFile size: %d bytes, path: %s\n", stat.Size(), w.filePath)
-		}
+	// 若无临时文件，或者没有新数据，不需要上传
+	if w.tempFile == nil || !w.dirty {
+		return nil
+	}
+	// 先同步到磁盘
+	fmt.Printf("S3File.Sync: syncing temp file to disk\n")
+	if err := w.tempFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temp file to disk: %w", err)
+	}
+	// 获取文件大小用于判断
+	var size int64
+	if stat, err := w.tempFile.Stat(); err == nil {
+		size = stat.Size()
+		fmt.Printf("[S3File.Sync] tempFile size: %d bytes, path: %s\n", stat.Size(), w.filePath)
+	}
+	// 空文件不上传，避免覆盖已上传的非空文件
+	if size == 0 {
+		return nil
 	}
 
 	fmt.Printf("S3File.Sync: uploading to S3\n")
 	if err := w.uploadTempFile(); err != nil {
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
+	// 上传成功，重置状态
+	w.dirty = false
+	w.uploaded = true
 	fmt.Printf("S3File.Sync: upload completed successfully\n")
 	return nil
 }
@@ -442,16 +468,32 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 
 // uploadTempFile 上传临时文件到S3
 func (w *S3File) uploadTempFile() (err error) {
-	// 重置文件指针到开头
-	if _, err := w.tempFile.Seek(0, 0); err != nil {
-		fmt.Printf("[S3File.uploadTempFile] failed to seek: %v\n", err)
-		return fmt.Errorf("failed to seek temp file: %w", err)
+	// 确保将缓冲写入磁盘并获取稳定的大小
+	if w.tempFile != nil {
+		if err := w.tempFile.Sync(); err != nil {
+			fmt.Printf("[S3File.uploadTempFile] tempFile.Sync failed: %v\n", err)
+			return fmt.Errorf("failed to sync temp file: %w", err)
+		}
 	}
 
+	// 重新以只读方式打开文件句柄，避免与写句柄共享状态带来的问题
+	f, err := os.Open(w.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to reopen temp file: %w", err)
+	}
+	defer f.Close()
+
 	// 获取文件大小
-	stat, _ := w.tempFile.Stat()
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat temp file: %w", err)
+	}
+	size := stat.Size()
 	fmt.Printf("[S3File.uploadTempFile] uploading to S3: bucket=%s, key=%s, size=%d\n",
-		w.storage.config.Bucket, w.objectKey, stat.Size())
+		w.storage.config.Bucket, w.objectKey, size)
+
+	// 使用带固定长度的 SectionReader，避免某些 S3 兼容实现对 chunked 传输处理异常
+	body := io.NewSectionReader(f, 0, size)
 
 	// 上传到S3
 	// 使用独立的上传上下文，避免因调用方上下文取消导致上传中断
@@ -464,7 +506,7 @@ func (w *S3File) uploadTempFile() (err error) {
 	_, err = w.storage.uploader.UploadWithContext(uploadCtx, &s3manager.UploadInput{
 		Bucket:      aws.String(w.storage.config.Bucket),
 		Key:         aws.String(w.objectKey),
-		Body:        w.tempFile,
+		Body:        body,
 		ContentType: aws.String("application/octet-stream"),
 	})
 

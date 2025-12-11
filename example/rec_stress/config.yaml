@@ -1,0 +1,480 @@
+# rec_stress config
+server: http://172.16.12.52:7080
+
+# Default record settings
+record:
+  filePath: record/mp4/stress
+  fragment: 100s
+  duration: 100s
+
+# S3 storage used for verification (must be reachable by this program)
+  
+s3:
+  region: "us-east-1"                   # AWS区域
+  endpoint: "storage-dev.xiding.tech"          # S3服务端点
+  accessKeyID: "xidinguser"     # 访问密钥ID
+  secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+  bucket: "vidu-media-bucket"            # 存储桶名称
+  pathPrefix: ""     # 文件路径前缀
+  forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+  useSSL: true                          # 是否使用SSL
+  timeout: "30s"                        # 上传超时时间
+
+# A list of sources to test. Each can override defaults.
+sources:
+  - url: rtsp://172.16.12.182/live/1A
+    stream: live/1A
+    record:
+      filePath: record/mp4/live/1A
+  - url: rtsp://172.16.12.182/live/1B
+    stream: live/1B
+    record:
+      filePath: record/mp4/live/1B
+  - url: rtsp://172.16.12.182/live/1C
+    stream: live/1C
+    record:
+      filePath: record/mp4/live/1C
+  - url: rtsp://172.16.12.182/live/2A
+    stream: live/2A
+    record:
+      filePath: record/mp4/live/2A
+  - url: rtsp://172.16.12.182/live/2B
+    stream: live/2B
+    record:
+      filePath: record/mp4/live/2B
+  - url: rtsp://172.16.12.182/live/2C
+    stream: live/2C
+    record:
+      filePath: record/mp4/live/2C
+  - url: rtsp://172.16.12.182/live/3A
+    stream: live/3A
+    record:
+      filePath: record/mp4/live/3A
+  - url: rtsp://172.16.12.182/live/3B
+    stream: live/3B
+    record:
+      filePath: record/mp4/live/3B
+  - url: rtsp://172.16.12.182/live/3C
+    stream: live/3C
+    record:
+      filePath: record/mp4/live/3C
+  - url: rtsp://172.16.12.182/live/4A
+    stream: live/4A
+    record:
+      filePath: record/mp4/live/4A
+  - url: rtsp://172.16.12.182/live/4B
+    stream: live/4B
+    record:
+      filePath: record/mp4/live/4B
+  - url: rtsp://172.16.12.182/live/4C
+    stream: live/4C
+    record:
+      filePath: record/mp4/live/4C
+  - url: rtsp://172.16.12.182/live/5A
+    stream: live/5A
+    record:
+      filePath: record/mp4/live/5A
+  - url: rtsp://172.16.12.182/live/5B
+    stream: live/5B
+    record:
+      filePath: record/mp4/live/5B
+  - url: rtsp://172.16.12.182/live/5C
+    stream: live/5C
+    record:
+      filePath: record/mp4/live/5C
+  - url: rtsp://172.16.12.182/live/6A
+    stream: live/6A
+    record:
+      filePath: record/mp4/live/6A
+  - url: rtsp://172.16.12.182/live/6B
+    stream: live/6B
+    record:
+      filePath: record/mp4/live/6B
+  - url: rtsp://172.16.12.182/live/6C
+    stream: live/6C
+    record:
+      filePath: record/mp4/live/6C
+  - url: rtsp://172.16.12.182/live/7A
+    stream: live/7A
+    record:
+      filePath: record/mp4/live/7A
+  - url: rtsp://172.16.12.182/live/7B
+    stream: live/7B
+    record:
+      filePath: record/mp4/live/7B
+  - url: rtsp://172.16.12.182/live/7C
+    stream: live/7C
+    record:
+      filePath: record/mp4/live/7C
+  - url: rtsp://172.16.12.182/live/8A
+    stream: live/8A
+    record:
+      filePath: record/mp4/live/8A
+  - url: rtsp://172.16.12.182/live/8B
+    stream: live/8B
+    record:
+      filePath: record/mp4/live/8B
+  - url: rtsp://172.16.12.182/live/8C
+    stream: live/8C
+    record:
+      filePath: record/mp4/live/8C
+  - url: rtsp://172.16.12.182/live/9A
+    stream: live/9A
+    record:
+      filePath: record/mp4/live/9A
+  - url: rtsp://172.16.12.182/live/9B
+    stream: live/9B
+    record:
+      filePath: record/mp4/live/9B
+  - url: rtsp://172.16.12.182/live/9C
+    stream: live/9C
+    record:
+      filePath: record/mp4/live/9C
+  - url: rtsp://172.16.12.182/live/10A
+    stream: live/10A
+    record:
+      filePath: record/mp4/live/10A
+  - url: rtsp://172.16.12.182/live/10B
+    stream: live/10B
+    record:
+      filePath: record/mp4/live/10B
+  - url: rtsp://172.16.12.182/live/10C
+    stream: live/10C
+    record:
+      filePath: record/mp4/live/10C
+  - url: rtsp://172.16.12.182/live/11A
+    stream: live/11A
+    record:
+      filePath: record/mp4/live/11A
+  - url: rtsp://172.16.12.182/live/11B
+    stream: live/11B
+    record:
+      filePath: record/mp4/live/11B
+  - url: rtsp://172.16.12.182/live/11C
+    stream: live/11C
+    record:
+      filePath: record/mp4/live/11C
+  - url: rtsp://172.16.12.182/live/12A
+    stream: live/12A
+    record:
+      filePath: record/mp4/live/12A
+  - url: rtsp://172.16.12.182/live/12B
+    stream: live/12B
+    record:
+      filePath: record/mp4/live/12B
+  - url: rtsp://172.16.12.182/live/12C
+    stream: live/12C
+    record:
+      filePath: record/mp4/live/12C
+  - url: rtsp://172.16.12.182/live/13A
+    stream: live/13A
+    record:
+      filePath: record/mp4/live/13A
+  # - url: rtsp://172.16.12.182/live/13B
+  #   stream: live/13B
+  #   record:
+  #     filePath: record/mp4/live/13B
+  # - url: rtsp://172.16.12.182/live/13C
+  #   stream: live/13C
+  #   record:
+  #     filePath: record/mp4/live/13C
+  # - url: rtsp://172.16.12.182/live/14A
+  #   stream: live/14A
+  #   record:
+  #     filePath: record/mp4/live/14A
+  # - url: rtsp://172.16.12.182/live/14B
+  #   stream: live/14B
+  #   record:
+  #     filePath: record/mp4/live/14B
+  # - url: rtsp://172.16.12.182/live/14C
+  #   stream: live/14C
+  #   record:
+  #     filePath: record/mp4/live/14C
+  # - url: rtsp://172.16.12.182/live/15A
+  #   stream: live/15A
+  #   record:
+  #     filePath: record/mp4/live/15A
+  # - url: rtsp://172.16.12.182/live/15B
+  #   stream: live/15B
+  #   record:
+  #     filePath: record/mp4/live/15B
+  # - url: rtsp://172.16.12.182/live/15C
+  #   stream: live/15C
+  #   record:
+  #     filePath: record/mp4/live/15C
+  # - url: rtsp://172.16.12.182/live/16A
+  #   stream: live/16A
+  #   record:
+  #     filePath: record/mp4/live/16A
+  # - url: rtsp://172.16.12.182/live/16B
+  #   stream: live/16B
+  #   record:
+  #     filePath: record/mp4/live/16B
+  # - url: rtsp://172.16.12.182/live/16C
+  #   stream: live/16C
+  #   record:
+  #     filePath: record/mp4/live/16C
+  # - url: rtsp://172.16.12.182/live/17A
+  #   stream: live/17A
+  #   record:
+  #     filePath: record/mp4/live/17A
+  # - url: rtsp://172.16.12.182/live/17B
+  #   stream: live/17B
+  #   record:
+  #     filePath: record/mp4/live/17B
+  # - url: rtsp://172.16.12.182/live/17C
+  #   stream: live/17C
+  #   record:
+  #     filePath: record/mp4/live/17C
+  # - url: rtsp://172.16.12.182/live/18A
+  #   stream: live/18A
+  #   record:
+  #     filePath: record/mp4/live/18A
+  # - url: rtsp://172.16.12.182/live/18B
+  #   stream: live/18B
+  #   record:
+  #     filePath: record/mp4/live/18B
+  # - url: rtsp://172.16.12.182/live/18C
+  #   stream: live/18C
+  #   record:
+  #     filePath: record/mp4/live/18C
+  # - url: rtsp://172.16.12.182/live/19A
+  #   stream: live/19A
+  #   record:
+  #     filePath: record/mp4/live/19A
+  # - url: rtsp://172.16.12.182/live/19B
+  #   stream: live/19B
+  #   record:
+  #     filePath: record/mp4/live/19B
+  # - url: rtsp://172.16.12.182/live/19C
+  #   stream: live/19C
+  #   record:
+  #     filePath: record/mp4/live/19C
+  # - url: rtsp://172.16.12.182/live/20A
+  #   stream: live/20A
+  #   record:
+  #     filePath: record/mp4/live/20A
+  # - url: rtsp://172.16.12.182/live/20B
+  #   stream: live/20B
+  #   record:
+  #     filePath: record/mp4/live/20B
+  # - url: rtsp://172.16.12.182/live/20C
+  #   stream: live/20C
+  #   record:
+  #     filePath: record/mp4/live/20C
+  - url: rtsp://172.16.12.82/live/21A
+    stream: live/21A
+    record:
+      filePath: record/mp4/live/21A
+  - url: rtsp://172.16.12.82/live/21B
+    stream: live/21B
+    record:
+      filePath: record/mp4/live/21B
+  - url: rtsp://172.16.12.82/live/21C
+    stream: live/21C
+    record:
+      filePath: record/mp4/live/21C
+  - url: rtsp://172.16.12.82/live/22A
+    stream: live/22A
+    record:
+      filePath: record/mp4/live/22A
+  - url: rtsp://172.16.12.82/live/22B
+    stream: live/22B
+    record:
+      filePath: record/mp4/live/22B
+  - url: rtsp://172.16.12.82/live/22C
+    stream: live/22C
+    record:
+      filePath: record/mp4/live/22C
+  - url: rtsp://172.16.12.82/live/23A
+    stream: live/23A
+    record:
+      filePath: record/mp4/live/23A
+  - url: rtsp://172.16.12.82/live/23B
+    stream: live/23B
+    record:
+      filePath: record/mp4/live/23B
+  - url: rtsp://172.16.12.82/live/23C
+    stream: live/23C
+    record:
+      filePath: record/mp4/live/23C
+  - url: rtsp://172.16.12.82/live/24A
+    stream: live/24A
+    record:
+      filePath: record/mp4/live/24A
+  - url: rtsp://172.16.12.82/live/24B
+    stream: live/24B
+    record:
+      filePath: record/mp4/live/24B
+  - url: rtsp://172.16.12.82/live/24C
+    stream: live/24C
+    record:
+      filePath: record/mp4/live/24C
+  - url: rtsp://172.16.12.82/live/25A
+    stream: live/25A
+    record:
+      filePath: record/mp4/live/25A
+  - url: rtsp://172.16.12.82/live/25B
+    stream: live/25B
+    record:
+      filePath: record/mp4/live/25B
+  - url: rtsp://172.16.12.82/live/25C
+    stream: live/25C
+    record:
+      filePath: record/mp4/live/25C
+  - url: rtsp://172.16.12.82/live/26A
+    stream: live/26A
+    record:
+      filePath: record/mp4/live/26A
+  - url: rtsp://172.16.12.82/live/26B
+    stream: live/26B
+    record:
+      filePath: record/mp4/live/26B
+  - url: rtsp://172.16.12.82/live/26C
+    stream: live/26C
+    record:
+      filePath: record/mp4/live/26C
+  - url: rtsp://172.16.12.82/live/27A
+    stream: live/27A
+    record:
+      filePath: record/mp4/live/27A
+  - url: rtsp://172.16.12.82/live/27B
+    stream: live/27B
+    record:
+      filePath: record/mp4/live/27B
+  - url: rtsp://172.16.12.82/live/27C
+    stream: live/27C
+    record:
+      filePath: record/mp4/live/27C
+  # - url: rtsp://172.16.12.82/live/28A
+  #   stream: live/28A
+  #   record:
+  #     filePath: record/mp4/live/28A
+  # - url: rtsp://172.16.12.82/live/28B
+  #   stream: live/28B
+  #   record:
+  #     filePath: record/mp4/live/28B
+  # - url: rtsp://172.16.12.82/live/28C
+  #   stream: live/28C
+  #   record:
+  #     filePath: record/mp4/live/28C
+  # - url: rtsp://172.16.12.82/live/29A
+  #   stream: live/29A
+  #   record:
+  #     filePath: record/mp4/live/29A
+  # - url: rtsp://172.16.12.82/live/29B
+  #   stream: live/29B
+  #   record:
+  #     filePath: record/mp4/live/29B
+  # - url: rtsp://172.16.12.82/live/29C
+  #   stream: live/29C
+  #   record:
+  #     filePath: record/mp4/live/29C
+  # - url: rtsp://172.16.12.82/live/30A
+  #   stream: live/30A
+  #   record:
+  #     filePath: record/mp4/live/30A
+  # - url: rtsp://172.16.12.82/live/30B
+  #   stream: live/30B
+  #   record:
+  #     filePath: record/mp4/live/30B
+  # - url: rtsp://172.16.12.82/live/30C
+  #   stream: live/30C
+  #   record:
+  #     filePath: record/mp4/live/30C
+  # - url: rtsp://172.16.12.82/live/31A
+  #   stream: live/31A
+  #   record:
+  #     filePath: record/mp4/live/31A
+  # - url: rtsp://172.16.12.82/live/31B
+  #   stream: live/31B
+  #   record:
+  #     filePath: record/mp4/live/31B
+  # - url: rtsp://172.16.12.82/live/31C
+  #   stream: live/31C
+  #   record:
+  #     filePath: record/mp4/live/31C
+  # - url: rtsp://172.16.12.82/live/32A
+  #   stream: live/32A
+  #   record:
+  #     filePath: record/mp4/live/32A
+  # - url: rtsp://172.16.12.82/live/32B
+  #   stream: live/32B
+  #   record:
+  #     filePath: record/mp4/live/32B
+  # - url: rtsp://172.16.12.82/live/32C
+  #   stream: live/32C
+  #   record:
+  #     filePath: record/mp4/live/32C
+  # - url: rtsp://172.16.12.82/live/33A
+  #   stream: live/33A
+  #   record:
+  #     filePath: record/mp4/live/33A
+  # - url: rtsp://172.16.12.82/live/33B
+  #   stream: live/33B
+  #   record:
+  #     filePath: record/mp4/live/33B
+  # - url: rtsp://172.16.12.82/live/33C
+  #   stream: live/33C
+  #   record:
+  #     filePath: record/mp4/live/33C
+  # - url: rtsp://172.16.12.82/live/34A
+  #   stream: live/34A
+  #   record:
+  #     filePath: record/mp4/live/34A
+  # - url: rtsp://172.16.12.82/live/34B
+  #   stream: live/34B
+  #   record:
+  #     filePath: record/mp4/live/34B
+  # - url: rtsp://172.16.12.82/live/34C
+  #   stream: live/34C
+  #   record:
+  #     filePath: record/mp4/live/34C
+  # - url: rtsp://172.16.12.82/live/35A
+  #   stream: live/35A
+  #   record:
+  #     filePath: record/mp4/live/35A
+  # - url: rtsp://172.16.12.82/live/35B
+  #   stream: live/35B
+  #   record:
+  #     filePath: record/mp4/live/35B
+  # - url: rtsp://172.16.12.82/live/35C
+  #   stream: live/35C
+  #   record:
+  #     filePath: record/mp4/live/35C
+  # - url: rtsp://172.16.12.82/live/36A
+  #   stream: live/36A
+  #   record:
+  #     filePath: record/mp4/live/36A
+  # - url: rtsp://172.16.12.82/live/36B
+  #   stream: live/36B
+  #   record:
+  #     filePath: record/mp4/live/36B
+  # - url: rtsp://172.16.12.82/live/36C
+  #   stream: live/36C
+  #   record:
+  #     filePath: record/mp4/live/36C
+  # - url: rtsp://172.16.12.82/live/37A
+  #   stream: live/37A
+  #   record:
+  #     filePath: record/mp4/live/37A
+  # - url: rtsp://172.16.12.82/live/37B
+  #   stream: live/37B
+  #   record:
+  #     filePath: record/mp4/live/37B
+  # - url: rtsp://172.16.12.82/live/37C
+  #   stream: live/37C
+  #   record:
+  #     filePath: record/mp4/live/37C
+  # - url: rtsp://172.16.12.82/live/38A
+  #   stream: live/38A
+  #   record:
+  #     filePath: record/mp4/live/38A
+  # - url: rtsp://172.16.12.82/live/38B
+  #   stream: live/38B
+  #   record:
+  #     filePath: record/mp4/live/38B
+  # - url: rtsp://172.16.12.82/live/38C
+  #   stream: live/38C
+  #   record:
+  #     filePath: record/mp4/live/38C

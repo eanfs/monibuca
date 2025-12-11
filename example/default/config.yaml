@@ -19,7 +19,7 @@ global:
       pathPrefix: "recordings"     # 文件路径前缀
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
-      timeout: "30s"                        # 上传超时时间
+      timeout: "0s"                        # 上传超时时间
   # storage:
   #   s3:
   #     endpoint: "s3.amazonaws.com"          # S3服务端点
