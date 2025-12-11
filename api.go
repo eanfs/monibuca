@@ -767,6 +767,176 @@ func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb
 	return
 }
 
+func (s *Server) GetFormily(_ context.Context, req *pb.GetConfigRequest) (res *pb.GetConfigResponse, err error) {
+	res = &pb.GetConfigResponse{
+		Data: &pb.ConfigData{},
+	}
+	var conf *config.Config
+	if req.Name == "global" || req.Name == "" {
+		conf = &s.Config
+	} else {
+		p, ok := s.Plugins.Get(req.Name)
+		if !ok {
+			err = pkg.ErrNotFound
+			return
+		}
+		conf = &p.Config
+	}
+	formily := conf.GetFormily()
+	var mm []byte
+	mm, err = json.Marshal(formily)
+	if err != nil {
+		return
+	}
+	res.Data.Merged = string(mm)
+	return
+}
+
+// ModifyConfig 保存配置
+// 1. 备份旧配置文件
+// 2. 只保存用户输入的值（非默认值、非全局配置值）
+// 3. 重新生成配置文件
+func (s *Server) ModifyConfig(_ context.Context, req *pb.ModifyConfigRequest) (res *pb.SuccessResponse, err error) {
+	res = &pb.SuccessResponse{}
+	
+	// 解析前端传来的配置数据（YAML 格式）
+	var userConfig map[string]any
+	if err = yaml.Unmarshal([]byte(req.Yaml), &userConfig); err != nil {
+		return nil, err
+	}
+	
+	// 获取对应的配置对象
+	var conf *config.Config
+	if req.Name == "global" || req.Name == "" {
+		conf = &s.Config
+	} else {
+		p, ok := s.Plugins.Get(req.Name)
+		if !ok {
+			err = pkg.ErrNotFound
+			return
+		}
+		conf = &p.Config
+	}
+	
+	// 过滤出用户输入的值（非默认值、非全局配置值）
+	filteredConfig := filterUserInputConfig(conf, userConfig)
+	
+	// 备份旧配置文件
+	if s.configFilePath != "" && s.configFileContent != nil {
+		backupPath := s.configFilePath + ".bak." + time.Now().Format("20060102150405")
+		if err = os.WriteFile(backupPath, s.configFileContent, 0644); err != nil {
+			s.Error("备份配置文件失败", "error", err)
+			// 继续执行，不中断
+		}
+	}
+	
+	// 读取现有配置文件内容
+	var existingConfig map[string]any
+	if s.configFileContent != nil {
+		yaml.Unmarshal(s.configFileContent, &existingConfig)
+	}
+	if existingConfig == nil {
+		existingConfig = make(map[string]any)
+	}
+	
+	// 更新对应的配置段（使用小写）
+	configKey := strings.ToLower(req.Name)
+	if configKey == "" {
+		configKey = "global"
+	}
+	
+	if len(filteredConfig) > 0 {
+		existingConfig[configKey] = filteredConfig
+	} else {
+		// 如果没有用户输入的值，删除该配置段
+		delete(existingConfig, configKey)
+	}
+	
+	// 清理 null 值
+	cleanNullValues(existingConfig)
+	
+	// 生成新的配置文件内容
+	var newContent []byte
+	newContent, err = yaml.Marshal(existingConfig)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 写入配置文件
+	if s.configFilePath != "" {
+		if err = os.WriteFile(s.configFilePath, newContent, 0644); err != nil {
+			return nil, err
+		}
+		s.configFileContent = newContent
+	}
+	
+	// 应用配置修改
+	conf.ParseModifyFile(filteredConfig)
+	
+	return
+}
+
+// filterUserInputConfig 过滤出用户输入的配置值
+// 只保留用户实际修改的值，排除默认值和全局配置值
+func filterUserInputConfig(conf *config.Config, userConfig map[string]any) map[string]any {
+	result := make(map[string]any)
+	
+	for key, value := range userConfig {
+		prop := conf.Get(key)
+		if prop == nil {
+			continue
+		}
+		
+		// 如果是嵌套配置
+		if nestedConfig, ok := value.(map[string]any); ok {
+			if len(prop.GetProps()) > 0 {
+				// 递归过滤嵌套配置
+				filtered := filterUserInputConfig(prop, nestedConfig)
+				if len(filtered) > 0 {
+					result[key] = filtered
+				}
+			} else {
+				result[key] = value
+			}
+			continue
+		}
+		
+		// 检查值是否与默认值相同
+		if prop.IsDefaultValue(value) {
+			continue
+		}
+		
+		// 检查值是否与全局配置值相同
+		if prop.IsGlobalValue(value) {
+			continue
+		}
+		
+		// 用户输入的值，保留
+		result[key] = value
+	}
+	
+	return result
+}
+
+// cleanNullValues 递归清理 map 中的 null 值
+// 删除值为 nil 的键，并递归处理嵌套的 map
+func cleanNullValues(m map[string]any) {
+	for key, value := range m {
+		if value == nil {
+			delete(m, key)
+			continue
+		}
+		// 递归处理嵌套的 map
+		if nested, ok := value.(map[string]any); ok {
+			cleanNullValues(nested)
+			// 如果清理后 map 为空，也删除该键
+			if len(nested) == 0 {
+				delete(m, key)
+			}
+		}
+	}
+}
+
 func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB

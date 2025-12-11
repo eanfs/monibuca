@@ -47,6 +47,7 @@ const (
 	Api_UpdateConfigFile_FullMethodName        = "/global.api/UpdateConfigFile"
 	Api_GetConfig_FullMethodName               = "/global.api/GetConfig"
 	Api_GetFormily_FullMethodName              = "/global.api/GetFormily"
+	Api_ModifyConfig_FullMethodName            = "/global.api/ModifyConfig"
 	Api_GetPullProxyList_FullMethodName        = "/global.api/GetPullProxyList"
 	Api_AddPullProxy_FullMethodName            = "/global.api/AddPullProxy"
 	Api_RemovePullProxy_FullMethodName         = "/global.api/RemovePullProxy"
@@ -97,6 +98,7 @@ type ApiClient interface {
 	UpdateConfigFile(ctx context.Context, in *UpdateConfigFileRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	GetFormily(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
+	ModifyConfig(ctx context.Context, in *ModifyConfigRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetPullProxyList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PullProxyListResponse, error)
 	AddPullProxy(ctx context.Context, in *PullProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
 	RemovePullProxy(ctx context.Context, in *RequestWithId, opts ...grpc.CallOption) (*SuccessResponse, error)
@@ -394,6 +396,16 @@ func (c *apiClient) GetFormily(ctx context.Context, in *GetConfigRequest, opts .
 	return out, nil
 }
 
+func (c *apiClient) ModifyConfig(ctx context.Context, in *ModifyConfigRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuccessResponse)
+	err := c.cc.Invoke(ctx, Api_ModifyConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *apiClient) GetPullProxyList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PullProxyListResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PullProxyListResponse)
@@ -595,6 +607,7 @@ type ApiServer interface {
 	UpdateConfigFile(context.Context, *UpdateConfigFileRequest) (*SuccessResponse, error)
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	GetFormily(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
+	ModifyConfig(context.Context, *ModifyConfigRequest) (*SuccessResponse, error)
 	GetPullProxyList(context.Context, *emptypb.Empty) (*PullProxyListResponse, error)
 	AddPullProxy(context.Context, *PullProxyInfo) (*SuccessResponse, error)
 	RemovePullProxy(context.Context, *RequestWithId) (*SuccessResponse, error)
@@ -702,6 +715,9 @@ func (UnimplementedApiServer) GetConfig(context.Context, *GetConfigRequest) (*Ge
 }
 func (UnimplementedApiServer) GetFormily(context.Context, *GetConfigRequest) (*GetConfigResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFormily not implemented")
+}
+func (UnimplementedApiServer) ModifyConfig(context.Context, *ModifyConfigRequest) (*SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ModifyConfig not implemented")
 }
 func (UnimplementedApiServer) GetPullProxyList(context.Context, *emptypb.Empty) (*PullProxyListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPullProxyList not implemented")
@@ -1261,6 +1277,24 @@ func _Api_GetFormily_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_ModifyConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModifyConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).ModifyConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_ModifyConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).ModifyConfig(ctx, req.(*ModifyConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Api_GetPullProxyList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -1681,6 +1715,10 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFormily",
 			Handler:    _Api_GetFormily_Handler,
+		},
+		{
+			MethodName: "ModifyConfig",
+			Handler:    _Api_ModifyConfig_Handler,
 		},
 		{
 			MethodName: "GetPullProxyList",

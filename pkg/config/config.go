@@ -196,6 +196,55 @@ func (config *Config) GetValue() any {
 	return config.Ptr.Interface()
 }
 
+// GetProps 返回子配置列表
+func (config *Config) GetProps() []*Config {
+	return config.props
+}
+
+// IsDefaultValue 检查值是否等于默认值
+// 对于复杂类型（切片、map、结构体），空值视为默认值
+func (config *Config) IsDefaultValue(value any) bool {
+	// 复杂类型的空值视为默认值
+	if isEmptyValue(value) {
+		return true
+	}
+	if config.Default == nil {
+		return false
+	}
+	return equal(config.Default, value)
+}
+
+// IsGlobalValue 检查值是否等于全局配置值
+func (config *Config) IsGlobalValue(value any) bool {
+	if config.Global == nil {
+		return false
+	}
+	return equal(config.Global.GetValue(), value)
+}
+
+// isEmptyValue 检查值是否为空值（针对复杂类型）
+func isEmptyValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		return rv.Len() == 0
+	case reflect.Map:
+		return rv.Len() == 0
+	case reflect.Struct:
+		// 结构体：检查是否所有字段都是零值
+		if rv.Type() == regexpType {
+			return rv.Interface().(Regexp).Regexp == nil || rv.Interface().(Regexp).String() == ""
+		}
+		return rv.IsZero()
+	case reflect.Ptr:
+		return rv.IsNil()
+	}
+	return false
+}
+
 // Parse step 1: Read default values from config struct
 func (config *Config) Parse(s any, prefix ...string) {
 	var t reflect.Type
@@ -237,8 +286,8 @@ func (config *Config) Parse(s any, prefix ...string) {
 				continue
 			}
 			name := strings.ToLower(ft.Name)
-			if name == "plugin" {
-				continue // Skip plugin field
+			if name == "plugin" || strings.HasPrefix(name, "unimplemented") {
+				continue // Skip plugin field and unimplemented fields
 			}
 			if tag := ft.Tag.Get("yaml"); tag != "" {
 				if tag == "-" {
