@@ -7,7 +7,9 @@ global:
     listenaddr: :50054
   quic:
     listenaddr: :44945  # 客户端1QUIC服务端口
-
+  db:
+    type: sqlite
+    dsn: ./cascadeclient1.db
 cascadeserver:
   enable: false
   quic:
@@ -17,7 +19,7 @@ cascadeserver:
 cascadeclient:
   enable: true
   server: 127.0.0.1:44944  # 上级服务器地址
-  secret: client-secret-123  # 连接密钥
+  secret: client-secret-8081  # 连接密钥
   onsub:
     pull:
       .*: m7s://$0
@@ -43,7 +45,3 @@ gb28181:
     listenaddr:
           - udp::5060  
 
-# 数据库配置
-database:
-  type: sqlite
-  dsn: ./cascadeclient1.db

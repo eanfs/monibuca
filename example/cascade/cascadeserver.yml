@@ -6,15 +6,16 @@ global:
     listenaddrtls: :8443
   tcp:
     listenaddr: :50050
-
+# 数据库配置
+  db:
+    type: sqlite
+    dsn: ./cascadeserver.db
 # 级联服务器插件配置
 cascadeserver:
   automigrate: true    # 自动数据库迁移
   autoregister: true   # 允许下级自动注册
   quic:
     listenaddr: :44944
-  relayapi:
-    secret: "server-secret-123"  # 级联API密钥
 
 rtsp:
   enable: true
