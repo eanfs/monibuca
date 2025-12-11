@@ -254,8 +254,7 @@ type S3File struct {
 	readOnly  bool     // 只读模式，不上传到S3
 
 	// 状态标记，避免重复上传
-	dirty    bool // 有未上传的数据
-	uploaded bool // 最近一次上传已完成，无新写入
+	dirty bool // 有未上传的数据
 
 	mu sync.Mutex // 保护并发访问
 }
@@ -283,7 +282,6 @@ func (w *S3File) Write(p []byte) (n int, err error) {
 	}
 	// 标记脏数据，表示需要上传
 	w.dirty = true
-	w.uploaded = false
 
 	// fmt.Printf("S3File.Write: wrote %d bytes\n", n)
 	return n, nil
@@ -330,7 +328,6 @@ func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 	// 标记脏数据
 	w.dirty = true
-	w.uploaded = false
 	return n, nil
 }
 
@@ -399,7 +396,6 @@ func (w *S3File) syncNoLock() error {
 	}
 	// 上传成功，重置状态
 	w.dirty = false
-	w.uploaded = true
 	fmt.Printf("S3File.Sync: upload completed successfully\n")
 	return nil
 }
