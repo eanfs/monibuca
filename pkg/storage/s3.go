@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -250,6 +251,8 @@ type S3File struct {
 	tempFile  *os.File // 本地临时文件，用于支持随机访问
 	filePath  string   // 临时文件路径
 	readOnly  bool     // 只读模式，不上传到S3
+
+	mu sync.Mutex // 保护并发访问
 }
 
 func (w *S3File) Name() string {
@@ -257,6 +260,9 @@ func (w *S3File) Name() string {
 }
 
 func (w *S3File) Write(p []byte) (n int, err error) {
+	// 并发安全写入
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建
 	if w.tempFile == nil {
 		if err = w.createTempFile(); err != nil {
@@ -269,10 +275,21 @@ func (w *S3File) Write(p []byte) (n int, err error) {
 }
 
 func (w *S3File) Read(p []byte) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	// 并发安全读取
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// 如果还没有创建缓存/临时文件
 	if w.tempFile == nil {
-		if err = w.downloadToTemp(); err != nil {
-			return 0, err
+		if w.readOnly {
+			// 只读模式，从远端下载
+			if err = w.downloadToTemp(); err != nil {
+				return 0, err
+			}
+		} else {
+			// 可写模式，创建空的临时文件（允许随后写入/读取）
+			if err = w.createTempFile(); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -281,6 +298,9 @@ func (w *S3File) Read(p []byte) (n int, err error) {
 }
 
 func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
+	// 并发安全写入
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建
 	if w.tempFile == nil {
 		if err = w.createTempFile(); err != nil {
@@ -293,6 +313,9 @@ func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
 }
 
 func (w *S3File) ReadAt(p []byte, off int64) (n int, err error) {
+	// 并发安全读取
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// 如果还没有创建缓存文件，先下载到本地
 	if w.tempFile == nil {
 		if err = w.downloadToTemp(); err != nil {
@@ -313,6 +336,21 @@ func (w *S3File) Sync() error {
 		return nil
 	}
 
+	// 并发安全Sync，避免与 Write/Close 竞争
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.syncNoLock()
+}
+
+// syncNoLock assumes caller holds w.mu
+func (w *S3File) syncNoLock() error {
+	// 只读模式不上传
+	if w.readOnly {
+		if w.tempFile != nil {
+			return w.tempFile.Sync()
+		}
+		return nil
+	}
 	// 如果使用临时文件，先同步到磁盘
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
@@ -330,10 +368,19 @@ func (w *S3File) Sync() error {
 }
 
 func (w *S3File) Seek(offset int64, whence int) (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建或下载
 	if w.tempFile == nil {
-		if err := w.downloadToTemp(); err != nil {
-			return 0, err
+		// 只读模式从远端下载，否则创建空临时文件
+		if w.readOnly {
+			if err := w.downloadToTemp(); err != nil {
+				return 0, err
+			}
+		} else {
+			if err := w.createTempFile(); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -342,15 +389,20 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (w *S3File) Close() error {
-	if err := w.Sync(); err != nil {
+	// 并发安全Close，确保不与其他操作竞争
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.syncNoLock(); err != nil {
 		return err
 	}
 	if w.tempFile != nil {
 		w.tempFile.Close()
+		w.tempFile = nil
 	}
 	// 清理临时文件
 	if w.filePath != "" {
 		os.Remove(w.filePath)
+		w.filePath = ""
 	}
 	return nil
 }
@@ -385,7 +437,14 @@ func (w *S3File) uploadTempFile() (err error) {
 		w.storage.config.Bucket, w.objectKey, stat.Size())
 
 	// 上传到S3
-	_, err = w.storage.uploader.UploadWithContext(w.ctx, &s3manager.UploadInput{
+	// 使用独立的上传上下文，避免因调用方上下文取消导致上传中断
+	uploadCtx := context.Background()
+	if w.storage.config.Timeout > 0 {
+		var cancel context.CancelFunc
+		uploadCtx, cancel = context.WithTimeout(uploadCtx, w.storage.config.Timeout)
+		defer cancel()
+	}
+	_, err = w.storage.uploader.UploadWithContext(uploadCtx, &s3manager.UploadInput{
 		Bucket:      aws.String(w.storage.config.Bucket),
 		Key:         aws.String(w.objectKey),
 		Body:        w.tempFile,
@@ -403,6 +462,10 @@ func (w *S3File) uploadTempFile() (err error) {
 
 // downloadToTemp 下载S3对象到本地临时文件
 func (w *S3File) downloadToTemp() error {
+	// 防止重复创建
+	if w.tempFile != nil {
+		return nil
+	}
 	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "s3reader_*.tmp")
 	if err != nil {
