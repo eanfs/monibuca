@@ -676,6 +676,8 @@ func (config *Config) schema(index int) (r any) {
 						Index:       index,
 						ComplexType: "map",
 						FieldCount:  valueFieldCount,
+						IsDefault:   isDefault,
+						ValueSource: valueSource,
 						ComponentProps: map[string]any{
 							"accordion": false,
 						},
@@ -784,8 +786,10 @@ func (config *Config) schema(index int) (r any) {
 							"x-component": "ArrayTable.Addition",
 						},
 					},
-					Index: index,
-					Title: config.name,
+					Index:       index,
+					Title:       config.name,
+					IsDefault:   isDefault,
+					ValueSource: valueSource,
 					Items: &Object{
 						Type: "object",
 						Properties: map[string]any{
