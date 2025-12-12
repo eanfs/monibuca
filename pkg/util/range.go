@@ -2,9 +2,11 @@ package util
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Range[T ~int | ~int8 | ~int16 | ~int32 | ~int64 |
@@ -20,6 +22,10 @@ func (r *Range[T]) Within(x T) bool {
 
 func (r *Range[T]) Valid() bool {
 	return r.Size() >= 0
+}
+
+func (r *Range[T]) String() string {
+	return fmt.Sprintf("%v-%v", r[0], r[1])
 }
 
 func (r *Range[T]) Resolve(s string) error {
@@ -51,4 +57,13 @@ func (r *Range[T]) Resolve(s string) error {
 
 func (r *Range[T]) UnmarshalYAML(value *yaml.Node) error {
 	return r.Resolve(value.Value)
+}
+
+// RangeToString 将 Range 类型的 reflect.Value 转换为字符串格式 "min-max"
+// 用于 formily schema 生成，因为泛型类型无法直接类型断言
+func RangeToString(v reflect.Value) string {
+	if v.Kind() == reflect.Array && v.Len() == 2 {
+		return fmt.Sprintf("%v-%v", v.Index(0).Interface(), v.Index(1).Interface())
+	}
+	return ""
 }

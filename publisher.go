@@ -485,11 +485,11 @@ func (p *Publisher) GetVideoTrack(dataType reflect.Type) (t *AVTrack) {
 }
 
 func (p *Publisher) HasAudioTrack() bool {
-	return p.AudioTrack.Length > 0
+	return p.PubAudio && p.AudioTrack.Length > 0
 }
 
 func (p *Publisher) HasVideoTrack() bool {
-	return p.VideoTrack.Length > 0
+	return p.PubVideo && p.VideoTrack.Length > 0
 }
 
 func (p *Publisher) Dispose() {

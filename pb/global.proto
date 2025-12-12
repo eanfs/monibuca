@@ -152,6 +152,12 @@ service api {
       get: "/api/config/formily/{name}"
     };
   }
+  rpc ModifyConfig (ModifyConfigRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/config/modify"
+      body: "*"
+    };
+  }
 
   rpc GetPullProxyList (google.protobuf.Empty) returns (PullProxyListResponse) {
     option (google.api.http) = {
