@@ -26,3 +26,5 @@ shutdown.sh
 !example/test/test.db
 shutdown.bat3rd/ffmpeg6
 /.spec-workflow
+rec_stress
+example/rec_stress/rec_stress

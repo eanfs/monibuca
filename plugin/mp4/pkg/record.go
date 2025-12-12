@@ -39,11 +39,9 @@ func (task *writeTrailerTask) Start() (err error) {
 	if err != nil {
 		task.Error("write trailer", "err", err)
 	}
-	if task.file != nil {
-		if errClose := task.file.Close(); errClose != nil {
-			return errClose
-		}
-	}
+	// 注意：不要在这里关闭文件！
+	// 文件需要在 Run() 方法中继续使用（Seek、Read、Write操作）
+	// 文件的关闭由 Run() 方法的 defer 处理
 	return
 }
 
@@ -167,7 +165,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	r.Debug("mp4 create file", "filePath", r.Event.FilePath)
+	r.Info("mp4 create file - recording started", "streamPath", r.Event.StreamPath, "filePath", r.Event.FilePath)
 
 	// 注意: 不要在这里关闭旧文件,因为它已经被传递给 writeTrailerTask
 	// writeTrailerTask 会负责关闭旧文件

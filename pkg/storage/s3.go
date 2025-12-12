@@ -5,10 +5,11 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -21,15 +22,18 @@ import (
 
 // S3StorageConfig S3存储配置
 type S3StorageConfig struct {
-	Endpoint        string        `desc:"S3服务端点"`
-	Region          string        `desc:"AWS区域" default:"us-east-1"`
-	AccessKeyID     string        `desc:"S3访问密钥ID"`
-	SecretAccessKey string        `desc:"S3秘密访问密钥"`
-	Bucket          string        `desc:"S3存储桶名称"`
-	PathPrefix      string        `desc:"文件路径前缀"`
-	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
-	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
-	Timeout         time.Duration `desc:"上传超时时间(0表示不超时)" default:"0s"`
+	Endpoint             string        `desc:"S3服务端点"`
+	Region               string        `desc:"AWS区域" default:"us-east-1"`
+	AccessKeyID          string        `desc:"S3访问密钥ID"`
+	SecretAccessKey      string        `desc:"S3秘密访问密钥"`
+	Bucket               string        `desc:"S3存储桶名称"`
+	PathPrefix           string        `desc:"文件路径前缀"`
+	ForcePathStyle       bool          `desc:"强制路径样式（MinIO需要）"`
+	UseSSL               bool          `desc:"是否使用SSL" default:"true"`
+	Timeout              time.Duration `desc:"上传超时时间" default:"30s"`
+	Concurrency          int           `desc:"单个文件上传时的并发分片数" default:"10"`
+	PartSize             int64         `desc:"分片大小(字节)" default:"10485760"` // 默认10MB
+	MaxConcurrentUploads int           `desc:"同时上传的最大文件数量" default:"8"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -55,6 +59,17 @@ type S3Storage struct {
 	s3Client   *s3.S3
 	uploader   *s3manager.Uploader
 	downloader *s3manager.Downloader
+	logger     *slog.Logger
+
+	// 并发控制
+	uploadSemaphore chan struct{} // 信号量，控制同时上传的文件数量
+
+	// 并发追踪
+	activeUploads  int32 // 当前活跃的上传数量
+	totalUploads   int32 // 总上传数量
+	successUploads int32 // 成功上传数量
+	failedUploads  int32 // 失败上传数量
+	uploadMutex    sync.Mutex
 }
 
 // NewS3Storage 创建S3存储实例
@@ -98,16 +113,40 @@ func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
 		return nil, fmt.Errorf("S3 connection test failed: %w", err)
 	}
 
+	// 创建 logger
+	logger := slog.Default().With("component", "S3Storage")
+
+	// 配置 Uploader 的并发参数
+	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		u.Concurrency = config.Concurrency
+		u.PartSize = config.PartSize
+		u.LeavePartsOnError = false // 上传失败时清理分片
+	})
+
+	// 创建信号量，控制同时上传的文件数量
+	uploadSemaphore := make(chan struct{}, config.MaxConcurrentUploads)
+
+	logger.Info("S3Storage initialized",
+		"bucket", config.Bucket,
+		"region", config.Region,
+		"endpoint", config.Endpoint,
+		"concurrency", config.Concurrency,
+		"partSize", config.PartSize,
+		"maxConcurrentUploads", config.MaxConcurrentUploads)
+
 	return &S3Storage{
-		config:     config,
-		s3Client:   s3Client,
-		uploader:   s3manager.NewUploader(sess),
-		downloader: s3manager.NewDownloader(sess),
+		config:          config,
+		s3Client:        s3Client,
+		uploader:        uploader,
+		downloader:      s3manager.NewDownloader(sess),
+		logger:          logger,
+		uploadSemaphore: uploadSemaphore,
 	}, nil
 }
 
 func (s *S3Storage) CreateFile(ctx context.Context, path string) (File, error) {
 	objectKey := s.getObjectKey(path)
+	s.logger.Debug("CreateFile called", "path", path, "objectKey", objectKey)
 	return &S3File{
 		storage:   s,
 		objectKey: objectKey,
@@ -118,6 +157,7 @@ func (s *S3Storage) CreateFile(ctx context.Context, path string) (File, error) {
 
 func (s *S3Storage) OpenFile(ctx context.Context, path string) (File, error) {
 	objectKey := s.getObjectKey(path)
+	s.logger.Debug("OpenFile called", "path", path, "objectKey", objectKey)
 	return &S3File{
 		storage:   s,
 		objectKey: objectKey,
@@ -224,8 +264,22 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]FileInfo, error)
 }
 
 func (s *S3Storage) Close() error {
+	// 记录最终统计信息
+	s.logger.Info("S3Storage closing",
+		"totalUploads", atomic.LoadInt32(&s.totalUploads),
+		"successUploads", atomic.LoadInt32(&s.successUploads),
+		"failedUploads", atomic.LoadInt32(&s.failedUploads),
+		"activeUploads", atomic.LoadInt32(&s.activeUploads))
 	// S3客户端无需显式关闭
 	return nil
+}
+
+// GetUploadStats 获取上传统计信息
+func (s *S3Storage) GetUploadStats() (total, success, failed, active int32) {
+	return atomic.LoadInt32(&s.totalUploads),
+		atomic.LoadInt32(&s.successUploads),
+		atomic.LoadInt32(&s.failedUploads),
+		atomic.LoadInt32(&s.activeUploads)
 }
 
 // getObjectKey 获取S3对象键
@@ -252,11 +306,6 @@ type S3File struct {
 	tempFile  *os.File // 本地临时文件，用于支持随机访问
 	filePath  string   // 临时文件路径
 	readOnly  bool     // 只读模式，不上传到S3
-
-	// 状态标记，避免重复上传
-	dirty bool // 有未上传的数据
-
-	mu sync.Mutex // 保护并发访问
 }
 
 func (w *S3File) Name() string {
@@ -264,45 +313,27 @@ func (w *S3File) Name() string {
 }
 
 func (w *S3File) Write(p []byte) (n int, err error) {
-	// 并发安全写入
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建
 	if w.tempFile == nil {
-		fmt.Printf("S3File.Write: creating temp file\n")
 		if err = w.createTempFile(); err != nil {
-			return 0, fmt.Errorf("failed to create temp file: %w", err)
+			w.storage.logger.Error("Write: failed to create temp file", "objectKey", w.objectKey, "err", err)
+			return 0, err
 		}
 	}
 
 	// 写入到临时文件
 	n, err = w.tempFile.Write(p)
 	if err != nil {
-		return n, fmt.Errorf("failed to write to temp file: %w", err)
+		w.storage.logger.Error("Write: failed to write to temp file", "objectKey", w.objectKey, "size", len(p), "err", err)
 	}
-	// 标记脏数据，表示需要上传
-	w.dirty = true
-
-	// fmt.Printf("S3File.Write: wrote %d bytes\n", n)
-	return n, nil
+	return n, err
 }
 
 func (w *S3File) Read(p []byte) (n int, err error) {
-	// 并发安全读取
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	// 如果还没有创建缓存/临时文件
+	// 如果还没有创建缓存文件，先下载到本地
 	if w.tempFile == nil {
-		if w.readOnly {
-			// 只读模式，从远端下载
-			if err = w.downloadToTemp(); err != nil {
-				return 0, err
-			}
-		} else {
-			// 可写模式，创建空的临时文件（允许随后写入/读取）
-			if err = w.createTempFile(); err != nil {
-				return 0, err
-			}
+		if err = w.downloadToTemp(); err != nil {
+			return 0, err
 		}
 	}
 
@@ -311,9 +342,6 @@ func (w *S3File) Read(p []byte) (n int, err error) {
 }
 
 func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
-	// 并发安全写入
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建
 	if w.tempFile == nil {
 		if err = w.createTempFile(); err != nil {
@@ -322,19 +350,10 @@ func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 
 	// 写入到临时文件的指定位置
-	n, err = w.tempFile.WriteAt(p, off)
-	if err != nil {
-		return n, err
-	}
-	// 标记脏数据
-	w.dirty = true
-	return n, nil
+	return w.tempFile.WriteAt(p, off)
 }
 
 func (w *S3File) ReadAt(p []byte, off int64) (n int, err error) {
-	// 并发安全读取
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	// 如果还没有创建缓存文件，先下载到本地
 	if w.tempFile == nil {
 		if err = w.downloadToTemp(); err != nil {
@@ -355,65 +374,34 @@ func (w *S3File) Sync() error {
 		return nil
 	}
 
-	// 并发安全Sync，避免与 Write/Close 竞争
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.syncNoLock()
-}
-
-// syncNoLock assumes caller holds w.mu
-func (w *S3File) syncNoLock() error {
-	// 只读模式不上传
-	if w.readOnly {
-		if w.tempFile != nil {
-			return w.tempFile.Sync()
+	// 如果使用临时文件，先同步到磁盘
+	if w.tempFile != nil {
+		if err := w.tempFile.Sync(); err != nil {
+			w.storage.logger.Error("Sync: failed to sync temp file to disk", "objectKey", w.objectKey, "err", err)
+			return err
 		}
-		return nil
-	}
-	// 若无临时文件，或者没有新数据，不需要上传
-	if w.tempFile == nil || !w.dirty {
-		return nil
-	}
-	// 先同步到磁盘
-	fmt.Printf("S3File.Sync: syncing temp file to disk\n")
-	if err := w.tempFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file to disk: %w", err)
-	}
-	// 获取文件大小用于判断
-	var size int64
-	if stat, err := w.tempFile.Stat(); err == nil {
-		size = stat.Size()
-		fmt.Printf("[S3File.Sync] tempFile size: %d bytes, path: %s\n", stat.Size(), w.filePath)
-	}
-	// 空文件不上传，避免覆盖已上传的非空文件
-	if size == 0 {
-		return nil
+		// 获取文件大小用于日志
+		if stat, err := w.tempFile.Stat(); err == nil {
+			w.storage.logger.Info("Sync: temp file synced to disk",
+				"objectKey", w.objectKey,
+				"size", stat.Size(),
+				"path", w.filePath)
+		}
 	}
 
-	fmt.Printf("S3File.Sync: uploading to S3\n")
+	// 上传到 S3
 	if err := w.uploadTempFile(); err != nil {
-		return fmt.Errorf("failed to upload to S3: %w", err)
+		w.storage.logger.Error("Sync: upload to S3 failed", "objectKey", w.objectKey, "err", err)
+		return err
 	}
-	// 上传成功，重置状态
-	w.dirty = false
-	fmt.Printf("S3File.Sync: upload completed successfully\n")
 	return nil
 }
 
 func (w *S3File) Seek(offset int64, whence int) (int64, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	// 如果还没有创建临时文件，先创建或下载
 	if w.tempFile == nil {
-		// 只读模式从远端下载，否则创建空临时文件
-		if w.readOnly {
-			if err := w.downloadToTemp(); err != nil {
-				return 0, err
-			}
-		} else {
-			if err := w.createTempFile(); err != nil {
-				return 0, err
-			}
+		if err := w.downloadToTemp(); err != nil {
+			return 0, err
 		}
 	}
 
@@ -422,28 +410,43 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (w *S3File) Close() error {
-	// 并发安全Close，确保不与其他操作竞争
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if err := w.syncNoLock(); err != nil {
-		return err
+	w.storage.logger.Debug("Close: starting", "objectKey", w.objectKey, "readOnly", w.readOnly)
+
+	var syncErr error
+	if err := w.Sync(); err != nil {
+		syncErr = err
+		w.storage.logger.Error("Close: Sync failed", "objectKey", w.objectKey, "err", err)
 	}
 
+	// 关闭临时文件
 	if w.tempFile != nil {
-		fmt.Printf("S3File.Close: closing temp file\n")
-		w.tempFile.Close()
-		w.tempFile = nil
+		if err := w.tempFile.Close(); err != nil {
+			w.storage.logger.Error("Close: failed to close temp file", "objectKey", w.objectKey, "err", err)
+			if syncErr == nil {
+				syncErr = err
+			}
+		}
 	}
 
-	// 清理临时文件
+	// 只有在上传成功（或只读模式）时才清理临时文件
 	if w.filePath != "" {
-		fmt.Printf("S3File.Close: removing temp file %s\n", w.filePath)
-		os.Remove(w.filePath)
-		w.filePath = ""
+		if syncErr == nil || w.readOnly {
+			if err := os.Remove(w.filePath); err != nil {
+				w.storage.logger.Warn("Close: failed to remove temp file", "path", w.filePath, "err", err)
+			} else {
+				w.storage.logger.Debug("Close: temp file removed", "path", w.filePath)
+			}
+		} else {
+			// 上传失败，保留临时文件以便后续重试或手动处理
+			w.storage.logger.Warn("Close: temp file preserved due to upload failure",
+				"path", w.filePath,
+				"objectKey", w.objectKey,
+				"err", syncErr)
+		}
 	}
 
-	fmt.Printf("S3File.Close: file closed successfully\n")
-	return nil
+	w.storage.logger.Debug("Close: completed", "objectKey", w.objectKey, "success", syncErr == nil)
+	return syncErr
 }
 
 // createTempFile 创建临时文件
@@ -451,10 +454,12 @@ func (w *S3File) createTempFile() error {
 	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "s3writer_*.tmp")
 	if err != nil {
+		w.storage.logger.Error("createTempFile: failed to create temp file", "objectKey", w.objectKey, "err", err)
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	w.tempFile = tempFile
 	w.filePath = tempFile.Name()
+	w.storage.logger.Debug("createTempFile: temp file created", "objectKey", w.objectKey, "path", w.filePath)
 	return nil
 }
 
@@ -464,63 +469,94 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 
 // uploadTempFile 上传临时文件到S3
 func (w *S3File) uploadTempFile() (err error) {
-	// 确保将缓冲写入磁盘并获取稳定的大小
-	if w.tempFile != nil {
-		if err := w.tempFile.Sync(); err != nil {
-			fmt.Printf("[S3File.uploadTempFile] tempFile.Sync failed: %v\n", err)
-			return fmt.Errorf("failed to sync temp file: %w", err)
-		}
+	if w.tempFile == nil {
+		w.storage.logger.Debug("uploadTempFile: no temp file to upload", "objectKey", w.objectKey)
+		return nil
 	}
 
-	// 重新以只读方式打开文件句柄，避免与写句柄共享状态带来的问题
-	f, err := os.Open(w.filePath)
-	if err != nil {
-		return fmt.Errorf("failed to reopen temp file: %w", err)
+	// 获取信号量，控制并发上传数量
+	// 如果已达到最大并发数，这里会阻塞等待
+	w.storage.uploadSemaphore <- struct{}{}
+	defer func() {
+		// 释放信号量
+		<-w.storage.uploadSemaphore
+	}()
+
+	// 增加并发计数
+	activeCount := atomic.AddInt32(&w.storage.activeUploads, 1)
+	totalCount := atomic.AddInt32(&w.storage.totalUploads, 1)
+
+	defer func() {
+		// 减少并发计数
+		atomic.AddInt32(&w.storage.activeUploads, -1)
+
+		// 更新统计
+		if err == nil {
+			atomic.AddInt32(&w.storage.successUploads, 1)
+		} else {
+			atomic.AddInt32(&w.storage.failedUploads, 1)
+		}
+	}()
+
+	// 重置文件指针到开头
+	if _, err := w.tempFile.Seek(0, 0); err != nil {
+		w.storage.logger.Error("uploadTempFile: failed to seek", "objectKey", w.objectKey, "err", err)
+		return fmt.Errorf("failed to seek temp file: %w", err)
 	}
-	defer f.Close()
 
 	// 获取文件大小
-	stat, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat temp file: %w", err)
+	stat, _ := w.tempFile.Stat()
+	fileSize := int64(0)
+	if stat != nil {
+		fileSize = stat.Size()
 	}
-	size := stat.Size()
-	fmt.Printf("[S3File.uploadTempFile] uploading to S3: bucket=%s, key=%s, size=%d\n",
-		w.storage.config.Bucket, w.objectKey, size)
 
-	// 使用带固定长度的 SectionReader，避免某些 S3 兼容实现对 chunked 传输处理异常
-	body := io.NewSectionReader(f, 0, size)
+	// 计算队列中等待的任务数量
+	queuedUploads := len(w.storage.uploadSemaphore)
+
+	w.storage.logger.Info("uploadTempFile: starting upload",
+		"objectKey", w.objectKey,
+		"bucket", w.storage.config.Bucket,
+		"size", fileSize,
+		"activeUploads", activeCount,
+		"queuedUploads", queuedUploads,
+		"maxConcurrent", w.storage.config.MaxConcurrentUploads,
+		"totalUploads", totalCount,
+		"tempPath", w.filePath)
 
 	// 上传到S3
-	// 使用独立的上传上下文，避免因调用方上下文取消导致上传中断
-	uploadCtx := context.Background()
-	if w.storage.config.Timeout > 0 {
-		var cancel context.CancelFunc
-		uploadCtx, cancel = context.WithTimeout(uploadCtx, w.storage.config.Timeout)
-		defer cancel()
-	}
-	_, err = w.storage.uploader.UploadWithContext(uploadCtx, &s3manager.UploadInput{
+	startTime := time.Now()
+	_, err = w.storage.uploader.UploadWithContext(w.ctx, &s3manager.UploadInput{
 		Bucket:      aws.String(w.storage.config.Bucket),
 		Key:         aws.String(w.objectKey),
-		Body:        body,
+		Body:        w.tempFile,
 		ContentType: aws.String("application/octet-stream"),
 	})
+	duration := time.Since(startTime)
 
 	if err != nil {
-		fmt.Printf("[S3File.uploadTempFile] upload failed: %v\n", err)
+		w.storage.logger.Error("uploadTempFile: upload failed",
+			"objectKey", w.objectKey,
+			"size", fileSize,
+			"duration", duration,
+			"activeUploads", activeCount-1,
+			"err", err)
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
-	fmt.Printf("[S3File.uploadTempFile] upload successful: %s\n", w.objectKey)
+	w.storage.logger.Info("uploadTempFile: upload successful",
+		"objectKey", w.objectKey,
+		"size", fileSize,
+		"duration", duration,
+		"activeUploads", activeCount-1,
+		"successCount", atomic.LoadInt32(&w.storage.successUploads),
+		"failedCount", atomic.LoadInt32(&w.storage.failedUploads))
+
 	return nil
 }
 
 // downloadToTemp 下载S3对象到本地临时文件
 func (w *S3File) downloadToTemp() error {
-	// 防止重复创建
-	if w.tempFile != nil {
-		return nil
-	}
 	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "s3reader_*.tmp")
 	if err != nil {

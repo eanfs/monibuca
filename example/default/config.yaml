@@ -16,10 +16,10 @@ global:
       accessKeyID: "xidinguser"     # 访问密钥ID
       secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
       bucket: "vidu-media-bucket"            # 存储桶名称
-      pathPrefix: "recordings"     # 文件路径前缀
+      pathPrefix: ""     # 文件路径前缀
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
-      timeout: "0s"                        # 上传超时时间
+      timeout: "600s"                        # 上传超时时间
   # storage:
   #   s3:
   #     endpoint: "s3.amazonaws.com"          # S3服务端点
