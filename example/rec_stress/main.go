@@ -220,7 +220,7 @@ func (st *StressTest) PrepareTasks() {
 	st.totalTasks = int32(len(st.tasks))
 }
 
-// RunTask 执行单个任务
+// RunTask 执行单个任务（仅启动录制）
 func (st *StressTest) RunTask(task *RecordTask) {
 	task.StartTime = time.Now()
 	task.SetStatus(StatusPulling)
@@ -253,25 +253,30 @@ func (st *StressTest) RunTask(task *RecordTask) {
 
 	startRecURL := fmt.Sprintf("%s/mp4/api/start/%s", st.baseURL, task.StreamPath)
 	if err := httpPostJSON(startRecURL, startRecordReq{
-		Fragment: protoDurationString(task.Frag),
 		FilePath: task.RecPath,
 	}); err != nil {
 		task.SetError(fmt.Errorf("启动录制失败: %w", err))
 		fmt.Printf("[%d/%d] 录制失败: %v\n", task.Index+1, st.totalTasks, err)
 		atomic.AddInt32(&st.failedTasks, 1)
-		
+
 		// 清理拉流代理
 		removeURL := fmt.Sprintf("%s/api/proxy/pull/remove/0?streamPath=%s", st.baseURL, task.StreamPath)
 		if err := httpPostJSON(removeURL, nil); err != nil {
 			fmt.Printf("[%d/%d] 清理拉流代理失败: %v\n", task.Index+1, st.totalTasks, err)
 		}
-		
+
 		task.EndTime = time.Now()
 		return
 	}
 
 	fmt.Printf("[%d/%d] 录制中，持续时间 %s\n", task.Index+1, st.totalTasks, task.Total)
-	time.Sleep(task.Total)
+}
+
+// StopTask 停止单个任务的录制
+func (st *StressTest) StopTask(task *RecordTask) {
+	if task.GetStatus() != StatusRecording {
+		return // 只停止正在录制的任务
+	}
 
 	task.SetStatus(StatusStopping)
 	stopRecURL := fmt.Sprintf("%s/mp4/api/stop/%s", st.baseURL, task.StreamPath)
@@ -290,6 +295,55 @@ func (st *StressTest) RunTask(task *RecordTask) {
 	fmt.Printf("[%d/%d] 任务完成，耗时 %s\n", task.Index+1, st.totalTasks, task.EndTime.Sub(task.StartTime))
 }
 
+// StopTasksBatch 分批停止录制任务，每5个一组，每10秒停止一组
+func (st *StressTest) StopTasksBatch() {
+	fmt.Printf("\n========== 开始分批停止录制 ==========\n")
+	
+	// 等待录制开始并运行一段时间
+	time.Sleep(30 * time.Second)
+	
+	// 获取所有正在录制的任务
+	var recordingTasks []*RecordTask
+	for _, task := range st.tasks {
+		if task.GetStatus() == StatusRecording {
+			recordingTasks = append(recordingTasks, task)
+		}
+	}
+	
+	fmt.Printf("正在录制的任务数: %d\n", len(recordingTasks))
+	
+	// 分批停止，每批5个任务
+	batchSize := 5
+	for i := 0; i < len(recordingTasks); i += batchSize {
+		end := i + batchSize
+		if end > len(recordingTasks) {
+			end = len(recordingTasks)
+		}
+		
+		batch := recordingTasks[i:end]
+		fmt.Printf("\n停止第 %d 批任务 (共 %d 个任务):\n", (i/batchSize)+1, len(batch))
+		
+		// 并行停止当前批次的任务
+		var wg sync.WaitGroup
+		for _, task := range batch {
+			wg.Add(1)
+			go func(t *RecordTask) {
+				defer wg.Done()
+				st.StopTask(t)
+			}(task)
+		}
+		wg.Wait()
+		
+		// 如果不是最后一批，等待10秒
+		if end < len(recordingTasks) {
+			fmt.Printf("等待 10 秒后停止下一批...\n")
+			time.Sleep(10 * time.Second)
+		}
+	}
+	
+	fmt.Printf("\n========== 所有录制任务已停止 ==========\n")
+}
+
 // Run 执行所有任务
 func (st *StressTest) Run() error {
 	st.startTime = time.Now()
@@ -298,6 +352,7 @@ func (st *StressTest) Run() error {
 	fmt.Printf("任务总数: %d\n", st.totalTasks)
 	fmt.Printf("开始时间: %s\n\n", st.startTime.Format("2006-01-02 15:04:05"))
 
+	// 启动所有录制任务
 	var wg sync.WaitGroup
 	wg.Add(len(st.tasks))
 
@@ -310,6 +365,10 @@ func (st *StressTest) Run() error {
 	}
 
 	wg.Wait()
+	
+	// 使用分批停止逻辑
+	st.StopTasksBatch()
+	
 	st.endTime = time.Now()
 
 	return nil
@@ -408,17 +467,17 @@ func httpPostJSON(url string, body any) error {
 			return err
 		}
 	}
-	
+
 	// 创建带超时的 context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	// 使用带超时的客户端
 	client := &http.Client{
 		Timeout: 10 * time.Second,

@@ -38,10 +38,12 @@ func (task *writeTrailerTask) Start() (err error) {
 	err = task.muxer.WriteTrailer(task.file)
 	if err != nil {
 		task.Error("write trailer", "err", err)
+		if task.file != nil {
+			if errClose := task.file.Close(); errClose != nil {
+				return errClose
+			}
+		}
 	}
-	// 注意：不要在这里关闭文件！
-	// 文件需要在 Run() 方法中继续使用（Seek、Read、Write操作）
-	// 文件的关闭由 Run() 方法的 defer 处理
 	return
 }
 
@@ -50,16 +52,6 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
-
-	// 使用defer确保文件总是被关闭，触发S3上传
-	defer func() {
-		if t.file != nil {
-			if closeErr := t.file.Close(); closeErr != nil && err == nil {
-				err = closeErr
-			}
-		}
-	}()
-
 	var temp *os.File
 	temp, err = os.CreateTemp("", "*.mp4")
 	if err != nil {
@@ -112,10 +104,14 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("copy file", "err", err)
 		return
 	}
-	// 文件关闭由defer处理，这里不需要显式关闭
+	if err = t.file.Close(); err != nil {
+		t.Error("close file", "err", err)
+		return
+	}
 	if err = temp.Close(); err != nil {
 		t.Error("close temp file", "err", err)
 	}
+
 	return
 }
 
@@ -165,7 +161,6 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	r.Info("mp4 create file - recording started", "streamPath", r.Event.StreamPath, "filePath", r.Event.FilePath)
 
 	// 注意: 不要在这里关闭旧文件,因为它已经被传递给 writeTrailerTask
 	// writeTrailerTask 会负责关闭旧文件
@@ -188,7 +183,6 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 			return
 		}
 	}
-	r.Debug("mp4 init segment", "streamPath", r.Event.StreamPath)
 
 	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)

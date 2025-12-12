@@ -614,7 +614,7 @@ sources:
     stream: live/50B
     record:
       filePath: record/mp4/live/50B
-  - url: rtsp://admin:a1234567@192.168.12.113/ch1/main/av_stream
+  - url: rtsp://admin:a1234567@192.168.10.135:554/cam/realmonitor?channel=1&subtype=0
     stream: live/50C
     record:
       filePath: record/mp4/live/50C
