@@ -104,6 +104,36 @@ func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
 	}, nil
 }
 
+// UploadFile 直接上传本地文件到 S3
+func (s *S3Storage) UploadFile(ctx context.Context, key string, localPath string) error {
+	file, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local file: %w", err)
+	}
+	defer file.Close()
+
+	if s.config.PathPrefix != "" {
+		key = strings.TrimPrefix(key, "/")
+		if !strings.HasPrefix(key, s.config.PathPrefix) {
+			key = s.config.PathPrefix + "/" + key
+		}
+	}
+	// 规范化 Key
+	key = strings.TrimPrefix(key, "/")
+
+	_, err = s.uploader.UploadWithContext(ctx, &s3manager.UploadInput{
+		Bucket:      aws.String(s.config.Bucket),
+		Key:         aws.String(key),
+		Body:        file,
+		ContentType: aws.String("application/octet-stream"),
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to upload to S3: %w", err)
+	}
+	return nil
+}
+
 func (s *S3Storage) CreateFile(ctx context.Context, path string) (File, error) {
 	objectKey := s.getObjectKey(path)
 	return &S3File{

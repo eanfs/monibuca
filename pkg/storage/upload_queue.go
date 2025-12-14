@@ -57,6 +57,11 @@ func GetUploadQueue() *UploadQueueTask {
 	return uploadQueue
 }
 
+// DocumentUploader 支持直接上传文件的存储接口
+type DocumentUploader interface {
+	UploadFile(ctx context.Context, key string, localPath string) error
+}
+
 // UploadTask 单个文件上传任务
 type UploadTask struct {
 	task.Task
@@ -85,17 +90,10 @@ func NewUploadTask(recordID uint, localPath, remotePath string, storageConfig ma
 }
 
 func (t *UploadTask) Start() error {
-	// 获取信号量，限制并发
-	select {
-	case t.Queue.semaphore <- struct{}{}:
-		// 成功获取信号量
-	case <-time.After(time.Minute * 5):
-		return fmt.Errorf("failed to acquire upload semaphore, timeout")
-	case <-t.Context.Done():
-		return t.Context.Err()
-	}
+	// Start 应该快速返回，不要进行阻塞操作
+	// 信号量获取移至 Run 中
 
-	// 更新状态为上传中
+	// 更新状态为上传中（异步更新，或者快速更新）
 	if t.DB != nil && t.RecordID > 0 {
 		t.DB.Model(&struct {
 			ID           uint
@@ -109,6 +107,16 @@ func (t *UploadTask) Start() error {
 }
 
 func (t *UploadTask) Run() error {
+	// 获取信号量，限制并发（在Run中阻塞是安全的）
+	select {
+	case t.Queue.semaphore <- struct{}{}:
+		// 成功获取信号量
+	case <-time.After(time.Minute * 30): // 增加超时时间到30分钟
+		return t.handleUploadError(fmt.Errorf("failed to acquire upload semaphore, timeout"))
+	case <-t.Context.Done():
+		return t.Context.Err()
+	}
+
 	// 确保释放信号量
 	defer func() {
 		<-t.Queue.semaphore
@@ -143,44 +151,55 @@ func (t *UploadTask) Run() error {
 
 	t.Info("using storage", "type", storageType)
 
-	// 打开本地文件
-	localFile, err := os.Open(t.LocalPath)
-	if err != nil {
-		return t.handleUploadError(fmt.Errorf("failed to open local file: %w", err))
-	}
-	defer localFile.Close()
+	var totalWritten int64 = fileInfo.Size()
 
-	// 创建远程文件
-	remoteFile, err := storageInstance.CreateFile(context.Background(), t.RemotePath)
-	if err != nil {
-		return t.handleUploadError(fmt.Errorf("failed to create remote file: %w", err))
-	}
+	// ⚡️ 优化：如果存储实现了上传接口，直接使用 UploadFile，避免双重拷贝
+	if uploader, ok := storageInstance.(DocumentUploader); ok {
+		t.Info("using fast direct upload path")
+		if err := uploader.UploadFile(t.Context, t.RemotePath, t.LocalPath); err != nil {
+			return t.handleUploadError(fmt.Errorf("direct upload failed: %w", err))
+		}
+	} else {
+		// 常规路径：使用 Writer 接口（会产生临时文件）
+		// 打开本地文件
+		localFile, err := os.Open(t.LocalPath)
+		if err != nil {
+			return t.handleUploadError(fmt.Errorf("failed to open local file: %w", err))
+		}
+		defer localFile.Close()
 
-	// 复制文件内容
-	buf := make([]byte, 1024*1024) // 1MB buffer
-	var totalWritten int64
-	for {
-		n, readErr := localFile.Read(buf)
-		if n > 0 {
-			written, writeErr := remoteFile.Write(buf[:n])
-			if writeErr != nil {
+		// 创建远程文件
+		remoteFile, err := storageInstance.CreateFile(context.Background(), t.RemotePath)
+		if err != nil {
+			return t.handleUploadError(fmt.Errorf("failed to create remote file: %w", err))
+		}
+
+		// 复制文件内容
+		buf := make([]byte, 1024*1024) // 1MB buffer
+		totalWritten = 0
+		for {
+			n, readErr := localFile.Read(buf)
+			if n > 0 {
+				written, writeErr := remoteFile.Write(buf[:n])
+				if writeErr != nil {
+					remoteFile.Close()
+					return t.handleUploadError(fmt.Errorf("failed to write to remote: %w", writeErr))
+				}
+				totalWritten += int64(written)
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
 				remoteFile.Close()
-				return t.handleUploadError(fmt.Errorf("failed to write to remote: %w", writeErr))
+				return t.handleUploadError(fmt.Errorf("failed to read local file: %w", readErr))
 			}
-			totalWritten += int64(written)
 		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
-			}
-			remoteFile.Close()
-			return t.handleUploadError(fmt.Errorf("failed to read local file: %w", readErr))
-		}
-	}
 
-	// 关闭远程文件（触发实际上传）
-	if err := remoteFile.Close(); err != nil {
-		return t.handleUploadError(fmt.Errorf("failed to close remote file: %w", err))
+		// 关闭远程文件（触发实际上传）
+		if err := remoteFile.Close(); err != nil {
+			return t.handleUploadError(fmt.Errorf("failed to close remote file: %w", err))
+		}
 	}
 
 	t.Info("upload completed", "recordID", t.RecordID, "bytes", totalWritten, "fileSize", fileInfo.Size())
