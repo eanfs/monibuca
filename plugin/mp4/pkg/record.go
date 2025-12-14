@@ -10,6 +10,7 @@ import (
 	"time"
 
 	task "github.com/langhuihui/gotask"
+	"gorm.io/gorm"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -29,9 +30,13 @@ var writeTrailerQueueTask WriteTrailerQueueTask
 
 type writeTrailerTask struct {
 	task.Task
-	muxer    *Muxer
-	file     storage.File
-	filePath string
+	muxer         *Muxer
+	file          storage.File
+	filePath      string
+	recordID      uint           // 录像记录ID
+	targetStorage map[string]any // 目标存储配置
+	deleteLocal   bool           // 上传成功后是否删除本地文件
+	db            *gorm.DB       // 数据库连接
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -112,7 +117,69 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("close temp file", "err", err)
 	}
 
+	// 获取文件大小
+	var fileSize int64
+	if fileInfo, statErr := os.Stat(t.filePath); statErr == nil {
+		fileSize = fileInfo.Size()
+	}
+
+	// 录制完成后，检查是否需要上传到云存储
+	if t.shouldUpload() {
+		t.Info("queueing upload to cloud storage", "filePath", t.filePath, "recordID", t.recordID)
+		t.queueUpload(fileSize)
+	} else {
+		// 本地存储，标记为完成
+		t.updateUploadStatus(storage.UploadStatusCompleted, "", fileSize)
+	}
+
 	return
+}
+
+// shouldUpload 检查是否需要上传到云存储
+func (t *writeTrailerTask) shouldUpload() bool {
+	if t.targetStorage == nil {
+		return false
+	}
+	for storageType := range t.targetStorage {
+		if storageType != "local" {
+			return true
+		}
+	}
+	return false
+}
+
+// queueUpload 将文件加入上传队列
+func (t *writeTrailerTask) queueUpload(fileSize int64) {
+	uploadQueue := storage.GetUploadQueue()
+	if uploadQueue == nil {
+		t.Error("upload queue not initialized")
+		t.updateUploadStatus(storage.UploadStatusFailed, "upload queue not initialized", fileSize)
+		return
+	}
+
+	uploadTask := storage.NewUploadTask(
+		t.recordID,
+		t.filePath,
+		t.filePath, // 远程路径与本地相同
+		t.targetStorage,
+		nil, // DB 将在上传任务中处理
+		t.deleteLocal,
+	)
+
+	uploadQueue.QueueUpload(uploadTask, nil)
+	t.Info("upload task queued", "recordID", t.recordID, "filePath", t.filePath)
+}
+
+// updateUploadStatus 更新数据库中的上传状态
+func (t *writeTrailerTask) updateUploadStatus(status, errorMsg string, fileSize int64) {
+	if t.db == nil || t.recordID == 0 {
+		return
+	}
+	t.db.Model(&m7s.RecordStream{}).Where("id = ?", t.recordID).Updates(map[string]interface{}{
+		"upload_status": status,
+		"upload_error":  errorMsg,
+		"file_size":     fileSize,
+	})
 }
 
 func init() {
@@ -133,9 +200,13 @@ type Recorder struct {
 func (r *Recorder) writeTailer(end time.Time) {
 	r.WriteTail(end, &writeTrailerQueueTask)
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:    r.muxer,
-		file:     r.file,
-		filePath: r.Event.FilePath,
+		muxer:         r.muxer,
+		file:          r.file,
+		filePath:      r.Event.FilePath,
+		recordID:      r.Event.ID,
+		targetStorage: r.RecordJob.GetTargetStorage(),
+		deleteLocal:   r.RecordJob.ShouldDeleteLocal(),
+		db:            r.RecordJob.Plugin.DB,
 	}, r.Logger)
 }
 

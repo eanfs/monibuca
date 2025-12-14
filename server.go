@@ -21,6 +21,7 @@ import (
 
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 
 	sysruntime "runtime"
 
@@ -60,7 +61,7 @@ type (
 		DisableAll    bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
-		Storage       map[string]any           `desc:"全局存储配置"`               // 全局存储配置
+		Storage       map[string]any           `desc:"全局存储配置"` // 全局存储配置
 		PullProxy     []*PullProxyConfig
 		PushProxy     []*PushProxyConfig
 		Admin         struct {
@@ -293,10 +294,11 @@ func (s *Server) Start() (err error) {
 			sqlDB.SetMaxOpenConns(100)
 			sqlDB.SetConnMaxLifetime(5 * time.Minute)
 			// Auto-migrate models
-			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}); err != nil {
+			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}, &RecordStream{}); err != nil {
 				s.Error("failed to auto-migrate models", "error", err)
 				return
 			}
+
 			// Create users from configuration if EnableLogin is true
 			if s.ServerConfig.Admin.EnableLogin {
 				for _, userConfig := range s.ServerConfig.Admin.Users {
@@ -387,7 +389,23 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
+
+	// 初始化上传队列（用于录制完成后异步上传到云存储）
+	uploadQueue := storage.InitUploadQueue(5) // 最多5个并发上传
+	s.AddTask(uploadQueue)
+
+	// 如果配置了云存储且有数据库，启动上传重试任务
+	if s.DB != nil && len(s.Storage) > 0 {
+		retryTask := &storage.UploadRetryTask{
+			DB:            s.DB,
+			Queue:         uploadQueue,
+			StorageConfig: s.Storage,
+		}
+		s.AddTask(retryTask)
+	}
+
 	promReg := prometheus.NewPedanticRegistry()
+
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
 		p := plugin.Init(s, cg[strings.ToLower(plugin.Name)])

@@ -69,6 +69,17 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		}
 
 		if storageConfig == nil {
+			// 尝试使用全局存储配置
+			if p.Server.Storage != nil {
+				if cfg, ok := p.Server.Storage[stream.StorageType]; ok {
+					if cfgMap, ok := cfg.(map[string]any); ok {
+						storageConfig = cfgMap
+					}
+				}
+			}
+		}
+
+		if storageConfig == nil {
 			http.Error(w, "storage config not found", http.StatusInternalServerError)
 			p.Error("storage config not found", "storageType", stream.StorageType)
 			return

@@ -26,14 +26,16 @@ type (
 	}
 	RecordJob struct {
 		task.Job
-		Event      *config.RecordEvent
-		StreamPath string // 对应本地流
-		Plugin     *Plugin
-		Subscriber *Subscriber
-		SubConf    *config.Subscribe
-		RecConf    *config.Record
-		recorder   IRecorder
-		storage    storage.Storage // 存储实例
+		Event         *config.RecordEvent
+		StreamPath    string // 对应本地流
+		Plugin        *Plugin
+		Subscriber    *Subscriber
+		SubConf       *config.Subscribe
+		RecConf       *config.Record
+		recorder      IRecorder
+		storage       storage.Storage // 本地存储实例（录制时使用）
+		TargetStorage map[string]any  // 目标存储配置（上传时使用）
+		DeleteLocal   bool            // 上传成功后是否删除本地文件
 	}
 	DefaultRecorder struct {
 		task.Task
@@ -56,6 +58,13 @@ type (
 		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
 		StorageLevel int               `json:"storageLevel" desc:"存储级别" gorm:"comment:存储级别,1=主存储,2=次级存储;default:1"`
 		StorageType  string            `json:"storageType" desc:"存储类型" gorm:"type:varchar(20);comment:存储类型(local/s3/oss/cos);default:'local'"`
+		// 上传状态相关字段
+		UploadStatus string    `json:"uploadStatus" gorm:"type:varchar(20);comment:上传状态(pending/uploading/completed/failed);default:'pending'"`
+		UploadError  string    `json:"uploadError" gorm:"type:text;comment:上传错误信息"`
+		RetryCount   int       `json:"retryCount" gorm:"comment:重试次数;default:0"`
+		LastRetryAt  time.Time `json:"lastRetryAt" gorm:"comment:最后重试时间"`
+		FileSize     int64     `json:"fileSize" gorm:"comment:文件大小(字节)"`
+		RemotePath   string    `json:"remotePath" gorm:"type:varchar(512);comment:远程存储路径"`
 	}
 )
 
@@ -76,15 +85,31 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	fileName := filepath.Base(filePath)
 
 	// 记录存储配置日志
+	r.Info("CreateStream: using local storage for recording", "streamPath", recordJob.StreamPath, "filePath", filePath)
 
-	// 记录存储配置日志
-	r.Info("CreateStream storage config", "storage", recordJob.RecConf.Storage, "streamPath", recordJob.StreamPath, "filePath", filePath)
-
-	var storageType string
-	recordJob.storage, storageType = r.createStorage(recordJob.RecConf.Storage)
-
+	// 始终使用本地存储进行录制
+	recordJob.storage = r.createLocalStorage()
 	if recordJob.storage == nil {
-		return fmt.Errorf("storage config is required")
+		return fmt.Errorf("failed to create local storage")
+	}
+
+	// 保存目标存储配置（用于上传）
+	recordJob.TargetStorage = recordJob.RecConf.Storage
+	recordJob.DeleteLocal = true // 默认上传成功后删除本地文件
+
+	// 确定最终的存储类型（用于数据库记录）
+	var targetStorageType = "local"
+	for t := range recordJob.RecConf.Storage {
+		if t != "local" {
+			targetStorageType = t
+			break
+		}
+	}
+
+	// 如果配置了云存储，初始状态为 pending
+	uploadStatus := storage.UploadStatusCompleted // 本地存储默认就是完成
+	if targetStorageType != "local" {
+		uploadStatus = storage.UploadStatusPending // 需要上传到云存储
 	}
 
 	r.Event.RecordStream = RecordStream{
@@ -93,8 +118,10 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		FilePath:     filePath,
 		Filename:     fileName,
 		Type:         recordJob.RecConf.Type,
-		StorageLevel: 1, // 默认为主存储
-		StorageType:  storageType,
+		StorageLevel: 1,
+		StorageType:  "local", // 录制时始终是本地
+		UploadStatus: uploadStatus,
+		RemotePath:   filePath, // 远程路径默认与本地相同
 	}
 
 	if sub.Publisher.HasAudioTrack() {
@@ -117,25 +144,38 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	return
 }
 
-// createStorage 创建存储实例，返回 storage 和存储类型
-func (r *DefaultRecorder) createStorage(storageConfig map[string]any) (storage.Storage, string) {
-	for t, conf := range storageConfig {
-		r.Info("trying to create storage", "type", t, "config", conf)
-		storage, err := storage.CreateStorage(t, conf)
-		if err == nil {
-			r.Info("storage created successfully", "type", t)
-			return storage, t
-		}
-		r.Error("create storage failed", "type", t, "err", err)
-	}
-	r.Warn("falling back to local storage", "path", r.RecordJob.RecConf.FilePath)
+// createLocalStorage 创建本地存储实例（录制时始终使用本地存储）
+func (r *DefaultRecorder) createLocalStorage() storage.Storage {
 	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
-	if err == nil {
-		return localStorage, "local"
-	} else {
+	if err != nil {
 		r.Error("create local storage failed", "err", err)
+		return nil
 	}
-	return nil, ""
+	r.Info("local storage created", "path", r.RecordJob.RecConf.FilePath)
+	return localStorage
+}
+
+// GetTargetStorage 获取目标存储配置（用于上传）
+func (p *RecordJob) GetTargetStorage() map[string]any {
+	return p.TargetStorage
+}
+
+// ShouldUpload 检查是否需要上传到云存储
+func (p *RecordJob) ShouldUpload() bool {
+	if p.TargetStorage == nil {
+		return false
+	}
+	for t := range p.TargetStorage {
+		if t != "local" {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldDeleteLocal 检查上传成功后是否删除本地文件
+func (p *RecordJob) ShouldDeleteLocal() bool {
+	return p.DeleteLocal
 }
 
 func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
