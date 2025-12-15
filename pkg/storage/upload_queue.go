@@ -95,10 +95,7 @@ func (t *UploadTask) Start() error {
 
 	// 更新状态为上传中（异步更新，或者快速更新）
 	if t.DB != nil && t.RecordID > 0 {
-		t.DB.Model(&struct {
-			ID           uint
-			UploadStatus string
-		}{}).Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
 			"upload_status": UploadStatusUploading,
 		})
 	}
@@ -206,12 +203,7 @@ func (t *UploadTask) Run() error {
 
 	// 更新数据库状态为已完成
 	if t.DB != nil && t.RecordID > 0 {
-		t.DB.Model(&struct {
-			ID           uint
-			UploadStatus string
-			UploadError  string
-			StorageType  string
-		}{}).Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
 			"upload_status": UploadStatusCompleted,
 			"upload_error":  "",
 			"storage_type":  storageType,
@@ -245,13 +237,7 @@ func (t *UploadTask) handleUploadError(err error) error {
 			t.Info("will retry upload", "retryCount", t.RetryCount, "maxRetries", t.Queue.maxRetries)
 		}
 
-		t.DB.Model(&struct {
-			ID           uint
-			UploadStatus string
-			UploadError  string
-			RetryCount   int
-			LastRetryAt  time.Time
-		}{}).Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
 			"upload_status": status,
 			"upload_error":  err.Error(),
 			"retry_count":   t.RetryCount,

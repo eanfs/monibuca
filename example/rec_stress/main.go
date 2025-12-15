@@ -298,10 +298,10 @@ func (st *StressTest) StopTask(task *RecordTask) {
 // StopTasksBatch 分批停止录制任务，每5个一组，每10秒停止一组
 func (st *StressTest) StopTasksBatch() {
 	fmt.Printf("\n========== 开始分批停止录制 ==========\n")
-	
+
 	// 等待录制开始并运行一段时间
 	time.Sleep(30 * time.Second)
-	
+
 	// 获取所有正在录制的任务
 	var recordingTasks []*RecordTask
 	for _, task := range st.tasks {
@@ -309,20 +309,20 @@ func (st *StressTest) StopTasksBatch() {
 			recordingTasks = append(recordingTasks, task)
 		}
 	}
-	
+
 	fmt.Printf("正在录制的任务数: %d\n", len(recordingTasks))
-	
+
 	// 分批停止，每批5个任务
-	batchSize := 5
+	batchSize := 20
 	for i := 0; i < len(recordingTasks); i += batchSize {
 		end := i + batchSize
 		if end > len(recordingTasks) {
 			end = len(recordingTasks)
 		}
-		
+
 		batch := recordingTasks[i:end]
 		fmt.Printf("\n停止第 %d 批任务 (共 %d 个任务):\n", (i/batchSize)+1, len(batch))
-		
+
 		// 并行停止当前批次的任务
 		var wg sync.WaitGroup
 		for _, task := range batch {
@@ -333,14 +333,14 @@ func (st *StressTest) StopTasksBatch() {
 			}(task)
 		}
 		wg.Wait()
-		
+
 		// 如果不是最后一批，等待10秒
 		if end < len(recordingTasks) {
-			fmt.Printf("等待 10 秒后停止下一批...\n")
-			time.Sleep(10 * time.Second)
+			fmt.Printf("等待 2 秒后停止下一批...\n")
+			time.Sleep(2 * time.Second)
 		}
 	}
-	
+
 	fmt.Printf("\n========== 所有录制任务已停止 ==========\n")
 }
 
@@ -365,10 +365,10 @@ func (st *StressTest) Run() error {
 	}
 
 	wg.Wait()
-	
+
 	// 使用分批停止逻辑
 	st.StopTasksBatch()
-	
+
 	st.endTime = time.Now()
 
 	return nil

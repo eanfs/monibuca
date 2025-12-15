@@ -117,69 +117,82 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("close temp file", "err", err)
 	}
 
-	// 获取文件大小
-	var fileSize int64
-	if fileInfo, statErr := os.Stat(t.filePath); statErr == nil {
-		fileSize = fileInfo.Size()
-	}
-
-	// 录制完成后，检查是否需要上传到云存储
-	if t.shouldUpload() {
-		t.Info("queueing upload to cloud storage", "filePath", t.filePath, "recordID", t.recordID)
-		t.queueUpload(fileSize)
-	} else {
-		// 本地存储，标记为完成
-		t.updateUploadStatus(storage.UploadStatusCompleted, "", fileSize)
+	// 录制完成后，上传到云存储
+	if err := queueFileUpload(t.filePath, t.recordID, t.targetStorage, t.db, t.deleteLocal); err != nil {
+		t.Error("failed to queue upload", "err", err)
 	}
 
 	return
 }
 
-// shouldUpload 检查是否需要上传到云存储
-func (t *writeTrailerTask) shouldUpload() bool {
-	if t.targetStorage == nil {
-		return false
+// queueFileUpload 将文件加入上传队列（公共函数）
+// 参数：
+//   - filePath: 本地文件路径
+//   - recordID: 录像记录ID
+//   - targetStorage: 目标存储配置
+//   - db: 数据库连接
+//   - deleteLocal: 上传成功后是否删除本地文件
+// 返回：
+//   - error: 如果上传队列未初始化或其他错误
+func queueFileUpload(
+	filePath string,
+	recordID uint,
+	targetStorage map[string]any,
+	db *gorm.DB,
+	deleteLocal bool,
+) error {
+	// 获取文件大小
+	var fileSize int64
+	if fileInfo, err := os.Stat(filePath); err == nil {
+		fileSize = fileInfo.Size()
 	}
-	for storageType := range t.targetStorage {
+
+	// 检查是否需要上传到云存储
+	shouldUpload := false
+	for storageType := range targetStorage {
 		if storageType != "local" {
-			return true
+			shouldUpload = true
+			break
 		}
 	}
-	return false
-}
 
-// queueUpload 将文件加入上传队列
-func (t *writeTrailerTask) queueUpload(fileSize int64) {
+	if !shouldUpload {
+		// 本地存储，标记为完成
+		if db != nil && recordID > 0 {
+			db.Model(&m7s.RecordStream{}).Where("id = ?", recordID).Updates(map[string]any{
+				"upload_status": storage.UploadStatusCompleted,
+				"upload_error":  "",
+				"file_size":     fileSize,
+			})
+		}
+		return nil
+	}
+
+	// 需要上传到云存储
 	uploadQueue := storage.GetUploadQueue()
 	if uploadQueue == nil {
-		t.Error("upload queue not initialized")
-		t.updateUploadStatus(storage.UploadStatusFailed, "upload queue not initialized", fileSize)
-		return
+		// 更新状态为失败
+		if db != nil && recordID > 0 {
+			db.Model(&m7s.RecordStream{}).Where("id = ?", recordID).Updates(map[string]any{
+				"upload_status": storage.UploadStatusFailed,
+				"upload_error":  "upload queue not initialized",
+				"file_size":     fileSize,
+			})
+		}
+		return fmt.Errorf("upload queue not initialized")
 	}
 
 	uploadTask := storage.NewUploadTask(
-		t.recordID,
-		t.filePath,
-		t.filePath, // 远程路径与本地相同
-		t.targetStorage,
-		nil, // DB 将在上传任务中处理
-		t.deleteLocal,
+		recordID,
+		filePath,
+		filePath,
+		targetStorage,
+		db,
+		deleteLocal,
 	)
 
 	uploadQueue.QueueUpload(uploadTask, nil)
-	t.Info("upload task queued", "recordID", t.recordID, "filePath", t.filePath)
-}
-
-// updateUploadStatus 更新数据库中的上传状态
-func (t *writeTrailerTask) updateUploadStatus(status, errorMsg string, fileSize int64) {
-	if t.db == nil || t.recordID == 0 {
-		return
-	}
-	t.db.Model(&m7s.RecordStream{}).Where("id = ?", t.recordID).Updates(map[string]interface{}{
-		"upload_status": status,
-		"upload_error":  errorMsg,
-		"file_size":     fileSize,
-	})
+	return nil
 }
 
 func init() {
@@ -271,9 +284,14 @@ func (r *Recorder) Dispose() {
 		// 注意: 文件的关闭由 writeTrailerTask.Run() 负责
 		// 不在这里关闭,避免在异步任务执行前文件被关闭
 	} else {
-		// 如果没有 muxer,需要在这里关闭文件
+		// 如果没有 muxer,需要在这里关闭文件并处理上传
 		if r.file != nil {
 			r.file.Close()
+		}
+
+		// 上传到云存储（无 muxer 情况）
+		if err := queueFileUpload(r.Event.FilePath, r.Event.ID, r.RecordJob.GetTargetStorage(), r.RecordJob.Plugin.DB, r.RecordJob.ShouldDeleteLocal()); err != nil {
+			r.Error("failed to queue upload (no muxer)", "err", err)
 		}
 	}
 }
