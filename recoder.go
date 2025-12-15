@@ -99,7 +99,7 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 
 	// 确定最终的存储类型（用于数据库记录）
 	var targetStorageType = "local"
-	for t := range recordJob.RecConf.Storage {
+	for t := range recordJob.TargetStorage {
 		if t != "local" {
 			targetStorageType = t
 			break

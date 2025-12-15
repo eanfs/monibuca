@@ -391,8 +391,14 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&webHookQueueTask)
 
 	// 初始化上传队列（用于录制完成后异步上传到云存储）
-	uploadQueue := storage.InitUploadQueue(5) // 最多5个并发上传
+	uploadQueue := storage.InitUploadQueue(24) // 最多5个并发上传
 	s.AddTask(uploadQueue)
+
+	// 启动文件清理任务（批量延时删除已上传的本地文件，减少磁盘IO）
+	cleanupTask := &storage.FileCleanupTask{
+		Queue: uploadQueue,
+	}
+	s.AddTask(cleanupTask)
 
 	// 如果配置了云存储且有数据库，启动上传重试任务
 	if s.DB != nil && len(s.Storage) > 0 {

@@ -254,6 +254,7 @@ func (st *StressTest) RunTask(task *RecordTask) {
 	startRecURL := fmt.Sprintf("%s/mp4/api/start/%s", st.baseURL, task.StreamPath)
 	if err := httpPostJSON(startRecURL, startRecordReq{
 		FilePath: task.RecPath,
+		Fragment: "60s",
 	}); err != nil {
 		task.SetError(fmt.Errorf("启动录制失败: %w", err))
 		fmt.Printf("[%d/%d] 录制失败: %v\n", task.Index+1, st.totalTasks, err)

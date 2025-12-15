@@ -562,18 +562,6 @@ sources:
     stream: live/45C
     record:
       filePath: record/mp4/live/45C
-  - url: rtsp://admin:a1234567@192.168.10.111/ch1/main/av_stream
-    stream: live/46A
-    record:
-      filePath: record/mp4/live/46A
-  - url: rtsp://admin:a1234567@192.168.10.112/ch1/main/av_stream
-    stream: live/46B
-    record:
-      filePath: record/mp4/live/46B
-  - url: rtsp://admin:a1234567@192.168.10.113/ch1/main/av_stream
-    stream: live/46C
-    record:
-      filePath: record/mp4/live/46C
   - url: rtsp://admin:a1234567@192.168.12.101:554/cam/realmonitor?channel=1&subtype=0
     stream: live/47A
     record:
@@ -602,10 +590,6 @@ sources:
     stream: live/49A
     record:
       filePath: record/mp4/live/49A
-  - url: rtsp://admin:a1234567@192.168.12.224:554/cam/realmonitor?channel=1&subtype=0
-    stream: live/49B
-    record:
-      filePath: record/mp4/live/49B
   - url: rtsp://admin:a1234567@192.168.12.111/ch1/main/av_stream
     stream: live/50A
     record:
@@ -650,7 +634,3 @@ sources:
     stream: live/53B
     record:
       filePath: record/mp4/live/53B
-  - url: rtsp://admin:a1234567@192.168.10.93/ch1/main/av_stream
-    stream: live/53C
-    record:
-      filePath: record/mp4/live/53C

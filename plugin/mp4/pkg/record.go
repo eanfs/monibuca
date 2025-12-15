@@ -40,6 +40,7 @@ type writeTrailerTask struct {
 }
 
 func (task *writeTrailerTask) Start() (err error) {
+	task.Info("write trailer start")
 	err = task.muxer.WriteTrailer(task.file)
 	if err != nil {
 		task.Error("write trailer", "err", err)
@@ -56,7 +57,7 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 将 moov 从末尾移动到前方
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
 func (t *writeTrailerTask) Run() (err error) {
-	t.Info("write trailer")
+	t.Info("write trailer running")
 	var temp *os.File
 	temp, err = os.CreateTemp("", "*.mp4")
 	if err != nil {
@@ -118,6 +119,7 @@ func (t *writeTrailerTask) Run() (err error) {
 	}
 
 	// 录制完成后，上传到云存储
+	t.Info("write trailer queueFileUpload", "id", t.recordID)
 	if err := queueFileUpload(t.filePath, t.recordID, t.targetStorage, t.db, t.deleteLocal); err != nil {
 		t.Error("failed to queue upload", "err", err)
 	}
@@ -132,6 +134,7 @@ func (t *writeTrailerTask) Run() (err error) {
 //   - targetStorage: 目标存储配置
 //   - db: 数据库连接
 //   - deleteLocal: 上传成功后是否删除本地文件
+//
 // 返回：
 //   - error: 如果上传队列未初始化或其他错误
 func queueFileUpload(
@@ -290,6 +293,7 @@ func (r *Recorder) Dispose() {
 		}
 
 		// 上传到云存储（无 muxer 情况）
+		r.Warn("write trailer Dispose queueFileUpload", "id", r.Event.ID)
 		if err := queueFileUpload(r.Event.FilePath, r.Event.ID, r.RecordJob.GetTargetStorage(), r.RecordJob.Plugin.DB, r.RecordJob.ShouldDeleteLocal()); err != nil {
 			r.Error("failed to queue upload (no muxer)", "err", err)
 		}

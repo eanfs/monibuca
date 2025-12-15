@@ -25,10 +25,12 @@ const (
 // 用于管理所有录制文件的异步上传
 type UploadQueueTask struct {
 	task.Work
-	maxConcurrent int           // 最大并发上传数
-	semaphore     chan struct{} // 并发控制信号量
-	retryInterval time.Duration // 重试间隔
-	maxRetries    int           // 最大重试次数
+	maxConcurrent  int           // 最大并发上传数
+	semaphore      chan struct{} // 并发控制信号量
+	retryInterval  time.Duration // 重试间隔
+	maxRetries     int           // 最大重试次数
+	pendingDeletes []string      // 待删除文件列表
+	deleteMutex    sync.Mutex    // 保护待删除列表的互斥锁
 }
 
 var (
@@ -70,7 +72,7 @@ type UploadTask struct {
 	RemotePath    string         // 远程存储路径
 	StorageConfig map[string]any // 存储配置
 	DB            *gorm.DB       // 数据库连接
-	Queue         *UploadQueueTask
+Queue         *UploadQueueTask
 	RetryCount    int  // 当前重试次数
 	DeleteLocal   bool // 上传成功后是否删除本地文件
 }
@@ -95,7 +97,7 @@ func (t *UploadTask) Start() error {
 
 	// 更新状态为上传中（异步更新，或者快速更新）
 	if t.DB != nil && t.RecordID > 0 {
-		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]any{
 			"upload_status": UploadStatusUploading,
 		})
 	}
@@ -203,20 +205,17 @@ func (t *UploadTask) Run() error {
 
 	// 更新数据库状态为已完成
 	if t.DB != nil && t.RecordID > 0 {
-		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]any{
 			"upload_status": UploadStatusCompleted,
 			"upload_error":  "",
 			"storage_type":  storageType,
 		})
 	}
 
-	// 上传成功后删除本地文件（可选）
-	if t.DeleteLocal {
-		if err := os.Remove(t.LocalPath); err != nil {
-			t.Warn("failed to remove local file after upload", "err", err)
-		} else {
-			t.Info("local file removed after successful upload", "path", t.LocalPath)
-		}
+	// 上传成功后将文件加入待删除队列（延时批量删除，减少磁盘IO）
+	if t.DeleteLocal && t.Queue != nil {
+		t.Queue.AddPendingDelete(t.LocalPath)
+		t.Info("file queued for batch deletion", "path", t.LocalPath)
 	}
 
 	return task.ErrTaskComplete
@@ -229,15 +228,16 @@ func (t *UploadTask) handleUploadError(err error) error {
 
 	// 更新数据库状态
 	if t.DB != nil && t.RecordID > 0 {
-		status := UploadStatusPending
+		// 无论是否达到最大重试次数，都标记为 failed
+		// 重试任务会根据 retry_count 判断是否继续重试
+		status := UploadStatusFailed
 		if t.RetryCount >= t.Queue.maxRetries {
-			status = UploadStatusFailed
-			t.Error("max retries reached, marking as failed", "retryCount", t.RetryCount)
+			t.Error("max retries reached, marking as permanently failed", "retryCount", t.RetryCount)
 		} else {
-			t.Info("will retry upload", "retryCount", t.RetryCount, "maxRetries", t.Queue.maxRetries)
+			t.Info("will retry upload later", "retryCount", t.RetryCount, "maxRetries", t.Queue.maxRetries)
 		}
 
-		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]interface{}{
+		t.DB.Table("record_streams").Where("id = ?", t.RecordID).Updates(map[string]any{
 			"upload_status": status,
 			"upload_error":  err.Error(),
 			"retry_count":   t.RetryCount,
@@ -261,6 +261,68 @@ func (q *UploadQueueTask) QueueUpload(uploadTask *UploadTask, logger *slog.Logge
 	}
 }
 
+// AddPendingDelete 将文件加入待删除队列（延时批量删除）
+func (q *UploadQueueTask) AddPendingDelete(filePath string) {
+	if q == nil {
+		return
+	}
+	q.deleteMutex.Lock()
+	defer q.deleteMutex.Unlock()
+	q.pendingDeletes = append(q.pendingDeletes, filePath)
+}
+
+// BatchDeleteFiles 批量删除待删除队列中的文件
+func (q *UploadQueueTask) BatchDeleteFiles() int {
+	if q == nil {
+		return 0
+	}
+
+	q.deleteMutex.Lock()
+	filesToDelete := make([]string, len(q.pendingDeletes))
+	copy(filesToDelete, q.pendingDeletes)
+	q.pendingDeletes = q.pendingDeletes[:0] // 清空队列
+	q.deleteMutex.Unlock()
+
+	if len(filesToDelete) == 0 {
+		return 0
+	}
+
+	deletedCount := 0
+	for _, filePath := range filesToDelete {
+		if err := os.Remove(filePath); err != nil {
+			if !os.IsNotExist(err) {
+				// 文件不存在不算错误，其他错误才记录
+				fmt.Printf("[BatchDeleteFiles] failed to delete file: %s, err: %v\n", filePath, err)
+			}
+		} else {
+			deletedCount++
+		}
+	}
+
+	return deletedCount
+}
+
+// FileCleanupTask 定时清理任务，批量删除已上传的本地文件
+type FileCleanupTask struct {
+	task.TickTask
+	Queue *UploadQueueTask
+}
+
+func (t *FileCleanupTask) GetTickInterval() time.Duration {
+	return time.Minute * 5 // 每5分钟清理一次
+}
+
+func (t *FileCleanupTask) Tick(now any) {
+	if t.Queue == nil {
+		return
+	}
+
+	deletedCount := t.Queue.BatchDeleteFiles()
+	if deletedCount > 0 {
+		t.Info("batch deleted local files", "count", deletedCount)
+	}
+}
+
 // UploadRetryTask 定时重试上传任务
 type UploadRetryTask struct {
 	task.TickTask
@@ -278,27 +340,46 @@ func (t *UploadRetryTask) Tick(now any) {
 		return
 	}
 
-	t.Info("checking for pending uploads")
+	t.Info("checking for failed uploads")
 
-	// 查询待上传和失败的记录
-	var pendingRecords []struct {
-		ID       uint
-		FilePath string
+	// 查询失败的记录（不包括 pending 状态，pending 由正常流程处理）
+	var failedRecords []struct {
+		ID          uint
+		FilePath    string
+		RetryCount  int
+		LastRetryAt time.Time
 	}
 
-	// 查询需要重试的记录
+	// 只查询失败的记录，且距离上次重试至少5分钟
 	t.DB.Table("record_streams").
-		Select("id, file_path").
-		Where("upload_status IN ? AND storage_type = ?",
-			[]string{UploadStatusPending, UploadStatusFailed},
+		Select("id, file_path, retry_count, last_retry_at").
+		Where("upload_status = ? AND storage_type = ?",
+			UploadStatusFailed,
 			"local").
 		Where("retry_count < ?", t.Queue.maxRetries).
-		Find(&pendingRecords)
+		Where("last_retry_at < ? OR last_retry_at IS NULL", time.Now().Add(-5*time.Minute)).
+		Find(&failedRecords)
 
-	t.Info("found pending uploads", "count", len(pendingRecords))
+	t.Info("found failed uploads", "count", len(failedRecords))
 
-	for _, record := range pendingRecords {
-		t.Info("retrying upload", "recordID", record.ID, "filePath", record.FilePath)
+	for _, record := range failedRecords {
+		// 检查本地文件是否存在
+		if _, err := os.Stat(record.FilePath); err != nil {
+			if os.IsNotExist(err) {
+				t.Warn("local file not found, marking as permanently failed", "recordID", record.ID, "filePath", record.FilePath)
+				// 文件不存在，标记为永久失败
+				t.DB.Table("record_streams").Where("id = ?", record.ID).Updates(map[string]any{
+					"upload_status": UploadStatusFailed,
+					"upload_error":  "local file not found",
+					"retry_count":   t.Queue.maxRetries, // 设置为最大重试次数，不再重试
+				})
+				continue
+			}
+			t.Warn("failed to check file existence", "recordID", record.ID, "filePath", record.FilePath, "err", err)
+			continue
+		}
+
+		t.Info("retrying upload", "recordID", record.ID, "filePath", record.FilePath, "retryCount", record.RetryCount)
 
 		uploadTask := NewUploadTask(
 			record.ID,

@@ -569,17 +569,34 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 
 func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (res *mp4pb.ResponseStopRecord, err error) {
 	res = &mp4pb.ResponseStopRecord{}
-	var recordJob *m7s.RecordJob
-	recordJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-		return job.StreamPath == req.StreamPath
-	})
-	if recordJob != nil {
-		t := recordJob.GetTask()
-		if t != nil {
-			res.Data = uint64(uintptr(unsafe.Pointer(t)))
-			t.Stop(task.ErrStopByUser)
+	var stoppedCount int
+	var lastTaskPtr uint64
+
+	// 遍历所有录制任务，停止所有匹配 StreamPath 的任务
+	p.Server.Records.Range(func(recordJob *m7s.RecordJob) bool {
+		if recordJob.StreamPath == req.StreamPath {
+			t := recordJob.GetTask()
+			if t != nil {
+				lastTaskPtr = uint64(uintptr(unsafe.Pointer(t)))
+				p.Info("停止录制任务", "streamPath", req.StreamPath, "filePath", recordJob.RecConf.FilePath, "fileName", recordJob.RecConf.FileName, "taskPtr", lastTaskPtr)
+				t.Stop(task.ErrStopByUser)
+				stoppedCount++
+			} else {
+				p.Warn("录制任务的 Task 为空", "streamPath", req.StreamPath, "filePath", recordJob.RecConf.FilePath)
+			}
 		}
+		return true // 继续遍历
+	})
+
+	if stoppedCount == 0 {
+		p.Warn("未找到匹配的录制任务", "streamPath", req.StreamPath)
+		err = pkg.ErrNotFound
+		return
 	}
+
+	// 返回最后一个停止的任务指针（保持向后兼容）
+	res.Data = lastTaskPtr
+	p.Info("成功停止录制任务", "streamPath", req.StreamPath, "count", stoppedCount)
 	return
 }
 
