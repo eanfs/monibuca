@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"m7s.live/v5/pkg/storage"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -57,8 +59,9 @@ var (
 type (
 	ServerConfig struct {
 		FatalDir      string                   `default:"fatal" desc:""`
-		PulseInterval time.Duration            `default:"5s" desc:"心跳事件间隔"`    //心跳事件间隔
-		DisableAll    bool                     `default:"false" desc:"禁用所有插件"` //禁用所有插件
+		PulseInterval time.Duration            `default:"5s" desc:"心跳事件间隔"`                               //心跳事件间隔
+		DisableAll    bool                     `default:"false" desc:"禁用所有插件"`                            //禁用所有插件
+		Armed         bool                     `default:"false" desc:"布防状态,true=布防(启用录像),false=撤防(禁用录像)"` //布防状态
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
 		Storage       map[string]any           `desc:"全局存储配置"` // 全局存储配置
@@ -77,6 +80,7 @@ type (
 				Role     string `default:"user" desc:"角色,可选值:admin,user"`
 			} `desc:"用户列表,仅在启用登录机制时生效"`
 		} `desc:"管理员界面配置"`
+		Storage map[string]any
 	}
 	WaitStream struct {
 		StreamPath string
@@ -124,6 +128,7 @@ type (
 		configFileContent []byte
 		disabledPlugins   []*Plugin
 		prometheusDesc    prometheusDesc
+		Storage           storage.Storage
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -267,6 +272,7 @@ func (s *Server) Start() (err error) {
 		s.Config.ParseUserFile(cg["global"])
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
+	s.initStorage()
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})
 	if err != nil {
 		s.Error("SetCrashOutput", "error", err)
@@ -648,5 +654,25 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 				pullProxy.GetPullJob().Progress = &w.Progress
 			}
 		}
+	}
+}
+
+// initStorage 创建全局存储实例，失败时回落到本地存储（空配置）
+func (s *Server) initStorage() {
+	for t, conf := range s.ServerConfig.Storage {
+		st, err := storage.CreateStorage(t, conf)
+		if err == nil {
+			s.Storage = st
+			s.Info("global storage created", "type", t)
+			return
+		}
+		s.Warn("create storage failed", "type", t, "err", err)
+	}
+	// 兜底：local 需要路径，这里用当前目录
+	if st, err := storage.CreateStorage("local", "."); err == nil {
+		s.Storage = st
+		s.Info("fallback to local storage", "path", ".")
+	} else {
+		s.Error("fallback local storage failed", "err", err)
 	}
 }

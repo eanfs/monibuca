@@ -1,13 +1,13 @@
 package flv
 
 import (
-    "context"
-    "fmt"
-    "io"
-    "os"
-    "path/filepath"
-    "strings"
-    "time"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
@@ -129,13 +129,13 @@ func writeMetaTag(file storage.File, suber *m7s.Subscriber, filepositions []uint
 	}
 	amf.GetBuffer().Reset()
 	marshals := amf.Marshals("onMetaData", metaData)
-	task := &writeMetaTagTask{
+	wrTask := &writeMetaTagTask{
 		file:     file,
 		flags:    flags,
 		metaData: marshals,
 	}
-	task.Logger = suber.Logger.With("file", file.Name())
-	writeMetaTagQueueTask.AddTask(task)
+	wrTask.Logger = suber.Logger.With("file", file.Name())
+	writeMetaTagQueueTask.AddTask(wrTask)
 }
 
 func NewRecorder(conf config.Record) m7s.IRecorder {
@@ -149,50 +149,44 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-    if fn := job.RecConf.FileName; fn != "" {
-        if !strings.HasSuffix(strings.ToLower(fn), ".flv") {
-            fn = fn + ".flv"
-        }
-        return filepath.Join(job.RecConf.FilePath, fn)
-    }
-    if job.RecConf.Fragment == 0 || job.RecConf.Append {
-        return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
-    }
-    return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
+	if fn := job.RecConf.FileName; fn != "" {
+		if !strings.HasSuffix(strings.ToLower(fn), ".flv") {
+			fn = fn + ".flv"
+		}
+		return filepath.Join(job.RecConf.FilePath, fn)
+	}
+	if job.RecConf.Fragment == 0 || job.RecConf.Append {
+		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
+	}
+	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
-    r.RecordJob.RecConf.Type = "flv"
-    err = r.CreateStream(start, CustomFileName)
-    if err != nil {
-        return
-    }
-    r.Debug("flv create file", "filePath", r.Event.FilePath)
+	r.RecordJob.RecConf.Type = "flv"
+	err = r.CreateStream(start, CustomFileName)
+	if err != nil {
+		return
+	}
+	r.Debug("flv create file", "filePath", r.Event.FilePath)
 
 	// 获取存储实例
-    storage := r.RecordJob.GetStorage()
+	st := r.RecordJob.GetStorage()
 
-    if storage != nil {
-        // 使用存储抽象层
-        r.file, err = storage.CreateFile(context.Background(), r.Event.FilePath)
-        if err != nil {
-            return
-        }
-        r.writer = NewFlvWriter(r.file)
-    } else {
-		// 默认本地文件行为
-        if r.file, err = os.OpenFile(r.Event.FilePath, os.O_CREATE|os.O_RDWR, 0666); err != nil {
-            return
-        }
-        r.writer = NewFlvWriter(r.file)
-    }
-    r.Debug("flv write head", "streamPath", r.Event.StreamPath)
+	if st == nil {
+		return fmt.Errorf("global storage is nil")
+	}
+	// 使用存储抽象层
+	r.file, err = st.CreateFile(context.Background(), r.Event.FilePath)
+	if err != nil {
+		return
+	}
+	r.writer = NewFlvWriter(r.file)
 
-    _, err = r.writer.Write(FLVHead)
-    if err != nil {
-        return
-    }
-    return
+	_, err = r.writer.Write(FLVHead)
+	if err != nil {
+		return
+	}
+	return
 }
 
 func (r *Recorder) writeTailer(end time.Time) {

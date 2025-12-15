@@ -55,7 +55,11 @@ func (r *Recorder) writeTailer(end time.Time) {
 	if !r.RecordJob.RecConf.RealTime {
 		defer r.TsInMemory.Recycle()
 		var err error
-		r.file, err = r.RecordJob.GetStorage().CreateFile(context.Background(), r.Event.FilePath)
+		st := r.RecordJob.GetStorage()
+		if st == nil {
+			return
+		}
+		r.file, err = st.CreateFile(context.Background(), r.Event.FilePath)
 		if err != nil {
 			return
 		}
@@ -71,7 +75,11 @@ func (r *Recorder) Dispose() {
 
 func (r *Recorder) createNewTs() (err error) {
 	if r.RecordJob.RecConf.RealTime {
-		r.file, err = r.RecordJob.GetStorage().CreateFile(context.Background(), r.Event.FilePath)
+		st := r.RecordJob.GetStorage()
+		if st == nil {
+			return
+		}
+		r.file, err = st.CreateFile(context.Background(), r.Event.FilePath)
 	}
 	return
 }
