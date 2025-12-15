@@ -1,36 +1,42 @@
-# Running Stage 
-FROM linuxserver/ffmpeg:latest
+# 多架构运行镜像 - 支持 AMD64 和 ARM64（使用清华大学镜像源）
+FROM --platform=$BUILDPLATFORM swr.cn-east-3.myhuaweicloud.com/intetech/ffmpeg:latest AS base
 
-WORKDIR /monibuca 
+WORKDIR /monibuca
 
-# Copy the pre-compiled binary from the build context
-# The GitHub Actions workflow prepares 'monibuca_linux' in the context root
+# 配置清华大学镜像源（DEB822 格式）
+RUN echo 'Types: deb\n\
+URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu\n\
+Suites: noble noble-updates noble-backports\n\
+Components: main restricted universe multiverse\n\
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n\
+\n\
+Types: deb\n\
+URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu\n\
+Suites: noble-security\n\
+Components: main restricted universe multiverse\n\
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources
 
-COPY monibuca_amd64 ./monibuca_amd64
-COPY monibuca_arm64 ./monibuca_arm64
+# 安装必要的工具（使用清华源加速）
+RUN apt-get update && \
+    apt-get install -y tcpdump && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY admin.zip ./admin.zip
+# 复制二进制文件
+ARG TARGETARCH
+COPY monibuca_${TARGETARCH} ./monibuca_linux
+
+# 复制静态资源
+COPY example/default/admin.zip ./admin.zip
 COPY example/default/test.mp4 ./test.mp4
 COPY example/default/test.flv ./test.flv
 
-# Install tcpdump
-RUN apt-get update && apt-get install -y tcpdump && rm -rf /var/lib/apt/lists/*
-
-# Copy the configuration file from the build context
+# 复制配置文件
 COPY example/default/config.yaml /etc/monibuca/config.yaml
 
-# Export necessary ports 
-EXPOSE 6000 8080 8443 1935 554 5060 9000-20000
+# 导出端口
+EXPOSE 6000 8080 8443 1935 554 5060 9000-20000/udp
 EXPOSE 5060/udp 44944/udp
 
-RUN if [ "$(uname -m)" = "aarch64" ]; then \
-      mv ./monibuca_arm64 ./monibuca_linux; \
-      rm ./monibuca_amd64; \
-    else \
-      mv ./monibuca_amd64 ./monibuca_linux; \
-      rm ./monibuca_arm64; \
-    fi
-
-
-ENTRYPOINT [ "./monibuca_linux"]
+# 设置入口点
+ENTRYPOINT ["./monibuca_linux"]
 CMD ["-c", "/etc/monibuca/config.yaml"]
