@@ -1,8 +1,6 @@
 module m7s.live/v5
 
-go 1.24
-
-toolchain go1.24.10
+go 1.24.10
 
 require (
 	github.com/VictoriaMetrics/VictoriaMetrics v1.102.0
@@ -155,3 +153,5 @@ require (
 	golang.org/x/sys v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/langhuihui/gotask => /Users/lirichen/Work/GithubRepo/gotask
