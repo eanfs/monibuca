@@ -15,8 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"m7s.live/v5/pkg/storage"
-
 	"gopkg.in/yaml.v3"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -64,7 +62,6 @@ type (
 		Armed         bool                     `default:"false" desc:"布防状态,true=布防(启用录像),false=撤防(禁用录像)"` //布防状态
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
-		Storage       map[string]any           `desc:"全局存储配置"` // 全局存储配置
 		PullProxy     []*PullProxyConfig
 		PushProxy     []*PushProxyConfig
 		Admin         struct {
@@ -407,11 +404,11 @@ func (s *Server) Start() (err error) {
 	s.AddTask(cleanupTask)
 
 	// 如果配置了云存储且有数据库，启动上传重试任务
-	if s.DB != nil && len(s.Storage) > 0 {
+	if s.DB != nil && len(s.ServerConfig.Storage) > 0 {
 		retryTask := &storage.UploadRetryTask{
 			DB:            s.DB,
 			Queue:         uploadQueue,
-			StorageConfig: s.Storage,
+			StorageConfig: s.ServerConfig.Storage,
 		}
 		s.AddTask(retryTask)
 	}

@@ -84,12 +84,6 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	filePath := customFileName(recordJob)
 	fileName := filepath.Base(filePath)
 
-	var storageType string
-	recordJob.storage = recordJob.Plugin.Server.Storage
-	if recordJob.storage != nil {
-		storageType = recordJob.storage.GetKey()
-	}
-
 	// 始终使用本地存储进行录制
 	recordJob.storage = r.createLocalStorage()
 	if recordJob.storage == nil {
