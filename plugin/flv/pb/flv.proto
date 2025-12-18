@@ -1,0 +1,45 @@
+syntax = "proto3";
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "global.proto";
+package flv;
+option go_package="m7s.live/v5/plugin/flv/pb";
+
+service api {
+  rpc List (ReqRecordList) returns (global.RecordResponseList) {
+    option (google.api.http) = {
+      get: "/flv/api/list/{streamPath=**}"
+    };
+  }
+  rpc Catalog (google.protobuf.Empty) returns (global.ResponseCatalog) {
+    option (google.api.http) = {
+      get: "/flv/api/catalog"
+    };
+  }
+  rpc Delete (ReqRecordDelete) returns (global.ResponseDelete) {
+    option (google.api.http) = {
+      post: "/flv/api/delete/{streamPath=**}"
+      body: "*"
+    };
+  }
+}
+
+message ReqRecordList {
+  string streamPath = 1;
+  string range = 2;
+  string start = 3;
+  string end = 4;
+  uint32 pageNum = 5;
+  uint32 pageSize = 6;
+  string mode = 7;
+}
+
+message ReqRecordDelete {
+  string streamPath = 1;
+  repeated uint32 ids = 2;
+  string startTime = 3;
+  string endTime = 4;
+  string range = 5;
+} 

@@ -166,9 +166,10 @@ func (i *NodeInfo) PrintableName() string {
 // NameComponents returns the components of the printable name to be used for a node.
 func (i *NodeInfo) NameComponents() []string {
 	var name []string
-	if i.Address != 0 {
-		name = append(name, fmt.Sprintf("%016x", i.Address))
-	}
+	// 注释掉内存地址显示，使图形更简洁
+	// if i.Address != 0 {
+	//	name = append(name, fmt.Sprintf("%016x", i.Address))
+	// }
 	if fun := i.Name; fun != "" {
 		name = append(name, fun)
 	}

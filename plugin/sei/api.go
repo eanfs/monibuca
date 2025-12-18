@@ -2,10 +2,10 @@ package plugin_sei
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 
 	globalPB "m7s.live/v5/pb"
-	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	pb "m7s.live/v5/plugin/sei/pb"
 	sei "m7s.live/v5/plugin/sei/pkg"
@@ -17,9 +17,9 @@ func (conf *SEIPlugin) Insert(ctx context.Context, req *pb.InsertRequest) (*glob
 	if targetStreamPath == "" {
 		targetStreamPath = streamPath + "/sei"
 	}
-	ok := conf.Server.Streams.Has(streamPath)
-	if !ok {
-		return nil, pkg.ErrNotFound
+	publisher, err := conf.Server.GetPublisher(streamPath)
+	if err != nil {
+		return nil, err
 	}
 	var transformer *sei.Transformer
 	if tm, ok := conf.Server.Transforms.Get(targetStreamPath); ok {
@@ -29,7 +29,7 @@ func (conf *SEIPlugin) Insert(ctx context.Context, req *pb.InsertRequest) (*glob
 		}
 	} else {
 		transformer = sei.NewTransform().(*sei.Transformer)
-		transformer.TransformJob.Init(transformer, &conf.Plugin, streamPath, config.Transform{
+		transformer.TransformJob.Init(transformer, &conf.Plugin, publisher, config.Transform{
 			Output: []config.TransfromOutput{
 				{
 					Target:     targetStreamPath,
@@ -39,9 +39,16 @@ func (conf *SEIPlugin) Insert(ctx context.Context, req *pb.InsertRequest) (*glob
 		}).WaitStarted()
 	}
 	t := req.Type
-
-	transformer.AddSEI(byte(t), req.Data)
-	err := transformer.WaitStarted()
+	var data []byte
+	switch req.Format {
+	case "json", "string":
+		data = []byte(req.Data)
+		data = []byte(req.Data)
+	case "base64":
+		data, err = base64.StdEncoding.DecodeString(req.Data)
+	}
+	transformer.AddSEI(byte(t), data)
+	err = transformer.WaitStarted()
 	if err != nil {
 		return nil, err
 	}

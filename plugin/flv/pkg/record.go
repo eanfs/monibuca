@@ -1,17 +1,18 @@
 package flv
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/task"
-	"m7s.live/v5/pkg/util"
+	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
@@ -27,7 +28,7 @@ func init() {
 
 type writeMetaTagTask struct {
 	task.Task
-	file     *os.File
+	file     storage.File
 	writer   *FlvWriter
 	flags    byte
 	metaData []byte
@@ -77,7 +78,7 @@ func (task *writeMetaTagTask) Start() (err error) {
 	}
 }
 
-func writeMetaTag(file *os.File, suber *m7s.Subscriber, filepositions []uint64, times []float64, duration *int64) {
+func writeMetaTag(file storage.File, suber *m7s.Subscriber, filepositions []uint64, times []float64, duration *int64) {
 	ar, vr := suber.AudioReader, suber.VideoReader
 	hasAudio, hasVideo := ar != nil, vr != nil
 	var amf rtmp.AMF
@@ -114,7 +115,7 @@ func writeMetaTag(file *os.File, suber *m7s.Subscriber, filepositions []uint64, 
 		}
 	}
 	amf.Marshals("onMetaData", metaData)
-	offset := amf.Len() + 13 + 15
+	offset := amf.GetBuffer().Len() + 13 + 15
 	if keyframesCount := len(filepositions); keyframesCount > 0 {
 		metaData["filesize"] = uint64(offset) + filepositions[keyframesCount-1]
 		for i := range filepositions {
@@ -125,119 +126,137 @@ func writeMetaTag(file *os.File, suber *m7s.Subscriber, filepositions []uint64, 
 			"times":         times,
 		}
 	}
-	amf.Reset()
+	amf.GetBuffer().Reset()
 	marshals := amf.Marshals("onMetaData", metaData)
-	task := &writeMetaTagTask{
+	wrTask := &writeMetaTagTask{
 		file:     file,
 		flags:    flags,
 		metaData: marshals,
 	}
-	task.Logger = suber.Logger.With("file", file.Name())
-	writeMetaTagQueueTask.AddTask(task)
+	wrTask.Logger = suber.Logger.With("file", file.Name())
+	writeMetaTagQueueTask.AddTask(wrTask)
 }
 
-func NewRecorder() m7s.IRecorder {
+func NewRecorder(conf config.Record) m7s.IRecorder {
 	return &Recorder{}
 }
 
 type Recorder struct {
 	m7s.DefaultRecorder
+	writer *FlvWriter
+	file   storage.File
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-	if job.Fragment == 0 || job.Append {
-		return fmt.Sprintf("%s.flv", job.FilePath)
+	if job.RecConf.Fragment == 0 || job.RecConf.Append {
+		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
 	}
-	return filepath.Join(job.FilePath, time.Now().Local().Format("2006-01-02T15:04:05")+".flv")
+	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%d.flv", time.Now().Unix()))
+}
+
+func (r *Recorder) createStream(start time.Time) (err error) {
+	r.RecordJob.RecConf.Type = "flv"
+	err = r.CreateStream(start, CustomFileName)
+	if err != nil {
+		return
+	}
+
+	// 获取存储实例
+	st := r.RecordJob.GetStorage()
+
+	if st == nil {
+		return fmt.Errorf("global storage is nil")
+	}
+	// 使用存储抽象层
+	r.file, err = st.CreateFile(context.Background(), r.Event.FilePath)
+	if err != nil {
+		return
+	}
+	r.writer = NewFlvWriter(r.file)
+
+	_, err = r.writer.Write(FLVHead)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (r *Recorder) writeTailer(end time.Time) {
+	if r.Event.EndTime.After(r.Event.StartTime) {
+		return
+	}
+	r.Event.EndTime = end
+	if r.RecordJob.Plugin.DB != nil {
+		if r.RecordJob.Event != nil {
+			r.RecordJob.Plugin.DB.Save(&r.Event)
+		} else {
+			r.RecordJob.Plugin.DB.Save(&r.Event.RecordStream)
+		}
+		writeMetaTagQueueTask.AddTask(m7s.NewEventRecordCheck(r.Event.Type, r.Event.StreamPath, r.RecordJob.Plugin.DB))
+	}
+}
+
+func (r *Recorder) Dispose() {
+	r.writeTailer(time.Now())
 }
 
 func (r *Recorder) Run() (err error) {
-	var file *os.File
 	var filepositions []uint64
 	var times []float64
 	var offset int64
 	var duration int64
 	ctx := &r.RecordJob
 	suber := ctx.Subscriber
-	noFragment := ctx.Fragment == 0 || ctx.Append
-	if noFragment {
-		if file, err = os.OpenFile(CustomFileName(ctx), os.O_CREATE|os.O_RDWR|util.Conditional(ctx.Append, os.O_APPEND, os.O_TRUNC), 0666); err != nil {
-			return
-		}
-		defer writeMetaTag(file, suber, filepositions, times, &duration)
-	}
-	if ctx.Append {
-		var metaData rtmp.EcmaArray
-		metaData, err = ReadMetaData(file)
-		keyframes := metaData["keyframes"].(map[string]any)
-		filepositions = slices.Collect(func(yield func(uint64) bool) {
-			for _, v := range keyframes["filepositions"].([]float64) {
-				yield(uint64(v))
-			}
-		})
-		times = keyframes["times"].([]float64)
-		if _, err = file.Seek(-4, io.SeekEnd); err != nil {
-			ctx.Error("seek file failed", "err", err)
-			_, err = file.Write(FLVHead)
-		} else {
-			tmp := make(util.Buffer, 4)
-			tmp2 := tmp
-			_, err = file.Read(tmp)
-			tagSize := tmp.ReadUint32()
-			tmp = tmp2
-			_, err = file.Seek(int64(tagSize), io.SeekEnd)
-			_, err = file.Read(tmp2)
-			ts := tmp2.ReadUint24() | (uint32(tmp[3]) << 24)
-			ctx.Info("append flv", "last tagSize", tagSize, "last ts", ts)
-			suber.StartAudioTS = time.Duration(ts) * time.Millisecond
-			suber.StartVideoTS = time.Duration(ts) * time.Millisecond
-			offset, err = file.Seek(0, io.SeekEnd)
-		}
-	} else if ctx.Fragment == 0 {
-		_, err = file.Write(FLVHead)
-	} else {
-		if file, err = os.OpenFile(CustomFileName(ctx), os.O_CREATE|os.O_RDWR, 0666); err != nil {
-			return
-		}
-		_, err = file.Write(FLVHead)
-	}
-	writer := NewFlvWriter(file)
-	checkFragment := func(absTime uint32) {
-		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.Fragment {
-			writeMetaTag(file, suber, filepositions, times, &duration)
+	noFragment := ctx.RecConf.Fragment == 0 || ctx.RecConf.Append
+	checkFragment := func(absTime uint32, writeTime time.Time) {
+		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.RecConf.Fragment {
+			writeMetaTag(r.file, suber, filepositions, times, &duration)
+			r.writeTailer(writeTime)
 			filepositions = []uint64{0}
 			times = []float64{0}
 			offset = 0
-			if file, err = os.OpenFile(CustomFileName(ctx), os.O_CREATE|os.O_RDWR, 0666); err != nil {
+			if err = r.createStream(writeTime); err != nil {
 				return
 			}
-			_, err = file.Write(FLVHead)
-			writer = NewFlvWriter(file)
 			if vr := suber.VideoReader; vr != nil {
 				vr.ResetAbsTime()
-				seq := vr.Track.SequenceFrame.(*rtmp.RTMPVideo)
-				err = writer.WriteTag(FLV_TAG_TYPE_VIDEO, 0, uint32(seq.Size), seq.Buffers...)
+				seq := vr.Track.ICodecCtx.(pkg.ISequenceCodecCtx[*rtmp.VideoFrame]).GetSequenceFrame()
+				err = r.writer.WriteTag(FLV_TAG_TYPE_VIDEO, 0, uint32(seq.Size), seq.Buffers...)
 				offset = int64(seq.Size + 15)
+			}
+			if ar := suber.AudioReader; ar != nil {
+				ar.ResetAbsTime()
+				if seqCtx, ok := ar.Track.ICodecCtx.(pkg.ISequenceCodecCtx[*rtmp.AudioFrame]); ok {
+					seq := seqCtx.GetSequenceFrame()
+					err = r.writer.WriteTag(FLV_TAG_TYPE_AUDIO, 0, uint32(seq.Size), seq.Buffers...)
+					offset += int64(seq.Size + 15)
+				}
 			}
 		}
 	}
 
-	return m7s.PlayBlock(ctx.Subscriber, func(audio *rtmp.RTMPAudio) (err error) {
+	return m7s.PlayBlock(ctx.Subscriber, func(audio *rtmp.AudioFrame) (err error) {
 		if suber.VideoReader == nil && !noFragment {
-			checkFragment(suber.AudioReader.AbsTime)
+			checkFragment(suber.AudioReader.AbsTime, suber.AudioReader.Value.WriteTime)
 		}
-		err = writer.WriteTag(FLV_TAG_TYPE_AUDIO, suber.AudioReader.AbsTime, uint32(audio.Size), audio.Buffers...)
+		err = r.writer.WriteTag(FLV_TAG_TYPE_AUDIO, suber.AudioReader.AbsTime, uint32(audio.Size), audio.Buffers...)
 		offset += int64(audio.Size + 15)
 		return
-	}, func(video *rtmp.RTMPVideo) (err error) {
+	}, func(video *rtmp.VideoFrame) (err error) {
+		if r.Event.StartTime.IsZero() {
+			err = r.createStream(suber.VideoReader.Value.WriteTime)
+			if err != nil {
+				return err
+			}
+		}
 		if suber.VideoReader.Value.IDR {
 			filepositions = append(filepositions, uint64(offset))
 			times = append(times, float64(suber.VideoReader.AbsTime)/1000)
 			if !noFragment {
-				checkFragment(suber.VideoReader.AbsTime)
+				checkFragment(suber.VideoReader.AbsTime, suber.VideoReader.Value.WriteTime)
 			}
 		}
-		err = writer.WriteTag(FLV_TAG_TYPE_VIDEO, suber.VideoReader.AbsTime, uint32(video.Size), video.Buffers...)
+		err = r.writer.WriteTag(FLV_TAG_TYPE_VIDEO, suber.VideoReader.AbsTime, uint32(video.Size), video.Buffers...)
 		offset += int64(video.Size + 15)
 		return
 	})

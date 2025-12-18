@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+
+	. "github.com/langhuihui/gomem"
 )
 
 func TestBuffer(t *testing.T) {
@@ -24,7 +26,7 @@ func TestReadBytesTo(t *testing.T) {
 		s := RandomString(100)
 		t.Logf("s:%s", s)
 		var m Memory
-		m.AppendOne([]byte(s))
+		m.PushOne([]byte(s))
 		r := m.NewReader()
 		seededRand := rand.New(rand.NewSource(time.Now().UnixNano()))
 		var total []byte
@@ -34,7 +36,7 @@ func TestReadBytesTo(t *testing.T) {
 				continue
 			}
 			buf := make([]byte, i)
-			n := r.ReadBytesTo(buf)
+			n, _ := r.Read(buf)
 			t.Logf("n:%d buf:%s", n, string(buf))
 			total = append(total, buf[:n]...)
 			if n == 0 {

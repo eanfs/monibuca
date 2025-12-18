@@ -2,15 +2,16 @@ package plugin_cascade
 
 import (
 	"bufio"
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 
+	task "github.com/langhuihui/gotask"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/pkg/util"
 
 	"context"
@@ -28,7 +29,7 @@ type CascadeServerPlugin struct {
 	clients      util.Collection[uint, *cascade.Instance]
 }
 
-func (c *CascadeServerPlugin) OnInit() (err error) {
+func (c *CascadeServerPlugin) Start() (err error) {
 	if c.GetCommonConf().Quic.ListenAddr == "" {
 		return pkg.ErrNotListen
 	}
@@ -49,28 +50,32 @@ func (c *CascadeServerPlugin) OnInit() (err error) {
 	return
 }
 
-var _ = m7s.InstallPlugin[CascadeServerPlugin](m7s.DefaultYaml(`quic:
-  listenaddr: :44944`), &pb.Server_ServiceDesc, pb.RegisterServerHandler)
+var _ = m7s.InstallPlugin[CascadeServerPlugin](m7s.PluginMeta{
+	DefaultYaml: `quic:
+  listenaddr: :44944`,
+	ServiceDesc:         &pb.Server_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterServerHandler,
+})
 
 type CascadeServer struct {
 	task.Work
-	quic.Connection
+	*quic.Conn
 	conf   *CascadeServerPlugin
 	client *cascade.Instance
 }
 
-func (c *CascadeServerPlugin) OnQUICConnect(conn quic.Connection) task.ITask {
+func (c *CascadeServerPlugin) OnQUICConnect(conn *quic.Conn) task.ITask {
 	ret := &CascadeServer{
-		Connection: conn,
-		conf:       c,
+		Conn: conn,
+		conf: c,
 	}
 	ret.Logger = c.Logger.With("remoteAddr", conn.RemoteAddr().String())
 	return ret
 }
 
 func (task *CascadeServer) Go() (err error) {
-	remoteAddr := task.Connection.RemoteAddr().String()
-	var stream quic.Stream
+	remoteAddr := task.Conn.RemoteAddr().String()
+	var stream *quic.Stream
 	if stream, err = task.AcceptStream(task); err != nil {
 		task.Error("AcceptStream", "err", err)
 		return
@@ -83,12 +88,17 @@ func (task *CascadeServer) Go() (err error) {
 	}
 	secret = secret[:len(secret)-1] // 去掉msg末尾的0
 	child := &cascade.Instance{}
-	tx := task.conf.DB.First(child, "secret = ?", secret)
-	err = tx.Error
+	if secret != "" {
+		tx := task.conf.DB.First(child, "secret = ?", secret)
+		err = tx.Error
+	} else {
+		tx := task.conf.DB.First(child, "ip = ?", remoteAddr)
+		err = tx.Error
+	}
 	if err == nil {
 		task.conf.clients.Set(child)
 	} else if task.conf.AutoRegister {
-		child.Secret = secret
+		child.Secret = sql.NullString{String: secret, Valid: secret != ""}
 		child.IP = remoteAddr
 		err = task.conf.DB.First(child, "ip = ?", remoteAddr).Error
 		if err != nil {
@@ -106,16 +116,16 @@ func (task *CascadeServer) Go() (err error) {
 		child.Name = remoteAddr
 	}
 	err = task.conf.DB.Updates(child).Error
-	child.Connection = task.Connection
+	child.Conn = task.Conn
 	task.client = child
 	_, err = stream.Write([]byte{0, 0})
 	err = stream.Close()
 	task.Info("client register:", "remoteAddr", remoteAddr)
 	for err == nil {
 		var receiveRequestTask cascade.ReceiveRequestTask
-		receiveRequestTask.Connection = task.Connection
+		receiveRequestTask.Conn = task.Conn
 		receiveRequestTask.Plugin = &task.conf.Plugin
-		receiveRequestTask.Handler = task.conf.GetGlobalCommonConf().GetHandler()
+		receiveRequestTask.Handler = task.conf.GetGlobalCommonConf().GetHandler(task.Logger)
 		if receiveRequestTask.Stream, err = task.AcceptStream(task); err == nil {
 			task.AddTask(&receiveRequestTask)
 		}
@@ -124,8 +134,8 @@ func (task *CascadeServer) Go() (err error) {
 }
 
 func (task *CascadeServer) Dispose() {
-	if task.Connection != nil {
-		task.Connection.CloseWithError(quic.ApplicationErrorCode(0), task.StopReason().Error())
+	if task.Conn != nil {
+		task.Conn.CloseWithError(quic.ApplicationErrorCode(0), task.StopReason().Error())
 	}
 	if task.client != nil {
 		task.client.Online = false
@@ -184,7 +194,7 @@ func (c *CascadeServerPlugin) CreateClient(ctx context.Context, req *pb.CreateCl
 
 	instance := &cascade.Instance{
 		Name:   req.Name,
-		Secret: req.Secret,
+		Secret: sql.NullString{String: req.Secret, Valid: req.Secret != ""},
 	}
 
 	if err = c.DB.Create(instance).Error; err != nil {
@@ -212,7 +222,7 @@ func (c *CascadeServerPlugin) UpdateClient(ctx context.Context, req *pb.UpdateCl
 	}
 
 	instance.Name = req.Name
-	instance.Secret = req.Secret
+	instance.Secret = sql.NullString{String: req.Secret, Valid: req.Secret != ""}
 
 	if err = c.DB.Save(instance).Error; err != nil {
 		return

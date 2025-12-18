@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-// aligned(8) class TrackFragmentBaseMediaDecodeTimeBox extends FullBox(‘tfdt’, version, 0) {
+// aligned(8) class TrackFragmentBaseMediaDecodeTimeBox extends FullBox('tfdt', version, 0) {
 // 	if (version==1) {
 // 		  unsigned int(64) baseMediaDecodeTime;
 // 	   } else { // version==0
@@ -14,43 +14,58 @@ import (
 // 	}
 
 type TrackFragmentBaseMediaDecodeTimeBox struct {
+	FullBox
 	BaseMediaDecodeTime uint64
 }
 
-func NewTrackFragmentBaseMediaDecodeTimeBox(fragStart uint64) *TrackFragmentBaseMediaDecodeTimeBox {
+func CreateTrackFragmentBaseMediaDecodeTimeBox(baseMediaDecodeTime uint64) *TrackFragmentBaseMediaDecodeTimeBox {
+	version := uint8(0)
+	size := uint32(FullBoxLen + 4)
+	if baseMediaDecodeTime > 0xFFFFFFFF {
+		version = 1
+		size = uint32(FullBoxLen + 8)
+	}
 	return &TrackFragmentBaseMediaDecodeTimeBox{
-		BaseMediaDecodeTime: fragStart,
+		FullBox: FullBox{
+			BaseBox: BaseBox{
+				typ:  TypeTFDT,
+				size: size,
+			},
+			Version: version,
+			Flags:   [3]byte{0, 0, 0},
+		},
+		BaseMediaDecodeTime: baseMediaDecodeTime,
 	}
 }
 
-func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Size() uint64 {
-	return FullBoxLen + 8
-}
-
-func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Decode(r io.Reader, size uint32) (offset int, err error) {
-	var fullbox FullBox
-	if offset, err = fullbox.Decode(r); err != nil {
-		return
-	}
-
-	buf := make([]byte, size-12)
-	if _, err = io.ReadFull(r, buf); err != nil {
-		return 0, err
-	}
-	if fullbox.Version == 1 {
-		tfdt.BaseMediaDecodeTime = binary.BigEndian.Uint64(buf)
-		offset += 8
+func (box *TrackFragmentBaseMediaDecodeTimeBox) WriteTo(w io.Writer) (n int64, err error) {
+	var tmp [8]byte
+	if box.Version == 1 {
+		binary.BigEndian.PutUint64(tmp[:], box.BaseMediaDecodeTime)
+		nn, err := w.Write(tmp[:8])
+		return int64(nn), err
 	} else {
-		tfdt.BaseMediaDecodeTime = uint64(binary.BigEndian.Uint32(buf))
-		offset += 4
+		binary.BigEndian.PutUint32(tmp[:], uint32(box.BaseMediaDecodeTime))
+		nn, err := w.Write(tmp[:4])
+		return int64(nn), err
 	}
-	return
 }
 
-func (tfdt *TrackFragmentBaseMediaDecodeTimeBox) Encode() (int, []byte) {
-	fullbox := NewFullBox(TypeTFDT, 1)
-	fullbox.Box.Size = tfdt.Size()
-	offset, boxdata := fullbox.Encode()
-	binary.BigEndian.PutUint64(boxdata[offset:], tfdt.BaseMediaDecodeTime)
-	return offset + 8, boxdata
+func (box *TrackFragmentBaseMediaDecodeTimeBox) Unmarshal(buf []byte) (IBox, error) {
+	if box.Version == 1 {
+		if len(buf) < 8 {
+			return nil, io.ErrShortBuffer
+		}
+		box.BaseMediaDecodeTime = binary.BigEndian.Uint64(buf[:8])
+	} else {
+		if len(buf) < 4 {
+			return nil, io.ErrShortBuffer
+		}
+		box.BaseMediaDecodeTime = uint64(binary.BigEndian.Uint32(buf[:4]))
+	}
+	return box, nil
+}
+
+func init() {
+	RegisterBox[*TrackFragmentBaseMediaDecodeTimeBox](TypeTFDT)
 }

@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"google.golang.org/protobuf/types/known/emptypb"
-	m7s "m7s.live/v5"
 	"net/url"
 	"os"
 	"path"
 	"strconv"
 	"strings"
+
+	"google.golang.org/protobuf/types/known/emptypb"
+	m7s "m7s.live/v5"
 
 	globalPB "m7s.live/v5/pb"
 	"m7s.live/v5/plugin/transcode/pb"
@@ -137,13 +138,8 @@ func parseCrop(cropString string) (string, error) {
 
 func (t *TranscodePlugin) Launch(ctx context.Context, transReq *pb.TransRequest) (response *globalPB.SuccessResponse, err error) {
 	var publisher *m7s.Publisher
-	var ok bool
-	t.Server.Server.Call(func() error {
-		publisher, ok = t.Server.Streams.Get(transReq.SrcStream)
-		return nil
-	})
-	if !ok {
-		err = fmt.Errorf("src stream not found")
+	publisher, err = t.Server.GetPublisher(transReq.SrcStream)
+	if err != nil {
 		return
 	}
 	response = &globalPB.SuccessResponse{}
@@ -318,7 +314,7 @@ func (t *TranscodePlugin) Close(ctx context.Context, closeReq *pb.TransTwin) (re
 
 func (t *TranscodePlugin) List(context.Context, *emptypb.Empty) (*pb.TransListResponse, error) {
 	data := make([]*pb.TransTwin, 0)
-	t.Server.Transforms.Call(func() error {
+	t.Server.Transforms.Call(func() {
 		for transformedMap := range t.Server.Transforms.Range {
 			if _, ok := transformedMap.TransformJob.Transformer.(*transcode.Transformer); ok {
 				data = append(data, &pb.TransTwin{
@@ -327,7 +323,6 @@ func (t *TranscodePlugin) List(context.Context, *emptypb.Empty) (*pb.TransListRe
 				})
 			}
 		}
-		return nil
 	})
 	return &pb.TransListResponse{
 		Code:    0,

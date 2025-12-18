@@ -1,9 +1,12 @@
 package box
 
+import "github.com/langhuihui/gomem"
+
 type Sample struct {
-	KeyFrame bool
-	Data     []byte
-	DTS, PTS uint64
-	Offset   int64
-	Size     int
+	gomem.Memory
+	KeyFrame  bool
+	Timestamp uint32
+	CTS       uint32
+	Offset    int64
+	Duration  uint32
 }

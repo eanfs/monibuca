@@ -1,23 +1,23 @@
 syntax = "proto3";
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "global.proto";
 package mp4;
 option go_package="m7s.live/v5/plugin/mp4/pb";
 
 service api {
-  rpc List (ReqRecordList) returns (ResponseList) {
+  rpc List (ReqRecordList) returns (global.RecordResponseList) {
     option (google.api.http) = {
       get: "/mp4/api/list/{streamPath=**}"
     };
   }
-  rpc Catalog (google.protobuf.Empty) returns (ResponseCatalog) {
+  rpc Catalog (google.protobuf.Empty) returns (global.ResponseCatalog) {
     option (google.api.http) = {
       get: "/mp4/api/catalog"
     };
   }
-  rpc Delete (ReqRecordDelete) returns (ResponseDelete) {
+  rpc Delete (ReqRecordDelete) returns (global.ResponseDelete) {
     option (google.api.http) = {
       post: "/mp4/api/delete/{streamPath=**}"
       body: "*"
@@ -31,8 +31,37 @@ service api {
   }
   rpc StartRecord (ReqStartRecord) returns (ResponseStartRecord) {
     option (google.api.http) = {
-      post: "/mp4/api/start"
+      post: "/mp4/api/start/{streamPath=**}"
       body: "*"
+    };
+  }
+  rpc StopRecord (ReqStopRecord) returns (ResponseStopRecord) {
+    option (google.api.http) = {
+      post: "/mp4/api/stop/{streamPath=**}"
+      body: "*"
+    };
+  }
+  rpc CreateTag (ReqCreateTag) returns (ResponseTag) {
+    option (google.api.http) = {
+      post: "/mp4/api/tag/add"
+      body: "*"
+    };
+  }
+  rpc UpdateTag (ReqUpdateTag) returns (ResponseTag) {
+    option (google.api.http) = {
+      post: "/mp4/api/tag/update/{id}"
+      body: "*"
+    };
+  }
+  rpc DeleteTag (ReqDeleteTag) returns (ResponseTag) {
+    option (google.api.http) = {
+      post: "/mp4/api/tag/delete/{id}"
+      body: "*"
+    };
+  }
+  rpc ListTag (ReqListTag) returns (ResponseTagList) {
+    option (google.api.http) = {
+      get: "/mp4/api/tag/list"
     };
   }
 }
@@ -44,37 +73,8 @@ message ReqRecordList {
   string end = 4;
   uint32 pageNum = 5;
   uint32 pageSize = 6;
-  string recordMode = 7;
-}
-
-message RecordFile {
-  uint32 id = 1;
-  string filePath = 2;
-  string streamPath = 3;
-  google.protobuf.Timestamp startTime = 4;
-  google.protobuf.Timestamp endTime = 5;
-}
-
-message ResponseList {
-  int32 code = 1;
-  string message = 2;
-  uint32 totalCount = 3;
-  uint32 pageNum = 4;
-  uint32 pageSize = 5;
-  repeated RecordFile data = 6;
-}
-
-message Catalog {
-  string streamPath = 1;
-  uint32 count = 2;
-  google.protobuf.Timestamp startTime = 3;
-  google.protobuf.Timestamp endTime = 4;
-}
-
-message ResponseCatalog {
-  int32 code = 1;
-  string message = 2;
-  repeated Catalog data = 3;
+  string mode = 7;
+  string eventLevel = 8;
 }
 
 message ReqRecordDelete {
@@ -85,22 +85,15 @@ message ReqRecordDelete {
   string range = 5;
 }
 
-message ResponseDelete {
-  int32 code = 1;
-  string message = 2;
-  repeated RecordFile data = 3;
-}
-
 message ReqEventRecord {
   string streamPath = 1;
   string eventId = 2;
-  string recordMode = 3;//auto=连续录像模式，event=事件录像模式
-  string eventName = 4;
-  string beforeDuration = 5;
-  string afterDuration = 6;
-  string eventDesc = 7;
-  string eventLevel = 8;//事件级别,0表示重要事件，无法删除且表示无需自动删除,1表示非重要事件,达到自动删除时间后，自动删除
-  string fragment = 9;
+  string eventName = 3;
+  string beforeDuration = 4;
+  string afterDuration = 5;
+  string eventDesc = 6;
+  string eventLevel = 7;//事件级别,0表示重要事件，无法删除且表示无需自动删除,1表示非重要事件,达到自动删除时间后，自动删除
+  string fragment = 8;
 }
 
 message ResponseEventRecord {
@@ -119,4 +112,63 @@ message ResponseStartRecord {
   int32 code = 1;
   string message = 2;
   uint64 data = 3;
+}
+
+message ReqStopRecord {
+  string streamPath = 1;
+}
+
+message ResponseStopRecord {
+  int32 code = 1;
+  string message = 2;
+  uint64 data = 3;
+}
+
+// 标签相关消息定义
+message TagInfo {
+  uint32 id = 1;
+  string tagName = 2;
+  string streamPath = 3;
+  string tagTime = 4;
+  string createdAt = 5;
+  string updatedAt = 6;
+}
+
+message ReqCreateTag {
+  string tagName = 1;
+  string streamPath = 2;
+  string tagTime = 3;
+}
+
+message ReqUpdateTag {
+  uint32 id = 1;
+  string tagName = 2;
+  string streamPath = 3;
+  string tagTime = 4;
+}
+
+message ReqDeleteTag {
+  uint32 id = 1;
+}
+
+message ReqListTag {
+  string streamPath = 1;
+  string tagName = 2;
+  string start = 3;
+  string end = 4;
+  uint32 page = 5;
+  uint32 count = 6;
+}
+
+message ResponseTag {
+  int32 code = 1;
+  string message = 2;
+  TagInfo data = 3;
+}
+
+message ResponseTagList {
+  int32 code = 1;
+  string message = 2;
+  repeated TagInfo list = 3;
+  uint32 total = 4;
 }

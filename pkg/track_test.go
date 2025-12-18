@@ -15,7 +15,7 @@ func TestTsTamer_Tame(t *testing.T) {
 
 	tr := &TsTamer{}
 	for i, tt := range tss {
-		if gotResult := tr.Tame(tt*time.Millisecond, 100); gotResult != wants[i]*time.Millisecond {
+		if gotResult := tr.Tame(tt*time.Millisecond, 100, 1.0); gotResult != wants[i]*time.Millisecond {
 			t.Errorf("TsTamer.Tame() = %v, want %v", gotResult, wants[i]*time.Millisecond)
 		}
 	}

@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	task "github.com/langhuihui/gotask"
 )
 
 type UDP struct {
@@ -57,7 +57,7 @@ func (task *ListenUDPWork) Go() error {
 				if max := 1 * time.Second; tempDelay > max {
 					tempDelay = max
 				}
-				// slog.Warnf("%s: Accept error: %v; retrying in %v", tcp.ListenAddr, err, tempDelay)
+				// slog.Warnf("%s: Accept error: %v; retrying in %v", tcp.DownListenAddr, err, tempDelay)
 				time.Sleep(tempDelay)
 				continue
 			}

@@ -5,19 +5,20 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/config"
 	flv "m7s.live/v5/plugin/flv/pkg"
 )
 
 type Puller struct {
 	flv.Puller
-	quic.Connection
+	*quic.Conn
 }
 
 func (p *Puller) GetPullJob() *m7s.PullJob {
 	return &p.PullJob
 }
 
-func NewCascadePuller() m7s.IPuller {
+func NewCascadePuller(config.Pull) m7s.IPuller {
 	return &Puller{}
 }
 
@@ -25,8 +26,8 @@ func (p *Puller) Start() (err error) {
 	if err = p.PullJob.Publish(); err != nil {
 		return
 	}
-	var stream quic.Stream
-	stream, err = p.Connection.OpenStream()
+	var stream *quic.Stream
+	stream, err = p.Conn.OpenStream()
 	if err != nil {
 		return
 	}

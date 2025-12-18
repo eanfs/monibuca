@@ -8,12 +8,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"m7s.live/v5/pkg"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
 )
@@ -21,12 +22,14 @@ import (
 const Timeout = time.Second * 10
 
 func NewNetConnection(conn net.Conn) *NetConnection {
-	return &NetConnection{
+	c := &NetConnection{
 		Conn:            conn,
 		BufReader:       util.NewBufReader(conn),
-		MemoryAllocator: util.NewScalableMemoryAllocator(1 << 12),
+		MemoryAllocator: gomem.NewScalableMemoryAllocator(1 << 12),
 		UserAgent:       "monibuca" + m7s.Version,
 	}
+	c.BufReader.SetTimeout(Timeout)
+	return c
 }
 
 type NetConnection struct {
@@ -38,22 +41,19 @@ type NetConnection struct {
 	SessionName     string
 	Timeout         int
 	Transport       string // custom transport support, ex. RTSP over WebSocket
-	MemoryAllocator *util.ScalableMemoryAllocator
+	MemoryAllocator *gomem.ScalableMemoryAllocator
 	UserAgent       string
 	URL             *url.URL
 
 	// internal
 
-	auth        *util.Auth
+	Auth        *util.Auth
 	Conn        net.Conn
 	keepalive   int
 	sequence    int
 	Session     string
 	sdp         string
-	uri         string
 	writing     atomic.Bool
-	state       State
-	stateMu     sync.Mutex
 	SDP         string
 	keepaliveTS time.Time
 }
@@ -69,9 +69,15 @@ func (c *NetConnection) StopWrite() {
 }
 
 func (c *NetConnection) Dispose() {
-	c.Conn.Close()
-	c.BufReader.Recycle()
-	c.MemoryAllocator.Recycle()
+	if c.Conn != nil {
+		c.Conn.Close()
+	}
+	if c.BufReader != nil {
+		c.BufReader.Recycle()
+	}
+	if c.MemoryAllocator != nil {
+		c.MemoryAllocator.Recycle()
+	}
 	c.Info("destroy connection")
 }
 
@@ -127,7 +133,9 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	var conn net.Conn
 	if istls {
 		var tlsconn *tls.Conn
-		tlsconn, err = tls.Dial("tcp", rtspURL.Host, &tls.Config{})
+		tlsconn, err = tls.Dial("tcp", rtspURL.Host, &tls.Config{
+			InsecureSkipVerify: true,
+		})
 		conn = tlsconn
 	} else {
 		conn, err = net.Dial("tcp", rtspURL.Host)
@@ -137,12 +145,14 @@ func (c *NetConnection) Connect(remoteURL string) (err error) {
 	}
 	c.Conn = conn
 	c.BufReader = util.NewBufReader(conn)
-	c.URL = rtspURL
+	c.BufReader.SetTimeout(Timeout)
 	c.UserAgent = "monibuca" + m7s.Version
 	c.Session = ""
-	c.auth = util.NewAuth(c.URL.User)
+	c.Auth = util.NewAuth(rtspURL.User)
+	c.URL = rtspURL
+	c.URL.User = nil
 	c.SetDescription("remoteAddr", conn.RemoteAddr().String())
-	c.MemoryAllocator = util.NewScalableMemoryAllocator(1 << 12)
+	c.MemoryAllocator = gomem.NewScalableMemoryAllocator(1 << 12)
 	// c.Backchannel = true
 	return
 }
@@ -161,7 +171,7 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 	// https://github.com/AlexxIT/go2rtc/issues/7
 	req.Header["CSeq"] = []string{strconv.Itoa(c.sequence)}
 
-	c.auth.Write(req)
+	c.Auth.Write(req)
 
 	if c.Session != "" {
 		req.Header.Set("Session", c.Session)
@@ -182,9 +192,6 @@ func (c *NetConnection) WriteRequest(req *util.Request) (err error) {
 }
 
 func (c *NetConnection) ReadRequest() (req *util.Request, err error) {
-	if err = c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return
-	}
 	req, err = util.ReadRequest(c.BufReader)
 	if err != nil {
 		return
@@ -238,9 +245,6 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 }
 
 func (c *NetConnection) ReadResponse() (res *util.Response, err error) {
-	if err := c.Conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
-		return nil, err
-	}
 	res, err = util.ReadResponse(c.BufReader)
 	if err == nil {
 		c.Debug("<-", "res", res.String())
@@ -254,9 +258,7 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 			return
 		}
 		ts := time.Now()
-		if err = c.Conn.SetReadDeadline(ts.Add(util.Conditional(sendMode, time.Second*60, time.Second*15))); err != nil {
-			return
-		}
+
 		var magic []byte
 		// we can read:
 		// 1. RTP interleaved: `$` + 1B channel number + 2B size
@@ -349,7 +351,10 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 							c.MemoryAllocator.Free(buf)
 							return
 						} else if onReceive != nil {
-							onReceive(channelID, buf)
+							if err := onReceive(channelID, buf); err != nil {
+								c.Error("onReceive", "error", err)
+								c.MemoryAllocator.Free(buf)
+							}
 						} else {
 							c.MemoryAllocator.Free(buf)
 						}
@@ -372,20 +377,27 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 				c.MemoryAllocator.Free(buf)
 				return
 			}
-			if channelID&1 == 0 {
+
+			var needToFree = true // 默认需要释放内存
+			if channelID&1 == 0 { // 偶数通道，RTP数据
 				if onReceive != nil {
-					if onReceive(channelID, buf) != nil {
-						c.MemoryAllocator.Free(buf)
+					err := onReceive(channelID, buf)
+					if err == nil {
+						// 如果回调返回nil，表示内存被接管
+						needToFree = false
+					} else {
+						// 如果回调返回错误，检查是否是丢弃错误
+						needToFree = (err != pkg.ErrDiscard)
 					}
-					continue
 				}
-			} else if onRTCP != nil {
-				if onRTCP(channelID, buf) != nil {
-					c.MemoryAllocator.Free(buf)
-				}
-				continue
+			} else if onRTCP != nil { // 奇数通道，RTCP数据
+				onRTCP(channelID, buf) // 处理RTCP数据,及时释放内存
 			}
-			c.MemoryAllocator.Free(buf)
+
+			// 如果需要释放内存，则释放
+			if needToFree {
+				c.MemoryAllocator.Free(buf)
+			}
 		}
 
 		if ts.After(c.keepaliveTS) {

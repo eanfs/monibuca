@@ -5,4 +5,5 @@ type ICodecCtx interface {
 	GetInfo() string
 	GetBase() ICodecCtx
 	GetRecord() []byte
+	String() string
 }

@@ -11,7 +11,7 @@ import (
 )
 
 type Http2Quic struct {
-	quic.Stream
+	*quic.Stream
 }
 
 func (q *Http2Quic) ServeSSE(w http.ResponseWriter, r *http.Request) {

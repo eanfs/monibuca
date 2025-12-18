@@ -2,6 +2,7 @@ package hls
 
 import (
 	"container/ring"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,11 +10,12 @@ import (
 	"sync"
 	"time"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/format"
+	mpegts "m7s.live/v5/pkg/format/ts"
 	"m7s.live/v5/pkg/util"
-	mpegts "m7s.live/v5/plugin/hls/pkg/ts"
 )
 
 func NewTransform() m7s.ITransformer {
@@ -24,13 +26,14 @@ func NewTransform() m7s.ITransformer {
 	return ret
 }
 
+var ErrNoBodyRead = errors.New("no body read")
+
 type HLSWriter struct {
 	m7s.DefaultTransformer
 	Window             int
 	Fragment           time.Duration
 	M3u8               util.Buffer
 	ts                 *TsInMemory
-	pesAudio, pesVideo *mpegts.MpegtsPESFrame
 	write_time         time.Duration
 	memoryTs           sync.Map
 	hls_segment_count  uint32 // hls segment count
@@ -48,6 +51,15 @@ func (w *HLSWriter) Start() (err error) {
 func (w *HLSWriter) GetTs(key string) (any, bool) {
 	w.lastReadTime = time.Now()
 	return w.memoryTs.Load(key)
+}
+
+func (w *HLSWriter) checkNoBodyRead() bool {
+	// 如果从未被读取过（纯录制模式），不检查超时
+	if w.lastReadTime.IsZero() {
+		return false
+	}
+	// 曾经有人播放过，检查是否15秒无访问
+	return time.Since(w.lastReadTime) > time.Second*15
 }
 
 func (w *HLSWriter) Run() (err error) {
@@ -83,27 +95,29 @@ func (w *HLSWriter) Run() (err error) {
 		videoCodec = subscriber.Publisher.VideoTrack.FourCC()
 	}
 	w.ts = &TsInMemory{}
-	w.pesAudio = &mpegts.MpegtsPESFrame{
-		Pid: mpegts.PID_AUDIO,
-	}
-	w.pesVideo = &mpegts.MpegtsPESFrame{
-		Pid: mpegts.PID_VIDEO,
-	}
+	pesAudio, pesVideo := mpegts.CreatePESWriters()
 	w.ts.WritePMTPacket(audioCodec, videoCodec)
-	return m7s.PlayBlock(subscriber, w.ProcessADTS, w.ProcessAnnexB)
-}
-
-func (w *HLSWriter) ProcessADTS(audio *pkg.ADTS) (err error) {
-	return w.ts.WriteAudioFrame(audio, w.pesAudio)
-}
-
-func (w *HLSWriter) ProcessAnnexB(video *pkg.AnnexB) (err error) {
-	if w.TransformJob.Subscriber.VideoReader.Value.IDR {
-		if err = w.checkFragment(video.GetTimestamp()); err != nil {
-			return
+	return m7s.PlayBlock(subscriber, func(audio *format.Mpeg2Audio) error {
+		pesAudio.Pts = uint64(subscriber.AudioReader.AbsTime) * 90
+		if w.checkNoBodyRead() {
+			return errors.Join(ErrNoBodyRead, task.ErrStopByUser)
 		}
-	}
-	return w.ts.WriteVideoFrame(video, w.pesVideo)
+		return pesAudio.WritePESPacket(audio.Memory, &w.ts.RecyclableMemory)
+	}, func(video *mpegts.VideoFrame) (err error) {
+		if w.checkNoBodyRead() {
+			return errors.Join(ErrNoBodyRead, task.ErrStopByUser)
+		}
+		vr := w.TransformJob.Subscriber.VideoReader
+		if vr.Value.IDR {
+			if err = w.checkFragment(video.Timestamp); err != nil {
+				return
+			}
+		}
+		pesVideo.IsKeyFrame = video.IDR
+		pesVideo.Pts = uint64(vr.AbsTime+video.GetCTS32()) * 90
+		pesVideo.Dts = uint64(vr.AbsTime) * 90
+		return pesVideo.WritePESPacket(video.Memory, &w.ts.RecyclableMemory)
+	})
 }
 
 func (w *HLSWriter) checkFragment(ts time.Duration) (err error) {
@@ -135,7 +149,7 @@ func (w *HLSWriter) checkFragment(ts time.Duration) (err error) {
 		inf := PlaylistInf{
 			//浮点计算精度
 			Duration: dur.Seconds(),
-			Title:    fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
+			URL:      fmt.Sprintf("%s/%s", ss[len(ss)-1], tsFilename),
 			FilePath: tsFilePath,
 		}
 

@@ -1,67 +1,60 @@
 package m7s
 
 import (
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
-
-	"m7s.live/v5/pkg/task"
-
-	"m7s.live/v5/pkg"
-)
-
-const (
-	RecordModeAuto  RecordMode = "auto"
-	RecordModeEvent RecordMode = "event"
+	"m7s.live/v5/pkg/storage"
 )
 
 type (
-	RecordMode = string
-	IRecorder  interface {
+	IRecorder interface {
 		task.ITask
 		GetRecordJob() *RecordJob
 	}
-	Recorder  = func() IRecorder
+	RecorderFactory = func(config.Record) IRecorder
+	// RecordEvent 包含录像事件的公共字段
+
+	EventRecordStream struct {
+		*config.RecordEvent
+		RecordStream
+	}
 	RecordJob struct {
 		task.Job
-		StreamPath     string // 对应本地流
-		Plugin         *Plugin
-		Subscriber     *Subscriber
-		SubConf        *config.Subscribe
-		Fragment       time.Duration
-		Append         bool
-		FilePath       string
-		recorder       IRecorder
-		EventId        string        `json:"eventId" desc:"事件编号"`
-		RecordMode     RecordMode    `json:"recordMode" desc:"事件类型,auto=连续录像模式，event=事件录像模式"`
-		BeforeDuration time.Duration `json:"beforeDuration" desc:"事件前缓存时长"`
-		AfterDuration  time.Duration `json:"afterDuration" desc:"事件后缓存时长"`
-		EventDesc      string        `json:"eventDesc" desc:"事件描述"`
-		EventLevel     string        `json:"eventLevel" desc:"事件级别"`
-		EventName      string        `json:"eventName" desc:"事件名称"`
+		Event      *config.RecordEvent
+		StreamPath string // 对应本地流
+		Plugin     *Plugin
+		Subscriber *Subscriber
+		SubConf    *config.Subscribe
+		RecConf    *config.Record
+		recorder   IRecorder
+		storage    storage.Storage // 存储实例
 	}
 	DefaultRecorder struct {
 		task.Task
 		RecordJob RecordJob
+		Event     EventRecordStream
 	}
 	RecordStream struct {
-		ID                     uint          `gorm:"primarykey"`
-		StartTime, EndTime     time.Time     `gorm:"default:'1970-01-01 00:00:00'"`
-		EventId                string        `json:"eventId" desc:"事件编号" gorm:"type:varchar(255);comment:事件编号"`
-		RecordMode             RecordMode    `json:"recordMode" desc:"事件类型,auto=连续录像模式，event=事件录像模式" gorm:"type:varchar(255);comment:事件类型,auto=连续录像模式，event=事件录像模式;default:'auto'"`
-		EventName              string        `json:"eventName" desc:"事件名称" gorm:"type:varchar(255);comment:事件名称"`
-		BeforeDuration         time.Duration `json:"beforeDuration" desc:"事件前缓存时长" gorm:"type:BIGINT;comment:事件前缓存时长;default:30000000000"`
-		AfterDuration          time.Duration `json:"afterDuration" desc:"事件后缓存时长" gorm:"type:BIGINT;comment:事件后缓存时长;default:30000000000"`
-		Filename               string        `json:"fileName" desc:"文件名" gorm:"type:varchar(255);comment:文件名"`
-		EventDesc              string        `json:"eventDesc" desc:"事件描述" gorm:"type:varchar(255);comment:事件描述"`
-		Type                   string        `json:"type" desc:"录像文件类型" gorm:"type:varchar(255);comment:录像文件类型,flv,mp4,raw,fmp4,hls"`
-		EventLevel             string        `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,0表示重要事件，无法删除且表示无需自动删除,1表示非重要事件,达到自动删除时间后，自动删除;default:'1'"`
-		FilePath               string
-		StreamPath             string
-		AudioCodec, VideoCodec string
-		DeletedAt              gorm.DeletedAt `gorm:"index" yaml:"-"`
+		ID           uint      `gorm:"primarykey"`
+		StartTime    time.Time `gorm:"default:NULL"`
+		EndTime      time.Time `gorm:"default:NULL"`
+		Duration     uint32    `gorm:"comment:录像时长;default:0"`
+		Filename     string    `json:"fileName" desc:"文件名" gorm:"type:varchar(255);comment:文件名"`
+		Type         string    `json:"type" desc:"录像文件类型" gorm:"type:varchar(255);comment:录像文件类型,flv,mp4,raw,fmp4,hls"`
+		FilePath     string
+		StreamPath   string
+		AudioCodec   string
+		VideoCodec   string
+		CreatedAt    time.Time
+		DeletedAt    gorm.DeletedAt    `gorm:"index" yaml:"-"`
+		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
+		StorageLevel int               `json:"storageLevel" desc:"存储级别" gorm:"comment:存储级别,1=主存储,2=次级存储;default:1"`
+		StorageType  string            `json:"storageType" desc:"存储类型" gorm:"type:varchar(20);comment:存储类型(local/s3/oss/cos);default:'local'"`
 	}
 )
 
@@ -73,28 +66,114 @@ func (r *DefaultRecorder) Start() (err error) {
 	return r.RecordJob.Subscribe()
 }
 
+func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*RecordJob) string) (err error) {
+	recordJob := &r.RecordJob
+	sub := recordJob.Subscriber
+
+	// 生成文件路径
+	filePath := customFileName(recordJob)
+
+	var storageType string
+	recordJob.storage = recordJob.Plugin.Server.Storage
+	if recordJob.storage != nil {
+		storageType = recordJob.storage.GetKey()
+	}
+
+	if recordJob.storage == nil {
+		return fmt.Errorf("storage config is required")
+	}
+
+	r.Event.RecordStream = RecordStream{
+		StartTime:    start,
+		StreamPath:   sub.StreamPath,
+		FilePath:     filePath,
+		Type:         recordJob.RecConf.Type,
+		StorageLevel: 1, // 默认为主存储
+		StorageType:  storageType,
+	}
+
+	if sub.Publisher.HasAudioTrack() {
+		r.Event.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
+	}
+	if sub.Publisher.HasVideoTrack() {
+		r.Event.VideoCodec = sub.Publisher.VideoTrack.ICodecCtx.String()
+	}
+	if recordJob.Plugin.DB != nil && recordJob.RecConf.Mode != config.RecordModeTest {
+		if recordJob.Event != nil {
+			r.Event.RecordEvent = recordJob.Event
+			r.Event.RecordLevel = recordJob.Event.EventLevel
+			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
+			recordJob.Plugin.DB.Save(&r.Event)
+		} else {
+			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
+		}
+	}
+	return
+}
+
+// createStorage 创建存储实例，返回 storage 和存储类型
+func (r *DefaultRecorder) createStorage(storageConfig map[string]any) (storage.Storage, string) {
+	for t, conf := range storageConfig {
+		r.Info("trying to create storage", "type", t, "config", conf)
+		storage, err := storage.CreateStorage(t, conf)
+		if err == nil {
+			r.Info("storage created successfully", "type", t)
+			return storage, t
+		}
+		r.Error("create storage failed", "type", t, "err", err)
+	}
+	r.Warn("falling back to local storage", "path", r.RecordJob.RecConf.FilePath)
+	localStorage, err := storage.CreateStorage("local", r.RecordJob.RecConf.FilePath)
+	if err == nil {
+		return localStorage, "local"
+	} else {
+		r.Error("create local storage failed", "err", err)
+	}
+	return nil, ""
+}
+
+func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
+	r.Event.EndTime = end
+	if r.RecordJob.Plugin.DB != nil && r.RecordJob.RecConf.Mode != config.RecordModeTest {
+		// 将事件和录像记录关联
+		if r.RecordJob.Event != nil {
+			r.RecordJob.Plugin.DB.Save(&r.Event)
+			r.RecordJob.Plugin.DB.Save(&r.Event.RecordStream)
+		} else {
+			r.RecordJob.Plugin.DB.Save(&r.Event.RecordStream)
+		}
+		if tailJob == nil {
+			return
+		}
+		tailJob.AddTask(NewEventRecordCheck(r.Event.Type, r.Event.StreamPath, r.RecordJob.Plugin.DB))
+	}
+}
+
 func (p *RecordJob) GetKey() string {
-	return p.FilePath
+	return p.RecConf.FilePath
+}
+
+// GetStorage 获取存储实例
+func (p *RecordJob) GetStorage() storage.Storage {
+	return p.storage
 }
 
 func (p *RecordJob) Subscribe() (err error) {
-	if p.SubConf != nil {
-		p.Subscriber, err = p.Plugin.SubscribeWithConfig(p.recorder.GetTask().Context, p.StreamPath, *p.SubConf)
-	} else {
-		p.Subscriber, err = p.Plugin.Subscribe(p.recorder.GetTask().Context, p.StreamPath)
-	}
-	if p.Subscriber != nil {
-		p.Subscriber.Type = SubscribeTypeVod
-	}
+
+	p.Subscriber, err = p.Plugin.SubscribeWithConfig(p.recorder.GetTask().Context, p.StreamPath, *p.SubConf)
 	return
 }
 
 func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, conf config.Record, subConf *config.Subscribe) *RecordJob {
 	p.Plugin = plugin
-	p.Fragment = conf.Fragment
-	p.Append = conf.Append
-	p.FilePath = conf.FilePath
+	p.RecConf = &conf
+	p.Event = conf.Event
 	p.StreamPath = streamPath
+	if subConf == nil {
+		conf := p.Plugin.config.Subscribe
+		subConf = &conf
+	}
+	subConf.SubType = SubscribeTypeVod
 	p.SubConf = subConf
 	p.recorder = recorder
 	p.SetDescriptions(task.Description{
@@ -105,15 +184,36 @@ func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, 
 		"fragment":   conf.Fragment,
 	})
 	recorder.SetRetry(-1, time.Second)
-	plugin.Server.Records.Add(p, plugin.Logger.With("filePath", conf.FilePath, "streamPath", streamPath))
+	if sender, webhook := plugin.getHookSender(config.HookOnRecordStart); sender != nil {
+		recorder.OnStart(func() {
+			alarmInfo := AlarmInfo{
+				AlarmName:  string(config.HookOnRecordStart),
+				AlarmType:  config.AlarmStorageExceptionRecover,
+				StreamPath: streamPath,
+				FilePath:   conf.FilePath,
+			}
+			sender(webhook, alarmInfo)
+		})
+	}
+
+	if sender, webhook := plugin.getHookSender(config.HookOnRecordEnd); sender != nil {
+		recorder.OnDispose(func() {
+			alarmInfo := AlarmInfo{
+				AlarmType:  config.AlarmStorageException,
+				AlarmDesc:  recorder.StopReason().Error(),
+				AlarmName:  string(config.HookOnRecordEnd),
+				StreamPath: streamPath,
+				FilePath:   conf.FilePath,
+			}
+			sender(webhook, alarmInfo)
+		})
+	}
+
+	plugin.Server.Records.AddTask(p, plugin.Logger.With("filePath", conf.FilePath, "streamPath", streamPath))
 	return p
 }
 
 func (p *RecordJob) Start() (err error) {
-	s := p.Plugin.Server
-	if _, ok := s.Records.Get(p.GetKey()); ok {
-		return pkg.ErrRecordSamePath
-	}
 	// dir := p.FilePath
 	// if p.Fragment == 0 || p.Append {
 	// 	dir = filepath.Dir(p.FilePath)
@@ -123,5 +223,48 @@ func (p *RecordJob) Start() (err error) {
 	// 	return
 	// }
 	p.AddTask(p.recorder, p.Logger)
+	return
+}
+
+func NewEventRecordCheck(t string, streamPath string, db *gorm.DB) *eventRecordCheck {
+	return &eventRecordCheck{
+		DB:         db,
+		streamPath: streamPath,
+		Type:       t,
+	}
+}
+
+type eventRecordCheck struct {
+	task.Task
+	DB         *gorm.DB
+	streamPath string
+	Type       string
+}
+
+func (t *eventRecordCheck) Run() (err error) {
+	var eventRecordStreams []EventRecordStream
+	queryRecord := EventRecordStream{
+		RecordEvent: &config.RecordEvent{
+			EventLevel: config.EventLevelHigh,
+		},
+		RecordStream: RecordStream{
+			StreamPath: t.streamPath,
+			Type:       t.Type,
+		},
+	}
+	t.DB.Where(&queryRecord).Find(&eventRecordStreams) //搜索事件录像，且为重要事件（无法自动删除）
+	if len(eventRecordStreams) > 0 {
+		for _, recordStream := range eventRecordStreams {
+			var unimportantEventRecordStreams []RecordStream
+			query := `start_time <= ? and end_time >= ? and stream_path=? and type=?`
+			t.DB.Where(query, recordStream.EndTime, recordStream.StartTime, t.streamPath, t.Type).Find(&unimportantEventRecordStreams)
+			if len(unimportantEventRecordStreams) > 0 {
+				for _, unimportantEventRecordStream := range unimportantEventRecordStreams {
+					unimportantEventRecordStream.RecordLevel = config.EventLevelHigh
+					t.DB.Save(&unimportantEventRecordStream)
+				}
+			}
+		}
+	}
 	return
 }

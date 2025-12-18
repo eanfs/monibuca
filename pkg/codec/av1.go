@@ -1,5 +1,7 @@
 package codec
 
+import "fmt"
+
 const (
 	AV1_OBU_SEQUENCE_HEADER        = 1
 	AV1_OBU_TEMPORAL_DELIMITER     = 2
@@ -40,4 +42,8 @@ func (*AV1Ctx) FourCC() FourCC {
 
 func (ctx *AV1Ctx) GetRecord() []byte {
 	return ctx.ConfigOBUs
+}
+
+func (ctx *AV1Ctx) String() string {
+	return fmt.Sprintf("av01.%02X%02X%02X", ctx.ConfigOBUs[0], ctx.ConfigOBUs[1], ctx.ConfigOBUs[2])
 }

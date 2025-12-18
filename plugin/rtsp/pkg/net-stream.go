@@ -3,10 +3,12 @@ package rtsp
 import (
 	"errors"
 	"fmt"
-	"m7s.live/v5/pkg/util"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+
+	"m7s.live/v5/pkg/util"
 )
 
 type Stream struct {
@@ -25,31 +27,63 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 		return nil, err
 	}
 
-	if res.StatusCode == http.StatusUnauthorized {
-		switch c.auth.Method {
+	switch res.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
+		switch c.Auth.Method {
 		case util.AuthNone:
-			if c.auth.ReadNone(res) {
+			if c.Auth.ReadNone(res) {
 				return c.Do(req)
 			}
 			return nil, errors.New("user/pass not provided")
 		case util.AuthUnknown:
-			if c.auth.Read(res) {
+			if c.Auth.Read(res) {
 				return c.Do(req)
 			}
 		default:
 			return nil, errors.New("wrong user/pass")
 		}
-	}
+	case http.StatusFound, http.StatusMovedPermanently:
+		oldHost := ""
+		if req.URL != nil {
+			oldHost = req.URL.Host
+		}
 
-	if res.StatusCode != http.StatusOK {
-		return res, fmt.Errorf("wrong response on %s", req.Method)
-	}
+		req.URL, err = url.Parse(res.Header.Get("Location"))
+		if err != nil {
+			return nil, err
+		}
 
+		// 检查重定向后的 host 是否发生变化
+		if oldHost != "" && req.URL.Host != oldHost {
+			c.Info("Host changed after redirect", "oldHost", oldHost, "newHost", req.URL.Host)
+
+			// 断开当前连接并建立新连接
+			c.Dispose()
+
+			// 使用新的 URL 重新建立连接
+			if err = c.Connect(req.URL.String()); err != nil {
+				return nil, fmt.Errorf("failed to connect to new host: %w", err)
+			}
+		}
+
+		return c.Do(req)
+	default:
+		return res, fmt.Errorf("wrong response on %s statusCode: %d", req.Method, res.StatusCode)
+	}
 	return res, nil
 }
 
 func (c *Stream) Options() error {
-	req := &util.Request{Method: MethodOptions, URL: c.URL}
+	req := &util.Request{
+		Method: MethodOptions,
+		URL:    c.URL,
+		Header: map[string][]string{},
+	}
+
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
 
 	res, err := c.Do(req)
 	if err != nil {
@@ -137,12 +171,12 @@ func (c *Stream) Announce(medias []*Media) (err error) {
 	return
 }
 
-func (c *Stream) SetupMedia(media *Media, index int) (byte, error) {
+func (c *Stream) SetupMedia(media *Media, mode string, index int) (byte, error) {
 	var transport string
 	transport = fmt.Sprintf(
 		// i   - RTP (data channel)
 		// i+1 - RTCP (control channel)
-		"RTP/AVP/TCP;unicast;interleaved=%d-%d", index*2, index*2+1,
+		"RTP/AVP/TCP;unicast;mode=%s;interleaved=%d-%d", mode, index*2, index*2+1,
 	)
 	if transport == "" {
 		return 0, fmt.Errorf("wrong media: %v", media)
@@ -223,7 +257,17 @@ func (c *Stream) SetupMedia(media *Media, index int) (byte, error) {
 }
 
 func (c *Stream) Play() (err error) {
-	_, err = c.Do(&util.Request{Method: MethodPlay, URL: c.URL})
+	req := &util.Request{
+		Method: MethodPlay,
+		URL:    c.URL,
+		Header: map[string][]string{},
+	}
+
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+
+	_, err = c.Do(req)
 	return
 }
 

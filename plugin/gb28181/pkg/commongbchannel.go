@@ -1,0 +1,365 @@
+package gb28181
+
+import (
+	"fmt"
+)
+
+// CommonGBChannel 通用国标通道信息
+type CommonGBChannel struct {
+	// 数据库自增ID
+	GbID int `json:"gb_id" gorm:"column:gb_id"`
+
+	// 国标编码
+	GbDeviceID string `json:"gb_device_id" gorm:"column:gb_device_id;default:null"`
+
+	// 国标名称
+	GbName string `json:"gb_name" gorm:"column:gb_name;default:null"`
+
+	// 国标设备厂商
+	GbManufacturer string `json:"gb_manufacturer" gorm:"column:gb_manufacturer;default:null"`
+
+	// 国标设备型号
+	GbModel string `json:"gb_model" gorm:"column:gb_model;default:null"`
+
+	// 国标设备归属
+	GbOwner string `json:"gb_owner" gorm:"column:gb_owner;default:null"`
+
+	// 国标行政区域
+	GbCivilCode string `json:"gb_civil_code" gorm:"column:gb_civil_code"`
+
+	// 国标警区
+	GbBlock string `json:"gb_block" gorm:"column:gb_block"`
+
+	// 国标安装地址
+	GbAddress string `json:"gb_address" gorm:"column:gb_address;default:null"`
+
+	// 国标是否有子设备
+	GbParental int `json:"gb_parental" gorm:"column:gb_parental"`
+
+	// 国标父节点ID
+	GbParentID string `json:"gb_parent_id" gorm:"column:gb_parent_id"`
+
+	// 国标信令安全模式
+	GbSafetyWay int `json:"gb_safety_way" gorm:"column:gb_safety_way"`
+
+	// 国标注册方式
+	GbRegisterWay int `json:"gb_register_way" gorm:"column:gb_register_way"`
+
+	// 国标证书序列号
+	GbCertNum string `json:"gb_cert_num" gorm:"column:gb_cert_num"`
+
+	// 国标证书有效标识
+	GbCertifiable int `json:"gb_certifiable" gorm:"column:gb_certifiable"`
+
+	// 国标无效原因码
+	GbErrCode int `json:"gb_err_code" gorm:"column:gb_err_code"`
+
+	// 国标证书终止有效期
+	GbEndTime string `json:"gb_end_time" gorm:"column:gb_end_time"`
+
+	// 国标保密属性
+	GbSecrecy int `json:"gb_secrecy" gorm:"column:gb_secrecy"`
+
+	// 国标IP地址
+	GbIPAddress string `json:"gb_ip_address" gorm:"column:gb_ip_address"`
+
+	// 国标端口
+	GbPort int `json:"gb_port" gorm:"column:gb_port"`
+
+	// 国标密码
+	GbPassword string `json:"gb_password" gorm:"column:gb_password"`
+
+	// 国标状态
+	GbStatus string `json:"gb_status" gorm:"column:gb_status"`
+
+	// 国标经度
+	GbLongitude float64 `json:"gb_longitude" gorm:"column:gb_longitude"`
+
+	// 国标纬度
+	GbLatitude float64 `json:"gb_latitude" gorm:"column:gb_latitude"`
+
+	// 国标业务分组ID
+	GbBusinessGroupID string `json:"gb_business_group_id" gorm:"column:gb_business_group_id"`
+
+	// 国标云台类型
+	GbPTZType int `json:"gb_ptz_type" gorm:"column:gb_ptz_type"`
+
+	// 国标位置类型
+	GbPositionType int `json:"gb_position_type" gorm:"column:gb_position_type"`
+
+	// 国标房间类型
+	GbRoomType int `json:"gb_room_type" gorm:"column:gb_room_type"`
+
+	// 国标用途类型
+	GbUseType int `json:"gb_use_type" gorm:"column:gb_use_type"`
+
+	// 国标补光类型
+	GbSupplyLightType int `json:"gb_supply_light_type" gorm:"column:gb_supply_light_type"`
+
+	// 国标方向类型
+	GbDirectionType int `json:"gb_direction_type" gorm:"column:gb_direction_type"`
+
+	// 国标分辨率
+	GbResolution string `json:"gb_resolution" gorm:"column:gb_resolution"`
+
+	// 国标下载速度
+	GbDownloadSpeed string `json:"gb_download_speed" gorm:"column:gb_download_speed"`
+
+	// 国标空域编码能力
+	GbSvcSpaceSupportMod int `json:"gb_svc_space_support_mod" gorm:"column:gb_svc_space_support_mod"`
+
+	// 国标时域编码能力
+	GbSvcTimeSupportMode int `json:"gb_svc_time_support_mode" gorm:"column:gb_svc_time_support_mode"`
+
+	// 关联的国标设备数据库ID
+	GbDeviceDbID int `json:"gb_device_db_id" gorm:"column:gb_device_db_id"`
+
+	// 二进制保存的录制计划
+	RecordPlan int64 `json:"record_plan" gorm:"column:record_plan"`
+
+	// 关联的推流ID
+	StreamPushID int `json:"stream_push_id" gorm:"column:stream_push_id"`
+
+	// 关联的拉流代理ID
+	StreamProxyID int `json:"stream_proxy_id" gorm:"column:stream_proxy_id"`
+
+	// 创建时间
+	CreateTime string `json:"create_time" gorm:"column:create_time"`
+
+	// 更新时间
+	UpdateTime string `json:"update_time" gorm:"column:update_time"`
+
+	// 流ID，存在表示正在推流
+	StreamID string `json:"stream_id" xml:"-"`
+
+	// 是否含有音频
+	HasAudio bool `json:"has_audio" xml:"-"`
+}
+
+// Build 构建通道信息
+func (c *CommonGBChannel) Build(deviceID string, name string, manufacturer string, model string, owner string,
+	civilCode string, block string, address string, parentID string) {
+	// TODO: 实现构建逻辑
+}
+
+// GetFullContent 获取完整的通道信息内容
+func (c *CommonGBChannel) GetFullContent(deviceID string, name string, parentID string, event string) string {
+	content := "<Item>\n"
+	content += fmt.Sprintf("<DeviceId>%s</DeviceId>\n", deviceID)
+	content += fmt.Sprintf("<Name>%s</Name>\n", name)
+
+	if len(deviceID) > 8 {
+		deviceType := deviceID[10:13]
+		switch deviceType {
+		case "200":
+			// 业务分组目录项
+			if c.GbManufacturer != "" {
+				content += fmt.Sprintf("<Manufacturer>%s</Manufacturer>\n", c.GbManufacturer)
+			}
+			if c.GbModel != "" {
+				content += fmt.Sprintf("<Model>%s</Model>\n", c.GbModel)
+			}
+			if c.GbOwner != "" {
+				content += fmt.Sprintf("<Owner>%s</Owner>\n", c.GbOwner)
+			}
+			if c.GbCivilCode != "" {
+				content += fmt.Sprintf("<CivilCode>%s</CivilCode>\n", c.GbCivilCode)
+			}
+			if c.GbAddress != "" {
+				content += fmt.Sprintf("<Address>%s</Address>\n", c.GbAddress)
+			}
+			if c.GbRegisterWay != 0 {
+				content += fmt.Sprintf("<RegisterWay>%d</RegisterWay>\n", c.GbRegisterWay)
+			}
+			content += fmt.Sprintf("<Secrecy>%d</Secrecy>\n", c.GbSecrecy)
+
+		case "215":
+			// 业务分组
+			if c.GbCivilCode != "" {
+				content += fmt.Sprintf("<CivilCode>%s</CivilCode>\n", c.GbCivilCode)
+			}
+			content += fmt.Sprintf("<ParentID>%s</ParentID>\n", parentID)
+
+		case "216":
+			// 虚拟组织目录项
+			if c.GbCivilCode != "" {
+				content += fmt.Sprintf("<CivilCode>%s</CivilCode>\n", c.GbCivilCode)
+			}
+			if c.GbParentID != "" {
+				content += fmt.Sprintf("<ParentID>%s</ParentID>\n", c.GbParentID)
+			}
+			content += fmt.Sprintf("<BusinessGroupID>%s</BusinessGroupID>\n", c.GbBusinessGroupID)
+
+		default:
+			// 其他类型
+			if c.GbManufacturer != "" {
+				content += fmt.Sprintf("<Manufacturer>%s</Manufacturer>\n", c.GbManufacturer)
+			}
+			if c.GbModel != "" {
+				content += fmt.Sprintf("<Model>%s</Model>\n", c.GbModel)
+			}
+			if c.GbOwner != "" {
+				content += fmt.Sprintf("<Owner>%s</Owner>\n", c.GbOwner)
+			}
+			if c.GbCivilCode != "" {
+				content += fmt.Sprintf("<CivilCode>%s</CivilCode>\n", c.GbCivilCode)
+			}
+			if c.GbAddress != "" {
+				content += fmt.Sprintf("<Address>%s</Address>\n", c.GbAddress)
+			}
+			if c.GbParentID != "" {
+				content += fmt.Sprintf("<ParentID>%s</ParentID>\n", c.GbParentID)
+			}
+			content += fmt.Sprintf("<Parental>%d</Parental>\n", c.GbParental)
+			if c.GbSafetyWay != 0 {
+				content += fmt.Sprintf("<SafetyWay>%d</SafetyWay>\n", c.GbSafetyWay)
+			}
+			if c.GbRegisterWay != 0 {
+				content += fmt.Sprintf("<RegisterWay>%d</RegisterWay>\n", c.GbRegisterWay)
+			}
+			if c.GbCertNum != "" {
+				content += fmt.Sprintf("<CertNum>%s</CertNum>\n", c.GbCertNum)
+			}
+			if c.GbCertifiable != 0 {
+				content += fmt.Sprintf("<Certifiable>%d</Certifiable>\n", c.GbCertifiable)
+			}
+			if c.GbErrCode != 0 {
+				content += fmt.Sprintf("<ErrCode>%d</ErrCode>\n", c.GbErrCode)
+			}
+			if c.GbEndTime != "" {
+				content += fmt.Sprintf("<EndTime>%s</EndTime>\n", c.GbEndTime)
+			}
+			content += fmt.Sprintf("<Secrecy>%d</Secrecy>\n", c.GbSecrecy)
+			if c.GbIPAddress != "" {
+				content += fmt.Sprintf("<IPAddress>%s</IPAddress>\n", c.GbIPAddress)
+			}
+			if c.GbPort != 0 {
+				content += fmt.Sprintf("<Port>%d</Port>\n", c.GbPort)
+			}
+			if c.GbPassword != "" {
+				content += fmt.Sprintf("<Password>%s</Password>\n", c.GbPassword)
+			}
+			if c.GbStatus != "" {
+				content += fmt.Sprintf("<Status>%s</Status>\n", c.GbStatus)
+			}
+			if c.GbLongitude != 0 {
+				content += fmt.Sprintf("<Longitude>%f</Longitude>\n", c.GbLongitude)
+			}
+			if c.GbLatitude != 0 {
+				content += fmt.Sprintf("<Latitude>%f</Latitude>\n", c.GbLatitude)
+			}
+
+			// Info 部分
+			content += "<Info>\n"
+			if c.GbPTZType != 0 {
+				content += fmt.Sprintf("  <PTZType>%d</PTZType>\n", c.GbPTZType)
+			}
+			if c.GbPositionType != 0 {
+				content += fmt.Sprintf("  <PositionType>%d</PositionType>\n", c.GbPositionType)
+			}
+			if c.GbRoomType != 0 {
+				content += fmt.Sprintf("  <RoomType>%d</RoomType>\n", c.GbRoomType)
+			}
+			if c.GbUseType != 0 {
+				content += fmt.Sprintf("  <UseType>%d</UseType>\n", c.GbUseType)
+			}
+			if c.GbSupplyLightType != 0 {
+				content += fmt.Sprintf("  <SupplyLightType>%d</SupplyLightType>\n", c.GbSupplyLightType)
+			}
+			if c.GbDirectionType != 0 {
+				content += fmt.Sprintf("  <DirectionType>%d</DirectionType>\n", c.GbDirectionType)
+			}
+			if c.GbResolution != "" {
+				content += fmt.Sprintf("  <Resolution>%s</Resolution>\n", c.GbResolution)
+			}
+			if c.GbBusinessGroupID != "" {
+				content += fmt.Sprintf("  <BusinessGroupID>%s</BusinessGroupID>\n", c.GbBusinessGroupID)
+			}
+			if c.GbDownloadSpeed != "" {
+				content += fmt.Sprintf("  <DownloadSpeed>%s</DownloadSpeed>\n", c.GbDownloadSpeed)
+			}
+			if c.GbSvcSpaceSupportMod != 0 {
+				content += fmt.Sprintf("  <SVCSpaceSupportMode>%d</SVCSpaceSupportMode>\n", c.GbSvcSpaceSupportMod)
+			}
+			if c.GbSvcTimeSupportMode != 0 {
+				content += fmt.Sprintf("  <SVCTimeSupportMode>%d</SVCTimeSupportMode>\n", c.GbSvcTimeSupportMode)
+			}
+			content += "</Info>\n"
+		}
+	}
+
+	if event != "" {
+		content += fmt.Sprintf("<Event>%s</Event>\n", event)
+	}
+	content += "</Item>\n"
+	return content
+}
+
+// Encode 编码通道信息
+func (c *CommonGBChannel) Encode(deviceID string, event string) string {
+	if event == "" {
+		return c.GetFullContent(deviceID, c.GbName, "", "")
+	}
+
+	switch event {
+	case "DEL", "DEFECT", "VLOST", "ON", "OFF":
+		return fmt.Sprintf("<Item>\n<DeviceId>%s</DeviceId>\n<Event>%s</Event>\n</Item>\n", deviceID, event)
+	case "ADD", "UPDATE":
+		return c.GetFullContent(deviceID, c.GbName, "", event)
+	default:
+		return ""
+	}
+}
+
+// BuildFromGroup 从 Group 构建 CommonGBChannel 实例
+func BuildFromGroup(group *Group) *CommonGBChannel {
+	gbCode := DecodeGBCode(group.DeviceID)
+	if gbCode == nil {
+		return nil
+	}
+
+	channel := &CommonGBChannel{
+		GbName:      group.Name,
+		GbDeviceID:  group.DeviceID,
+		GbCivilCode: group.CivilCode,
+	}
+
+	if gbCode.TypeCode == "215" {
+		// 业务分组
+		channel.GbCivilCode = group.CivilCode
+	} else if gbCode.TypeCode == "216" {
+		// 虚拟组织
+		channel.GbParentID = group.ParentDeviceID
+		channel.GbBusinessGroupID = group.BusinessGroup
+		channel.GbCivilCode = group.CivilCode
+	}
+
+	return channel
+}
+
+// BuildFromPlatform 从 PlatformModel 构建 CommonGBChannel 实例
+func BuildFromPlatform(platform *PlatformModel) *CommonGBChannel {
+	status := "OFF"
+	if platform.Status {
+		status = "ON"
+	}
+	return &CommonGBChannel{
+		GbDeviceID:     platform.DeviceGBID,
+		GbName:         platform.Name,
+		GbManufacturer: platform.Manufacturer,
+		GbModel:        platform.Model,
+		GbCivilCode:    platform.CivilCode,
+		GbAddress:      platform.Address,
+		GbRegisterWay:  platform.RegisterWay,
+		GbSecrecy:      platform.Secrecy,
+		GbStatus:       status,
+	}
+}
+
+// BuildFromRegion 从 Region 构建 CommonGBChannel 实例
+func BuildFromRegion(region *Region) *CommonGBChannel {
+	return &CommonGBChannel{
+		GbDeviceID: region.DeviceID,
+		GbName:     region.Name,
+	}
+}

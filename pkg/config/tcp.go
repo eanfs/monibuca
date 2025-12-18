@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 )
 
 //go:embed local.monibuca.com_bundle.pem
@@ -40,6 +40,8 @@ type TCP struct {
 	KeyFile       string `desc:"私钥文件"`
 	ListenNum     int    `desc:"同时并行监听数量，0为CPU核心数量"` //同时并行监听数量，0为CPU核心数量
 	NoDelay       bool   `desc:"是否禁用Nagle算法"`        //是否禁用Nagle算法
+	WriteBuffer   int    `desc:"写缓冲区大小"`             //写缓冲区大小
+	ReadBuffer    int    `desc:"读缓冲区大小"`             //读缓冲区大小
 	KeepAlive     bool   `desc:"是否启用KeepAlive"`      //是否启用KeepAlive
 	AutoListen    bool   `default:"true" desc:"是否自动监听"`
 }
@@ -125,7 +127,7 @@ func (task *ListenTCPWork) listen(handler TCPHandler) {
 				if max := 1 * time.Second; tempDelay > max {
 					tempDelay = max
 				}
-				// slog.Warnf("%s: Accept error: %v; retrying in %v", tcp.ListenAddr, err, tempDelay)
+				// slog.Warnf("%s: Accept error: %v; retrying in %v", tcp.DownListenAddr, err, tempDelay)
 				time.Sleep(tempDelay)
 				continue
 			}
@@ -140,6 +142,18 @@ func (task *ListenTCPWork) listen(handler TCPHandler) {
 		}
 		if !task.NoDelay {
 			tcpConn.SetNoDelay(false)
+		}
+		if task.WriteBuffer > 0 {
+			if err := tcpConn.SetWriteBuffer(task.WriteBuffer); err != nil {
+				task.Error("failed to set write buffer", "error", err)
+				continue
+			}
+		}
+		if task.ReadBuffer > 0 {
+			if err := tcpConn.SetReadBuffer(task.ReadBuffer); err != nil {
+				task.Error("failed to set read buffer", "error", err)
+				continue
+			}
 		}
 		tempDelay = 0
 		subTask := handler(tcpConn)

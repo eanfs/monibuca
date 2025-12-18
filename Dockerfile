@@ -1,34 +1,36 @@
-# Compile Stage 
-FROM golang:1.23.2-bullseye AS builder
-
-
-LABEL stage=gobuilder
-
-# Env 
-ENV CGO_ENABLED 0
-ENV GOOS linux 
-ENV GOARCH amd64
-#ENV GOPROXY https://goproxy.cn,direct
-ENV HOME /monibuca 
-
-WORKDIR /
-
-RUN git clone -b v5 --depth 1 https://github.com/langhuihui/monibuca
-
-# compile 
-WORKDIR /monibuca
-RUN go build -tags sqlite -o ./build/monibuca ./example/default/main.go
-
-RUN cp -r /monibuca/example/default/config.yaml /monibuca/build
-
 # Running Stage 
-FROM alpine:3.20
+FROM linuxserver/ffmpeg:latest
 
 WORKDIR /monibuca 
-COPY --from=builder /monibuca/build /monibuca/
-RUN cp -r ./config.yaml /etc/monibuca
-# Export necessary ports 
-EXPOSE 8080 8443 1935 554 5060 9000-20000
-EXPOSE 5060/udp
 
-CMD [ "./monibuca", "-c", "/etc/monibuca/config.yaml" ]
+# Copy the pre-compiled binary from the build context
+# The GitHub Actions workflow prepares 'monibuca_linux' in the context root
+
+COPY monibuca_amd64 ./monibuca_amd64
+COPY monibuca_arm64 ./monibuca_arm64
+
+COPY admin.zip ./admin.zip
+COPY example/default/test.mp4 ./test.mp4
+COPY example/default/test.flv ./test.flv
+
+# Install tcpdump
+RUN apt-get update && apt-get install -y tcpdump && rm -rf /var/lib/apt/lists/*
+
+# Copy the configuration file from the build context
+COPY example/default/config.yaml /etc/monibuca/config.yaml
+
+# Export necessary ports 
+EXPOSE 6000 8080 8443 1935 554 5060 9000-20000
+EXPOSE 5060/udp 44944/udp
+
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+      mv ./monibuca_arm64 ./monibuca_linux; \
+      rm ./monibuca_amd64; \
+    else \
+      mv ./monibuca_amd64 ./monibuca_linux; \
+      rm ./monibuca_arm64; \
+    fi
+
+
+ENTRYPOINT [ "./monibuca_linux"]
+CMD ["-c", "/etc/monibuca/config.yaml"]

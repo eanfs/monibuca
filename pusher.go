@@ -1,11 +1,7 @@
 package m7s
 
 import (
-	"net/http"
-
-	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/task"
-
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/config"
 )
 
@@ -14,12 +10,12 @@ type IPusher interface {
 	GetPushJob() *PushJob
 }
 
-type Pusher = func() IPusher
+type PusherFactory = func() IPusher
 
 type PushJob struct {
 	Connection
 	Subscriber *Subscriber
-	SubConf    *config.Subscribe
+	SubConf    config.Subscribe
 	pusher     IPusher
 }
 
@@ -28,9 +24,14 @@ func (p *PushJob) GetKey() string {
 }
 
 func (p *PushJob) Init(pusher IPusher, plugin *Plugin, streamPath string, conf config.Push, subConf *config.Subscribe) *PushJob {
-	p.Connection.Init(plugin, streamPath, conf.URL, conf.Proxy, http.Header(conf.Header))
+	p.Connection.Init(plugin, streamPath, conf.URL, conf.Proxy)
 	p.pusher = pusher
-	p.SubConf = subConf
+	if subConf == nil {
+		p.SubConf = plugin.config.Subscribe
+	} else {
+		p.SubConf = *subConf
+	}
+	p.SubConf.SubType = SubscribeTypePush
 	p.SetDescriptions(task.Description{
 		"plugin":     plugin.Meta.Name,
 		"streamPath": streamPath,
@@ -38,27 +39,39 @@ func (p *PushJob) Init(pusher IPusher, plugin *Plugin, streamPath string, conf c
 		"maxRetry":   conf.MaxRetry,
 	})
 	pusher.SetRetry(conf.MaxRetry, conf.RetryInterval)
-	plugin.Server.Pushs.Add(p, plugin.Logger.With("pushURL", conf.URL, "streamPath", streamPath))
+	if sender, webhook := plugin.getHookSender(config.HookOnPushStart); sender != nil {
+		pusher.OnStart(func() {
+			alarmInfo := AlarmInfo{
+				AlarmName:  string(config.HookOnPushStart),
+				AlarmDesc:  "start push",
+				AlarmType:  config.AlarmPushRecover,
+				StreamPath: streamPath,
+			}
+			sender(webhook, alarmInfo)
+		})
+	}
+
+	if sender, webhook := plugin.getHookSender(config.HookOnPushEnd); sender != nil {
+		pusher.OnDispose(func() {
+			alarmInfo := AlarmInfo{
+				AlarmName:  string(config.HookOnPushEnd),
+				AlarmDesc:  pusher.StopReason().Error(),
+				AlarmType:  config.AlarmPushOffline,
+				StreamPath: streamPath,
+			}
+			sender(webhook, alarmInfo)
+		})
+	}
+	plugin.Server.Pushs.AddTask(p, plugin.Logger.With("pushURL", conf.URL, "streamPath", streamPath))
 	return p
 }
 
 func (p *PushJob) Subscribe() (err error) {
-	if p.SubConf != nil {
-		p.Subscriber, err = p.Plugin.SubscribeWithConfig(p.pusher.GetTask().Context, p.StreamPath, *p.SubConf)
-	} else {
-		p.Subscriber, err = p.Plugin.Subscribe(p.pusher.GetTask().Context, p.StreamPath)
-	}
-	if p.Subscriber != nil {
-		p.Subscriber.Type = SubscribeTypePush
-	}
+	p.Subscriber, err = p.Plugin.SubscribeWithConfig(p.pusher.GetTask().Context, p.StreamPath, p.SubConf)
 	return
 }
 
 func (p *PushJob) Start() (err error) {
-	s := p.Plugin.Server
-	if _, ok := s.Pushs.Get(p.GetKey()); ok {
-		return pkg.ErrPushRemoteURLExist
-	}
 	p.AddTask(p.pusher, p.Logger)
 	return
 }

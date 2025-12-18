@@ -1,264 +1,151 @@
 package plugin_flv
 
 import (
-	"bufio"
+	"context"
 	"encoding/binary"
-	"io"
-	"io/fs"
-	"m7s.live/v5/pkg/util"
-	flv "m7s.live/v5/plugin/flv/pkg"
-	rtmp "m7s.live/v5/plugin/rtmp/pkg"
+	"errors"
+	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
+
+	"github.com/gobwas/ws"
+	"github.com/langhuihui/gomem"
+	"google.golang.org/protobuf/types/known/emptypb"
+	m7s "m7s.live/v5"
+	"m7s.live/v5/pb"
+	flvpb "m7s.live/v5/plugin/flv/pb"
+	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
+func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
+	globalReq := &pb.ReqRecordList{
+		StreamPath: req.StreamPath,
+		Range:      req.Range,
+		Start:      req.Start,
+		End:        req.End,
+		PageNum:    req.PageNum,
+		PageSize:   req.PageSize,
+		Type:       "flv",
+	}
+	return p.Server.GetRecordList(ctx, globalReq)
+}
+
+func (p *FLVPlugin) Catalog(ctx context.Context, req *emptypb.Empty) (resp *pb.ResponseCatalog, err error) {
+	return p.Server.GetRecordCatalog(ctx, &pb.ReqRecordCatalog{Type: "flv"})
+}
+
+func (p *FLVPlugin) Delete(ctx context.Context, req *flvpb.ReqRecordDelete) (resp *pb.ResponseDelete, err error) {
+	globalReq := &pb.ReqRecordDelete{
+		StreamPath: req.StreamPath,
+		Ids:        req.Ids,
+		StartTime:  req.StartTime,
+		EndTime:    req.EndTime,
+		Range:      req.Range,
+		Type:       "flv",
+	}
+	return p.Server.DeleteRecord(ctx, globalReq)
+}
+
 func (plugin *FLVPlugin) Download_(w http.ResponseWriter, r *http.Request) {
-	streamPath := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/download/"), ".flv")
-	singleFile := filepath.Join(plugin.Path, streamPath+".flv")
-	startTime, endTime, err := util.TimeRangeQueryParse(r.URL.Query())
+	// 解析请求参数
+	params, err := plugin.parseRequestParams(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	timeRange := endTime.Sub(startTime)
-	plugin.Info("download", "stream", streamPath, "start", startTime, "end", endTime)
-	dir := filepath.Join(plugin.Path, streamPath)
-	if util.Exist(singleFile) {
 
-	} else if util.Exist(dir) {
-		var fileList []fs.FileInfo
-		var found bool
-		var startOffsetTime time.Duration
-		err = filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
-			if info.IsDir() || !strings.HasSuffix(info.Name(), ".flv") {
-				return nil
-			}
-			modTime := info.ModTime()
-			//tmp, _ := strconv.Atoi(strings.TrimSuffix(info.Name(), ".flv"))
-			//fileStartTime := time.Unix(tmp, 10)
-			if !found {
-				if modTime.After(startTime) {
-					found = true
-					//fmt.Println(path, modTime, startTime, found)
-				} else {
-					fileList = []fs.FileInfo{info}
-					startOffsetTime = startTime.Sub(modTime)
-					//fmt.Println(path, modTime, startTime, found)
-					return nil
-				}
-			}
-			if modTime.After(endTime) {
-				return fs.ErrInvalid
-			}
-			fileList = append(fileList, info)
-			return nil
-		})
-		if !found {
-			http.NotFound(w, r)
-			return
-		}
+	plugin.Info("download", "stream", params.streamPath, "start", params.startTime, "end", params.endTime)
 
-		w.Header().Set("Content-Type", "video/x-flv")
-		w.Header().Set("Content-Disposition", "attachment")
-		var writer io.Writer = w
-		flvHead := make([]byte, 9+4)
-		tagHead := make(util.Buffer, 11)
-		var contentLength uint64
+	// 从数据库查询录像记录
+	recordStreams, err := plugin.queryRecordStreams(params)
+	if err != nil {
+		plugin.Error("Failed to query record streams", "err", err)
+		http.Error(w, "Database query failed", http.StatusInternalServerError)
+		return
+	}
 
-		var amf *rtmp.AMF
-		var metaData rtmp.EcmaArray
-		initMetaData := func(reader io.Reader, dataLen uint32) {
-			data := make([]byte, dataLen+4)
-			_, err = io.ReadFull(reader, data)
-			amf = &rtmp.AMF{
-				Buffer: util.Buffer(data[1+2+len("onMetaData") : len(data)-4]),
-			}
-			var obj any
-			obj, err = amf.Unmarshal()
-			metaData = obj.(rtmp.EcmaArray)
-		}
-		var filepositions []uint64
-		var times []float64
-		for pass := 0; pass < 2; pass++ {
-			offsetTime := startOffsetTime
-			var offsetTimestamp, lastTimestamp uint32
-			var init, seqAudioWritten, seqVideoWritten bool
-			if pass == 1 {
-				metaData["keyframes"] = map[string]any{
-					"filepositions": filepositions,
-					"times":         times,
-				}
-				amf.Marshals("onMetaData", metaData)
-				offsetDelta := amf.Len() + 15
-				offset := offsetDelta + len(flvHead)
-				contentLength += uint64(offset)
-				metaData["duration"] = timeRange.Seconds()
-				metaData["filesize"] = contentLength
-				for i := range filepositions {
-					filepositions[i] += uint64(offset)
-				}
-				metaData["keyframes"] = map[string]any{
-					"filepositions": filepositions,
-					"times":         times,
-				}
-				amf.Reset()
-				amf.Marshals("onMetaData", metaData)
-				plugin.Info("start download", "metaData", metaData)
-				w.Header().Set("Content-Length", strconv.FormatInt(int64(contentLength), 10))
-				w.WriteHeader(http.StatusOK)
-			}
-			if offsetTime == 0 {
-				init = true
-			} else {
-				offsetTimestamp = -uint32(offsetTime.Milliseconds())
-			}
-			for i, info := range fileList {
-				if r.Context().Err() != nil {
-					return
-				}
-				filePath := filepath.Join(dir, info.Name())
-				plugin.Debug("read", "file", filePath)
-				file, err := os.Open(filePath)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				reader := bufio.NewReader(file)
-				if i == 0 {
-					_, err = io.ReadFull(reader, flvHead)
-					if pass == 1 {
-						// 第一次写入头
-						_, err = writer.Write(flvHead)
-						tagHead[0] = flv.FLV_TAG_TYPE_SCRIPT
-						l := amf.Len()
-						tagHead[1] = byte(l >> 16)
-						tagHead[2] = byte(l >> 8)
-						tagHead[3] = byte(l)
-						flv.PutFlvTimestamp(tagHead, 0)
-						writer.Write(tagHead)
-						writer.Write(amf.Buffer)
-						l += 11
-						binary.BigEndian.PutUint32(tagHead[:4], uint32(l))
-						writer.Write(tagHead[:4])
-					}
-				} else {
-					// 后面的头跳过
-					_, err = reader.Discard(13)
-					if !init {
-						offsetTime = 0
-						offsetTimestamp = 0
-					}
-				}
-				for err == nil {
-					_, err = io.ReadFull(reader, tagHead)
-					if err != nil {
-						break
-					}
-					tmp := tagHead
-					t := tmp.ReadByte()
-					dataLen := tmp.ReadUint24()
-					lastTimestamp = tmp.ReadUint24() | uint32(tmp.ReadByte())<<24
-					//fmt.Println(lastTimestamp, tagHead)
-					if init {
-						if t == flv.FLV_TAG_TYPE_SCRIPT {
-							if pass == 0 {
-								initMetaData(reader, dataLen)
-							} else {
-								_, err = reader.Discard(int(dataLen) + 4)
-							}
-						} else {
-							lastTimestamp += offsetTimestamp
-							if lastTimestamp >= uint32(timeRange.Milliseconds()) {
-								break
-							}
-							if pass == 0 {
-								data := make([]byte, dataLen+4)
-								_, err = io.ReadFull(reader, data)
-								frameType := (data[0] >> 4) & 0b0111
-								idr := frameType == 1 || frameType == 4
-								if idr {
-									filepositions = append(filepositions, contentLength)
-									times = append(times, float64(lastTimestamp)/1000)
-								}
-								contentLength += uint64(11 + dataLen + 4)
-							} else {
-								//fmt.Println("write", lastTimestamp)
-								flv.PutFlvTimestamp(tagHead, lastTimestamp)
-								_, err = writer.Write(tagHead)
-								_, err = io.CopyN(writer, reader, int64(dataLen+4))
-							}
-						}
-						continue
-					}
-
-					switch t {
-					case flv.FLV_TAG_TYPE_SCRIPT:
-						if pass == 0 {
-							initMetaData(reader, dataLen)
-						} else {
-							_, err = reader.Discard(int(dataLen) + 4)
-						}
-					case flv.FLV_TAG_TYPE_AUDIO:
-						if !seqAudioWritten {
-							if pass == 0 {
-								contentLength += uint64(11 + dataLen + 4)
-								_, err = reader.Discard(int(dataLen) + 4)
-							} else {
-								flv.PutFlvTimestamp(tagHead, 0)
-								_, err = writer.Write(tagHead)
-								_, err = io.CopyN(writer, reader, int64(dataLen+4))
-							}
-							seqAudioWritten = true
-						} else {
-							_, err = reader.Discard(int(dataLen) + 4)
-						}
-					case flv.FLV_TAG_TYPE_VIDEO:
-						if !seqVideoWritten {
-							if pass == 0 {
-								contentLength += uint64(11 + dataLen + 4)
-								_, err = reader.Discard(int(dataLen) + 4)
-							} else {
-								flv.PutFlvTimestamp(tagHead, 0)
-								_, err = writer.Write(tagHead)
-								_, err = io.CopyN(writer, reader, int64(dataLen+4))
-							}
-							seqVideoWritten = true
-						} else {
-							if lastTimestamp >= uint32(offsetTime.Milliseconds()) {
-								data := make([]byte, dataLen+4)
-								_, err = io.ReadFull(reader, data)
-								frameType := (data[0] >> 4) & 0b0111
-								idr := frameType == 1 || frameType == 4
-								if idr {
-									init = true
-									plugin.Debug("init", "lastTimestamp", lastTimestamp)
-									if pass == 0 {
-										filepositions = append(filepositions, contentLength)
-										times = append(times, float64(lastTimestamp)/1000)
-										contentLength += uint64(11 + dataLen + 4)
-									} else {
-										flv.PutFlvTimestamp(tagHead, 0)
-										_, err = writer.Write(tagHead)
-										_, err = writer.Write(data)
-									}
-								}
-							} else {
-								_, err = reader.Discard(int(dataLen) + 4)
-							}
-						}
-					}
-				}
-				offsetTimestamp = lastTimestamp
-				err = file.Close()
-			}
-		}
-		plugin.Info("end download")
-	} else {
+	// 构建文件信息列表
+	fileInfoList, found := plugin.buildFileInfoList(recordStreams, params.startTime, params.endTime)
+	if !found || len(fileInfoList) == 0 {
+		plugin.Warn("No records found", "stream", params.streamPath, "start", params.startTime, "end", params.endTime)
 		http.NotFound(w, r)
 		return
 	}
+
+	// 根据记录类型选择处理方式
+	if plugin.hasOnlyMp4Records(fileInfoList) {
+		// 过滤MP4文件并转换为FLV
+		mp4FileList := plugin.filterMp4Files(fileInfoList)
+		if len(mp4FileList) == 0 {
+			plugin.Warn("No valid MP4 files after filtering", "stream", params.streamPath)
+			http.NotFound(w, r)
+			return
+		}
+		plugin.processMp4ToFlv(w, r, mp4FileList, params)
+	} else {
+		// 过滤FLV文件并处理
+		flvFileList := plugin.filterFlvFiles(fileInfoList)
+		if len(flvFileList) == 0 {
+			plugin.Warn("No valid FLV files after filtering", "stream", params.streamPath)
+			http.NotFound(w, r)
+			return
+		}
+		plugin.processFlvFiles(w, r, flvFileList, params)
+	}
+}
+
+func (plugin *FLVPlugin) RegisterHandler() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"/jessica/{streamPath...}": plugin.jessica,
+	}
+}
+
+// /jessica/{streamPath}
+func (plugin *FLVPlugin) jessica(rw http.ResponseWriter, r *http.Request) {
+	subscriber, err := plugin.Subscribe(r.Context(), r.PathValue("streamPath"))
+	defer func() {
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+		}
+	}()
+	if err != nil {
+		return
+	}
+	var conn net.Conn
+	conn, err = subscriber.CheckWebSocket(rw, r)
+	if err != nil {
+		return
+	}
+	if conn == nil {
+		err = errors.New("no websocket connection.")
+		return
+	}
+	var _sendBuffer = net.Buffers{}
+	sendBuffer := _sendBuffer
+	var head [5]byte
+	write := func(typ byte, ts uint32, mem gomem.Memory) (err error) {
+		head[0] = typ
+		binary.BigEndian.PutUint32(head[1:], ts)
+		err = ws.WriteHeader(conn, ws.Header{
+			Fin:    true,
+			OpCode: ws.OpBinary,
+			Length: int64(mem.Size + 5),
+		})
+		if err != nil {
+			return
+		}
+		sendBuffer = append(_sendBuffer, head[:])
+		sendBuffer = append(sendBuffer, mem.Buffers...)
+		if plugin.GetCommonConf().WriteTimeout > 0 {
+			conn.SetWriteDeadline(time.Now().Add(plugin.GetCommonConf().WriteTimeout))
+		}
+		_, err = sendBuffer.WriteTo(conn)
+		return
+	}
+
+	m7s.PlayBlock(subscriber, func(audio *rtmp.AudioFrame) (err error) {
+		return write(1, audio.GetTS32(), audio.Memory)
+	}, func(video *rtmp.VideoFrame) (err error) {
+		return write(2, video.GetTS32(), video.Memory)
+	})
 }

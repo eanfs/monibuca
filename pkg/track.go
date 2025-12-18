@@ -7,12 +7,18 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 
 	"m7s.live/v5/pkg/util"
 )
+
+const threshold = 10 * time.Millisecond
+const DROP_FRAME_LEVEL_NODROP = 0
+const DROP_FRAME_LEVEL_DROP_P = 1
+const DROP_FRAME_LEVEL_DROP_ALL = 2
 
 type (
 	Track struct {
@@ -30,16 +36,31 @@ type (
 		Track
 	}
 	TsTamer struct {
-		BaseTs, LastTs time.Duration
+		BaseTs, LastTs, BeforeScaleChangedTs time.Duration
+		LastScale                            float64
+	}
+	SpeedController struct {
+		speed          float64
+		pausedTime     time.Duration
+		beginTime      time.Time
+		beginTimestamp time.Duration
+		Delta          time.Duration
+	}
+	DropController struct {
+		acceptFrameCount    int
+		accpetFPS           int
+		LastDropLevelChange time.Time
+		DropFrameLevel      int // 0: no drop, 1: drop P-frame, 2: drop all
 	}
 	AVTrack struct {
 		Track
 		*RingWriter
 		codec.ICodecCtx
-		Allocator     *util.ScalableMemoryAllocator
-		SequenceFrame IAVFrame
-		WrapIndex     int
+		Allocator *gomem.ScalableMemoryAllocator
+		WrapIndex int
 		TsTamer
+		SpeedController
+		DropController
 	}
 )
 
@@ -49,11 +70,13 @@ func NewAVTrack(args ...any) (t *AVTrack) {
 		switch v := arg.(type) {
 		case IAVFrame:
 			t.FrameType = reflect.TypeOf(v)
-			t.Allocator = v.GetAllocator()
+			sample := v.GetSample()
+			t.Allocator = sample.GetAllocator()
+			t.ICodecCtx = sample.ICodecCtx
 		case reflect.Type:
 			t.FrameType = v
 		case *slog.Logger:
-			t.Logger = v
+			t.Logger = v.With("frameType", t.FrameType.String())
 		case *AVTrack:
 			t.Logger = v.Logger.With("subtrack", t.FrameType.String())
 			t.RingWriter = v.RingWriter
@@ -67,7 +90,7 @@ func NewAVTrack(args ...any) (t *AVTrack) {
 		}
 	}
 	//t.ready = util.NewPromise(struct{}{})
-	t.Info("create")
+	t.Info("create", "dropFrameLevel", t.DropFrameLevel)
 	return
 }
 
@@ -87,6 +110,74 @@ func (t *Track) AddBytesIn(n int) {
 	}
 }
 
+func (t *AVTrack) AddBytesIn(n int) {
+	dur := time.Since(t.lastBPSTime)
+	t.Track.AddBytesIn(n)
+	if t.frameCount == 0 {
+		t.accpetFPS = int(float64(t.acceptFrameCount) / dur.Seconds())
+		t.acceptFrameCount = 0
+	}
+}
+
+func (t *AVTrack) FixTimestamp(data *Sample, scale float64) {
+	t.AddBytesIn(data.Size)
+	data.Timestamp = t.Tame(data.Timestamp, t.FPS, scale)
+}
+
+func (t *AVTrack) NewFrame(avFrame *AVFrame) (frame IAVFrame) {
+	frame = reflect.New(t.FrameType.Elem()).Interface().(IAVFrame)
+	if avFrame.Sample == nil {
+		avFrame.Sample = frame.GetSample()
+	}
+	if avFrame.BaseSample == nil {
+		avFrame.BaseSample = &BaseSample{}
+	}
+	frame.GetSample().BaseSample = avFrame.BaseSample
+	return
+}
+
+func (t *AVTrack) AcceptFrame() {
+	t.acceptFrameCount++
+}
+
+func (t *AVTrack) changeDropFrameLevel(newLevel int) {
+	t.Warn("change drop frame level", "from", t.DropFrameLevel, "to", newLevel)
+	t.DropFrameLevel = newLevel
+	t.LastDropLevelChange = time.Now()
+}
+
+func (t *AVTrack) CheckIfNeedDropFrame(maxFPS int) (drop bool) {
+	drop = maxFPS > 0 && (t.accpetFPS > maxFPS)
+	if drop {
+		defer func() {
+			if time.Since(t.LastDropLevelChange) > time.Second && t.DropFrameLevel > 0 {
+				t.changeDropFrameLevel(t.DropFrameLevel + 1)
+			}
+		}()
+	}
+	// Enhanced frame dropping strategy based on DropFrameLevel
+	switch t.DropFrameLevel {
+	case DROP_FRAME_LEVEL_NODROP:
+		if drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_DROP_P)
+		}
+	case DROP_FRAME_LEVEL_DROP_P: // Drop P-frame
+		if !t.Value.IDR {
+			return true
+		} else if !drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_NODROP)
+		}
+		return false
+	default:
+		if !drop {
+			t.changeDropFrameLevel(DROP_FRAME_LEVEL_DROP_P)
+		} else {
+			return true
+		}
+	}
+	return
+}
+
 func (t *AVTrack) Ready(err error) {
 	if t.ready.IsPending() {
 		if err != nil {
@@ -94,9 +185,9 @@ func (t *AVTrack) Ready(err error) {
 		} else {
 			switch ctx := t.ICodecCtx.(type) {
 			case IVideoCodecCtx:
-				t.Info("ready", "info", t.ICodecCtx.GetInfo(), "width", ctx.Width(), "height", ctx.Height())
+				t.Info("ready", "codec", t.ICodecCtx.FourCC(), "info", t.ICodecCtx.GetInfo(), "width", ctx.Width(), "height", ctx.Height())
 			case IAudioCodecCtx:
-				t.Info("ready", "info", t.ICodecCtx.GetInfo(), "channels", ctx.GetChannels(), "sample_rate", ctx.GetSampleRate())
+				t.Info("ready", "codec", t.ICodecCtx.FourCC(), "info", t.ICodecCtx.GetInfo(), "channels", ctx.GetChannels(), "sample_rate", ctx.GetSampleRate())
 			}
 		}
 		t.ready.Fulfill(err)
@@ -126,19 +217,63 @@ func (t *Track) Trace(msg string, fields ...any) {
 	t.Log(context.TODO(), task.TraceLevel, msg, fields...)
 }
 
-func (t *TsTamer) Tame(ts time.Duration, fps int) (result time.Duration) {
+func (t *TsTamer) Tame(ts time.Duration, fps int, scale float64) (result time.Duration) {
 	if t.LastTs == 0 {
 		t.BaseTs -= ts
 	}
 	result = max(1*time.Millisecond, t.BaseTs+ts)
-	if fps > 0 {
+
+	// 突变检测：仅在 fps 合理的情况下启用
+	// 如果 fps > 100，说明是快速下载场景，接收速度远大于真实帧率，不应该做突变检测
+	if fps > 0 && fps <= 100 {
 		frameDur := float64(time.Second) / float64(fps)
-		if math.Abs(float64(result-t.LastTs)) > 10*frameDur { //时间戳突变
-			// t.Warn("timestamp mutation", "fps", t.FPS, "lastTs", uint32(t.LastTs/time.Millisecond), "ts", uint32(frame.Timestamp/time.Millisecond), "frameDur", time.Duration(frameDur))
+		diff := math.Abs(float64(result - t.LastTs))
+		threshold := 10 * frameDur * scale
+		if diff > threshold { //时间戳突变
 			result = t.LastTs + time.Duration(frameDur)
 			t.BaseTs = result - ts
 		}
 	}
+
 	t.LastTs = result
+	if t.LastScale != scale {
+		t.BeforeScaleChangedTs = result
+		t.LastScale = scale
+	}
+	result = t.BeforeScaleChangedTs + time.Duration(float64(result-t.BeforeScaleChangedTs)/scale)
 	return
+}
+
+func (t *AVTrack) SpeedControl(speed float64) {
+	t.speedControl(speed, t.LastTs)
+}
+
+func (t *AVTrack) AddPausedTime(d time.Duration) {
+	t.pausedTime += d
+}
+
+func (t *AVTrack) speedControl(speed float64, ts time.Duration) {
+	if speed != t.speed || t.beginTime.IsZero() {
+		t.speed = speed
+		t.beginTime = time.Now()
+		t.beginTimestamp = ts
+		t.pausedTime = 0
+	} else {
+		elapsed := time.Since(t.beginTime) - t.pausedTime
+		if speed == 0 {
+			t.Delta = ts - elapsed
+			if t.Logger.Enabled(t.ready, task.TraceLevel) {
+				t.Trace("speed 0", "ts", ts, "elapsed", elapsed, "delta", t.Delta)
+			}
+			return
+		}
+		should := time.Duration(float64(ts-t.beginTimestamp) / speed)
+		t.Delta = should - elapsed
+		if t.Delta > threshold {
+			if t.Logger.Enabled(t.ready, task.TraceLevel) {
+				t.Trace("speed control", "speed", speed, "elapsed", elapsed, "should", should, "delta", t.Delta)
+			}
+			time.Sleep(min(t.Delta, time.Millisecond*500))
+		}
+	}
 }

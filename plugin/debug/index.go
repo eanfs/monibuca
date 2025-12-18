@@ -2,37 +2,55 @@ package plugin_debug
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/exec" // 新增导入
 	"runtime"
 	runtimePPROF "runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	myproc "github.com/cloudwego/goref/pkg/proc"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
+	task "github.com/langhuihui/gotask"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"
 	"m7s.live/v5/plugin/debug/pb"
 	debug "m7s.live/v5/plugin/debug/pkg"
 	"m7s.live/v5/plugin/debug/pkg/profile"
 )
 
-var _ = m7s.InstallPlugin[DebugPlugin](&pb.Api_ServiceDesc, pb.RegisterApiHandler)
+var _ = m7s.InstallPlugin[DebugPlugin](m7s.PluginMeta{
+	ServiceDesc:         &pb.Api_ServiceDesc,
+	RegisterGRPCHandler: pb.RegisterApiHandler,
+})
 var conf, _ = config.LoadConfig()
 
 type DebugPlugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
-	ProfileDuration time.Duration `default:"10s" desc:"profile持续时间"`
-	Profile         string        `desc:"采集profile存储文件"`
-	ChartPeriod     time.Duration `default:"1s" desc:"图表更新周期"`
-	Grfout          string        `default:"grf.out" desc:"grf输出文件"`
+	ProfileDuration   time.Duration `default:"10s" desc:"profile持续时间"`
+	Profile           string        `desc:"采集profile存储文件"`
+	Grfout            string        `default:"grf.out" desc:"grf输出文件"`
+	EnableChart       bool          `default:"true" desc:"是否启用图表功能"`
+	EnableTaskHistory bool          `default:"false" desc:"是否启用任务历史功能"`
+	// 添加缓存字段
+	cpuProfileData *profile.Profile // 缓存 CPU Profile 数据
+	cpuProfileOnce sync.Once        // 确保只采集一次
+	cpuProfileLock sync.Mutex       // 保护缓存数据
+	chartServer    server
+	// Monitor plugin fields
+	session *debug.Session
 }
 
 type WriteToFile struct {
@@ -41,19 +59,15 @@ type WriteToFile struct {
 }
 
 func (w *WriteToFile) Header() http.Header {
-	// return w.w.Header()
 	return w.header
 }
 
-//	func (w *WriteToFile) Write(p []byte) (int, error) {
-//		// w.w.Write(p)
-//		return w.Writer.Write(p)
-//	}
-func (w *WriteToFile) WriteHeader(statusCode int) {
-	// w.w.WriteHeader(statusCode)
-}
+func (w *WriteToFile) WriteHeader(statusCode int) {}
 
-func (p *DebugPlugin) OnInit() error {
+func (p *DebugPlugin) Start() error {
+	// 启用阻塞分析
+	runtime.SetBlockProfileRate(1) // 设置采样率为1纳秒
+
 	if p.Profile != "" {
 		go func() {
 			file, err := os.Create(p.Profile)
@@ -68,6 +82,36 @@ func (p *DebugPlugin) OnInit() error {
 			p.Info("cpu profile done")
 		}()
 	}
+	if p.EnableChart {
+		p.AddTask(&p.chartServer)
+	}
+
+	// 初始化 monitor session
+	if p.DB != nil && p.EnableTaskHistory {
+		p.session = &debug.Session{
+			PID:       os.Getpid(),
+			Args:      strings.Join(os.Args, " "),
+			StartTime: time.Now(),
+		}
+		err := p.DB.AutoMigrate(p.session)
+		if err != nil {
+			return err
+		}
+		err = p.DB.Create(p.session).Error
+		if err != nil {
+			return err
+		}
+		err = p.DB.AutoMigrate(&debug.Task{})
+		if err != nil {
+			return err
+		}
+		p.Plugin.Server.Using(func() {
+			p.saveTask(p.Plugin.Server)
+		})
+		// 监听任务完成事件
+		p.Plugin.Server.OnDescendantsDispose(p.saveTask)
+	}
+
 	return nil
 }
 
@@ -76,9 +120,90 @@ func (p *DebugPlugin) Pprof_Trace(w http.ResponseWriter, r *http.Request) {
 	pprof.Trace(w, r)
 }
 
+func (p *DebugPlugin) Dispose() {
+	// 保存 session 结束时间
+	if p.DB != nil && p.session != nil {
+		p.DB.Model(p.session).Update("end_time", time.Now())
+	}
+}
+
+// saveTask 保存任务信息到数据库
+func (p *DebugPlugin) saveTask(task task.ITask) {
+	if p.DB == nil || p.session == nil {
+		return
+	}
+	var th debug.Task
+	th.SessionID = p.session.ID
+	th.TaskID = task.GetTaskID()
+	th.ParentID = task.GetParent().GetTaskID()
+	th.StartTime = task.GetTask().StartTime
+	th.EndTime = time.Now()
+	th.OwnerType = task.GetOwnerType()
+	th.TaskType = byte(task.GetTaskType())
+	th.Reason = task.StopReason().Error()
+	th.Level = task.GetLevel()
+	b, _ := json.Marshal(task.GetDescriptions())
+	th.Description = string(b)
+	p.DB.Create(&th)
+}
+
 func (p *DebugPlugin) Pprof_profile(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/debug" + r.URL.Path
 	pprof.Profile(w, r)
+}
+
+// Monitor plugin API implementations
+func (p *DebugPlugin) SearchTask(ctx context.Context, req *pb.SearchTaskRequest) (res *pb.SearchTaskResponse, err error) {
+	if p.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if !p.EnableTaskHistory {
+		return nil, fmt.Errorf("task history is not enabled")
+	}
+	res = &pb.SearchTaskResponse{}
+	var tasks []*debug.Task
+	tx := p.DB.Find(&tasks, "session_id = ?", req.SessionId)
+	if err = tx.Error; err == nil {
+		for _, t := range tasks {
+			res.Data = append(res.Data, &pb.Task{
+				Id:          t.TaskID,
+				StartTime:   timestamppb.New(t.StartTime),
+				EndTime:     timestamppb.New(t.EndTime),
+				Owner:       t.OwnerType,
+				Type:        uint32(t.TaskType),
+				Description: t.Description,
+				Reason:      t.Reason,
+				SessionId:   t.SessionID,
+				ParentId:    t.ParentID,
+			})
+		}
+	}
+	return
+}
+
+func (p *DebugPlugin) SessionList(context.Context, *emptypb.Empty) (res *pb.SessionListResponse, err error) {
+	if p.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if !p.EnableTaskHistory {
+		return nil, fmt.Errorf("task history is not enabled")
+	}
+	res = &pb.SessionListResponse{}
+	var sessions []*debug.Session
+	tx := p.DB.Find(&sessions)
+	err = tx.Error
+	if err == nil {
+		for _, s := range sessions {
+			res.Data = append(res.Data, &pb.Session{
+				Id:        s.ID,
+				Pid:       uint32(s.PID),
+				Args:      s.Args,
+				StartTime: timestamppb.New(s.StartTime),
+				EndTime:   timestamppb.New(s.EndTime.Time),
+			})
+		}
+	}
+	return
 }
 
 func (p *DebugPlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -96,11 +221,11 @@ func (p *DebugPlugin) Charts_(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *DebugPlugin) Charts_data(w http.ResponseWriter, r *http.Request) {
-	dataHandler(w, r)
+	p.chartServer.dataHandler(w, r)
 }
 
 func (p *DebugPlugin) Charts_datafeed(w http.ResponseWriter, r *http.Request) {
-	s.dataFeedHandler(w, r)
+	p.chartServer.dataFeedHandler(w, r)
 }
 
 func (p *DebugPlugin) Grf(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +376,156 @@ func (p *DebugPlugin) GetHeap(ctx context.Context, empty *emptypb.Empty) (*pb.He
 	return resp, nil
 }
 
+// 采集 CPU Profile 并缓存
+func (p *DebugPlugin) collectCPUProfile() error {
+	p.cpuProfileLock.Lock()
+	defer p.cpuProfileLock.Unlock()
+
+	// 如果已经采集过，直接返回
+	if p.cpuProfileData != nil {
+		return nil
+	}
+
+	// 创建临时文件用于存储 CPU Profile 数据
+	f, err := os.CreateTemp("", "cpu_profile")
+	if err != nil {
+		return fmt.Errorf("could not create CPU profile: %v", err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	// 开始 CPU profiling
+	if err := runtimePPROF.StartCPUProfile(f); err != nil {
+		return fmt.Errorf("could not start CPU profile: %v", err)
+	}
+
+	// 采样指定时间
+	time.Sleep(p.ProfileDuration)
+	runtimePPROF.StopCPUProfile()
+
+	// 读取并解析 CPU Profile 数据
+	f.Seek(0, 0)
+	profileData, err := profile.Parse(f)
+	if err != nil {
+		return fmt.Errorf("could not parse CPU profile: %v", err)
+	}
+
+	// 缓存 CPU Profile 数据
+	p.cpuProfileData = profileData
+	return nil
+}
+
+// GetCpu 接口
+func (p *DebugPlugin) GetCpu(ctx context.Context, req *pb.CpuRequest) (*pb.CpuResponse, error) {
+	// 如果需要刷新或者缓存中没有数据
+	if req.Refresh || p.cpuProfileData == nil {
+		p.cpuProfileLock.Lock()
+		p.cpuProfileData = nil         // 清除现有缓存
+		p.cpuProfileOnce = sync.Once{} // 重置 Once
+		p.cpuProfileLock.Unlock()
+	}
+
+	// 如果请求指定了duration，临时更新ProfileDuration
+	originalDuration := p.ProfileDuration
+	if req.Duration > 0 {
+		p.ProfileDuration = time.Duration(req.Duration) * time.Second
+	}
+
+	// 确保采集 CPU Profile
+	p.cpuProfileOnce.Do(func() {
+		if err := p.collectCPUProfile(); err != nil {
+			fmt.Printf("Failed to collect CPU profile: %v\n", err)
+		}
+	})
+
+	// 恢复原始的ProfileDuration
+	if req.Duration > 0 {
+		p.ProfileDuration = originalDuration
+	}
+
+	// 如果缓存中没有数据，返回错误
+	if p.cpuProfileData == nil {
+		return nil, fmt.Errorf("CPU profile data is not available")
+	}
+
+	// 使用缓存的 CPU Profile 数据构建响应
+	resp := &pb.CpuResponse{
+		Data: &pb.CpuData{
+			TotalCpuTimeNs:     uint64(p.cpuProfileData.DurationNanos),
+			SamplingIntervalNs: uint64(p.cpuProfileData.Period),
+			Functions:          make([]*pb.FunctionProfile, 0),
+			Goroutines:         make([]*pb.GoroutineProfile, 0),
+			SystemCalls:        make([]*pb.SystemCall, 0),
+			RuntimeStats:       &pb.RuntimeStats{},
+		},
+	}
+
+	// 填充函数调用信息
+	for _, sample := range p.cpuProfileData.Sample {
+		functionProfile := &pb.FunctionProfile{
+			FunctionName:    sample.Location[0].Line[0].Function.Name,
+			CpuTimeNs:       uint64(sample.Value[0]),
+			InvocationCount: uint64(sample.Value[1]),
+			CallStack:       make([]string, 0),
+		}
+
+		// 填充调用栈信息
+		for _, loc := range sample.Location {
+			for _, line := range loc.Line {
+				functionProfile.CallStack = append(functionProfile.CallStack, line.Function.Name)
+			}
+		}
+
+		resp.Data.Functions = append(resp.Data.Functions, functionProfile)
+	}
+
+	return resp, nil
+}
+
+// GetCpuGraph 接口
+func (p *DebugPlugin) GetCpuGraph(ctx context.Context, req *pb.CpuRequest) (*pb.CpuGraphResponse, error) {
+	// 如果需要刷新或者缓存中没有数据
+	if req.Refresh || p.cpuProfileData == nil {
+		p.cpuProfileLock.Lock()
+		p.cpuProfileData = nil         // 清除现有缓存
+		p.cpuProfileOnce = sync.Once{} // 重置 Once
+		p.cpuProfileLock.Unlock()
+	}
+
+	// 如果请求指定了duration，临时更新ProfileDuration
+	originalDuration := p.ProfileDuration
+	if req.Duration > 0 {
+		p.ProfileDuration = time.Duration(req.Duration) * time.Second
+	}
+
+	// 确保采集 CPU Profile
+	p.cpuProfileOnce.Do(func() {
+		if err := p.collectCPUProfile(); err != nil {
+			fmt.Printf("Failed to collect CPU profile: %v\n", err)
+		}
+	})
+
+	// 恢复原始的ProfileDuration
+	if req.Duration > 0 {
+		p.ProfileDuration = originalDuration
+	}
+
+	// 如果缓存中没有数据，返回错误
+	if p.cpuProfileData == nil {
+		return nil, fmt.Errorf("CPU profile data is not available")
+	}
+
+	// 使用缓存的 CPU Profile 数据生成 dot 图
+	dot, err := debug.GetDotGraph(p.cpuProfileData)
+	if err != nil {
+		return nil, fmt.Errorf("could not generate dot graph: %v", err)
+	}
+
+	return &pb.CpuGraphResponse{
+		Data: dot,
+	}, nil
+}
+
 // 辅助函数：检查字符串切片是否包含特定字符串
 func contains(slice []string, str string) bool {
 	for _, s := range slice {
@@ -282,6 +557,12 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	if err != nil {
 		return nil, err
 	}
+
+	// 清理不重要的函数，使图形更干净明了
+	if err := profile.RemoveUninteresting(); err != nil {
+		return nil, fmt.Errorf("could not remove uninteresting functions: %v", err)
+	}
+
 	// Generate dot graph.
 	dot, err := debug.GetDotGraph(profile)
 	if err != nil {
@@ -290,4 +571,68 @@ func (p *DebugPlugin) GetHeapGraph(ctx context.Context, empty *emptypb.Empty) (*
 	return &pb.HeapGraphResponse{
 		Data: dot,
 	}, nil
+}
+
+func (p *DebugPlugin) API_TcpDump(rw http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	cmdName := "sudo"
+	args := []string{"-S", "tcpdump", "-w", "dump.cap"}
+	// 检查当前程序是否具有 root 权限
+	isRoot := syscall.Geteuid() == 0
+	if isRoot {
+		cmdName = "tcpdump"
+		args = args[2:]
+	}
+	if query.Get("interface") != "" {
+		args = append(args, "-i", query.Get("interface"))
+	}
+	if query.Get("filter") != "" {
+		args = append(args, query.Get("filter"))
+	}
+	if query.Get("extra_args") != "" {
+		args = append(args, strings.Fields(query.Get("extra_args"))...)
+	}
+	if query.Get("duration") == "" {
+		http.Error(rw, "duration is required", http.StatusBadRequest)
+		return
+	}
+	// rw.Header().Set("Content-Type", "text/plain")
+	// rw.Header().Set("Cache-Control", "no-cache")
+	// rw.Header().Set("Content-Disposition", "attachment; filename=tcpdump.txt")
+	duration, err := strconv.Atoi(query.Get("duration"))
+	if err != nil {
+		http.Error(rw, "invalid duration", http.StatusBadRequest)
+		return
+	}
+	ctx, _ := context.WithTimeout(p, time.Duration(duration)*time.Second)
+	cmd := exec.CommandContext(ctx, cmdName, args...)
+
+	p.Info("starting tcpdump", "args", strings.Join(cmd.Args, " "))
+	cmd.Stdin = strings.NewReader(query.Get("password"))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr // 将错误输出重定向到标准错误
+	err = cmd.Start()
+	if err != nil {
+		http.Error(rw, fmt.Sprintf("failed to start tcpdump: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	<-ctx.Done()
+
+	// 杀死 tcpdump 进程
+	var killcmd *exec.Cmd
+	if isRoot {
+		killcmd = exec.Command("pkill", "-9", "tcpdump")
+	} else {
+		killcmd = exec.Command("sudo", "-S", "pkill", "-9", "tcpdump")
+		killcmd.Stdin = strings.NewReader(query.Get("password"))
+	}
+	p.Info("killing tcpdump", "args", strings.Join(killcmd.Args, " "))
+	killcmd.Stderr = os.Stderr
+	killcmd.Stdout = os.Stdout
+	killcmd.Run()
+	p.Info("kill done")
+	cmd.Wait()
+	p.Info("dump done")
+	http.ServeFile(rw, r, "dump.cap")
 }

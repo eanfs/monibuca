@@ -152,12 +152,19 @@ service api {
       get: "/api/config/formily/{name}"
     };
   }
-  rpc ModifyConfig (ModifyConfigRequest) returns (SuccessResponse) {
+  rpc SetArming (SetArmingRequest) returns (SuccessResponse) {
     option (google.api.http) = {
-      post: "/api/config/modify/{name}"
-      body: "yaml"
+      post: "/api/arming/set"
+      body: "*"
     };
   }
+  rpc ModifyConfig (ModifyConfigRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/config/modify"
+      body: "*"
+    };
+  }
+
   rpc GetPullProxyList (google.protobuf.Empty) returns (PullProxyListResponse) {
     option (google.api.http) = {
       get: "/api/proxy/pull/list"
@@ -181,12 +188,12 @@ service api {
       post: "/api/proxy/pull/remove/{id}"
       body: "*"
       additional_bindings {
-        post: "/api/device/add/{id}"
+        post: "/api/device/remove/{id}"
         body: "*"
       }
     };
   }
-  rpc UpdatePullProxy (PullProxyInfo) returns (SuccessResponse) {
+  rpc UpdatePullProxy (UpdatePullProxyRequest) returns (SuccessResponse) {
     option (google.api.http) = {
       post: "/api/proxy/pull/update"
       body: "*"
@@ -213,7 +220,7 @@ service api {
       body: "*"
     };
   }
-  rpc UpdatePushProxy (PushProxyInfo) returns (SuccessResponse) {
+  rpc UpdatePushProxy (UpdatePushProxyRequest) returns (SuccessResponse) {
     option (google.api.http) = {
       post: "/api/proxy/push/update"
       body: "*"
@@ -227,6 +234,44 @@ service api {
   rpc GetTransformList (google.protobuf.Empty) returns (TransformListResponse) {
     option (google.api.http) = {
       get: "/api/transform/list"
+    };
+  }
+  rpc GetRecordList (ReqRecordList) returns (RecordResponseList) {
+    option (google.api.http) = {
+      get: "/api/record/{type}/list/{streamPath=**}"
+    };
+  }
+  rpc GetEventRecordList (ReqRecordList) returns (EventRecordResponseList) {
+    option (google.api.http) = {
+      get: "/api/record/{type}/event/list/{streamPath=**}"
+    };
+  }
+  rpc GetRecordCatalog (ReqRecordCatalog) returns (ResponseCatalog) {
+    option (google.api.http) = {
+      get: "/api/record/{type}/catalog"
+    };
+  }
+  rpc DeleteRecord (ReqRecordDelete) returns (ResponseDelete) {
+    option (google.api.http) = {
+      post: "/api/record/{type}/delete/{streamPath=**}"
+      body: "*"
+    };
+  }
+  rpc GetAlarmList (AlarmListRequest) returns (AlarmListResponse) {
+    option (google.api.http) = {
+      get: "/api/alarm/list"
+    };
+  }
+  rpc GetSubscriptionProgress (StreamSnapRequest) returns (SubscriptionProgressResponse) {
+    option (google.api.http) = {
+      get: "/api/stream/progress/{streamPath=**}"
+    };
+  }
+  
+  rpc StartPull (GlobalPullRequest) returns (SuccessResponse) {
+    option (google.api.http) = {
+      post: "/api/stream/pull"
+      body: "*"
     };
   }
 }
@@ -345,6 +390,8 @@ message TaskTreeData {
   TaskTreeData blocked = 8;
   uint64 pointer = 9;
   string startReason = 10;
+  bool eventLoopRunning = 11;
+  uint32 level = 12;
 }
 
 message TaskTreeResponse {
@@ -396,7 +443,16 @@ message StreamInfo {
   float speed = 12;
   google.protobuf.Duration bufferTime = 13;
   bool stopOnIdle = 14;
-  bool recording = 15;
+  repeated RecordingDetail recording = 15;
+}
+
+message RecordingDetail {
+  string filePath = 1;
+  string mode = 2;
+  google.protobuf.Duration fragment = 3;
+  bool append = 4;
+  string pluginName = 5;
+  uint64 pointer = 6;
 }
 
 message Wrap {
@@ -428,9 +484,10 @@ message AudioTrackInfo {
   string delta = 2;
   string meta = 3;
   uint32 bps = 4;
-  uint32 fps = 5;
-  uint32 sampleRate = 6;
-  uint32 channels =7;
+  uint32 bps_out = 5;
+  uint32 fps = 6;
+  uint32 sampleRate = 7;
+  uint32 channels =8;
 }
 
 message TrackSnapShotData {
@@ -451,15 +508,20 @@ message VideoTrackInfo {
   string delta = 2;
   string meta = 3;
   uint32 bps = 4;
-  uint32 fps = 5;
-  uint32 width = 6;
-  uint32 height =7;
-  uint32 gop = 8;
+  uint32 bps_out = 5;
+  uint32 fps = 6;
+  uint32 width = 7;
+  uint32 height =8;
+  uint32 gop = 9;
 }
 
 message SuccessResponse {
   int32 code = 1;
   string message = 2;
+}
+
+message SetArmingRequest {
+  bool armed = 1;  // true=布防（启用录像），false=撤防（禁用录像）
 }
 
 message RequestWithId {
@@ -487,6 +549,7 @@ message RingReaderSnapShot {
   uint32 timestamp = 2;
   uint32 delay = 3;
   int32 state = 4;
+  uint32 bps = 5;
 }
 
 message SubscriberSnapShot {
@@ -536,6 +599,24 @@ message PullProxyInfo {
   google.protobuf.Duration recordFragment = 14; // 录制片段长度
   uint32 rtt = 15; // 平均RTT
   string streamPath = 16; // 流路径
+  google.protobuf.Duration checkInterval = 17; // 检查间隔
+}
+
+message UpdatePullProxyRequest {
+  uint32 ID = 1;
+  optional uint32 parentID = 2; // 父设备ID
+  optional string name = 3; // 设备名称
+  optional string type = 4; // 设备类型
+  optional uint32 status = 5; // 设备状态
+  optional string pullURL = 6; // 拉流地址
+  optional bool pullOnStart = 7; // 启动时拉流
+  optional bool stopOnIdle = 8; // 空闲时停止拉流
+  optional bool audio = 9; // 是否拉取音频
+  optional string description = 10; // 设备描述
+  optional string recordPath = 11; // 录制路径
+  optional google.protobuf.Duration recordFragment = 12; // 录制片段长度
+  optional string streamPath = 13; // 流路径
+  optional google.protobuf.Duration checkInterval = 14; // 检查间隔
 }
 
 message PushProxyInfo {
@@ -552,6 +633,20 @@ message PushProxyInfo {
   string description = 11; // 设备描述
   uint32 rtt = 12; // 平均RTT
   string streamPath = 13; // 流路径
+}
+
+message UpdatePushProxyRequest {
+  uint32 ID = 1;
+  optional uint32 parentID = 2; // 父设备ID
+  optional string name = 3; // 设备名称
+  optional string type = 4; // 设备类型
+  optional uint32 status = 5; // 设备状态
+  optional string pushURL = 6; // 推流地址
+  optional bool pushOnStart = 7; // 启动时推流
+  optional bool audio = 8; // 是否推音频
+  optional string description = 9; // 设备描述
+  optional uint32 rtt = 10; // 平均RTT
+  optional string streamPath = 11; // 流路径
 }
 
 message PushProxyListResponse {
@@ -632,4 +727,165 @@ message TransformListResponse {
   int32 code = 1;
   string message = 2;
   repeated Transform data = 3;
+}
+
+message ReqRecordList {
+  string streamPath = 1;
+  string range = 2;
+  string start = 3;
+  string end = 4;
+  uint32 pageNum = 5;
+  uint32 pageSize = 6;
+  string type = 7;
+  string eventLevel = 8;
+}
+
+message RecordFile {
+  uint32 id = 1;
+  string filePath = 2;
+  string streamPath = 3;
+  google.protobuf.Timestamp startTime = 4;
+  google.protobuf.Timestamp endTime = 5;
+}
+
+message EventRecordFile {
+  uint32 id = 1;
+  string filePath = 2;
+  string streamPath = 3;
+  google.protobuf.Timestamp startTime = 4;
+  google.protobuf.Timestamp endTime = 5;
+  string eventId = 6;
+  string eventLevel = 7;
+  string eventName = 8;
+  string eventDesc = 9;
+}
+
+message RecordResponseList {
+  int32 code = 1;
+  string message = 2;
+  uint32 total = 3;
+  uint32 pageNum = 4;
+  uint32 pageSize = 5;
+  repeated RecordFile data = 6;
+}
+
+message EventRecordResponseList {
+  int32 code = 1;
+  string message = 2;
+  uint32 total = 3;
+  uint32 pageNum = 4;
+  uint32 pageSize = 5;
+  repeated EventRecordFile data = 6;
+}
+
+message Catalog {
+  string streamPath = 1;
+  uint32 count = 2;
+  google.protobuf.Timestamp startTime = 3;
+  google.protobuf.Timestamp endTime = 4;
+}
+
+message ResponseCatalog {
+  int32 code = 1;
+  string message = 2;
+  repeated Catalog data = 3;
+}
+
+message ReqRecordDelete {
+  string streamPath = 1;
+  repeated uint32 ids = 2;
+  string startTime = 3;
+  string endTime = 4;
+  string range = 5;
+  string type = 6;
+}
+
+message ResponseDelete {
+  int32 code = 1;
+  string message = 2;
+  repeated RecordFile data = 3;
+}
+
+message ReqRecordCatalog {
+  string type = 1;
+}
+
+message AlarmInfo {
+  uint32 id = 1;
+  string serverInfo = 2;
+  string streamName = 3;
+  string streamPath = 4;
+  string alarmDesc = 5;
+  string alarmName = 6;
+  int32 alarmType = 7;
+  bool isSent = 8;
+  string filePath = 9;
+  google.protobuf.Timestamp createdAt = 10;
+  google.protobuf.Timestamp updatedAt = 11;
+}
+
+message AlarmListRequest {
+  int32 pageNum = 1;
+  int32 pageSize = 2;
+  string range = 3;
+  string start = 4;
+  string end = 5;
+  int32 alarmType = 6;
+  string streamPath = 7;
+  string streamName = 8;
+}
+
+message AlarmListResponse {
+  int32 code = 1;
+  string message = 2;
+  int32 total = 3;
+  int32 pageNum = 4;
+  int32 pageSize = 5;
+  repeated AlarmInfo data = 6;
+}
+
+message Step {
+  string name = 1;
+  string description = 2;
+  string error = 3;
+  google.protobuf.Timestamp startedAt = 4;
+  google.protobuf.Timestamp completedAt = 5;
+}
+
+message SubscriptionProgressData {
+  repeated Step steps = 1;
+  int32 currentStep = 2;
+}
+
+message SubscriptionProgressResponse {
+  int32 code = 1;
+  string message = 2;
+  SubscriptionProgressData data = 3;
+}
+
+message GlobalPullRequest {
+  string remoteURL = 1;
+  string protocol = 2;
+  int32 testMode = 3; // 0: pull, 1: pull without publish
+  string streamPath = 4; // 流路径
+  optional int32 loop = 22; // 拉流循环次数,-1:无限循环
+  
+  // Publish configuration
+  optional bool pubAudio = 5;
+  optional bool pubVideo = 6;
+  optional google.protobuf.Duration delayCloseTimeout = 7; // 延迟自动关闭（无订阅时）
+  optional double speed = 8; // 发送速率
+  optional int32 maxCount = 9; // 最大发布者数量
+  optional bool kickExist = 10; // 是否踢掉已经存在的发布者
+  optional google.protobuf.Duration publishTimeout = 11; // 发布无数据超时
+  optional google.protobuf.Duration waitCloseTimeout = 12; // 延迟自动关闭（等待重连）
+  optional google.protobuf.Duration idleTimeout = 13; // 空闲(无订阅)超时
+  optional google.protobuf.Duration pauseTimeout = 14; // 暂停超时时间
+  optional google.protobuf.Duration bufferTime = 15; // 缓冲时长，0代表取最近关键帧
+  optional double scale = 16; // 缩放倍数
+  optional int32 maxFPS = 17; // 最大FPS
+  optional string key = 18; // 发布鉴权key
+  optional string relayMode = 19; // 转发模式
+  optional string pubType = 20; // 发布类型
+  optional bool dump = 21; // 是否dump
 }

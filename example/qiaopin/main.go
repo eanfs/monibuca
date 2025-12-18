@@ -16,7 +16,6 @@ import (
 	_ "m7s.live/v5/plugin/flv"
 	_ "m7s.live/v5/plugin/gb28181"
 	_ "m7s.live/v5/plugin/logrotate"
-	_ "m7s.live/v5/plugin/monitor"
 	_ "m7s.live/v5/plugin/mp4"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
 	_ "m7s.live/v5/plugin/preview"
@@ -24,7 +23,7 @@ import (
 	_ "m7s.live/v5/plugin/rtsp"
 	_ "m7s.live/v5/plugin/sei"
 	_ "m7s.live/v5/plugin/srt"
-	_ "m7s.live/v5/plugin/stress"
+	_ "m7s.live/v5/plugin/test"
 	_ "m7s.live/v5/plugin/transcode"
 	_ "m7s.live/v5/plugin/webrtc"
 )
@@ -72,7 +71,7 @@ func main() {
 
 	mp4.CustomFileName = func(job *m7s.RecordJob) string {
 
-		fileDir := strings.ReplaceAll(job.FilePath, job.StreamPath, "")
+		fileDir := strings.ReplaceAll(job.RecConf.FilePath, job.StreamPath, "")
 		if err := os.MkdirAll(fileDir, 0755); err != nil {
 			log.Default().Printf("创建目录失败：%s", err)
 			return fmt.Sprintf("%s_%s%s", job.StreamPath, time.Now().Local().Format("2006-01-02-15-04-05"), ".mp4")

@@ -1,3 +1,5 @@
+//go:build !fasthttp
+
 package util
 
 import (
@@ -16,6 +18,7 @@ var (
 	sseEnd   = []byte("\n\n")
 )
 
+// SSE 标准库实现
 type SSE struct {
 	http.ResponseWriter
 	context.Context
@@ -45,7 +48,7 @@ func (sse *SSE) WriteEvent(event string, data []byte) (err error) {
 	return
 }
 
-func NewSSE(w http.ResponseWriter, ctx context.Context) *SSE {
+func NewSSE(w http.ResponseWriter, ctx context.Context, block func(sse *SSE)) (sse *SSE) {
 	header := w.Header()
 	header.Set("Content-Type", "text/event-stream")
 	header.Set("Cache-Control", "no-cache")
@@ -56,10 +59,12 @@ func NewSSE(w http.ResponseWriter, ctx context.Context) *SSE {
 	// rw.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 	// rw.Header().Set("Access-Control-Allow-Credentials", "true")
 	// rw.Header().Set("Transfer-Encoding", "chunked")
-	return &SSE{
+	sse = &SSE{
 		ResponseWriter: w,
 		Context:        ctx,
 	}
+	block(sse)
+	return sse
 }
 
 func (sse *SSE) WriteJSON(data any) error {

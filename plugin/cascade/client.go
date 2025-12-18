@@ -7,9 +7,9 @@ import (
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/task"
 	cascade "m7s.live/v5/plugin/cascade/pkg"
 
+	task "github.com/langhuihui/gotask"
 	"github.com/quic-go/quic-go"
 )
 
@@ -19,15 +19,17 @@ type CascadeClientPlugin struct {
 	AutoPush bool                   `desc:"自动推流到上级"` //自动推流到上级
 	Server   string                 `desc:"上级服务器"`   // TODO: support multiple servers
 	Secret   string                 `desc:"连接秘钥"`
-	conn     quic.Connection
+	client   *CascadeClient
 }
 
-var _ = m7s.InstallPlugin[CascadeClientPlugin](cascade.NewCascadePuller)
+var _ = m7s.InstallPlugin[CascadeClientPlugin](m7s.PluginMeta{
+	NewPuller: cascade.NewCascadePuller,
+})
 
 type CascadeClient struct {
 	task.Work
 	cfg *CascadeClientPlugin
-	quic.Connection
+	*quic.Conn
 }
 
 func (task *CascadeClient) Start() (err error) {
@@ -36,14 +38,14 @@ func (task *CascadeClient) Start() (err error) {
 		NextProtos:         []string{"monibuca"},
 	}
 	cfg := task.cfg
-	task.Connection, err = quic.DialAddr(cfg.Context, cfg.Server, tlsConf, &quic.Config{
+	task.Conn, err = quic.DialAddr(cfg.Context, cfg.Server, tlsConf, &quic.Config{
 		KeepAlivePeriod: time.Second * 10,
 		EnableDatagrams: true,
 	})
 	if err != nil {
 		return
 	}
-	var stream quic.Stream
+	var stream *quic.Stream
 	if stream, err = task.OpenStreamSync(task.cfg); err == nil {
 		res := []byte{0}
 		fmt.Fprintf(stream, "%s", task.cfg.Secret)
@@ -66,20 +68,20 @@ func (task *CascadeClient) Start() (err error) {
 
 func (task *CascadeClient) Run() (err error) {
 	for err == nil {
-		var s quic.Stream
+		var s *quic.Stream
 		if s, err = task.AcceptStream(task.Task.Context); err == nil {
 			task.AddTask(&cascade.ReceiveRequestTask{
-				Stream:     s,
-				Handler:    task.cfg.GetGlobalCommonConf().GetHandler(),
-				Connection: task.Connection,
-				Plugin:     &task.cfg.Plugin,
+				Conn:    task.Conn,
+				Stream:  s,
+				Handler: task.cfg.GetGlobalCommonConf().GetHandler(task.Logger),
+				Plugin:  &task.cfg.Plugin,
 			})
 		}
 	}
 	return
 }
 
-func (c *CascadeClientPlugin) OnInit() (err error) {
+func (c *CascadeClientPlugin) Start() (err error) {
 	if c.Secret == "" && c.Server == "" {
 		return nil
 	}
@@ -88,14 +90,17 @@ func (c *CascadeClientPlugin) OnInit() (err error) {
 	}
 	connectTask.SetRetry(-1, time.Second)
 	c.AddTask(&connectTask)
+	c.client = &connectTask
 	return
 }
 
-func (c *CascadeClientPlugin) Pull(streamPath string, conf config.Pull, pub *config.Publish) {
+func (c *CascadeClientPlugin) Pull(streamPath string, conf config.Pull, pub *config.Publish) (job *m7s.PullJob, err error) {
 	puller := &cascade.Puller{
-		Connection: c.conn,
+		Conn: c.client.Conn,
 	}
-	puller.GetPullJob().Init(puller, &c.Plugin, streamPath, conf, pub)
+	job = puller.GetPullJob()
+	job.Init(puller, &c.Plugin, streamPath, conf, pub)
+	return
 }
 
 //func (c *CascadeClientPlugin) Start() {

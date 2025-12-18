@@ -6,13 +6,18 @@ import (
 	"net/http"
 	"strings"
 
-	. "github.com/pion/webrtc/v3"
+	. "github.com/pion/webrtc/v4"
 	. "m7s.live/v5/plugin/webrtc/pkg"
 )
 
 // https://datatracker.ietf.org/doc/html/draft-ietf-wish-whip
-func (conf *WebRTCPlugin) Push_(w http.ResponseWriter, r *http.Request) {
-	streamPath := r.URL.Path[len("/push/"):]
+func (conf *WebRTCPlugin) servePush(w http.ResponseWriter, r *http.Request) {
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if conf.Server.RedirectIfNeeded(w, r, "webrtc", redirectPath) {
+		conf.Debug("redirect issued", "protocol", "webrtc", "path", redirectPath)
+		return
+	}
+	streamPath := r.PathValue("streamPath")
 	rawQuery := r.URL.RawQuery
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
@@ -35,12 +40,16 @@ func (conf *WebRTCPlugin) Push_(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	conn := Connection{
+	conn := MultipleConnection{
 		PLI: conf.PLI,
-		SDP: string(bytes),
 	}
+	conn.SDP = string(bytes)
 	conn.Logger = conf.Logger
-	if conn.PeerConnection, err = conf.api.NewPeerConnection(Configuration{
+
+	if conn.PeerConnection, err = conf.CreatePC(SessionDescription{
+		Type: SDPTypeOffer,
+		SDP:  conn.SDP,
+	}, Configuration{
 		ICEServers: conf.ICEServers,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -56,10 +65,7 @@ func (conf *WebRTCPlugin) Push_(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+
 	if answer, err := conn.GetAnswer(); err == nil {
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, answer.SDP)
@@ -69,11 +75,16 @@ func (conf *WebRTCPlugin) Push_(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (conf *WebRTCPlugin) Play_(w http.ResponseWriter, r *http.Request) {
+func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
+	redirectPath := strings.TrimPrefix(r.URL.Path, "/")
+	if conf.Server.RedirectIfNeeded(w, r, "webrtc", redirectPath) {
+		conf.Debug("redirect issued", "protocol", "webrtc", "path", redirectPath)
+		return
+	}
 	w.Header().Set("Content-Type", "application/sdp")
-	streamPath := r.URL.Path[len("/play/"):]
+	streamPath := r.PathValue("streamPath")
 	rawQuery := r.URL.RawQuery
-	var conn Connection
+	var conn MultipleConnection
 	conn.EnableDC = conf.EnableDC
 	bytes, err := io.ReadAll(r.Body)
 	defer func() {
@@ -85,15 +96,25 @@ func (conf *WebRTCPlugin) Play_(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SDP = string(bytes)
-	if conn.PeerConnection, err = conf.api.NewPeerConnection(Configuration{
+	// Check if client supports H265
+	if strings.Contains(strings.ToLower(conn.SDP), "h265") {
+		conn.SupportsH265 = true
+	}
+
+	conn.PeerConnection, err = conf.CreatePC(SessionDescription{
+		Type: SDPTypeOffer,
+		SDP:  conn.SDP,
+	}, Configuration{
 		ICEServers: conf.ICEServers,
-	}); err != nil {
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if rawQuery != "" {
 		streamPath += "?" + rawQuery
 	}
-	if conn.Subscriber, err = conf.Subscribe(conn.Context, streamPath); err != nil {
+	if conn.Subscriber, err = conf.Subscribe(conf.Context, streamPath); err != nil {
 		return
 	}
 	conn.Subscriber.RemoteAddr = r.RemoteAddr
@@ -102,10 +123,7 @@ func (conf *WebRTCPlugin) Play_(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err = conn.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: conn.SDP}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+
 	if sdp, err := conn.GetAnswer(); err == nil {
 		w.Write([]byte(sdp.SDP))
 	} else {

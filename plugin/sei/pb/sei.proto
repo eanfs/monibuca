@@ -16,7 +16,8 @@ service api {
 
 message InsertRequest {
   string streamPath = 1;
-  bytes data = 2;
+  string data = 2;
   uint32 type = 3;
   string targetStreamPath = 4;
+  string format = 5;
 }

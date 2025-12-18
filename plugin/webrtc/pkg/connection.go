@@ -6,41 +6,86 @@ import (
 	"net"
 	"time"
 
+	"github.com/langhuihui/gomem"
+	task "github.com/langhuihui/gotask"
 	"github.com/pion/rtcp"
-	"github.com/pion/rtp"
-	. "github.com/pion/webrtc/v3"
+	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
-	. "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/aacopus"
 	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/task"
-	"m7s.live/v5/pkg/util"
 	flv "m7s.live/v5/plugin/flv/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
 )
 
 type Connection struct {
-	task.Task
 	*PeerConnection
-	SDP string
+	SupportsH265 bool // Add this field
+	Publisher    *m7s.Publisher
+	SDP          string
+}
+
+func (IO *Connection) GetOffer() (*SessionDescription, error) {
+	offer, err := IO.CreateOffer(nil)
+	if err != nil {
+		return nil, err
+	}
+	gatherComplete := GatheringCompletePromise(IO.PeerConnection)
+	if err = IO.SetLocalDescription(offer); err != nil {
+		return nil, err
+	}
+	<-gatherComplete
+	return IO.LocalDescription(), nil
+}
+
+func (IO *Connection) GetAnswer() (*SessionDescription, error) {
+	answer, err := IO.CreateAnswer(nil)
+	if err != nil {
+		return nil, err
+	}
+	gatherComplete := GatheringCompletePromise(IO.PeerConnection)
+	if err = IO.SetLocalDescription(answer); err != nil {
+		return nil, err
+	}
+	<-gatherComplete
+	return IO.LocalDescription(), nil
+}
+
+type MultipleConnection struct {
+	task.Task
+	Connection
 	// LocalSDP *sdp.SessionDescription
-	Publisher  *m7s.Publisher
 	Subscriber *m7s.Subscriber
 	EnableDC   bool
 	PLI        time.Duration
 }
 
-func (IO *Connection) Start() (err error) {
+func (IO *MultipleConnection) Start() (err error) {
 	if IO.Publisher != nil {
+		IO.Using(IO.Publisher)
+		IO.Publisher.Using(IO)
 		IO.Receive()
 	}
 	if IO.Subscriber != nil {
-		IO.Send()
+		IO.Using(IO.Subscriber)
+		IO.Subscriber.Using(IO)
+		err = IO.Send()
+		if err != nil {
+			return
+		}
 	}
 	IO.OnICECandidate(func(ice *ICECandidate) {
 		if ice != nil {
 			IO.Info(ice.ToJSON().Candidate)
 		}
 	})
+	// 监听ICE连接状态变化
+	IO.OnICEConnectionStateChange(func(state ICEConnectionState) {
+		IO.Debug("ICE connection state changed", "state", state.String())
+		if state == ICEConnectionStateFailed {
+			IO.Error("ICE connection failed")
+		}
+	})
+
 	IO.OnConnectionStateChange(func(state PeerConnectionState) {
 		IO.Info("Connection State has changed:" + state.String())
 		switch state {
@@ -53,60 +98,46 @@ func (IO *Connection) Start() (err error) {
 	return
 }
 
-func (IO *Connection) GetOffer() (*SessionDescription, error) {
-	offer, err := IO.CreateOffer(nil)
-	if err != nil {
-		return nil, err
-	}
-	// IO.LocalSDP, err = offer.Unmarshal()
-	// if err != nil {
-	// 	return "", err
-	// }
-	gatherComplete := GatheringCompletePromise(IO.PeerConnection)
-	if err = IO.SetLocalDescription(offer); err != nil {
-		return nil, err
-	}
-	<-gatherComplete
-	return IO.LocalDescription(), nil
-}
-
-func (IO *Connection) GetAnswer() (*SessionDescription, error) {
-	// Sets the LocalDescription, and starts our UDP listeners
-	answer, err := IO.CreateAnswer(nil)
-	if err != nil {
-		return nil, err
-	}
-	// IO.LocalSDP, err = answer.Unmarshal()
-	// if err != nil {
-	// 	return "", err
-	// }
-	gatherComplete := GatheringCompletePromise(IO.PeerConnection)
-	if err = IO.SetLocalDescription(answer); err != nil {
-		return nil, err
-	}
-	<-gatherComplete
-	return IO.LocalDescription(), nil
-}
-
-func (IO *Connection) Receive() {
+func (IO *MultipleConnection) Receive() {
 	puber := IO.Publisher
-	IO.Depend(puber)
 	IO.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
-		IO.Info("OnTrack", "kind", track.Kind().String(), "payloadType", uint8(track.Codec().PayloadType))
+		codecParameters := track.Codec()
+		IO.Info("OnTrack", "kind", track.Kind().String(), "payloadType", uint8(codecParameters.PayloadType))
 		var n int
 		var err error
-		if codecP := track.Codec(); track.Kind() == RTPCodecTypeAudio {
+		if track.Kind() == RTPCodecTypeAudio {
 			if !puber.PubAudio {
 				return
 			}
-			mem := util.NewScalableMemoryAllocator(1 << 12)
+			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
-			frame := &mrtp.Audio{}
-			frame.RTPCodecParameters = &codecP
-			frame.SetAllocator(mem)
+			writer := m7s.NewPublishAudioWriter[*mrtp.AudioFrame](puber, mem)
+			frame := writer.AudioFrame
+			switch codecParameters.MimeType {
+			case MimeTypeOpus:
+				var ctx mrtp.OPUSCtx
+				ctx.OPUSCtx = &codec.OPUSCtx{}
+				ctx.ParseFmtpLine(&codecParameters)
+				ctx.OPUSCtx.Channels = int(codecParameters.Channels)
+				frame.ICodecCtx = &ctx
+			case MimeTypePCMA:
+				var ctx mrtp.PCMACtx
+				ctx.PCMACtx = &codec.PCMACtx{}
+				ctx.ParseFmtpLine(&codecParameters)
+				ctx.AudioCtx.SampleRate = int(codecParameters.ClockRate)
+				ctx.AudioCtx.Channels = int(codecParameters.Channels)
+				frame.ICodecCtx = &ctx
+			case MimeTypePCMU:
+				var ctx mrtp.PCMUCtx
+				ctx.PCMUCtx = &codec.PCMUCtx{}
+				ctx.ParseFmtpLine(&codecParameters)
+				ctx.AudioCtx.SampleRate = int(codecParameters.ClockRate)
+				ctx.AudioCtx.Channels = int(codecParameters.Channels)
+				frame.ICodecCtx = &ctx
+			}
+			packet := frame.Packets.GetNextPointer()
 			for {
-				var packet rtp.Packet
-				buf := mem.Malloc(mrtp.MTUSize)
+				buf := mem.Malloc(mrtp.ReceiveMTU)
 				if n, _, err = track.Read(buf); err == nil {
 					mem.FreeRest(&buf, n)
 					err = packet.Unmarshal(buf)
@@ -118,16 +149,19 @@ func (IO *Connection) Receive() {
 					mem.Free(buf)
 					continue
 				}
-				if len(frame.Packets) == 0 || packet.Timestamp == frame.Packets[0].Timestamp {
+				if packet.Timestamp == frame.Packets[0].Timestamp {
 					frame.AddRecycleBytes(buf)
-					frame.Packets = append(frame.Packets, &packet)
+					packet = frame.Packets.GetNextPointer()
 				} else {
-					err = puber.WriteAudio(frame)
-					frame = &mrtp.Audio{}
+					newFrameFirstPacket := *packet
+					frame.Packets.Reduce()
+					if err = writer.NextAudio(); err != nil {
+						return
+					}
+					frame = writer.AudioFrame
 					frame.AddRecycleBytes(buf)
-					frame.Packets = []*rtp.Packet{&packet}
-					frame.RTPCodecParameters = &codecP
-					frame.SetAllocator(mem)
+					*frame.Packets.GetNextPointer() = newFrameFirstPacket
+					packet = frame.Packets.GetNextPointer()
 				}
 			}
 		} else {
@@ -135,11 +169,28 @@ func (IO *Connection) Receive() {
 				return
 			}
 			var lastPLISent time.Time
-			mem := util.NewScalableMemoryAllocator(1 << 12)
+			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
-			frame := &mrtp.Video{}
-			frame.RTPCodecParameters = &codecP
-			frame.SetAllocator(mem)
+			writer := m7s.NewPublishVideoWriter[*mrtp.VideoFrame](puber, mem)
+			// 根据编解码器类型设置上下文
+			switch codecParameters.MimeType {
+			case MimeTypeH264:
+				var ctx mrtp.H264Ctx
+				ctx.H264Ctx = &codec.H264Ctx{}
+				ctx.RTPCodecParameters = codecParameters
+				writer.VideoFrame.ICodecCtx = &ctx
+			case MimeTypeH265:
+				var ctx mrtp.H265Ctx
+				ctx.H265Ctx = &codec.H265Ctx{}
+				ctx.RTPCodecParameters = codecParameters
+				writer.VideoFrame.ICodecCtx = &ctx
+			case MimeTypeAV1:
+				var ctx mrtp.AV1Ctx
+				ctx.AV1Ctx = &codec.AV1Ctx{}
+				ctx.RTPCodecParameters = codecParameters
+				writer.VideoFrame.ICodecCtx = &ctx
+			}
+			packet := writer.VideoFrame.Packets.GetNextPointer()
 			for {
 				if time.Since(lastPLISent) > IO.PLI {
 					if rtcpErr := IO.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); rtcpErr != nil {
@@ -148,8 +199,8 @@ func (IO *Connection) Receive() {
 					}
 					lastPLISent = time.Now()
 				}
-				var packet rtp.Packet
-				buf := mem.Malloc(mrtp.MTUSize)
+
+				buf := mem.Malloc(mrtp.ReceiveMTU)
 				if n, _, err = track.Read(buf); err == nil {
 					mem.FreeRest(&buf, n)
 					err = packet.Unmarshal(buf)
@@ -161,18 +212,20 @@ func (IO *Connection) Receive() {
 					mem.Free(buf)
 					continue
 				}
-				if len(frame.Packets) == 0 || packet.Timestamp == frame.Packets[0].Timestamp {
-					frame.AddRecycleBytes(buf)
-					frame.Packets = append(frame.Packets, &packet)
+
+				if packet.Timestamp == writer.VideoFrame.Packets[0].Timestamp {
+					writer.VideoFrame.AddRecycleBytes(buf)
+					packet = writer.VideoFrame.Packets.GetNextPointer()
 				} else {
-					// t := time.Now()
-					err = puber.WriteVideo(frame)
-					// fmt.Println("write video", time.Since(t))
-					frame = &mrtp.Video{}
+					newFrameFirstPacket := *packet
+					writer.VideoFrame.Packets.Reduce()
+					if err = writer.NextVideo(); err != nil {
+						return
+					}
+					frame := writer.VideoFrame
 					frame.AddRecycleBytes(buf)
-					frame.Packets = []*rtp.Packet{&packet}
-					frame.RTPCodecParameters = &codecP
-					frame.SetAllocator(mem)
+					*frame.Packets.GetNextPointer() = newFrameFirstPacket
+					packet = frame.Packets.GetNextPointer()
 				}
 			}
 		}
@@ -200,36 +253,56 @@ func (IO *Connection) Receive() {
 	})
 }
 
-func (IO *Connection) Send() (err error) {
-	suber := IO.Subscriber
-	IO.Depend(suber)
+func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioSender, videoSender *RTPSender, err error) {
 	var useDC bool
 	var audioTLSRTP, videoTLSRTP *TrackLocalStaticRTP
-	var audioSender, videoSender *RTPSender
-	vctx, actx := suber.Publisher.GetVideoCodecCtx(), suber.Publisher.GetAudioCodecCtx()
-	if IO.EnableDC && vctx != nil && vctx.FourCC() == codec.FourCC_H265 {
-		useDC = true
+	var aacTranscoder *aacopus.AACToOpus
+	var opusCtx mrtp.RTPCtx
+	var opusTimestamp uint32
+	vctx, actx := subscriber.Publisher.GetVideoCodecCtx(), subscriber.Publisher.GetAudioCodecCtx()
+	if IO.EnableDC {
+		// If H265 is supported by the client, we do NOT use DataChannel for H265 video.
+		// DataChannel will be used for H265 video only if the client does NOT support H265 (potentially for transcoding or specific handling).
+		// Or if video is not H265 but DC is enabled for other codecs like MP4A audio.
+		if vctx != nil && vctx.FourCC() == codec.FourCC_H265 {
+			if !IO.SupportsH265 { // Client does not support H265, so use DC
+				useDC = true
+				IO.Info("Client does not support H265, using DataChannel for H265 video.")
+			} else {
+				// Client supports H265, so we will use RTP. useDC remains false.
+				IO.Info("Client supports H265, using RTP for H265 video.")
+			}
+		} else if actx != nil && actx.FourCC() == codec.FourCC_MP4A { // For MP4A audio, use DC if enabled
+			useDC = true
+		}
 	}
-	if IO.EnableDC && actx != nil && actx.FourCC() == codec.FourCC_MP4A {
-		useDC = true
-	}
-
 	if vctx != nil && !useDC {
 		videoCodec := vctx.FourCC()
 		var rcc RTPCodecParameters
 		if ctx, ok := vctx.(mrtp.IRTPCtx); ok {
 			rcc = ctx.GetRTPCodecParameter()
 		} else {
-			var rtpCtx mrtp.RTPData
-			var tmpAVTrack AVTrack
-			tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(vctx)
-			if err == nil {
-				rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
-			} else {
-				return
+			switch base := vctx.GetBase().(type) {
+			case *codec.H264Ctx:
+				rcc.PayloadType = 96
+				rcc.MimeType = MimeTypeH264
+				rcc.ClockRate = 90000
+				spsInfo := base.SPSInfo
+				rcc.SDPFmtpLine = fmt.Sprintf("profile-level-id=%02x%02x%02x;level-asymmetry-allowed=1;packetization-mode=1", spsInfo.ProfileIdc, spsInfo.ConstraintSetFlag, spsInfo.LevelIdc)
+			case *codec.H265Ctx:
+				rcc.PayloadType = 98
+				rcc.MimeType = MimeTypeH265
+				rcc.ClockRate = 90000
+				rcc.SDPFmtpLine = "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST"
+			case *codec.AV1Ctx:
+				rcc.PayloadType = 45
+				rcc.MimeType = MimeTypeAV1
+				rcc.ClockRate = 90000
+				rcc.SDPFmtpLine = "profile=2;level-idx=8;tier=1"
 			}
 		}
-		videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), suber.StreamPath)
+		rcc.RTCPFeedback = videoRTCPFeedback
+		videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), subscriber.StreamPath)
 		if err != nil {
 			return
 		}
@@ -241,7 +314,7 @@ func (IO *Connection) Send() (err error) {
 			rtcpBuf := make([]byte, 1500)
 			for {
 				if n, _, rtcpErr := videoSender.Read(rtcpBuf); rtcpErr != nil {
-					suber.Warn("rtcp read error", "error", rtcpErr)
+					subscriber.Warn("rtcp read error", "error", rtcpErr)
 					return
 				} else {
 					if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
@@ -257,21 +330,48 @@ func (IO *Connection) Send() (err error) {
 		}()
 	}
 	if actx != nil && !useDC {
-		audioCodec := actx.FourCC()
 		var rcc RTPCodecParameters
-		if ctx, ok := actx.(mrtp.IRTPCtx); ok {
-			rcc = ctx.GetRTPCodecParameter()
+		var audioCodec codec.FourCC
+		if actx.FourCC() == codec.FourCC_MP4A {
+			// AAC source, create Opus codec parameters for WebRTC
+			audioCodec = codec.FourCC_OPUS
+			rcc.PayloadType = 111
+			rcc.MimeType = MimeTypeOpus
+			rcc.ClockRate = 48000
+			rcc.Channels = 2
+			rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
+			if base, ok := actx.GetBase().(*codec.AACCtx); ok {
+				if aacTranscoder, err = aacopus.NewAACToOpus(base, 64000); err != nil {
+					IO.Error("create AAC->Opus transcoder failed", "error", err)
+					// fallback to existing behavior: no RTP audio track for AAC
+					goto audioDone
+				}
+			}
 		} else {
-			var rtpCtx mrtp.RTPData
-			var tmpAVTrack AVTrack
-			tmpAVTrack.ICodecCtx, _, err = rtpCtx.ConvertCtx(actx)
-			if err == nil {
-				rcc = tmpAVTrack.ICodecCtx.(mrtp.IRTPCtx).GetRTPCodecParameter()
+			audioCodec = actx.FourCC()
+			if ctx, ok := actx.(mrtp.IRTPCtx); ok {
+				rcc = ctx.GetRTPCodecParameter()
 			} else {
-				return
+				switch actx.GetBase().(type) {
+				case *codec.PCMACtx:
+					rcc.PayloadType = 8
+					rcc.MimeType = MimeTypePCMA
+					rcc.ClockRate = 8000
+				case *codec.PCMUCtx:
+					rcc.PayloadType = 0
+					rcc.MimeType = MimeTypePCMU
+					rcc.ClockRate = 8000
+				case *codec.OPUSCtx:
+					rcc.PayloadType = 111
+					rcc.MimeType = MimeTypeOpus
+					rcc.ClockRate = 48000
+					rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
+				}
 			}
 		}
-		audioTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, audioCodec.String(), suber.StreamPath)
+
+		// Create audio track for WebRTC
+		audioTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, audioCodec.String(), subscriber.StreamPath)
 		if err != nil {
 			return
 		}
@@ -279,17 +379,25 @@ func (IO *Connection) Send() (err error) {
 		if err != nil {
 			return
 		}
+		if aacTranscoder != nil {
+			// Initialize Opus RTP context
+			opusCtx.PayloadType = rcc.PayloadType
+			opusCtx.ClockRate = rcc.ClockRate
+			opusCtx.SSRC = uint32(time.Now().UnixNano())
+		}
 	}
+
+audioDone:
 	var dc *DataChannel
 	if useDC {
-		dc, err = IO.CreateDataChannel(suber.StreamPath, nil)
+		dc, err = IO.CreateDataChannel(subscriber.StreamPath, nil)
 		if err != nil {
 			return
 		}
-		dc.OnOpen(func(){
+		dc.OnOpen(func() {
 			var live flv.Live
 			live.WriteFlvTag = func(buffers net.Buffers) (err error) {
-				r := util.NewReadableBuffersFromBytes(buffers...)
+				r := gomem.NewReadableBuffersFromBytes(buffers...)
 				for r.Length > 65535 {
 					r.RangeN(65535, func(buf []byte) {
 						err = dc.Send(buf)
@@ -306,26 +414,58 @@ func (IO *Connection) Send() (err error) {
 				})
 				return
 			}
-			live.Subscriber = suber
+			live.Subscriber = subscriber
 			err = live.Run()
 			dc.Close()
 		})
 	} else {
 		if audioSender == nil {
-			suber.SubAudio = false
+			subscriber.SubAudio = false
 		}
 		if videoSender == nil {
-			suber.SubVideo = false
+			subscriber.SubVideo = false
 		}
-		go m7s.PlayBlock(suber, func(frame *mrtp.Audio) (err error) {
-			for _, p := range frame.Packets {
+		go m7s.PlayBlock(subscriber, func(frame *mrtp.AudioFrame) (err error) {
+			if audioTLSRTP == nil {
+				return nil
+			}
+			// If we have an AAC->Opus transcoder, transcode AAC AUs to Opus RTP packets.
+			if aacTranscoder != nil {
+				if err = frame.Demux(); err != nil {
+					IO.Error("demux audio frame failed", "error", err)
+					return err
+				}
+				data := frame.GetAudioData()
+				frame.Packets.Reset()
+				const opusFrameSamples = 960
+				for _, buf := range data.Buffers {
+					if len(buf) == 0 {
+						continue
+					}
+					pkts, err2 := aacTranscoder.Transcode(buf)
+					if err2 != nil {
+						IO.Error("aac->opus transcode failed", "error", err2)
+						return err2
+					}
+					for _, payload := range pkts {
+						opusTimestamp += opusFrameSamples
+						pkt := frame.Append(&opusCtx, opusTimestamp, payload)
+						if err = audioTLSRTP.WriteRTP(pkt); err != nil {
+							return
+						}
+					}
+				}
+				return
+			}
+			// Default pass-through for non-AAC codecs
+			for p := range frame.Packets.RangePoint {
 				if err = audioTLSRTP.WriteRTP(p); err != nil {
 					return
 				}
 			}
 			return
-		}, func(frame *mrtp.Video) error {
-			for _, p := range frame.Packets {
+		}, func(frame *mrtp.VideoFrame) error {
+			for p := range frame.Packets.RangePoint {
 				if err := videoTLSRTP.WriteRTP(p); err != nil {
 					return err
 				}
@@ -336,6 +476,120 @@ func (IO *Connection) Send() (err error) {
 	return
 }
 
-func (IO *Connection) Dispose() {
+func (IO *MultipleConnection) Send() (err error) {
+	if IO.Subscriber != nil {
+		_, _, err = IO.SendSubscriber(IO.Subscriber)
+	}
+	return
+}
+
+func (IO *MultipleConnection) Dispose() {
 	IO.PeerConnection.Close()
+}
+
+type RemoteStream struct {
+	task.Task
+	pc          *Connection
+	suber       *m7s.Subscriber
+	videoTLSRTP *TrackLocalStaticRTP
+	videoSender *RTPSender
+}
+
+func (r *RemoteStream) GetKey() string {
+	return r.suber.StreamPath
+}
+
+func (r *RemoteStream) Start() (err error) {
+	r.Using(r.suber)
+	vctx := r.suber.Publisher.GetVideoCodecCtx()
+	videoCodec := vctx.FourCC()
+	var rcc RTPCodecParameters
+	if ctx, ok := vctx.(mrtp.IRTPCtx); ok {
+		rcc = ctx.GetRTPCodecParameter()
+	} else {
+		switch base := vctx.GetBase().(type) {
+		case *codec.H264Ctx:
+			rcc.PayloadType = 96
+			rcc.MimeType = MimeTypeH264
+			rcc.ClockRate = 90000
+			spsInfo := base.SPSInfo
+			rcc.SDPFmtpLine = fmt.Sprintf("profile-level-id=%02x%02x%02x;level-asymmetry-allowed=1;packetization-mode=1", spsInfo.ProfileIdc, spsInfo.ConstraintSetFlag, spsInfo.LevelIdc)
+		case *codec.H265Ctx:
+			rcc.PayloadType = 98
+			rcc.MimeType = MimeTypeH265
+			rcc.ClockRate = 90000
+			rcc.SDPFmtpLine = "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST"
+		case *codec.AV1Ctx:
+			rcc.PayloadType = 45
+			rcc.MimeType = MimeTypeAV1
+			rcc.ClockRate = 90000
+			rcc.SDPFmtpLine = "profile=2;level-idx=8;tier=1"
+		}
+	}
+
+	r.videoTLSRTP, err = NewTrackLocalStaticRTP(rcc.RTPCodecCapability, videoCodec.String(), r.suber.StreamPath)
+	if err != nil {
+		return
+	}
+	r.videoSender, err = r.pc.AddTrack(r.videoTLSRTP)
+	return
+}
+
+func (r *RemoteStream) Go() (err error) {
+	go func() {
+		rtcpBuf := make([]byte, 1500)
+		for {
+			if n, _, rtcpErr := r.videoSender.Read(rtcpBuf); rtcpErr != nil {
+				r.suber.Warn("rtcp read error", "error", rtcpErr)
+				return
+			} else {
+				if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
+					for _, pp := range p {
+						switch pp.(type) {
+						case *rtcp.PictureLossIndication:
+							// fmt.Println("PictureLossIndication")
+						}
+					}
+				}
+			}
+		}
+	}()
+	return m7s.PlayBlock(r.suber, (func(frame *mrtp.AudioFrame) (err error))(nil), func(frame *mrtp.VideoFrame) error {
+		for p := range frame.Packets.RangePoint {
+			if err := r.videoTLSRTP.WriteRTP(p); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// SingleConnection extends Connection to handle multiple subscribers in a single WebRTC connection
+type SingleConnection struct {
+	task.WorkCollection[string, *RemoteStream]
+	Connection
+}
+
+func (c *SingleConnection) Receive() {
+	c.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
+		c.Info("OnTrack", "kind", track.Kind().String(), "payloadType", uint8(track.Codec().PayloadType))
+	})
+}
+
+// AddSubscriber adds a new subscriber to the connection and starts sending
+func (c *SingleConnection) AddSubscriber(subscriber *m7s.Subscriber) (remoteStream *RemoteStream) {
+	remoteStream = &RemoteStream{suber: subscriber, pc: &c.Connection}
+	c.AddTask(remoteStream)
+	return
+}
+
+// RemoveSubscriber removes a subscriber from the connection
+func (c *SingleConnection) RemoveSubscriber(remoteStream *RemoteStream) {
+	c.RemoveTrack(remoteStream.videoSender)
+	remoteStream.Stop(task.ErrStopByUser)
+}
+
+// HasSubscriber checks if a stream is already subscribed
+func (c *SingleConnection) HasSubscriber(streamPath string) bool {
+	return c.Has(streamPath)
 }

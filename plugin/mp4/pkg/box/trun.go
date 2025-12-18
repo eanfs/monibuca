@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-// aligned(8) class TrackRunBox extends FullBox(‘trun’, version, tr_flags) {
+// aligned(8) class TrackRunBox extends FullBox('trun', version, tr_flags) {
 //      unsigned int(32) sample_count;
 //      // the following are optional fields
 //      signed int(32) data_offset;
@@ -33,123 +33,219 @@ const (
 	TR_FLAG_DATA_SAMPLE_SIZE             uint32 = 0x000200
 	TR_FLAG_DATA_SAMPLE_FLAGS            uint32 = 0x000400
 	TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME uint32 = 0x000800
+
+	/*
+			bit(4) reserved=0;
+		unsigned int(2) is_leading;
+		unsigned int(2) sample_depends_on;
+		unsigned int(2) sample_is_depended_on;
+		unsigned int(2) sample_has_redundancy;
+		bit(3) sample_padding_value;
+		bit(1) sample_is_non_sync_sample;
+		unsigned int(16) sample_degradation_priority;
+	*/
+
+	SAMPLE_FLAG_IS_LEADING     uint32 = 0x0C000000 // bits 4-5
+	SAMPLE_FLAG_DEPENDS_ON_YES uint32 = 0x01000000 // bits 6-7: 01
+	SAMPLE_FLAG_DEPENDS_ON_NO  uint32 = 0x02000000 // bits 6-7: 10
+	SAMPLE_FLAG_IS_DEPENDED_ON uint32 = 0x00300000 // bits 8-9
+	SAMPLE_FLAG_HAS_REDUNDANCY uint32 = 0x000C0000 // bits 10-11
 )
 
+type TrunEntry struct {
+	SampleDuration              uint32
+	SampleSize                  uint32
+	SampleFlags                 uint32
+	SampleCompositionTimeOffset int32
+}
+
 type TrackRunBox struct {
+	FullBox
 	SampleCount      uint32
-	Dataoffset       int32
+	DataOffset       int32
 	FirstSampleFlags uint32
-	EntryList        []TrunEntry
+	Entries          []TrunEntry
 }
 
-func NewTrackRunBox() *TrackRunBox {
-	return &TrackRunBox{}
+func CreateTrackRunBox(flags uint32, entries []TrunEntry) *TrackRunBox {
+	size := uint32(FullBoxLen + 4) // base size + sample_count
+
+	if flags&TR_FLAG_DATA_OFFSET != 0 {
+		size += 4
+	}
+	if flags&TR_FLAG_DATA_FIRST_SAMPLE_FLAGS != 0 {
+		size += 4
+	}
+
+	entrySize := uint32(0)
+	if flags&TR_FLAG_DATA_SAMPLE_DURATION != 0 {
+		entrySize += 4
+	}
+	if flags&TR_FLAG_DATA_SAMPLE_SIZE != 0 {
+		entrySize += 4
+	}
+	if flags&TR_FLAG_DATA_SAMPLE_FLAGS != 0 {
+		entrySize += 4
+	}
+	if flags&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
+		entrySize += 4
+	}
+
+	size += entrySize * uint32(len(entries))
+
+	return &TrackRunBox{
+		FullBox: FullBox{
+			BaseBox: BaseBox{
+				typ:  TypeTRUN,
+				size: size,
+			},
+			Version: 1, // Use version 1 for signed composition time offsets
+			Flags:   [3]byte{byte(flags >> 16), byte(flags >> 8), byte(flags)},
+		},
+		SampleCount: uint32(len(entries)),
+		Entries:     entries,
+	}
 }
 
-func (trun *TrackRunBox) Size(trunFlags uint32) uint64 {
-	n := uint64(FullBoxLen)
-	n += 4
-	if trunFlags&uint32(TR_FLAG_DATA_OFFSET) > 0 {
-		n += 4
+func (box *TrackRunBox) WriteTo(w io.Writer) (n int64, err error) {
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], box.SampleCount)
+	nn, err := w.Write(tmp[:])
+	if err != nil {
+		return int64(nn), err
 	}
-	if trunFlags&uint32(TR_FLAG_DATA_FIRST_SAMPLE_FLAGS) > 0 {
-		n += 4
-	}
-	if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_DURATION) > 0 {
-		n += 4 * uint64(trun.SampleCount)
-	}
-	if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_SIZE) > 0 {
-		n += 4 * uint64(trun.SampleCount)
-	}
-	if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_FLAGS) > 0 {
-		n += 4 * uint64(trun.SampleCount)
-	}
-	if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME) > 0 {
-		n += 4 * uint64(trun.SampleCount)
-	}
-	return n
-}
+	n = int64(nn)
 
-func (trun *TrackRunBox) Decode(r io.Reader, size uint32, dataOffset uint32) (offset int, err error) {
-	var fullbox FullBox
-	if offset, err = fullbox.Decode(r); err != nil {
-		return
-	}
-	buf := make([]byte, size-12)
-	if _, err = io.ReadFull(r, buf); err != nil {
-		return 0, err
-	}
-	n := 0
-	trun.SampleCount = binary.BigEndian.Uint32(buf[n:])
-	n += 4
-	trunFlags := uint32(fullbox.Flags[0])<<16 | uint32(fullbox.Flags[1])<<8 | uint32(fullbox.Flags[2])
+	flags := uint32(box.Flags[0])<<16 | uint32(box.Flags[1])<<8 | uint32(box.Flags[2])
 
-	if trunFlags&uint32(TR_FLAG_DATA_OFFSET) > 0 {
-		trun.Dataoffset = int32(binary.BigEndian.Uint32(buf[n:]))
-		n += 4
-	} else {
-		trun.Dataoffset = int32(dataOffset)
+	if flags&TR_FLAG_DATA_OFFSET != 0 {
+		binary.BigEndian.PutUint32(tmp[:], uint32(box.DataOffset))
+		nn, err = w.Write(tmp[:])
+		if err != nil {
+			return n + int64(nn), err
+		}
+		n += int64(nn)
 	}
-	if trunFlags&uint32(TR_FLAG_DATA_FIRST_SAMPLE_FLAGS) > 0 {
-		trun.FirstSampleFlags = binary.BigEndian.Uint32(buf[n:])
-		n += 4
+
+	if flags&TR_FLAG_DATA_FIRST_SAMPLE_FLAGS != 0 {
+		binary.BigEndian.PutUint32(tmp[:], box.FirstSampleFlags)
+		nn, err = w.Write(tmp[:])
+		if err != nil {
+			return n + int64(nn), err
+		}
+		n += int64(nn)
 	}
-	trun.EntryList = make([]TrunEntry, trun.SampleCount)
-	for i := 0; i < int(trun.SampleCount); i++ {
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_DURATION) > 0 {
-			trun.EntryList[i].SampleDuration = binary.BigEndian.Uint32(buf[n:])
-			n += 4
+
+	for i := uint32(0); i < box.SampleCount; i++ {
+		if flags&TR_FLAG_DATA_SAMPLE_DURATION != 0 {
+			binary.BigEndian.PutUint32(tmp[:], box.Entries[i].SampleDuration)
+			nn, err = w.Write(tmp[:])
+			if err != nil {
+				return n + int64(nn), err
+			}
+			n += int64(nn)
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_SIZE) > 0 {
-			trun.EntryList[i].SampleSize = binary.BigEndian.Uint32(buf[n:])
-			n += 4
+
+		if flags&TR_FLAG_DATA_SAMPLE_SIZE != 0 {
+			binary.BigEndian.PutUint32(tmp[:], box.Entries[i].SampleSize)
+			nn, err = w.Write(tmp[:])
+			if err != nil {
+				return n + int64(nn), err
+			}
+			n += int64(nn)
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_FLAGS) > 0 {
-			trun.EntryList[i].SampleFlags = binary.BigEndian.Uint32(buf[n:])
-			n += 4
+
+		if flags&TR_FLAG_DATA_SAMPLE_FLAGS != 0 {
+			binary.BigEndian.PutUint32(tmp[:], box.Entries[i].SampleFlags)
+			nn, err = w.Write(tmp[:])
+			if err != nil {
+				return n + int64(nn), err
+			}
+			n += int64(nn)
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME) > 0 {
-			trun.EntryList[i].SampleCompositionTimeOffset = binary.BigEndian.Uint32(buf[n:])
-			n += 4
+
+		if flags&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
+			binary.BigEndian.PutUint32(tmp[:], uint32(box.Entries[i].SampleCompositionTimeOffset))
+			nn, err = w.Write(tmp[:])
+			if err != nil {
+				return n + int64(nn), err
+			}
+			n += int64(nn)
 		}
 	}
-	offset += n
+
 	return
 }
 
-func (trun *TrackRunBox) Encode(trunFlags uint32) (int, []byte) {
-	fullbox := NewFullBox(TypeTRUN, 1)
-	fullbox.Box.Size = trun.Size(trunFlags)
-	offset, buf := fullbox.Encode()
-	binary.BigEndian.PutUint32(buf[offset:], trun.SampleCount)
-	offset += 4
-
-	if trunFlags&uint32(TR_FLAG_DATA_OFFSET) > 0 {
-		binary.BigEndian.PutUint32(buf[offset:], uint32(trun.Dataoffset))
-		offset += 4
-	}
-	if trunFlags&uint32(TR_FLAG_DATA_FIRST_SAMPLE_FLAGS) > 0 {
-		binary.BigEndian.PutUint32(buf[offset:], trun.FirstSampleFlags)
-		offset += 4
+func (box *TrackRunBox) Unmarshal(buf []byte) (IBox, error) {
+	if len(buf) < 4 {
+		return nil, io.ErrShortBuffer
 	}
 
-	for i := 0; i < int(trun.SampleCount); i++ {
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_DURATION) != 0 {
-			binary.BigEndian.PutUint32(buf[offset:], trun.EntryList[i].SampleDuration)
-			offset += 4
+	n := 0
+	box.SampleCount = binary.BigEndian.Uint32(buf[n:])
+	n += 4
+
+	flags := uint32(box.Flags[0])<<16 | uint32(box.Flags[1])<<8 | uint32(box.Flags[2])
+
+	if flags&TR_FLAG_DATA_OFFSET != 0 {
+		if len(buf) < n+4 {
+			return nil, io.ErrShortBuffer
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_SIZE) != 0 {
-			binary.BigEndian.PutUint32(buf[offset:], trun.EntryList[i].SampleSize)
-			offset += 4
+		box.DataOffset = int32(binary.BigEndian.Uint32(buf[n:]))
+		n += 4
+	}
+
+	if flags&TR_FLAG_DATA_FIRST_SAMPLE_FLAGS != 0 {
+		if len(buf) < n+4 {
+			return nil, io.ErrShortBuffer
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_FLAGS) != 0 {
-			binary.BigEndian.PutUint32(buf[offset:], trun.EntryList[i].SampleFlags)
-			offset += 4
+		box.FirstSampleFlags = binary.BigEndian.Uint32(buf[n:])
+		n += 4
+	}
+
+	box.Entries = make([]TrunEntry, box.SampleCount)
+	for i := uint32(0); i < box.SampleCount; i++ {
+		if flags&TR_FLAG_DATA_SAMPLE_DURATION != 0 {
+			if len(buf) < n+4 {
+				return nil, io.ErrShortBuffer
+			}
+			box.Entries[i].SampleDuration = binary.BigEndian.Uint32(buf[n:])
+			n += 4
 		}
-		if trunFlags&uint32(TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME) != 0 {
-			binary.BigEndian.PutUint32(buf[offset:], trun.EntryList[i].SampleCompositionTimeOffset)
-			offset += 4
+
+		if flags&TR_FLAG_DATA_SAMPLE_SIZE != 0 {
+			if len(buf) < n+4 {
+				return nil, io.ErrShortBuffer
+			}
+			box.Entries[i].SampleSize = binary.BigEndian.Uint32(buf[n:])
+			n += 4
+		}
+
+		if flags&TR_FLAG_DATA_SAMPLE_FLAGS != 0 {
+			if len(buf) < n+4 {
+				return nil, io.ErrShortBuffer
+			}
+			box.Entries[i].SampleFlags = binary.BigEndian.Uint32(buf[n:])
+			n += 4
+		}
+
+		if flags&TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME != 0 {
+			if len(buf) < n+4 {
+				return nil, io.ErrShortBuffer
+			}
+			if box.Version == 0 {
+				box.Entries[i].SampleCompositionTimeOffset = int32(binary.BigEndian.Uint32(buf[n:]))
+			} else {
+				box.Entries[i].SampleCompositionTimeOffset = int32(binary.BigEndian.Uint32(buf[n:]))
+			}
+			n += 4
 		}
 	}
-	return offset, buf
+
+	return box, nil
+}
+
+func init() {
+	RegisterBox[*TrackRunBox](TypeTRUN)
 }

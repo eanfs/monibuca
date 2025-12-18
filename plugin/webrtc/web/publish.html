@@ -59,6 +59,56 @@
     mediaStream.getTracks().forEach((t) => {
       pc.addTrack(t, mediaStream);
     });
+
+    const preferH265 = searchParams.has('h265');
+    if (preferH265) {
+      const videoTransceiver = pc.getTransceivers().find(
+        t => t.sender.track && t.sender.track.kind === 'video'
+      );
+      if (videoTransceiver && typeof videoTransceiver.setCodecPreferences === 'function') {
+        const capabilities = RTCRtpSender.getCapabilities('video');
+        if (capabilities && capabilities.codecs) {
+          const h265Codec = capabilities.codecs.find(c => c.mimeType.toLowerCase() === 'video/h265');
+          if (h265Codec) {
+            const preferredCodecs = [h265Codec];
+            videoTransceiver.setCodecPreferences(preferredCodecs);
+            console.log('Attempted to set H.265 as preferred codec.');
+          } else {
+            console.warn('H.265 codec not found in sender capabilities.');
+          }
+        } else {
+          console.warn('Could not get video sender capabilities for H.265 preference.');
+        }
+      } else if (videoTransceiver && typeof videoTransceiver.setCodecPreferences !== 'function') {
+        console.warn('videoTransceiver.setCodecPreferences is not a function. Cannot set H.265 preference.');
+      } else {
+        console.warn('Video transceiver not found. Cannot set H.265 preference.');
+      }
+    }
+
+    const audioTransceiver = pc.getTransceivers().find(
+      t => t.sender.track && t.sender.track.kind === 'audio'
+    );
+    if (audioTransceiver && typeof audioTransceiver.setCodecPreferences === 'function') {
+      const capabilities = RTCRtpSender.getCapabilities('audio');
+      if (capabilities && capabilities.codecs) {
+        const pcmaCodec = capabilities.codecs.find(c => c.mimeType.toLowerCase() === 'audio/pcma');
+        if (pcmaCodec) {
+          const preferredCodecs = [pcmaCodec];
+          audioTransceiver.setCodecPreferences(preferredCodecs);
+          console.log('Attempted to set PCMA as preferred audio codec.');
+        } else {
+          console.warn('PCMA codec not found in sender capabilities.');
+        }
+      } else {
+        console.warn('Could not get audio sender capabilities for PCMA preference.');
+      }
+    } else if (audioTransceiver && typeof audioTransceiver.setCodecPreferences !== 'function') {
+      console.warn('audioTransceiver.setCodecPreferences is not a function. Cannot set PCMA preference.');
+    } else {
+      console.warn('Audio transceiver not found. Cannot set PCMA preference.');
+    }
+
     // const videoTransceiver = pc.addTransceiver(mediaStream.getVideoTracks()[0], { direction: 'sendonly' });
     // const audioTransceiver = pc.addTransceiver(mediaStream.getAudioTracks()[0], { direction: 'sendonly' });
     // const dc = pc.createDataChannel('sdp');

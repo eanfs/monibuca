@@ -52,14 +52,15 @@ func (h *LogRotatePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *LogRotatePlugin) API_trail(w http.ResponseWriter, r *http.Request) {
-	writer := util.NewSSE(w, r.Context())
-	file, err := os.Open(filepath.Join(l.Path, "current.log"))
-	if err == nil {
-		io.Copy(writer, file)
-		file.Close()
-	}
-	h := console.NewHandler(writer, &console.HandlerOptions{NoColor: true})
-	l.Server.LogHandler.Add(h)
-	<-r.Context().Done()
-	l.Server.LogHandler.Remove(h)
+	util.NewSSE(w, r.Context(), func(sse *util.SSE) {
+		file, err := os.Open(filepath.Join(l.Path, "current.log"))
+		if err == nil {
+			io.Copy(sse, file)
+			file.Close()
+		}
+		h := console.NewHandler(sse, &console.HandlerOptions{NoColor: true})
+		l.Server.LogHandler.Add(h)
+		<-r.Context().Done()
+		l.Server.LogHandler.Remove(h)
+	})
 }

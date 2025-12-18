@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	task "github.com/langhuihui/gotask"
 	flv "m7s.live/v5/plugin/flv/pkg"
 
 	"github.com/quic-go/quic-go"
 	"m7s.live/v5"
-	"m7s.live/v5/pkg/task"
 )
 
 type RelayAPIConfig struct {
@@ -43,8 +43,8 @@ func (c *RelayAPIConfig) Check(path string) bool {
 type ReceiveRequestTask struct {
 	task.Task
 	Plugin *m7s.Plugin
-	quic.Connection
-	quic.Stream
+	*quic.Conn
+	*quic.Stream
 	http.Handler
 	*RelayAPIConfig
 }

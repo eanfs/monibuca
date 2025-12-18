@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	"m7s.live/v5/pkg/task"
+	"github.com/langhuihui/gotask"
 )
 
 var _ slog.Handler = (*MultiLogHandler)(nil)

@@ -27,22 +27,22 @@ const (
 
 type Chunk struct {
 	ChunkHeader
-	AVData  RTMPData
+	buf     []byte
 	MsgData RtmpMessage
 	bufLen  int
 }
 
 type ChunkHeader struct {
-	ChunkStreamID   uint32 `json:""`
-	Timestamp       uint32 `json:""` // 3 byte
-	MessageLength   uint32 `json:""` // 3 byte
-	MessageTypeID   byte   `json:""` // 1 byte
-	MessageStreamID uint32 `json:""` // 4 byte
+	ChunkStreamID   uint32
+	Timestamp       uint32
+	MessageLength   uint32
+	MessageTypeID   byte
+	MessageStreamID uint32
 	// Extended Timestamp (0 or 4 bytes): This field is present in certain
 	// circumstances depending on the encoded timestamp or timestamp
 	// delta field in the Chunk Message header. See Section 5.3.1.3 for
 	// more information
-	ExtendTimestamp uint32 `json:",omitempty"` // 标识该字段的数据可忽略
+	ExtendTimestamp uint32
 }
 
 func (c *ChunkHeader) SetTimestamp(timestamp uint32) {
