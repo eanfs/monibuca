@@ -341,13 +341,17 @@ func (gb *GB28181Plugin) GetChannels(ctx context.Context, req *pb.GetChannelsReq
 			if req.ChannelType && c.ParentId == "" {
 				continue
 			}
+			// IP地址过滤
+			if req.Ip != "" && !strings.Contains(c.Address, req.Ip) {
+				continue
+			}
 			total++
 
 			// 当Page和Count都为0时，不做分页，返回所有数据
 			if req.Page == 0 && req.Count == 0 {
 				// 不分页，添加所有符合条件的通道
 				channels = append(channels, &pb.Channel{
-					DeviceId:     c.ChannelId,
+					DeviceId:     c.DeviceId,
 					ChannelId:    c.ChannelId,
 					ParentId:     c.ParentId,
 					Name:         c.Name,
@@ -375,7 +379,7 @@ func (gb *GB28181Plugin) GetChannels(ctx context.Context, req *pb.GetChannelsReq
 					continue
 				}
 				channels = append(channels, &pb.Channel{
-					DeviceId:     c.ChannelId,
+					DeviceId:     c.DeviceId,
 					ChannelId:    c.ChannelId,
 					ParentId:     c.ParentId,
 					Name:         c.Name,

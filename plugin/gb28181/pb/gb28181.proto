@@ -562,6 +562,7 @@ message GetChannelsRequest {
   string query = 4;
   bool online = 5;
   bool channelType = 6;
+  string ip = 7;  // IP地址查询参数
 }
 
 message ChannelsPageInfo {

@@ -25,3 +25,14 @@ example/default/*
 shutdown.sh
 !example/test/test.db
 shutdown.bat3rd/ffmpeg6
+pro_darwin_amd64
+pro_linux_amd64
+pro_linux_arm64
+example/cascade/pro_darwin_amd64
+example/cascade/activate_m7s.key
+build_docker_pro.sh
+DockerfilePro
+example/cascade/config1.yaml
+example/cascade/config2.yaml
+example/cascade/config3.yaml
+example/cascade/config4.yaml
