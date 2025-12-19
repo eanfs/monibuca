@@ -8,7 +8,7 @@ package flv;
 option go_package="m7s.live/v5/plugin/flv/pb";
 
 service api {
-  rpc List (ReqRecordList) returns (global.RecordResponseList) {
+  rpc List (ReqRecordList) returns (global.ResponseList) {
     option (google.api.http) = {
       get: "/flv/api/list/{streamPath=**}"
     };

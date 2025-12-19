@@ -24,4 +24,6 @@ example/default/*
 !example/default/test.mp4
 shutdown.sh
 !example/test/test.db
-shutdown.bat3rd/ffmpeg6
+node_modules
+data
+shutdown.bat

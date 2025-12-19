@@ -357,10 +357,12 @@ func (s *Server) Start() (err error) {
 
 	var grpcServer *GRPCServer
 	if tcpConf.ListenAddr != "" {
-		var opts []grpc.ServerOption
-		// Add the auth interceptor
-		opts = append(opts, grpc.UnaryInterceptor(s.AuthInterceptor()))
-		s.grpcServer = grpc.NewServer(opts...)
+		s.grpcServer = grpc.NewServer(
+			grpc.MaxSendMsgSize(s.GRPC.IncreasedMaxSendMsgSize),
+			grpc.MaxRecvMsgSize(s.GRPC.IncreasedMaxRecvMsgSize),
+			grpc.MaxHeaderListSize(s.GRPC.IncreasedMaxHeaderListSize),
+			grpc.UnaryInterceptor(s.AuthInterceptor()),
+		)
 		pb.RegisterApiServer(s.grpcServer, s)
 		pb.RegisterAuthServer(s.grpcServer, s)
 		s.grpcClientConn, err = grpc.DialContext(s.Context, tcpConf.ListenAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))

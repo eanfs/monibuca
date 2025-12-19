@@ -1,0 +1,44 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Gloal
+
+complete cluster plugin
+
+# Modify Plugins
+
+- follow [README.md](mdc:plugin/README.md)
+
+# Use Task System
+
+- follow [task.md](mdc:doc/arch/task.md)
+- 可以覆盖 Start 方法用来启动任务
+- 不可以覆盖 Stop 方法
+- 可以覆盖 Dispose 方法用来释放资源
+- 如果没有子任务则内嵌 task.Task
+- 如果需要子任务则内嵌 task.Work 或 task.Job,取决于是否随着子任务的退出而自动退出，如果需要保留则内嵌 task.Work，如果需要自动退出则内嵌 task.Job
+- 如果该任务需要用定时器则可以内嵌 task.TickTask
+- 如果该任务需要用信号量则可以内嵌 task.ChannelTask
+- 不可主动调用 task.Task 的除了 Stop 以外的方法
+- 不可主动调用 task.Job 的除了 AddTask 以外的方法
+
+# logger
+
+- slog need input key value pair
+
+# yaml config file
+
+- Must be all lowercase
+
+
+## 编译全局 pb
+
+sh scripts/protoc.sh
+
+## 编译某插件 pb
+
+`sh scripts/protoc.sh 插件名`
+
+例如 cluster 插件使用 `sh scripts/protoc.sh cluster`

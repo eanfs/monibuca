@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package pb;
+
+import "common.proto";
+
+option go_package = "m7s.live/v5/plugin/cluster/pb";
+
+// 注册流请求
+message RegisterStreamRequest {
+  StreamInfo stream_info = 1;
+  string auth_token = 2;
+}
+
+// 注册流响应数据
+message RegisterStreamResponseData {
+  bool conflict_detected = 1;
+  StreamInfo resolved_stream = 2;  // 如果检测到冲突，返回解决后的流信息
+}
+
+// 注册流响应
+message RegisterStreamResponse {
+  int32 code = 1;
+  string message = 2;
+  RegisterStreamResponseData data = 3;
+}
+
+// 注销流请求
+message UnregisterStreamRequest {
+  string stream_path = 1;
+  string node_id = 2;
+  string auth_token = 3;
+}
+
+// 注销流响应数据
+message UnregisterStreamResponseData {
+  bool success = 1;
+}
+
+// 注销流响应
+message UnregisterStreamResponse {
+  int32 code = 1;
+  string message = 2;
+  UnregisterStreamResponseData data = 3;
+}
+
+// 获取流信息请求
+message GetStreamInfoRequest {
+  string stream_path = 1;
+}
+
+// 获取流信息响应数据
+message GetStreamInfoResponseData {
+  StreamInfo stream_info = 1;
+}
+
+// 获取流信息响应
+message GetStreamInfoResponse {
+  int32 code = 1;
+  string message = 2;
+  GetStreamInfoResponseData data = 3;
+}
+
+// 获取集群流列表请求
+message GetClusterStreamsRequest {
+  string node_filter = 1;  // 可选，按节点筛选
+  string state_filter = 2;  // 可选，按状态筛选
+  string path_prefix = 3;   // 可选，按路径前缀筛选
+  int32 limit = 4;          // 可选，限制返回数量
+  int32 offset = 5;         // 可选，分页偏移
+}
+
+// 获取集群流列表响应数据
+message GetClusterStreamsResponseData {
+  repeated StreamInfo streams = 1;
+  int32 total_count = 2;    // 总数，用于分页
+}
+
+// 获取集群流列表响应
+message GetClusterStreamsResponse {
+  int32 code = 1;
+  string message = 2;
+  GetClusterStreamsResponseData data = 3;
+}
+
+// 获取发布者最优节点请求
+message GetOptimalNodeForPublisherRequest {
+  string region = 1;        // 可选，首选区域
+  string codec = 2;         // 可选，编码信息
+  double estimated_bandwidth_mbps = 3;  // 可选，预估带宽
+}
+
+// 获取发布者最优节点响应数据
+message GetOptimalNodeForPublisherResponseData {
+  NodeInfo optimal_node = 1;
+  repeated NodeInfo fallback_nodes = 2;  // 备选节点
+}
+
+// 获取发布者最优节点响应
+message GetOptimalNodeForPublisherResponse {
+  int32 code = 1;
+  string message = 2;
+  GetOptimalNodeForPublisherResponseData data = 3;
+}
+
+// 获取订阅者最优节点请求
+message GetOptimalNodeForSubscriberRequest {
+  string stream_path = 1;
+  string subscriber_ip = 2;  // 可选，订阅者 IP，用于地理位置优化
+  string region = 3;         // 可选，首选区域
+}
+
+// 获取订阅者最优节点响应数据
+message GetOptimalNodeForSubscriberResponseData {
+  NodeInfo optimal_node = 1;
+  repeated NodeInfo fallback_nodes = 2;  // 备选节点
+}
+
+// 获取订阅者最优节点响应
+message GetOptimalNodeForSubscriberResponse {
+  int32 code = 1;
+  string message = 2;
+  GetOptimalNodeForSubscriberResponseData data = 3;
+}
+
+// 更新流状态请求
+message UpdateStreamStateRequest {
+  string stream_path = 1;
+  string state = 2;
+  string auth_token = 3;
+}
+
+// 更新流状态响应数据
+message UpdateStreamStateResponseData {
+  bool success = 1;
+}
+
+// 更新流状态响应
+message UpdateStreamStateResponse {
+  int32 code = 1;
+  string message = 2;
+  UpdateStreamStateResponseData data = 3;
+}
