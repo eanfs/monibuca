@@ -518,6 +518,13 @@ func (config *Config) schema(index int) (r any) {
 				if valueType.Kind() == reflect.Ptr {
 					valueType = valueType.Elem()
 				}
+				
+				// 特殊处理 map[string]any 类型（如 Storage 字段）
+				// 使用动态 Schema 注册机制
+				if keyType.Kind() == reflect.String && valueType.Kind() == reflect.Interface {
+					return buildDynamicStorageSchema(config, index, isDefault, valueSource)
+				}
+				
 				valueIsStruct := valueType.Kind() == reflect.Struct && valueType != regexpType
 				valueIsMap := valueType.Kind() == reflect.Map
 				
@@ -1018,4 +1025,29 @@ func (config *Config) GetFormily() (r Object) {
 		}
 	}
 	return
+}
+
+// buildDynamicStorageSchema 为 map[string]any 类型（如 Storage）构建动态表单 Schema
+// 使用 DynamicStorage 组件，前端会自动调用 /api/storage/schemas 获取存储类型列表
+func buildDynamicStorageSchema(config *Config, index int, isDefault bool, valueSource string) Property {
+	// 获取当前配置的值
+	currentValue := config.GetValue()
+	
+	return Property{
+		Type:        "object",
+		Title:       config.name,
+		Decorator:   "FormItem",
+		Component:   "DynamicStorage",
+		Index:       index,
+		Default:     currentValue,
+		ComplexType: "dynamic-storage",
+		IsDefault:   isDefault,
+		ValueSource: valueSource,
+		DecoratorProps: map[string]any{
+			"tooltip": config.tag.Get("desc"),
+		},
+		ComponentProps: map[string]any{
+			"apiUrl": "/api/storage/schemas",
+		},
+	}
 }

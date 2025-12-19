@@ -28,6 +28,7 @@ import (
 	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/format"
+	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -724,7 +725,7 @@ func (s *Server) GetConfigFile(_ context.Context, req *emptypb.Empty) (res *pb.G
 func (s *Server) UpdateConfigFile(_ context.Context, req *pb.UpdateConfigFileRequest) (res *pb.SuccessResponse, err error) {
 	if s.configFileContent != nil {
 		s.configFileContent = []byte(req.Content)
-		os.WriteFile(s.configFilePath, s.configFileContent, 0644)
+		err = os.WriteFile(s.configFilePath, s.configFileContent, 0644)
 		res = &pb.SuccessResponse{}
 	} else {
 		err = pkg.ErrNotFound
@@ -1455,4 +1456,12 @@ func (s *Server) GetAlarmList(ctx context.Context, req *pb.AlarmListRequest) (re
 	}
 
 	return res, nil
+}
+
+// GetStorageSchemas 获取所有已注册的存储类型 Schema
+// 用于前端动态渲染存储配置表单
+func (s *Server) GetStorageSchemas(w http.ResponseWriter, r *http.Request) {
+	schemas := storage.GetSchemas()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schemas)
 }

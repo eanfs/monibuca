@@ -446,4 +446,12 @@ func init() {
 		config.Parse(&s3Config, conf.(map[string]any))
 		return NewS3Storage(&s3Config)
 	}
+
+	// 注册 S3 存储类型 Schema
+	RegisterSchema(StorageSchema{
+		Type:        "s3",
+		Name:        "S3 存储",
+		Description: "AWS S3 或兼容 S3 协议的对象存储（如 MinIO）",
+		Properties:  GenerateSchemaFromStruct(S3StorageConfig{}),
+	})
 }

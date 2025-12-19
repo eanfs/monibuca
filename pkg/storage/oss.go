@@ -357,6 +357,14 @@ func init() {
 	Factory["oss"] = func(config any) (Storage, error) {
 		var ossConfig OSSStorageConfig
 		config.Parse(&ossConfig, config.(map[string]any))
-		return NewOSSStorage(ossConfig)
+		return NewOSSStorage(&ossConfig)
 	}
+
+	// 注册 OSS 存储类型 Schema
+	RegisterSchema(StorageSchema{
+		Type:        "oss",
+		Name:        "阿里云 OSS",
+		Description: "阿里云对象存储服务",
+		Properties:  GenerateSchemaFromStruct(OSSStorageConfig{}),
+	})
 }
