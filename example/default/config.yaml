@@ -20,6 +20,9 @@ global:
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
       timeout: "600s"                        # 上传超时时间
+  db:
+    dsn: "host=172.16.12.54 user=gaussdb password=Xiding@2023 dbname=m7s_prod port=5432 sslmode=disable TimeZone=Asia/Shanghai search_path=m7s_prod"
+    dbtype: postgres      
   # storage:
   #   s3:
   #     endpoint: "s3.amazonaws.com"          # S3服务端点
@@ -47,10 +50,10 @@ srt:
   listenaddr: :6000
   # passphrase: foobarfoobar
 gb28181:
-  enable: false # 是否启用GB28181协议
+  enable: true # 是否启用GB28181协议
   autoinvite: false #建议使用false，开启后会自动邀请设备推流
-  mediaip: 192.168.1.21 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
-  sipip: 192.168.1.21 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  mediaip: 192.168.15.115 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
+  sipip: 192.168.15.115 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
   sip:
     listenaddr:
       - udp::5060
