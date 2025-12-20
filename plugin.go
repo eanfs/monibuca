@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,15 +19,16 @@ import (
 	"strings"
 	"time"
 
-	"m7s.live/v5/pkg/task"
+	"gopkg.in/yaml.v3"
 
 	"github.com/quic-go/quic-go"
 
 	gatewayRuntime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	myip "github.com/husanpao/ip"
 	"google.golang.org/grpc"
-	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+
+	task "github.com/langhuihui/gotask"
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/db"
@@ -63,12 +65,9 @@ type (
 
 	IPlugin interface {
 		task.IJob
-		OnInit() error
-		OnStop()
-		Pull(string, config.Pull, *config.Publish)
+		Pull(string, config.Pull, *config.Publish) (*PullJob, error)
 		Push(string, config.Push, *config.Subscribe)
 		Transform(*Publisher, config.Transform)
-		OnPublish(*Publisher)
 	}
 
 	IRegisterHandler interface {
@@ -88,7 +87,15 @@ type (
 	}
 
 	IQUICPlugin interface {
-		OnQUICConnect(quic.Connection) task.ITask
+		OnQUICConnect(*quic.Conn) task.ITask
+	}
+
+	IPublishHookPlugin interface {
+		OnPublish(pub *Publisher)
+	}
+
+	ISubscribeHookPlugin interface {
+		OnSubscribe(streamPath string, args url.Values)
 	}
 )
 
@@ -97,7 +104,7 @@ var plugins []PluginMeta
 func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin) {
 	instance, ok := reflect.New(plugin.Type).Interface().(IPlugin)
 	if !ok {
-		panic("plugin must implement IPlugin")
+		panic("plugin " + plugin.Name + " must implement IPlugin")
 	}
 	p = reflect.ValueOf(instance).Elem().FieldByName("Plugin").Addr().Interface().(*Plugin)
 	p.handler = instance
@@ -133,24 +140,9 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 	finalConfig, _ := yaml.Marshal(p.Config.GetMap())
 	p.Logger.Handler().(*MultiLogHandler).SetLevel(ParseLevel(p.config.LogLevel))
 	p.Debug("config", "detail", string(finalConfig))
-	if s.DisableAll {
-		p.Disabled = true
-	}
-	if userConfig["enable"] == false {
-		p.Disabled = true
-	} else if userConfig["enable"] == true {
-		p.Disabled = false
-	}
-	if p.Disabled {
+	if userConfig["enable"] == false || (s.DisableAll && userConfig["enable"] != true) {
 		p.disable("config")
-		p.Warn("plugin disabled")
 		return
-	} else {
-		var handlers map[string]http.HandlerFunc
-		if v, ok := instance.(IRegisterHandler); ok {
-			handlers = v.RegisterHandler()
-		}
-		p.registerHandler(handlers)
 	}
 	p.Info("init", "version", plugin.Version)
 	var err error
@@ -158,7 +150,7 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 		p.DB = s.DB
 	} else if p.config.DSN != "" {
 		if factory, ok := db.Factory[p.config.DBType]; ok {
-			s.DB, err = gorm.Open(factory(p.config.DSN), &gorm.Config{})
+			p.DB, err = gorm.Open(factory(p.config.DSN), &gorm.Config{})
 			if err != nil {
 				s.Error("failed to connect database", "error", err, "dsn", s.config.DSN, "type", s.config.DBType)
 				p.disable(fmt.Sprintf("database %v", err))
@@ -171,19 +163,51 @@ func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin)
 			p.disable(fmt.Sprintf("auto migrate record stream failed %v", err))
 			return
 		}
+		if err = p.DB.AutoMigrate(&EventRecordStream{}); err != nil {
+			p.disable(fmt.Sprintf("auto migrate event record stream failed %v", err))
+			return
+		}
 	}
-	s.AddTask(instance)
+	if err = s.AddTask(instance).WaitStarted(); err != nil {
+		p.disable(instance.StopReason().Error())
+		return
+	}
+	if err = p.listen(); err != nil {
+		p.Stop(err)
+		p.disable(err.Error())
+		return
+	}
+	if p.Meta.ServiceDesc != nil && s.grpcServer != nil {
+		s.grpcServer.RegisterService(p.Meta.ServiceDesc, p.handler)
+		if p.Meta.RegisterGRPCHandler != nil {
+			if err = p.Meta.RegisterGRPCHandler(p.Context, s.config.HTTP.GetGRPCMux(), s.grpcClientConn); err != nil {
+				p.Stop(err)
+				p.disable(fmt.Sprintf("grpc %v", err))
+				return
+			} else {
+				p.Info("grpc handler registered")
+			}
+		}
+	}
+	if p.config.Hook != nil {
+		if hook, ok := p.config.Hook[config.HookOnServerKeepAlive]; ok && hook.Interval > 0 {
+			p.AddTask(&ServerKeepAliveTask{plugin: p})
+		}
+	}
+	var handlers map[string]http.HandlerFunc
+	if v, ok := instance.(IRegisterHandler); ok {
+		handlers = v.RegisterHandler()
+	}
+	p.registerHandler(handlers)
+	p.OnDispose(func() {
+		s.Plugins.Remove(p)
+	})
+	s.Plugins.Add(p)
 	return
 }
 
 // InstallPlugin 安装插件
-func InstallPlugin[C iPlugin](options ...any) error {
-	var meta PluginMeta
-	for _, option := range options {
-		if m, ok := option.(PluginMeta); ok {
-			meta = m
-		}
-	}
+func InstallPlugin[C iPlugin](meta PluginMeta) error {
 	var c *C
 	meta.Type = reflect.TypeOf(c).Elem()
 	if meta.Name == "" {
@@ -196,30 +220,6 @@ func InstallPlugin[C iPlugin](options ...any) error {
 			meta.Version = after
 		} else {
 			meta.Version = "dev"
-		}
-	}
-	for _, option := range options {
-		switch v := option.(type) {
-		case OnExitHandler:
-			meta.OnExit = v
-		case DefaultYaml:
-			meta.DefaultYaml = v
-		case PullerFactory:
-			meta.NewPuller = v
-		case PusherFactory:
-			meta.NewPusher = v
-		case RecorderFactory:
-			meta.NewRecorder = v
-		case TransformerFactory:
-			meta.NewTransformer = v
-		case AuthPublisher:
-			meta.OnAuthPub = v
-		case AuthSubscriber:
-			meta.OnAuthSub = v
-		case *grpc.ServiceDesc:
-			meta.ServiceDesc = v
-		case func(context.Context, *gatewayRuntime.ServeMux, *grpc.ClientConn) error:
-			meta.RegisterGRPCHandler = v
 		}
 	}
 	plugins = append(plugins, meta)
@@ -277,48 +277,8 @@ func (p *Plugin) GetPublicIP(netcardIP string) string {
 func (p *Plugin) disable(reason string) {
 	p.Disabled = true
 	p.SetDescription("disableReason", reason)
+	p.Warn("plugin disabled")
 	p.Server.disabledPlugins = append(p.Server.disabledPlugins, p)
-}
-
-func (p *Plugin) Start() (err error) {
-	s := p.Server
-	if s == nil {
-		return fmt.Errorf("server is nil")
-	}
-	if p.Meta == nil {
-		return fmt.Errorf("plugin meta is nil")
-	}
-	if p.Meta.ServiceDesc != nil && s.grpcServer != nil {
-		s.grpcServer.RegisterService(p.Meta.ServiceDesc, p.handler)
-		if p.Meta.RegisterGRPCHandler != nil {
-			if err = p.Meta.RegisterGRPCHandler(p.Context, s.config.HTTP.GetGRPCMux(), s.grpcClientConn); err != nil {
-				p.disable(fmt.Sprintf("grpc %v", err))
-				return
-			} else {
-				p.Info("grpc handler registered")
-			}
-		}
-	}
-	s.Plugins.Add(p)
-	if err = p.listen(); err != nil {
-		p.disable(fmt.Sprintf("listen %v", err))
-		return
-	}
-	if err = p.handler.OnInit(); err != nil {
-		p.disable(fmt.Sprintf("init %v", err))
-		return
-	}
-	if p.config.Hook != nil {
-		if hook, ok := p.config.Hook[config.HookOnServerKeepAlive]; ok && hook.Interval > 0 {
-			p.AddTask(&ServerKeepAliveTask{plugin: p})
-		}
-	}
-	return
-}
-
-func (p *Plugin) Dispose() {
-	p.handler.OnStop()
-	p.Server.Plugins.Remove(p)
 }
 
 func (p *Plugin) listen() (err error) {
@@ -380,21 +340,19 @@ func (p *Plugin) listen() (err error) {
 	return
 }
 
-func (p *Plugin) OnInit() error {
-	return nil
+type WebHookQueueTask struct {
+	task.Work
 }
 
-func (p *Plugin) OnStop() {
-
-}
+var webHookQueueTask WebHookQueueTask
 
 type WebHookTask struct {
 	task.Task
 	plugin   *Plugin
-	hookType config.HookType
 	conf     config.Webhook
 	data     any
 	jsonData []byte
+	alarm    AlarmInfo
 }
 
 func (t *WebHookTask) Start() error {
@@ -402,10 +360,58 @@ func (t *WebHookTask) Start() error {
 		return task.ErrTaskComplete
 	}
 
-	var err error
-	t.jsonData, err = json.Marshal(t.data)
-	if err != nil {
-		return fmt.Errorf("marshal webhook data: %w", err)
+	// 处理AlarmInfo数据
+	if t.data != nil {
+		// 获取主机名和IP地址
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
+
+		// 获取本机IP地址
+		var ipAddr string
+		addrs, err := net.InterfaceAddrs()
+		if err == nil {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					if ipnet.IP.To4() != nil {
+						ipAddr = ipnet.IP.String()
+						break
+					}
+				}
+			}
+		}
+		if ipAddr == "" {
+			ipAddr = "unknown"
+		}
+
+		// 直接使用t.data作为AlarmInfo
+		alarmInfo, ok := t.data.(AlarmInfo)
+		if !ok {
+			return fmt.Errorf("data is not of type AlarmInfo")
+		}
+
+		// 更新服务器信息
+		if alarmInfo.ServerInfo == "" {
+			alarmInfo.ServerInfo = fmt.Sprintf("%s (%s)", hostname, ipAddr)
+		}
+
+		// 确保时间戳已设置
+		if alarmInfo.CreatedAt.IsZero() {
+			alarmInfo.CreatedAt = time.Now()
+		}
+		if alarmInfo.UpdatedAt.IsZero() {
+			alarmInfo.UpdatedAt = time.Now()
+		}
+
+		// 将AlarmInfo序列化为JSON
+		jsonData, err := json.Marshal(alarmInfo)
+		if err != nil {
+			return fmt.Errorf("marshal AlarmInfo to json: %w", err)
+		}
+
+		t.jsonData = jsonData
+		t.alarm = alarmInfo
 	}
 
 	t.SetRetry(t.conf.RetryTimes, t.conf.RetryInterval)
@@ -413,6 +419,25 @@ func (t *WebHookTask) Start() error {
 }
 
 func (t *WebHookTask) Go() error {
+	// 检查是否需要保存告警到数据库
+	var dbID uint
+	if t.conf.SaveAlarm && t.plugin.DB != nil {
+		// 默认 IsSent 为 false
+		t.alarm.IsSent = false
+		if err := t.plugin.DB.Create(&t.alarm).Error; err != nil {
+			t.plugin.Error("保存告警到数据库失败", "error", err)
+		} else {
+			dbID = t.alarm.ID
+			t.plugin.Info("告警已保存到数据库", "id", dbID)
+		}
+	}
+
+	// 检查全局布防状态，撤防时不发送 HTTP 请求
+	if !t.plugin.Server.ServerConfig.Armed {
+		t.plugin.Debug("WebHook skipped due to disarmed state", "url", t.conf.URL, "dbID", dbID)
+		return task.ErrTaskComplete
+	}
+
 	req, err := http.NewRequest(t.conf.Method, t.conf.URL, bytes.NewBuffer(t.jsonData))
 	if err != nil {
 		return err
@@ -429,32 +454,42 @@ func (t *WebHookTask) Go() error {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		t.plugin.Error("webhook request failed", "error", err)
+		t.plugin.Error("webhook请求失败", "error", err)
 		return err
 	}
 	defer resp.Body.Close()
+
+	// 如果发送成功且已保存到数据库，则更新IsSent字段为true
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && t.conf.SaveAlarm && t.plugin.DB != nil && dbID > 0 {
+		t.alarm.IsSent = true
+		if err := t.plugin.DB.Model(&AlarmInfo{}).Where("id = ?", dbID).Update("is_sent", true).Error; err != nil {
+			t.plugin.Error("更新告警发送状态失败", "error", err)
+		} else {
+			t.plugin.Info("告警发送状态已更新", "id", dbID, "is_sent", true)
+		}
+		return task.ErrTaskComplete
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return task.ErrTaskComplete
 	}
 
-	err = fmt.Errorf("webhook request failed with status: %d", resp.StatusCode)
-	t.plugin.Error("webhook response error", "status", resp.StatusCode)
+	err = fmt.Errorf("webhook请求失败，状态码：%d", resp.StatusCode)
+	t.plugin.Error("webhook响应错误", "状态码", resp.StatusCode)
 	return err
 }
 
-func (p *Plugin) SendWebhook(hookType config.HookType, data any) *task.Task {
+func (p *Plugin) SendWebhook(conf config.Webhook, data any) *task.Task {
 	webhookTask := &WebHookTask{
-		plugin:   p,
-		hookType: hookType,
-		conf:     p.config.Hook[hookType],
-		data:     data,
+		plugin: p,
+		conf:   conf,
+		data:   data,
 	}
-	return p.AddTask(webhookTask)
+	return webHookQueueTask.AddTask(webhookTask)
 }
 
 // TODO: use alias stream
-func (p *Plugin) OnPublish(pub *Publisher) {
+func (p *Plugin) onPublish(pub *Publisher) {
 	onPublish := p.config.OnPub
 	if p.Meta.NewPusher != nil {
 		for r, pushConf := range onPublish.Push {
@@ -492,6 +527,9 @@ func (p *Plugin) OnPublish(pub *Publisher) {
 			}
 		}
 	}
+	if publishHookPlugin, ok := p.handler.(IPublishHookPlugin); ok {
+		publishHookPlugin.OnPublish(pub)
+	}
 }
 
 func (p *Plugin) auth(streamPath string, key string, secret string, expire string) (err error) {
@@ -508,7 +546,7 @@ func (p *Plugin) auth(streamPath string, key string, secret string, expire strin
 	return fmt.Errorf("auth failed invalid secret")
 }
 
-func (p *Plugin) OnSubscribe(streamPath string, args url.Values) {
+func (p *Plugin) onSubscribe(streamPath string, args url.Values) {
 	//	var avoidTrans bool
 	//AVOID:
 	//	for trans := range server.Transforms.Range {
@@ -523,10 +561,16 @@ func (p *Plugin) OnSubscribe(streamPath string, args url.Values) {
 		if p.Meta.NewPuller != nil && reg.MatchString(streamPath) {
 			conf.Args = config.HTTPValues(args)
 			conf.URL = reg.Replace(streamPath, conf.URL)
-			p.handler.Pull(streamPath, conf, nil)
+			if job, err := p.handler.Pull(streamPath, conf, nil); err == nil {
+				if w, ok := p.Server.Waiting.Get(streamPath); ok {
+					job.Progress = &w.Progress
+				}
+			}
 		}
 	}
-
+	if subscribeHookPlugin, ok := p.handler.(ISubscribeHookPlugin); ok {
+		subscribeHookPlugin.OnSubscribe(streamPath, args)
+	}
 	//if !avoidTrans {
 	//	for reg, conf := range plugin.GetCommonConf().OnSub.Transform {
 	//		if plugin.Meta.Transformer != nil {
@@ -545,8 +589,19 @@ func (p *Plugin) OnSubscribe(streamPath string, args url.Values) {
 	//	}
 	//}
 }
+
 func (p *Plugin) PublishWithConfig(ctx context.Context, streamPath string, conf config.Publish) (publisher *Publisher, err error) {
-	publisher = createPublisher(p, streamPath, conf)
+	publisher = &Publisher{Publish: conf}
+	publisher.Type = conf.PubType
+	publisher.ID = task.GetNextTaskID()
+	publisher.Plugin = p
+	if conf.PublishTimeout > 0 {
+		publisher.TimeoutTimer = time.NewTimer(conf.PublishTimeout)
+	} else {
+		publisher.TimeoutTimer = time.NewTimer(time.Hour * 24 * 365)
+	}
+	publisher.Logger = p.Logger.With("streamPath", streamPath, "pId", publisher.ID)
+	publisher.Init(streamPath, &publisher.Publish)
 	if p.config.EnableAuth && publisher.Type == PublishTypeServer {
 		onAuthPub := p.Meta.OnAuthPub
 		if onAuthPub == nil {
@@ -564,35 +619,40 @@ func (p *Plugin) PublishWithConfig(ctx context.Context, streamPath string, conf 
 			}
 		}
 	}
-	err = p.Server.Streams.AddTask(publisher, ctx).WaitStarted()
-	if err == nil {
-		if sender := p.getHookSender(config.HookOnPublishEnd); sender != nil {
-			publisher.OnDispose(func() {
-				webhookData := map[string]interface{}{
-					"event":      config.HookOnPublishEnd,
-					"streamPath": publisher.StreamPath,
-					"publishId":  publisher.ID,
-					"reason":     publisher.StopReason().Error(),
-					"timestamp":  time.Now().Unix(),
-				}
-				sender(config.HookOnPublishEnd, webhookData)
-			})
-		}
-		if sender := p.getHookSender(config.HookOnPublishStart); sender != nil {
-			webhookData := map[string]interface{}{
-				"event":      config.HookOnPublishStart,
-				"streamPath": publisher.StreamPath,
-				"args":       publisher.Args,
-				"publishId":  publisher.ID,
-				"remoteAddr": publisher.RemoteAddr,
-				"type":       publisher.Type,
-				"pluginName": p.Meta.Name,
-				"timestamp":  time.Now().Unix(),
+	for {
+		err = p.Server.Streams.Add(publisher, ctx).WaitStarted()
+		if err == nil {
+			if sender, webhook := p.getHookSender(config.HookOnPublishEnd); sender != nil {
+				publisher.OnDispose(func() {
+					alarmInfo := AlarmInfo{
+						AlarmName:  string(config.HookOnPublishEnd),
+						AlarmDesc:  publisher.StopReason().Error(),
+						AlarmType:  config.AlarmPublishOffline,
+						StreamPath: publisher.StreamPath,
+					}
+					sender(webhook, alarmInfo)
+				})
 			}
-			sender(config.HookOnPublishStart, webhookData)
+			if sender, webhook := p.getHookSender(config.HookOnPublishStart); sender != nil {
+				alarmInfo := AlarmInfo{
+					AlarmName:  string(config.HookOnPublishStart),
+					AlarmType:  config.AlarmPublishRecover,
+					StreamPath: publisher.StreamPath,
+				}
+				sender(webhook, alarmInfo)
+			}
+			return
+		} else if oldStream := new(task.ExistTaskError); errors.As(err, oldStream) {
+			if conf.KickExist {
+				publisher.takeOver(oldStream.Task.(*Publisher))
+				oldStream.Task.WaitStopped()
+			} else {
+				return nil, ErrStreamExist
+			}
+		} else {
+			return
 		}
 	}
-	return
 }
 
 func (p *Plugin) Publish(ctx context.Context, streamPath string) (publisher *Publisher, err error) {
@@ -622,39 +682,32 @@ func (p *Plugin) SubscribeWithConfig(ctx context.Context, streamPath string, con
 	if err == nil {
 		select {
 		case <-subscriber.waitPublishDone:
-			err = subscriber.Publisher.WaitTrack()
+			waitAudio := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "audio")
+			waitVideo := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "video")
+			err = subscriber.Publisher.WaitTrack(waitAudio, waitVideo)
 		case <-subscriber.Done():
 			err = subscriber.StopReason()
 		}
 	}
 	if err == nil {
-		if sender := p.getHookSender(config.HookOnSubscribeEnd); sender != nil {
+		if sender, webhook := p.getHookSender(config.HookOnSubscribeEnd); sender != nil {
 			subscriber.OnDispose(func() {
-				webhookData := map[string]interface{}{
-					"event":        config.HookOnSubscribeEnd,
-					"streamPath":   subscriber.StreamPath,
-					"subscriberId": subscriber.ID,
-					"reason":       subscriber.StopReason().Error(),
-					"timestamp":    time.Now().Unix(),
+				alarmInfo := AlarmInfo{
+					AlarmName:  string(config.HookOnSubscribeEnd),
+					AlarmDesc:  subscriber.StopReason().Error(),
+					AlarmType:  config.AlarmSubscribeOffline,
+					StreamPath: subscriber.StreamPath,
 				}
-				if subscriber.Publisher != nil {
-					webhookData["publishId"] = subscriber.Publisher.ID
-				}
-				sender(config.HookOnSubscribeEnd, webhookData)
+				sender(webhook, alarmInfo)
 			})
 		}
-		if sender := p.getHookSender(config.HookOnSubscribeStart); sender != nil {
-			webhookData := map[string]interface{}{
-				"event":        config.HookOnSubscribeStart,
-				"streamPath":   subscriber.StreamPath,
-				"publishId":    subscriber.Publisher.ID,
-				"subscriberId": subscriber.ID,
-				"remoteAddr":   subscriber.RemoteAddr,
-				"type":         subscriber.Type,
-				"args":         subscriber.Args,
-				"timestamp":    time.Now().Unix(),
+		if sender, webhook := p.getHookSender(config.HookOnSubscribeStart); sender != nil {
+			alarmInfo := AlarmInfo{
+				AlarmName:  string(config.HookOnSubscribeStart),
+				AlarmType:  config.AlarmSubscribeRecover,
+				StreamPath: subscriber.StreamPath,
 			}
-			sender(config.HookOnSubscribeStart, webhookData)
+			sender(webhook, alarmInfo)
 		}
 	}
 	return
@@ -664,12 +717,14 @@ func (p *Plugin) Subscribe(ctx context.Context, streamPath string) (subscriber *
 	return p.SubscribeWithConfig(ctx, streamPath, p.config.Subscribe)
 }
 
-func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) {
+func (p *Plugin) Pull(streamPath string, conf config.Pull, pubConf *config.Publish) (job *PullJob, err error) {
 	puller := p.Meta.NewPuller(conf)
 	if puller == nil {
-		return
+		return nil, ErrNotFound
 	}
-	puller.GetPullJob().Init(puller, p, streamPath, conf, pubConf)
+	job = puller.GetPullJob()
+	job.Init(puller, p, streamPath, conf, pubConf)
+	return
 }
 
 func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subscribe) {
@@ -680,14 +735,13 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subscribe) *RecordJob {
 	recorder := p.Meta.NewRecorder(conf)
 	job := recorder.GetRecordJob().Init(recorder, p, pub.StreamPath, conf, subConf)
-	job.Depend(pub)
+	pub.Using(job)
 	return job
 }
 
 func (p *Plugin) Transform(pub *Publisher, conf config.Transform) {
 	transformer := p.Meta.NewTransformer()
-	job := transformer.GetTransformJob().Init(transformer, p, pub, conf)
-	job.Depend(pub)
+	pub.Using(transformer.GetTransformJob().Init(transformer, p, pub, conf))
 }
 
 func (p *Plugin) registerHandler(handlers map[string]http.HandlerFunc) {
@@ -725,10 +779,11 @@ func (p *Plugin) registerHandler(handlers map[string]http.HandlerFunc) {
 			streamPath := r.PathValue("streamPath")
 			t := r.PathValue("type")
 			expire := r.URL.Query().Get("expire")
-			if t == "publish" {
+			switch t {
+			case "publish":
 				secret := md5.Sum([]byte(p.config.Publish.Key + streamPath + expire))
 				rw.Write([]byte(hex.EncodeToString(secret[:])))
-			} else if t == "subscribe" {
+			case "subscribe":
 				secret := md5.Sum([]byte(p.config.Subscribe.Key + streamPath + expire))
 				rw.Write([]byte(hex.EncodeToString(secret[:])))
 			}
@@ -766,13 +821,21 @@ func (p *Plugin) handle(pattern string, handler http.Handler) {
 	p.Server.apiList = append(p.Server.apiList, pattern)
 }
 
-func (p *Plugin) getHookSender(hookType config.HookType) (sender func(hookType config.HookType, data any) *task.Task) {
+func (p *Plugin) getHookSender(hookType config.HookType) (sender func(webhook config.Webhook, data any) *task.Task, conf config.Webhook) {
 	if p.config.Hook != nil {
 		if _, ok := p.config.Hook[hookType]; ok {
 			sender = p.SendWebhook
+			conf = p.config.Hook[hookType]
+		} else if _, ok := p.config.Hook[config.HookDefault]; ok {
+			sender = p.SendWebhook
+			conf = p.config.Hook[config.HookDefault]
 		} else if p.Server.config.Hook != nil {
 			if _, ok := p.Server.config.Hook[hookType]; ok {
+				conf = p.Server.config.Hook[hookType]
 				sender = p.Server.SendWebhook
+			} else if _, ok := p.Server.config.Hook[config.HookDefault]; ok {
+				sender = p.Server.SendWebhook
+				conf = p.Server.config.Hook[config.HookDefault]
 			}
 		}
 	}
@@ -789,19 +852,25 @@ func (t *ServerKeepAliveTask) GetTickInterval() time.Duration {
 }
 
 func (t *ServerKeepAliveTask) Tick(now any) {
-	sender := t.plugin.getHookSender(config.HookOnServerKeepAlive)
+	sender, webhook := t.plugin.getHookSender(config.HookOnServerKeepAlive)
 	if sender == nil {
 		return
 	}
-	s := t.plugin.Server
-	webhookData := map[string]interface{}{
-		"event":           config.HookOnServerKeepAlive,
-		"timestamp":       time.Now().Unix(),
-		"streams":         s.Streams.Length,
-		"subscribers":     s.Subscribers.Length,
-		"publisherCount":  s.Streams.Length,
-		"subscriberCount": s.Subscribers.Length,
-		"uptime":          time.Since(s.StartTime).Seconds(),
+	//s := t.plugin.Server
+	alarmInfo := AlarmInfo{
+		AlarmName:  string(config.HookOnServerKeepAlive),
+		AlarmType:  config.AlarmKeepAliveOnline,
+		StreamPath: "",
 	}
-	sender(config.HookOnServerKeepAlive, webhookData)
+	sender(webhook, alarmInfo)
+	//webhookData := map[string]interface{}{
+	//	"event":           config.HookOnServerKeepAlive,
+	//	"timestamp":       time.Now().Unix(),
+	//	"streams":         s.Streams.Length,
+	//	"subscribers":     s.Subscribers.Length,
+	//	"publisherCount":  s.Streams.Length,
+	//	"subscriberCount": s.Subscribers.Length,
+	//	"uptime":          time.Since(s.StartTime).Seconds(),
+	//}
+	//sender(webhook, webhookData)
 }

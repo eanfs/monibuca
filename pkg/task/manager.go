@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	. "m7s.live/v5/pkg/util"
+	"m7s.live/v5/pkg/util"
 )
 
 var ErrExist = errors.New("exist")
@@ -16,7 +16,7 @@ type ManagerItem[K comparable] interface {
 
 type Manager[K comparable, T ManagerItem[K]] struct {
 	Work
-	Collection[K, T]
+	util.Collection[K, T]
 }
 
 func (m *Manager[K, T]) Add(ctx T, opt ...any) *Task {

@@ -17,6 +17,12 @@ type RedirectAdvisor interface {
 	GetRedirectTarget(protocol, streamPath, currentHost string) (targetHost string, statusCode int, ok bool)
 }
 
+// RedirectAdvisorV2 is an optional extension that provides request scheme context (http/https),
+// allowing advisors to choose the correct target port.
+type RedirectAdvisorV2 interface {
+	GetRedirectTargetV2(protocol, streamPath, currentHost, scheme string) (targetHost string, statusCode int, ok bool)
+}
+
 func (s *Server) GetRedirectAdvisor() RedirectAdvisor {
 	if s == nil {
 		return nil
@@ -66,7 +72,14 @@ func (s *Server) RedirectIfNeeded(w http.ResponseWriter, r *http.Request, prefix
 		}
 	}()
 
-	targetHost, statusCode, ok := advisor.GetRedirectTarget(prefix, redirectPath, r.Host)
+	var targetHost string
+	var statusCode int
+	var ok bool
+	if adv2, ok2 := advisor.(RedirectAdvisorV2); ok2 {
+		targetHost, statusCode, ok = adv2.GetRedirectTargetV2(prefix, redirectPath, r.Host, requestScheme(r))
+	} else {
+		targetHost, statusCode, ok = advisor.GetRedirectTarget(prefix, redirectPath, r.Host)
+	}
 	if !ok || targetHost == "" {
 		return false
 	}

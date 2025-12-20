@@ -261,6 +261,9 @@ func (gb *GB28181Plugin) Start() (err error) {
 		// 用于在无法从设备请求中确定本地IP时使用
 		gb.defaultSipIP = gb.SipIP
 		gb.defaultSipPort = 5060 // 默认端口
+		if len(gb.sipPorts) > 0 {
+			gb.defaultSipPort = gb.sipPorts[0]
+		}
 
 		if gb.defaultSipIP == "" {
 			// 从第一个监听地址提取默认IP
@@ -420,6 +423,20 @@ func (gb *GB28181Plugin) checkDeviceExpire() (err error) {
 		// 设置plugin引用
 		device.plugin = gb
 
+		originalLocalPort := device.LocalPort
+		if len(gb.sipPorts) > 0 {
+			portValid := false
+			for _, port := range gb.sipPorts {
+				if device.LocalPort == port {
+					portValid = true
+					break
+				}
+			}
+			if !portValid {
+				device.LocalPort = gb.sipPorts[0]
+			}
+		}
+
 		// 设置联系人头信息
 		device.contactHDR = sip.ContactHeader{
 			Address: sip.Uri{
@@ -496,10 +513,14 @@ func (gb *GB28181Plugin) checkDeviceExpire() (err error) {
 		}
 
 		// 更新设备状态到数据库
-		if err := gb.DB.Model(&Device{}).Where(&Device{DeviceId: device.DeviceId}).Updates(map[string]interface{}{
+		updates := map[string]interface{}{
 			"online": device.Online,
 			"status": device.Status,
-		}).Error; err != nil {
+		}
+		if originalLocalPort != device.LocalPort {
+			updates["local_port"] = device.LocalPort
+		}
+		if err := gb.DB.Model(&Device{}).Where(&Device{DeviceId: device.DeviceId}).Updates(updates).Error; err != nil {
 			gb.Error("更新设备状态到数据库失败", "error", err, "deviceId", device.DeviceId)
 		}
 

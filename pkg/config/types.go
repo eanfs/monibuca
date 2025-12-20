@@ -61,6 +61,22 @@ type (
 	RecordMode = string
 	HookType   = string
 
+	APIRoute struct {
+		Enable         bool           `default:"false" desc:"是否启用跨节点 API 路由（控制面）。启用后，当本机没有对应流时，可将指定 gRPC 方法转发到其它节点执行。"`
+		GRPCPeers      []string       `desc:"可路由的 gRPC 节点列表（host:port），例如 localhost:50052。"`
+		Nodes          []APIRouteNode `desc:"节点映射表（推荐）。用于 API 路由与播放重定向：包含每个节点的 gRPC/HTTP/RTSP 地址。"`
+		Methods        []string       `desc:"需要路由的 gRPC FullMethod 列表，例如 /mp4.api/StartRecord。"`
+		ResolveTimeout time.Duration  `default:"800ms" desc:"探测流所在节点的超时时间（通过 /global.api/StreamInfo 探测）。"`
+		ForwardTimeout time.Duration  `default:"10s" desc:"转发执行目标 RPC 的超时时间。"`
+		CacheTTL       time.Duration  `default:"30s" desc:"streamPath->节点 的缓存有效期，用于降低探测开销。"`
+	}
+
+	APIRouteNode struct {
+		GRPC string `desc:"节点 gRPC 地址(host:port)，用于探测与转发"`
+		HTTP string `desc:"节点 HTTP 地址(host:port)，用于 HTTP/WS 播放重定向"`
+		RTSP string `desc:"节点 RTSP 地址(host:port)，用于 RTSP 播放重定向"`
+	}
+
 	Publish struct {
 		MaxCount          int             `default:"0" desc:"最大发布者数量"` // 最大发布者数量
 		PubAudio          bool            `default:"true" desc:"是否发布音频"`
@@ -165,6 +181,7 @@ type (
 		PublicIPv6 string
 		LogLevel   string `default:"info" enum:"trace:跟踪,debug:调试,info:信息,warn:警告,error:错误"` //日志级别
 		EnableAuth bool   `desc:"启用鉴权"`                                                      //启用鉴权
+		APIRoute   APIRoute
 		Publish
 		Subscribe
 		HTTP

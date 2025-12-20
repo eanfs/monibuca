@@ -29,8 +29,9 @@ var _ = m7s.InstallPlugin[MyPlugin](
 
 - 响应结构体必须包含 code、message、data 字段
 - 错误处理采用直接返回 error 的方式，无需手动设置 code 和 message
-- 修改 global.proto 后需要运行 `sh scripts/protoc.sh` 生成 pb 文件
-- 修改插件相关的 proto 文件后需要运行 `sh scripts/protoc.sh {pluginName}` 生成对应的 pb 文件
+- 修改 proto 后需要重新生成 pb 文件：
+  - macOS/Linux：`sh scripts/protoc.sh`（全局），`sh scripts/protoc.sh {pluginName}`（插件）
+  - Windows：`.\scripts\protoc.bat`（全局），`.\scripts\protoc.bat {pluginName}`（插件）
 
 ## 服务实现机制
 

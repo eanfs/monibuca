@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -219,13 +218,11 @@ func (s *Server) TaskTree(context.Context, *emptypb.Empty) (res *pb.TaskTreeResp
 			StartTime:   timestamppb.New(t.StartTime),
 			Description: m.GetDescriptions(),
 			StartReason: t.StartReason,
-			Level:       uint32(t.GetLevel()),
 		}
 		if job, ok := m.(task.IJob); ok {
 			if blockedTask := job.Blocked(); blockedTask != nil {
 				res.Blocked = fillData(blockedTask)
 			}
-			res.EventLoopRunning = job.EventLoopRunning()
 			for t := range job.RangeSubTask {
 				child := fillData(t)
 				if child == nil {
@@ -586,39 +583,6 @@ func (s *Server) WaitList(context.Context, *emptypb.Empty) (res *pb.StreamWaitLi
 	return
 }
 
-func (s *Server) GetSubscriptionProgress(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SubscriptionProgressResponse, err error) {
-	s.CallOnStreamTask(func() {
-		if waitStream, ok := s.Waiting.Get(req.StreamPath); ok {
-			progress := waitStream.Progress
-			res = &pb.SubscriptionProgressResponse{
-				Code:    0,
-				Message: "success",
-				Data: &pb.SubscriptionProgressData{
-					CurrentStep: int32(progress.CurrentStep),
-				},
-			}
-			// Convert steps
-			for _, step := range progress.Steps {
-				pbStep := &pb.Step{
-					Name:        step.Name,
-					Description: step.Description,
-					Error:       step.Error,
-				}
-				if !step.StartedAt.IsZero() {
-					pbStep.StartedAt = timestamppb.New(step.StartedAt)
-				}
-				if !step.CompletedAt.IsZero() {
-					pbStep.CompletedAt = timestamppb.New(step.CompletedAt)
-				}
-				res.Data.Steps = append(res.Data.Steps, pbStep)
-			}
-		} else {
-			err = pkg.ErrNotFound
-		}
-	})
-	return
-}
-
 func (s *Server) Api_Summary_SSE(rw http.ResponseWriter, r *http.Request) {
 	util.ReturnFetchValue(func() *pb.SummaryResponse {
 		ret, _ := s.Summary(r.Context(), nil)
@@ -768,73 +732,6 @@ func (s *Server) GetConfig(_ context.Context, req *pb.GetConfigRequest) (res *pb
 	return
 }
 
-func (s *Server) SetArming(_ context.Context, req *pb.SetArmingRequest) (res *pb.SuccessResponse, err error) {
-	// 修改内存中的 Armed 配置
-	s.ServerConfig.Armed = req.Armed
-
-	// 修改配置文件
-	if s.configFileContent != nil {
-		content := string(s.configFileContent)
-		armedValue := "false"
-		if req.Armed {
-			armedValue = "true"
-		}
-
-		// 使用正则表达式查找并替换 armed 配置
-		// 匹配模式：armed: true 或 armed: false（可能有空格）
-		re := regexp.MustCompile(`(?m)^(\s*)armed:\s*(true|false)\s*$`)
-
-		if re.MatchString(content) {
-			// 找到了 armed 配置，直接替换
-			content = re.ReplaceAllString(content, "${1}armed: "+armedValue)
-		} else {
-			// 没有找到 armed 配置，需要添加到 global 节点下
-			// 查找 global: 行后的第一个子节点，获取缩进
-			globalRe := regexp.MustCompile(`(?m)^global:\s*\n(\s+)`)
-			matches := globalRe.FindStringSubmatch(content)
-
-			if len(matches) > 1 {
-				// 找到 global 节点和缩进，在 global: 后插入 armed
-				indent := matches[1] // 获取第一个子节点的缩进
-				// 在 global: 后面插入新行
-				content = strings.Replace(content, matches[0], "global:\n"+indent+"armed: "+armedValue+"\n"+indent, 1)
-			} else {
-				// 没有找到 global 节点或其子节点，使用默认缩进（2个空格）
-				// 先尝试查找 global: 行
-				simpleGlobalRe := regexp.MustCompile(`(?m)^global:\s*$`)
-				if simpleGlobalRe.MatchString(content) {
-					// 找到 global: 但没有子节点，使用默认2个空格缩进
-					content = simpleGlobalRe.ReplaceAllString(content, "global:\n  armed: "+armedValue)
-				} else {
-					// 没有 global 节点，在文件开头添加
-					content = "global:\n  armed: " + armedValue + "\n" + content
-				}
-			}
-		}
-
-		// 写入文件
-		s.configFileContent = []byte(content)
-		if err = os.WriteFile(s.configFilePath, []byte(content), 0644); err != nil {
-			s.Error("SetArming", "error", "write file failed", "err", err)
-			return nil, err
-		}
-	}
-
-	// 记录日志
-	status := "撤防(禁用录像)"
-	if req.Armed {
-		status = "布防(启用录像)"
-	}
-	s.Info("SetArming", "status", status, "armed", req.Armed)
-
-	// 返回成功响应
-	res = &pb.SuccessResponse{
-		Code:    0,
-		Message: "设置成功",
-	}
-	return
-}
-
 func (s *Server) GetFormily(_ context.Context, req *pb.GetConfigRequest) (res *pb.GetConfigResponse, err error) {
 	res = &pb.GetConfigResponse{
 		Data: &pb.ConfigData{},
@@ -857,90 +754,6 @@ func (s *Server) GetFormily(_ context.Context, req *pb.GetConfigRequest) (res *p
 		return
 	}
 	res.Data.Merged = string(mm)
-	return
-}
-
-// ModifyConfig 保存配置
-// 1. 备份旧配置文件
-// 2. 只保存用户输入的值（非默认值、非全局配置值）
-// 3. 重新生成配置文件
-func (s *Server) ModifyConfig(_ context.Context, req *pb.ModifyConfigRequest) (res *pb.SuccessResponse, err error) {
-	res = &pb.SuccessResponse{}
-
-	// 解析前端传来的配置数据（YAML 格式）
-	var userConfig map[string]any
-	if err = yaml.Unmarshal([]byte(req.Yaml), &userConfig); err != nil {
-		return nil, err
-	}
-
-	// 获取对应的配置对象
-	var conf *config.Config
-	if req.Name == "global" || req.Name == "" {
-		conf = &s.Config
-	} else {
-		p, ok := s.Plugins.Get(req.Name)
-		if !ok {
-			err = pkg.ErrNotFound
-			return
-		}
-		conf = &p.Config
-	}
-
-	// 过滤出用户输入的值（非默认值、非全局配置值）
-	filteredConfig := filterUserInputConfig(conf, userConfig)
-
-	// 备份旧配置文件
-	if s.configFilePath != "" && s.configFileContent != nil {
-		backupPath := s.configFilePath + ".bak." + time.Now().Format("20060102150405")
-		if err = os.WriteFile(backupPath, s.configFileContent, 0644); err != nil {
-			s.Error("备份配置文件失败", "error", err)
-			// 继续执行，不中断
-		}
-	}
-
-	// 读取现有配置文件内容
-	var existingConfig map[string]any
-	if s.configFileContent != nil {
-		yaml.Unmarshal(s.configFileContent, &existingConfig)
-	}
-	if existingConfig == nil {
-		existingConfig = make(map[string]any)
-	}
-
-	// 更新对应的配置段（使用小写）
-	configKey := strings.ToLower(req.Name)
-	if configKey == "" {
-		configKey = "global"
-	}
-
-	if len(filteredConfig) > 0 {
-		existingConfig[configKey] = filteredConfig
-	} else {
-		// 如果没有用户输入的值，删除该配置段
-		delete(existingConfig, configKey)
-	}
-
-	// 清理 null 值
-	cleanNullValues(existingConfig)
-
-	// 生成新的配置文件内容
-	var newContent []byte
-	newContent, err = yaml.Marshal(existingConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// 写入配置文件
-	if s.configFilePath != "" {
-		if err = os.WriteFile(s.configFilePath, newContent, 0644); err != nil {
-			return nil, err
-		}
-		s.configFileContent = newContent
-	}
-
-	// 应用配置修改
-	conf.ParseModifyFile(filteredConfig)
-
 	return
 }
 
@@ -1005,7 +818,7 @@ func cleanNullValues(m map[string]any) {
 	}
 }
 
-func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
+func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.ResponseList, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -1044,10 +857,11 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 	if err != nil {
 		return
 	}
-	resp = &pb.RecordResponseList{
-		Total:    uint32(totalCount),
-		PageNum:  req.PageNum,
-		PageSize: req.PageSize,
+	resp = &pb.ResponseList{
+		TotalCount: uint32(totalCount),
+		PageNum:    req.PageNum,
+		PageSize:   req.PageSize,
+		Data:       make([]*pb.RecordFile, 0),
 	}
 	for _, recordFile := range result {
 		resp.Data = append(resp.Data, &pb.RecordFile{
@@ -1056,69 +870,6 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 			EndTime:    timestamppb.New(recordFile.EndTime),
 			FilePath:   recordFile.FilePath,
 			StreamPath: recordFile.StreamPath,
-		})
-	}
-	return
-}
-
-func (s *Server) GetEventRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.EventRecordResponseList, err error) {
-	if s.DB == nil {
-		err = pkg.ErrNoDB
-		return
-	}
-	if req.PageSize == 0 {
-		req.PageSize = 10
-	}
-	if req.PageNum == 0 {
-		req.PageNum = 1
-	}
-	offset := (req.PageNum - 1) * req.PageSize // 计算偏移量
-	var totalCount int64                       //总条数
-
-	var result []*EventRecordStream
-	query := s.DB.Model(&EventRecordStream{})
-	if strings.Contains(req.StreamPath, "*") {
-		query = query.Where("stream_path like ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
-	} else if req.StreamPath != "" {
-		query = query.Where("stream_path = ?", req.StreamPath)
-	}
-	if req.Type != "" {
-		query = query.Where("type = ?", req.Type)
-	}
-	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{"range": []string{req.Range}, "start": []string{req.Start}, "end": []string{req.End}})
-	if err == nil {
-		if !startTime.IsZero() {
-			query = query.Where("start_time >= ?", startTime)
-		}
-		if !endTime.IsZero() {
-			query = query.Where("end_time <= ?", endTime)
-		}
-	}
-	if req.EventLevel != "" {
-		query = query.Where("event_level = ?", req.EventLevel)
-	}
-
-	query.Count(&totalCount)
-	err = query.Offset(int(offset)).Limit(int(req.PageSize)).Order("start_time desc").Find(&result).Error
-	if err != nil {
-		return
-	}
-	resp = &pb.EventRecordResponseList{
-		Total:    uint32(totalCount),
-		PageNum:  req.PageNum,
-		PageSize: req.PageSize,
-	}
-	for _, recordFile := range result {
-		resp.Data = append(resp.Data, &pb.EventRecordFile{
-			Id:         uint32(recordFile.ID),
-			StartTime:  timestamppb.New(recordFile.StartTime),
-			EndTime:    timestamppb.New(recordFile.EndTime),
-			FilePath:   recordFile.FilePath,
-			StreamPath: recordFile.StreamPath,
-			EventLevel: recordFile.EventLevel,
-			EventId:    recordFile.EventId,
-			EventName:  recordFile.EventName,
-			EventDesc:  recordFile.EventDesc,
 		})
 	}
 	return
@@ -1217,242 +968,4 @@ func (s *Server) GetTransformList(ctx context.Context, req *emptypb.Empty) (res 
 		}
 	})
 	return
-}
-
-func (s *Server) StartPull(ctx context.Context, req *pb.GlobalPullRequest) (res *pb.SuccessResponse, err error) {
-	// 创建拉流配置
-	pullConfig := config.Pull{
-		URL:      req.RemoteURL,
-		TestMode: int(req.TestMode),
-	}
-
-	// 使用请求中的流路径，如果未提供则生成默认路径
-	streamPath := req.StreamPath
-	protocol := req.Protocol
-
-	// 如果没有提供protocol，则从URL推测
-	if protocol == "" {
-		u, err := url.Parse(req.RemoteURL)
-		if err == nil {
-			switch {
-			case strings.HasPrefix(u.Scheme, "rtmp"):
-				protocol = "rtmp"
-			case strings.HasPrefix(u.Scheme, "rtsp"):
-				protocol = "rtsp"
-			case strings.HasPrefix(u.Scheme, "srt"):
-				protocol = "srt"
-			case strings.HasPrefix(u.Scheme, "whep"):
-				protocol = "webrtc"
-			case strings.HasPrefix(u.Scheme, "http"):
-				if strings.Contains(u.Path, ".m3u8") {
-					protocol = "hls"
-				} else if strings.Contains(u.Path, ".flv") {
-					protocol = "flv"
-				} else if strings.Contains(u.Path, ".mp4") {
-					protocol = "mp4"
-				}
-			}
-		}
-	}
-
-	if streamPath == "" {
-		if protocol == "" {
-			streamPath = "pull/unknown"
-		} else {
-			streamPath = "pull/" + protocol
-		}
-	}
-
-	// 根据protocol找到对应的plugin进行pull
-	if protocol != "" {
-		for p := range s.Plugins.Range {
-			if strings.EqualFold(p.Meta.Name, protocol) {
-				pubConfig := p.GetCommonConf().Publish
-
-				// 设置发布配置参数
-				if req.PubAudio != nil {
-					pubConfig.PubAudio = *req.PubAudio
-				}
-				if req.PubVideo != nil {
-					pubConfig.PubVideo = *req.PubVideo
-				}
-				if req.DelayCloseTimeout != nil {
-					pubConfig.DelayCloseTimeout = req.DelayCloseTimeout.AsDuration()
-				}
-				if req.Speed != nil {
-					pubConfig.Speed = *req.Speed
-				}
-				if req.MaxCount != nil {
-					pubConfig.MaxCount = int(*req.MaxCount)
-				}
-				if req.KickExist != nil {
-					pubConfig.KickExist = *req.KickExist
-				}
-				if req.PublishTimeout != nil {
-					pubConfig.PublishTimeout = req.PublishTimeout.AsDuration()
-				}
-				if req.WaitCloseTimeout != nil {
-					pubConfig.WaitCloseTimeout = req.WaitCloseTimeout.AsDuration()
-				}
-				if req.IdleTimeout != nil {
-					pubConfig.IdleTimeout = req.IdleTimeout.AsDuration()
-				}
-				if req.PauseTimeout != nil {
-					pubConfig.PauseTimeout = req.PauseTimeout.AsDuration()
-				}
-				if req.BufferTime != nil {
-					pubConfig.BufferTime = req.BufferTime.AsDuration()
-				}
-				if req.Scale != nil {
-					pubConfig.Scale = *req.Scale
-				}
-				if req.MaxFPS != nil {
-					pubConfig.MaxFPS = int(*req.MaxFPS)
-				}
-				if req.Key != nil {
-					pubConfig.Key = *req.Key
-				}
-				if req.RelayMode != nil {
-					pubConfig.RelayMode = *req.RelayMode
-				}
-				if req.PubType != nil {
-					pubConfig.PubType = *req.PubType
-				}
-				if req.Loop != nil {
-					pullConfig.Loop = int(*req.Loop)
-				}
-				if req.Dump != nil {
-					pubConfig.Dump = *req.Dump
-				}
-
-				_, err = p.Pull(streamPath, pullConfig, &pubConfig)
-				if err != nil {
-					return nil, err
-				}
-				return &pb.SuccessResponse{
-					Code:    0,
-					Message: "success",
-				}, nil
-			}
-		}
-	}
-
-	return &pb.SuccessResponse{
-		Code:    0,
-		Message: "success",
-	}, nil
-}
-
-func (s *Server) GetAlarmList(ctx context.Context, req *pb.AlarmListRequest) (res *pb.AlarmListResponse, err error) {
-	// 初始化响应对象
-	res = &pb.AlarmListResponse{
-		Code:     0,
-		Message:  "success",
-		PageNum:  req.PageNum,
-		PageSize: req.PageSize,
-	}
-
-	// 检查数据库连接是否可用
-	if s.DB == nil {
-		res.Code = 500
-		res.Message = "数据库连接不可用"
-		return res, nil
-	}
-
-	// 构建查询条件
-	query := s.DB.Model(&AlarmInfo{})
-
-	// 添加时间范围过滤
-	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{
-		"range": []string{req.Range},
-		"start": []string{req.Start},
-		"end":   []string{req.End},
-	})
-	if err == nil {
-		if !startTime.IsZero() {
-			query = query.Where("created_at >= ?", startTime)
-		}
-		if !endTime.IsZero() {
-			query = query.Where("created_at <= ?", endTime)
-		}
-	}
-
-	// 添加告警类型过滤
-	if req.AlarmType != 0 {
-		query = query.Where("alarm_type = ?", req.AlarmType)
-	}
-
-	// 添加 StreamPath 过滤
-	if req.StreamPath != "" {
-		if strings.Contains(req.StreamPath, "*") {
-			// 支持通配符搜索
-			query = query.Where("stream_path LIKE ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
-		} else {
-			query = query.Where("stream_path = ?", req.StreamPath)
-		}
-	}
-
-	// 添加 StreamName 过滤
-	if req.StreamName != "" {
-		if strings.Contains(req.StreamName, "*") {
-			// 支持通配符搜索
-			query = query.Where("stream_name LIKE ?", strings.ReplaceAll(req.StreamName, "*", "%"))
-		} else {
-			query = query.Where("stream_name = ?", req.StreamName)
-		}
-	}
-
-	// 计算总记录数
-	var total int64
-	if err = query.Count(&total).Error; err != nil {
-		res.Code = 500
-		res.Message = "查询告警信息总数失败: " + err.Error()
-		return res, nil
-	}
-	res.Total = int32(total)
-
-	// 如果没有记录，直接返回
-	if total == 0 {
-		return res, nil
-	}
-
-	// 处理分页参数
-	if req.PageNum <= 0 {
-		req.PageNum = 1
-	}
-	if req.PageSize <= 0 {
-		req.PageSize = 10
-	}
-
-	// 查询分页数据
-	var alarmInfoList []AlarmInfo
-	offset := (req.PageNum - 1) * req.PageSize
-	if err = query.Order("created_at DESC").
-		Offset(int(offset)).
-		Limit(int(req.PageSize)).
-		Find(&alarmInfoList).Error; err != nil {
-		res.Code = 500
-		res.Message = "查询告警信息失败: " + err.Error()
-		return res, nil
-	}
-
-	// 转换为 protobuf 格式
-	res.Data = make([]*pb.AlarmInfo, len(alarmInfoList))
-	for i, alarm := range alarmInfoList {
-		res.Data[i] = &pb.AlarmInfo{
-			Id:         uint32(alarm.ID),
-			ServerInfo: alarm.ServerInfo,
-			StreamName: alarm.StreamName,
-			StreamPath: alarm.StreamPath,
-			AlarmDesc:  alarm.AlarmDesc,
-			AlarmName:  alarm.AlarmName,
-			AlarmType:  int32(alarm.AlarmType),
-			IsSent:     alarm.IsSent,
-			CreatedAt:  timestamppb.New(alarm.CreatedAt),
-			UpdatedAt:  timestamppb.New(alarm.UpdatedAt),
-			FilePath:   alarm.FilePath,
-		}
-	}
-
-	return res, nil
 }

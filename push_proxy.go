@@ -303,136 +303,33 @@ func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *
 	return
 }
 
-func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.UpdatePushProxyRequest) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
-		err = pkg.ErrNoDB
-		return
+		return nil, pkg.ErrNoDB
+	}
+	if req == nil || req.ID == 0 {
+		return nil, pkg.ErrNotFound
 	}
 	target := &PushProxyConfig{}
-	err = s.DB.First(target, req.ID).Error
-	if err != nil {
+	if err = s.DB.First(target, req.ID).Error; err != nil {
 		return
 	}
 
-	// Update only if the field is provided (optional fields)
-	if req.Name != nil {
-		target.Name = *req.Name
-	}
-	if req.PushURL != nil {
-		target.URL = *req.PushURL
-	}
-	if req.ParentID != nil {
-		target.ParentID = uint(*req.ParentID)
-	}
-	if req.Type != nil {
-		target.Type = *req.Type
-	}
-	if target.Type == "" {
-		var u *url.URL
-		if req.PushURL != nil {
-			u, err = url.Parse(*req.PushURL)
-			if err != nil {
-				s.Error("parse push url failed", "error", err)
-				return
-			}
-			switch u.Scheme {
-			case "srt", "rtsp", "rtmp":
-				target.Type = u.Scheme
-			default:
-				ext := filepath.Ext(u.Path)
-				switch ext {
-				case ".m3u8":
-					target.Type = "hls"
-				case ".flv":
-					target.Type = "flv"
-				case ".mp4":
-					target.Type = "mp4"
-				}
-			}
-		}
-	}
-	if req.PushOnStart != nil {
-		target.PushOnStart = *req.PushOnStart
-	}
-	if req.Audio != nil {
-		target.Audio = *req.Audio
-	}
-	if req.Description != nil {
-		target.Description = *req.Description
-	}
-	if req.StreamPath != nil {
-		target.StreamPath = *req.StreamPath
-	}
-	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
-	if req.Status != nil && *req.Status != uint32(PushProxyStatusDisabled) {
-		var existingCount int64
-		streamPath := target.StreamPath
-		if streamPath == "" {
-			streamPath = target.GetStreamPath()
-		}
-		s.DB.Model(&PushProxyConfig{}).Where("stream_path = ? AND id != ? AND status != ?", streamPath, req.ID, PushProxyStatusDisabled).Count(&existingCount)
+	target.ParentID = uint(req.ParentID)
+	target.Name = req.Name
+	target.Type = req.Type
+	target.URL = req.PushURL
+	target.PushOnStart = req.PushOnStart
+	target.Audio = req.Audio
+	target.Description = req.Description
+	target.StreamPath = req.StreamPath
+	target.Status = byte(req.Status)
 
-		// 如果存在相同 streamPath 且状态不是 disabled 的其他记录，更新失败
-		if existingCount > 0 {
-			err = fmt.Errorf("已存在相同 streamPath [%s] 的非禁用代理，更新失败", streamPath)
-			return
-		}
-		target.Status = byte(*req.Status)
-	} else if req.Status != nil {
-		target.Status = PushProxyStatusDisabled
+	if err = s.DB.Save(target).Error; err != nil {
+		return
 	}
-
-	s.DB.Save(target)
-
-	// 检查是否从 disable 状态变为非 disable 状态
-	isNowDisabled := target.Status == PushProxyStatusDisabled
-
-	// 检查是否需要停止和重新创建代理
-
-	if device, ok := s.PushProxies.Get(uint(req.ID)); ok {
-		conf := device.GetConfig()
-		originalStatus := conf.Status
-		wasEnabled := originalStatus != PushProxyStatusDisabled
-
-		// 如果现在变为 disable 状态，需要停止并移除代理
-		if wasEnabled && isNowDisabled {
-			device.Stop(task.ErrStopByUser)
-			return
-		}
-
-		// 如果URL或音频设置或流路径发生变化，需要重新创建代理
-		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath {
-			device.Stop(task.ErrStopByUser)
-			device, err = s.createPushProxy(target)
-			if err != nil {
-				s.Error("create push proxy failed", "error", err)
-				return
-			}
-			// 如果原来状态是推送中，并且PushOnStart为true，则重新开始推送
-			if originalStatus == PushProxyStatusPushing && target.PushOnStart {
-				device.Push()
-			}
-		} else {
-			// 只更新配置，不重新创建代理
-			conf.Name = target.Name
-			conf.PushOnStart = target.PushOnStart
-			conf.Description = target.Description
-
-			// 如果PushOnStart为true且当前状态为在线，则开始推送
-			if conf.PushOnStart && conf.Status == PushProxyStatusOnline {
-				device.Push()
-			}
-		}
-	} else {
-		// 如果代理不存在，则创建新代理
-		_, err = s.createPushProxy(target)
-		if err != nil {
-			s.Error("create push proxy failed", "error", err)
-		}
-	}
-
-	res = &pb.SuccessResponse{}
-	return
+	_, _ = s.createPushProxy(target)
+	return &pb.SuccessResponse{}, nil
 }
 
 func (s *Server) RemovePushProxy(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {

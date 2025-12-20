@@ -127,6 +127,8 @@ type (
 		disabledPlugins   []*Plugin
 		prometheusDesc    prometheusDesc
 		Storage           storage.Storage
+		apiRoute          *apiRouter
+		rawConfig         RawConfig
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -264,6 +266,7 @@ func (s *Server) Start() (err error) {
 			cg[key] = value
 		}
 	}
+	s.rawConfig = cg
 	s.Config.Parse(&s.config, "GLOBAL")
 	s.Config.Parse(&s.ServerConfig, "GLOBAL")
 	if cg != nil {
@@ -357,12 +360,10 @@ func (s *Server) Start() (err error) {
 
 	var grpcServer *GRPCServer
 	if tcpConf.ListenAddr != "" {
-		s.grpcServer = grpc.NewServer(
-			grpc.MaxSendMsgSize(s.GRPC.IncreasedMaxSendMsgSize),
-			grpc.MaxRecvMsgSize(s.GRPC.IncreasedMaxRecvMsgSize),
-			grpc.MaxHeaderListSize(s.GRPC.IncreasedMaxHeaderListSize),
-			grpc.UnaryInterceptor(s.AuthInterceptor()),
-		)
+		s.grpcServer = grpc.NewServer(grpc.ChainUnaryInterceptor(
+			s.AuthInterceptor(),
+			s.RouteInterceptor(),
+		))
 		pb.RegisterApiServer(s.grpcServer, s)
 		pb.RegisterAuthServer(s.grpcServer, s)
 		s.grpcClientConn, err = grpc.DialContext(s.Context, tcpConf.ListenAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))

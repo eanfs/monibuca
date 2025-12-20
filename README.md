@@ -79,8 +79,9 @@ Monibuca is a powerful streaming server framework written entirely in Go. It's d
 
 ### Prerequisites
 
-- Go 1.23 or higher
+- Go 1.24 or higher
 - Basic understanding of streaming protocols
+- Windows dev notes: `doc_CN/windows_dev.md`
 
 ### Run with Default Configuration
 

@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch example/default (sqlite)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/example/default",
+      "cwd": "${workspaceFolder}/example/default",
+      "buildFlags": "-tags=sqlite",
+      "env": {
+        "CGO_ENABLED": "0"
+      },
+      "args": [
+        "-c",
+        "config.yaml"
+      ]
+    }
+  ]
+}

@@ -17,7 +17,7 @@ import (
 	rtmp "m7s.live/v5/plugin/rtmp/pkg"
 )
 
-func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
+func (p *FLVPlugin) List(ctx context.Context, req *flvpb.ReqRecordList) (resp *pb.ResponseList, err error) {
 	globalReq := &pb.ReqRecordList{
 		StreamPath: req.StreamPath,
 		Range:      req.Range,

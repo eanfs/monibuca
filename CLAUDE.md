@@ -35,6 +35,12 @@ sh scripts/protoc.sh
 sh scripts/protoc.sh plugin_name
 ```
 
+Windows:
+```powershell
+.\scripts\protoc.bat
+.\scripts\protoc.bat plugin_name
+```
+
 **Release Building:**
 ```bash
 # Uses goreleaser configuration

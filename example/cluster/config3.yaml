@@ -1,0 +1,75 @@
+global:
+  loglevel: info
+  apiRoute:
+    enable: true
+  http:
+    listenaddr: :8082
+    listenaddrtls: :18557
+  tcp:
+    listenaddr: :50054
+  db:
+    dsn: "test3.db"
+    type: "sqlite"
+  # storage:
+  #   s3:
+  #     region: "us-east-1"
+  #     endpoint: "s3.example.com"
+  #     accessKeyID: "REPLACE_ME"
+  #     secretAccessKey: "REPLACE_ME"
+  #     bucket: "example-bucket"
+  #     pathPrefix: ""
+  #     forcePathStyle: true
+  #     useSSL: true
+  #     timeout: "600s"
+rtmp:
+  tcp:
+    listenaddr: :19353
+rtsp:
+  tcp: :8556    
+gb28181:
+  enable: false  
+webrtc:
+  port: udp:9400-9500  
+webtransport:
+  listenAddr: :4435
+cascadeserver:
+  quic:
+    listenaddr: :44943
+cluster:
+  quic:
+    listenaddr: :44943
+  sync:
+    serverid: "node3"
+    address: "localhost:50054"
+    seedservers:
+      - "localhost:50052"
+      - "localhost:50053"
+    heartbeatinterval: 5s
+    syncinterval: 30s
+  role:
+    - name: "internal"
+      description: "内网角色"
+      canAccess:
+        - "public"
+        - "relay"
+      accessibleBy:
+        - "internal"
+        - "admin"
+    - name: "public"
+      description: "公网角色"
+      canAccess:
+        - "admin"
+        - "storage"
+      accessibleBy:
+        - "internal"
+        - "relay"
+  # routing:
+  #   redirect:
+  #     "^test/":
+  #       statusCode: 307
+  #       forceredirect: true
+  #       targetoverrides:
+  #         node1: localhost:18081
+  #         node2: localhost:18082
+  #         node3: localhost:18083
+  #         node4: localhost:18084
