@@ -364,6 +364,14 @@ func init() {
 	Factory["cos"] = func(config any) (Storage, error) {
 		var cosConfig COSStorageConfig
 		config.Parse(&cosConfig, config.(map[string]any))
-		return NewCOSStorage(cosConfig)
+		return NewCOSStorage(&cosConfig)
 	}
+
+	// 注册 COS 存储类型 Schema
+	RegisterSchema(StorageSchema{
+		Type:        "cos",
+		Name:        "腾讯云 COS",
+		Description: "腾讯云对象存储服务",
+		Properties:  GenerateSchemaFromStruct(COSStorageConfig{}),
+	})
 }

@@ -969,3 +969,249 @@ func (s *Server) GetTransformList(ctx context.Context, req *emptypb.Empty) (res 
 	})
 	return
 }
+
+func (s *Server) StartPull(ctx context.Context, req *pb.GlobalPullRequest) (res *pb.SuccessResponse, err error) {
+	// 创建拉流配置
+	pullConfig := config.Pull{
+		URL:      req.RemoteURL,
+		TestMode: int(req.TestMode),
+	}
+
+	// 使用请求中的流路径，如果未提供则生成默认路径
+	streamPath := req.StreamPath
+	protocol := req.Protocol
+
+	// 如果没有提供protocol，则从URL推测
+	if protocol == "" {
+		u, err := url.Parse(req.RemoteURL)
+		if err == nil {
+			switch {
+			case strings.HasPrefix(u.Scheme, "rtmp"):
+				protocol = "rtmp"
+			case strings.HasPrefix(u.Scheme, "rtsp"):
+				protocol = "rtsp"
+			case strings.HasPrefix(u.Scheme, "srt"):
+				protocol = "srt"
+			case strings.HasPrefix(u.Scheme, "whep"):
+				protocol = "webrtc"
+			case strings.HasPrefix(u.Scheme, "http"):
+				if strings.Contains(u.Path, ".m3u8") {
+					protocol = "hls"
+				} else if strings.Contains(u.Path, ".flv") {
+					protocol = "flv"
+				} else if strings.Contains(u.Path, ".mp4") {
+					protocol = "mp4"
+				}
+			}
+		}
+	}
+
+	if streamPath == "" {
+		if protocol == "" {
+			streamPath = "pull/unknown"
+		} else {
+			streamPath = "pull/" + protocol
+		}
+	}
+
+	// 根据protocol找到对应的plugin进行pull
+	if protocol != "" {
+		for p := range s.Plugins.Range {
+			if strings.EqualFold(p.Meta.Name, protocol) {
+				pubConfig := p.GetCommonConf().Publish
+
+				// 设置发布配置参数
+				if req.PubAudio != nil {
+					pubConfig.PubAudio = *req.PubAudio
+				}
+				if req.PubVideo != nil {
+					pubConfig.PubVideo = *req.PubVideo
+				}
+				if req.DelayCloseTimeout != nil {
+					pubConfig.DelayCloseTimeout = req.DelayCloseTimeout.AsDuration()
+				}
+				if req.Speed != nil {
+					pubConfig.Speed = *req.Speed
+				}
+				if req.MaxCount != nil {
+					pubConfig.MaxCount = int(*req.MaxCount)
+				}
+				if req.KickExist != nil {
+					pubConfig.KickExist = *req.KickExist
+				}
+				if req.PublishTimeout != nil {
+					pubConfig.PublishTimeout = req.PublishTimeout.AsDuration()
+				}
+				if req.WaitCloseTimeout != nil {
+					pubConfig.WaitCloseTimeout = req.WaitCloseTimeout.AsDuration()
+				}
+				if req.IdleTimeout != nil {
+					pubConfig.IdleTimeout = req.IdleTimeout.AsDuration()
+				}
+				if req.PauseTimeout != nil {
+					pubConfig.PauseTimeout = req.PauseTimeout.AsDuration()
+				}
+				if req.BufferTime != nil {
+					pubConfig.BufferTime = req.BufferTime.AsDuration()
+				}
+				if req.Scale != nil {
+					pubConfig.Scale = *req.Scale
+				}
+				if req.MaxFPS != nil {
+					pubConfig.MaxFPS = int(*req.MaxFPS)
+				}
+				if req.Key != nil {
+					pubConfig.Key = *req.Key
+				}
+				if req.RelayMode != nil {
+					pubConfig.RelayMode = *req.RelayMode
+				}
+				if req.PubType != nil {
+					pubConfig.PubType = *req.PubType
+				}
+				if req.Loop != nil {
+					pullConfig.Loop = int(*req.Loop)
+				}
+				if req.Dump != nil {
+					pubConfig.Dump = *req.Dump
+				}
+
+				_, err = p.Pull(streamPath, pullConfig, &pubConfig)
+				if err != nil {
+					return nil, err
+				}
+				return &pb.SuccessResponse{
+					Code:    0,
+					Message: "success",
+				}, nil
+			}
+		}
+	}
+
+	return &pb.SuccessResponse{
+		Code:    0,
+		Message: "success",
+	}, nil
+}
+
+func (s *Server) GetAlarmList(ctx context.Context, req *pb.AlarmListRequest) (res *pb.AlarmListResponse, err error) {
+	// 初始化响应对象
+	res = &pb.AlarmListResponse{
+		Code:     0,
+		Message:  "success",
+		PageNum:  req.PageNum,
+		PageSize: req.PageSize,
+	}
+
+	// 检查数据库连接是否可用
+	if s.DB == nil {
+		res.Code = 500
+		res.Message = "数据库连接不可用"
+		return res, nil
+	}
+
+	// 构建查询条件
+	query := s.DB.Model(&AlarmInfo{})
+
+	// 添加时间范围过滤
+	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{
+		"range": []string{req.Range},
+		"start": []string{req.Start},
+		"end":   []string{req.End},
+	})
+	if err == nil {
+		if !startTime.IsZero() {
+			query = query.Where("created_at >= ?", startTime)
+		}
+		if !endTime.IsZero() {
+			query = query.Where("created_at <= ?", endTime)
+		}
+	}
+
+	// 添加告警类型过滤
+	if req.AlarmType != 0 {
+		query = query.Where("alarm_type = ?", req.AlarmType)
+	}
+
+	// 添加 StreamPath 过滤
+	if req.StreamPath != "" {
+		if strings.Contains(req.StreamPath, "*") {
+			// 支持通配符搜索
+			query = query.Where("stream_path LIKE ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
+		} else {
+			query = query.Where("stream_path = ?", req.StreamPath)
+		}
+	}
+
+	// 添加 StreamName 过滤
+	if req.StreamName != "" {
+		if strings.Contains(req.StreamName, "*") {
+			// 支持通配符搜索
+			query = query.Where("stream_name LIKE ?", strings.ReplaceAll(req.StreamName, "*", "%"))
+		} else {
+			query = query.Where("stream_name = ?", req.StreamName)
+		}
+	}
+
+	// 计算总记录数
+	var total int64
+	if err = query.Count(&total).Error; err != nil {
+		res.Code = 500
+		res.Message = "查询告警信息总数失败: " + err.Error()
+		return res, nil
+	}
+	res.Total = int32(total)
+
+	// 如果没有记录，直接返回
+	if total == 0 {
+		return res, nil
+	}
+
+	// 处理分页参数
+	if req.PageNum <= 0 {
+		req.PageNum = 1
+	}
+	if req.PageSize <= 0 {
+		req.PageSize = 10
+	}
+
+	// 查询分页数据
+	var alarmInfoList []AlarmInfo
+	offset := (req.PageNum - 1) * req.PageSize
+	if err = query.Order("created_at DESC").
+		Offset(int(offset)).
+		Limit(int(req.PageSize)).
+		Find(&alarmInfoList).Error; err != nil {
+		res.Code = 500
+		res.Message = "查询告警信息失败: " + err.Error()
+		return res, nil
+	}
+
+	// 转换为 protobuf 格式
+	res.Data = make([]*pb.AlarmInfo, len(alarmInfoList))
+	for i, alarm := range alarmInfoList {
+		res.Data[i] = &pb.AlarmInfo{
+			Id:         uint32(alarm.ID),
+			ServerInfo: alarm.ServerInfo,
+			StreamName: alarm.StreamName,
+			StreamPath: alarm.StreamPath,
+			AlarmDesc:  alarm.AlarmDesc,
+			AlarmName:  alarm.AlarmName,
+			AlarmType:  int32(alarm.AlarmType),
+			IsSent:     alarm.IsSent,
+			CreatedAt:  timestamppb.New(alarm.CreatedAt),
+			UpdatedAt:  timestamppb.New(alarm.UpdatedAt),
+			FilePath:   alarm.FilePath,
+		}
+	}
+
+	return res, nil
+}
+
+// GetStorageSchemas 获取所有已注册的存储类型 Schema
+// 用于前端动态渲染存储配置表单
+func (s *Server) GetStorageSchemas(w http.ResponseWriter, r *http.Request) {
+	schemas := storage.GetSchemas()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schemas)
+}
