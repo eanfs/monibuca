@@ -43,11 +43,11 @@ var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
 
 func init() {
 	// Register MP4 control-plane methods that can be routed to the node hosting the stream.
-	m7s.RegisterAPIRouteUnary(mp4pb.Api_List_FullMethodName, func() any { return new(pb.ResponseList) })
-	m7s.RegisterAPIRouteUnary(mp4pb.Api_Delete_FullMethodName, func() any { return new(pb.ResponseDelete) })
-	m7s.RegisterAPIRouteUnary(mp4pb.Api_EventStart_FullMethodName, func() any { return new(mp4pb.ResponseEventRecord) })
-	m7s.RegisterAPIRouteUnary(mp4pb.Api_StartRecord_FullMethodName, func() any { return new(mp4pb.ResponseStartRecord) })
-	m7s.RegisterAPIRouteUnary(mp4pb.Api_StopRecord_FullMethodName, func() any { return new(mp4pb.ResponseStopRecord) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/List", func() any { return new(pb.RecordResponseList) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/Delete", func() any { return new(pb.ResponseDelete) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/EventStart", func() any { return new(mp4pb.ResponseEventRecord) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/StartRecord", func() any { return new(mp4pb.ResponseStartRecord) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/StopRecord", func() any { return new(mp4pb.ResponseStopRecord) })
 }
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {

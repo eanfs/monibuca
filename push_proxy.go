@@ -303,7 +303,7 @@ func (s *Server) AddPushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *
 	return
 }
 
-func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.UpdatePushProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		return nil, pkg.ErrNoDB
 	}
@@ -315,15 +315,33 @@ func (s *Server) UpdatePushProxy(ctx context.Context, req *pb.PushProxyInfo) (re
 		return
 	}
 
-	target.ParentID = uint(req.ParentID)
-	target.Name = req.Name
-	target.Type = req.Type
-	target.URL = req.PushURL
-	target.PushOnStart = req.PushOnStart
-	target.Audio = req.Audio
-	target.Description = req.Description
-	target.StreamPath = req.StreamPath
-	target.Status = byte(req.Status)
+	if req.ParentID != nil {
+		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Name != nil {
+		target.Name = *req.Name
+	}
+	if req.Type != nil {
+		target.Type = *req.Type
+	}
+	if req.PushURL != nil {
+		target.URL = *req.PushURL
+	}
+	if req.PushOnStart != nil {
+		target.PushOnStart = *req.PushOnStart
+	}
+	if req.Audio != nil {
+		target.Audio = *req.Audio
+	}
+	if req.Description != nil {
+		target.Description = *req.Description
+	}
+	if req.StreamPath != nil {
+		target.StreamPath = *req.StreamPath
+	}
+	if req.Status != nil {
+		target.Status = byte(*req.Status)
+	}
 
 	if err = s.DB.Save(target).Error; err != nil {
 		return

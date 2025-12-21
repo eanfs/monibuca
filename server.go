@@ -272,6 +272,27 @@ func (s *Server) Start() (err error) {
 	if cg != nil {
 		s.Config.ParseUserFile(cg["global"])
 	}
+	// Pragmatic cluster integration: if `cluster:` is configured, enable apiRoute by default
+	// (unless user explicitly set global.apiRoute.enable=false).
+	if s.rawConfig != nil && s.rawConfig["cluster"] != nil {
+		explicitDisable := false
+		if g := s.rawConfig["global"]; g != nil {
+			apiRouteAny, ok := g["apiRoute"]
+			if !ok {
+				apiRouteAny = g["apiroute"]
+			}
+			if m, ok := apiRouteAny.(map[string]any); ok {
+				if v, ok := m["enable"]; ok {
+					if b, ok := v.(bool); ok && !b {
+						explicitDisable = true
+					}
+				}
+			}
+		}
+		if !explicitDisable {
+			s.config.APIRoute.Enable = true
+		}
+	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})

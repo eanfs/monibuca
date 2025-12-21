@@ -692,7 +692,7 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 	return res, err
 }
 
-func (p *MP4Plugin) List(ctx context.Context, req *mp4pb.ReqRecordList) (resp *pb.ResponseList, err error) {
+func (p *MP4Plugin) List(ctx context.Context, req *mp4pb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
 	globalReq := &pb.ReqRecordList{
 		StreamPath: req.StreamPath,
 		Range:      req.Range,

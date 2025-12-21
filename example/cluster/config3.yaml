@@ -1,7 +1,5 @@
 global:
   loglevel: info
-  apiRoute:
-    enable: true
   http:
     listenaddr: :8082
     listenaddrtls: :18557
@@ -32,9 +30,6 @@ webrtc:
   port: udp:9400-9500  
 webtransport:
   listenAddr: :4435
-cascadeserver:
-  quic:
-    listenaddr: :44943
 cluster:
   quic:
     listenaddr: :44943

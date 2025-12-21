@@ -146,7 +146,7 @@ func (s *Server) APIRouteGRPCPeers() []string {
 func (s *Server) apiRouteGRPCPeers(conf cfg.APIRoute) []string {
 	peers := apiRouteGRPCPeersFromConf(conf)
 	if len(peers) == 0 {
-		peers = s.apiRouteGRPCPeersFromRawClusterSync()
+		peers = s.apiRouteGRPCPeersFromRawCluster()
 	}
 	if len(peers) == 0 {
 		return nil
@@ -210,15 +210,18 @@ func apiRouteIsSelfPeer(localListenAddr, peer string) bool {
 	}
 }
 
-func (s *Server) apiRouteGRPCPeersFromRawClusterSync() []string {
-	// Support the legacy/example config style:
+func (s *Server) apiRouteGRPCPeersFromRawCluster() []string {
+	// Pragmatic "static peers" support:
+	//
+	// cluster:
+	//   peers: ["localhost:50052", "localhost:50053", "localhost:50054"]
+	//
+	// or legacy/example style:
 	//
 	// cluster:
 	//   sync:
 	//     address: "localhost:50052"
 	//     seedservers: ["localhost:50053", "localhost:50054"]
-	//
-	// This lets users configure the cluster once and let apiRoute reuse the peer list.
 	if s == nil || s.rawConfig == nil {
 		return nil
 	}
@@ -226,6 +229,20 @@ func (s *Server) apiRouteGRPCPeersFromRawClusterSync() []string {
 	if cluster == nil {
 		return nil
 	}
+
+	// Preferred: explicit peer list.
+	if peersAny, ok := cluster["peers"]; ok {
+		if peers := apiRouteCoerceStringSlice(peersAny); len(peers) > 0 {
+			return peers
+		}
+	}
+	// Backward compatibility: allow cluster.grpcPeers as an alias.
+	if peersAny, ok := cluster["grpcPeers"]; ok {
+		if peers := apiRouteCoerceStringSlice(peersAny); len(peers) > 0 {
+			return peers
+		}
+	}
+
 	syncConfAny, ok := cluster["sync"]
 	if !ok || syncConfAny == nil {
 		return nil

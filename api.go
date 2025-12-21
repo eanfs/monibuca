@@ -27,6 +27,7 @@ import (
 	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/format"
+	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -818,7 +819,7 @@ func cleanNullValues(m map[string]any) {
 	}
 }
 
-func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.ResponseList, err error) {
+func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.RecordResponseList, err error) {
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -857,11 +858,13 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 	if err != nil {
 		return
 	}
-	resp = &pb.ResponseList{
-		TotalCount: uint32(totalCount),
-		PageNum:    req.PageNum,
-		PageSize:   req.PageSize,
-		Data:       make([]*pb.RecordFile, 0),
+	resp = &pb.RecordResponseList{
+		Code:     0,
+		Message:  "success",
+		Total:    uint32(totalCount),
+		PageNum:  req.PageNum,
+		PageSize: req.PageSize,
+		Data:     make([]*pb.RecordFile, 0),
 	}
 	for _, recordFile := range result {
 		resp.Data = append(resp.Data, &pb.RecordFile{

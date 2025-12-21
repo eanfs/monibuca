@@ -24,7 +24,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ApiClient interface {
-	List(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*pb.ResponseList, error)
+	List(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*pb.RecordResponseList, error)
 	Catalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*pb.ResponseCatalog, error)
 	Delete(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*pb.ResponseDelete, error)
 }
@@ -37,8 +37,8 @@ func NewApiClient(cc grpc.ClientConnInterface) ApiClient {
 	return &apiClient{cc}
 }
 
-func (c *apiClient) List(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*pb.ResponseList, error) {
-	out := new(pb.ResponseList)
+func (c *apiClient) List(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*pb.RecordResponseList, error) {
+	out := new(pb.RecordResponseList)
 	err := c.cc.Invoke(ctx, "/flv.api/List", in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func (c *apiClient) Delete(ctx context.Context, in *ReqRecordDelete, opts ...grp
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility
 type ApiServer interface {
-	List(context.Context, *ReqRecordList) (*pb.ResponseList, error)
+	List(context.Context, *ReqRecordList) (*pb.RecordResponseList, error)
 	Catalog(context.Context, *emptypb.Empty) (*pb.ResponseCatalog, error)
 	Delete(context.Context, *ReqRecordDelete) (*pb.ResponseDelete, error)
 	mustEmbedUnimplementedApiServer()
@@ -78,7 +78,7 @@ type ApiServer interface {
 type UnimplementedApiServer struct {
 }
 
-func (UnimplementedApiServer) List(context.Context, *ReqRecordList) (*pb.ResponseList, error) {
+func (UnimplementedApiServer) List(context.Context, *ReqRecordList) (*pb.RecordResponseList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method List not implemented")
 }
 func (UnimplementedApiServer) Catalog(context.Context, *emptypb.Empty) (*pb.ResponseCatalog, error) {

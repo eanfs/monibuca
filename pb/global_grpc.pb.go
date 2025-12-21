@@ -50,19 +50,25 @@ type ApiClient interface {
 	UpdateConfigFile(ctx context.Context, in *UpdateConfigFileRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	GetFormily(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
+	SetArming(ctx context.Context, in *SetArmingRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
+	ModifyConfig(ctx context.Context, in *ModifyConfigRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetPullProxyList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PullProxyListResponse, error)
 	AddPullProxy(ctx context.Context, in *PullProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
 	RemovePullProxy(ctx context.Context, in *RequestWithId, opts ...grpc.CallOption) (*SuccessResponse, error)
-	UpdatePullProxy(ctx context.Context, in *PullProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
+	UpdatePullProxy(ctx context.Context, in *UpdatePullProxyRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetPushProxyList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PushProxyListResponse, error)
 	AddPushProxy(ctx context.Context, in *PushProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
 	RemovePushProxy(ctx context.Context, in *RequestWithId, opts ...grpc.CallOption) (*SuccessResponse, error)
-	UpdatePushProxy(ctx context.Context, in *PushProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error)
+	UpdatePushProxy(ctx context.Context, in *UpdatePushProxyRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 	GetRecording(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RecordingListResponse, error)
 	GetTransformList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TransformListResponse, error)
-	GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*ResponseList, error)
+	GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*RecordResponseList, error)
+	GetEventRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*EventRecordResponseList, error)
 	GetRecordCatalog(ctx context.Context, in *ReqRecordCatalog, opts ...grpc.CallOption) (*ResponseCatalog, error)
 	DeleteRecord(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*ResponseDelete, error)
+	GetAlarmList(ctx context.Context, in *AlarmListRequest, opts ...grpc.CallOption) (*AlarmListResponse, error)
+	GetSubscriptionProgress(ctx context.Context, in *StreamSnapRequest, opts ...grpc.CallOption) (*SubscriptionProgressResponse, error)
+	StartPull(ctx context.Context, in *GlobalPullRequest, opts ...grpc.CallOption) (*SuccessResponse, error)
 }
 
 type apiClient struct {
@@ -316,6 +322,24 @@ func (c *apiClient) GetFormily(ctx context.Context, in *GetConfigRequest, opts .
 	return out, nil
 }
 
+func (c *apiClient) SetArming(ctx context.Context, in *SetArmingRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
+	out := new(SuccessResponse)
+	err := c.cc.Invoke(ctx, "/global.api/SetArming", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) ModifyConfig(ctx context.Context, in *ModifyConfigRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
+	out := new(SuccessResponse)
+	err := c.cc.Invoke(ctx, "/global.api/ModifyConfig", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *apiClient) GetPullProxyList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PullProxyListResponse, error) {
 	out := new(PullProxyListResponse)
 	err := c.cc.Invoke(ctx, "/global.api/GetPullProxyList", in, out, opts...)
@@ -343,7 +367,7 @@ func (c *apiClient) RemovePullProxy(ctx context.Context, in *RequestWithId, opts
 	return out, nil
 }
 
-func (c *apiClient) UpdatePullProxy(ctx context.Context, in *PullProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error) {
+func (c *apiClient) UpdatePullProxy(ctx context.Context, in *UpdatePullProxyRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
 	out := new(SuccessResponse)
 	err := c.cc.Invoke(ctx, "/global.api/UpdatePullProxy", in, out, opts...)
 	if err != nil {
@@ -379,7 +403,7 @@ func (c *apiClient) RemovePushProxy(ctx context.Context, in *RequestWithId, opts
 	return out, nil
 }
 
-func (c *apiClient) UpdatePushProxy(ctx context.Context, in *PushProxyInfo, opts ...grpc.CallOption) (*SuccessResponse, error) {
+func (c *apiClient) UpdatePushProxy(ctx context.Context, in *UpdatePushProxyRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
 	out := new(SuccessResponse)
 	err := c.cc.Invoke(ctx, "/global.api/UpdatePushProxy", in, out, opts...)
 	if err != nil {
@@ -406,9 +430,18 @@ func (c *apiClient) GetTransformList(ctx context.Context, in *emptypb.Empty, opt
 	return out, nil
 }
 
-func (c *apiClient) GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*ResponseList, error) {
-	out := new(ResponseList)
+func (c *apiClient) GetRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*RecordResponseList, error) {
+	out := new(RecordResponseList)
 	err := c.cc.Invoke(ctx, "/global.api/GetRecordList", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetEventRecordList(ctx context.Context, in *ReqRecordList, opts ...grpc.CallOption) (*EventRecordResponseList, error) {
+	out := new(EventRecordResponseList)
+	err := c.cc.Invoke(ctx, "/global.api/GetEventRecordList", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -427,6 +460,33 @@ func (c *apiClient) GetRecordCatalog(ctx context.Context, in *ReqRecordCatalog, 
 func (c *apiClient) DeleteRecord(ctx context.Context, in *ReqRecordDelete, opts ...grpc.CallOption) (*ResponseDelete, error) {
 	out := new(ResponseDelete)
 	err := c.cc.Invoke(ctx, "/global.api/DeleteRecord", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetAlarmList(ctx context.Context, in *AlarmListRequest, opts ...grpc.CallOption) (*AlarmListResponse, error) {
+	out := new(AlarmListResponse)
+	err := c.cc.Invoke(ctx, "/global.api/GetAlarmList", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetSubscriptionProgress(ctx context.Context, in *StreamSnapRequest, opts ...grpc.CallOption) (*SubscriptionProgressResponse, error) {
+	out := new(SubscriptionProgressResponse)
+	err := c.cc.Invoke(ctx, "/global.api/GetSubscriptionProgress", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *apiClient) StartPull(ctx context.Context, in *GlobalPullRequest, opts ...grpc.CallOption) (*SuccessResponse, error) {
+	out := new(SuccessResponse)
+	err := c.cc.Invoke(ctx, "/global.api/StartPull", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -464,19 +524,25 @@ type ApiServer interface {
 	UpdateConfigFile(context.Context, *UpdateConfigFileRequest) (*SuccessResponse, error)
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	GetFormily(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
+	SetArming(context.Context, *SetArmingRequest) (*SuccessResponse, error)
+	ModifyConfig(context.Context, *ModifyConfigRequest) (*SuccessResponse, error)
 	GetPullProxyList(context.Context, *emptypb.Empty) (*PullProxyListResponse, error)
 	AddPullProxy(context.Context, *PullProxyInfo) (*SuccessResponse, error)
 	RemovePullProxy(context.Context, *RequestWithId) (*SuccessResponse, error)
-	UpdatePullProxy(context.Context, *PullProxyInfo) (*SuccessResponse, error)
+	UpdatePullProxy(context.Context, *UpdatePullProxyRequest) (*SuccessResponse, error)
 	GetPushProxyList(context.Context, *emptypb.Empty) (*PushProxyListResponse, error)
 	AddPushProxy(context.Context, *PushProxyInfo) (*SuccessResponse, error)
 	RemovePushProxy(context.Context, *RequestWithId) (*SuccessResponse, error)
-	UpdatePushProxy(context.Context, *PushProxyInfo) (*SuccessResponse, error)
+	UpdatePushProxy(context.Context, *UpdatePushProxyRequest) (*SuccessResponse, error)
 	GetRecording(context.Context, *emptypb.Empty) (*RecordingListResponse, error)
 	GetTransformList(context.Context, *emptypb.Empty) (*TransformListResponse, error)
-	GetRecordList(context.Context, *ReqRecordList) (*ResponseList, error)
+	GetRecordList(context.Context, *ReqRecordList) (*RecordResponseList, error)
+	GetEventRecordList(context.Context, *ReqRecordList) (*EventRecordResponseList, error)
 	GetRecordCatalog(context.Context, *ReqRecordCatalog) (*ResponseCatalog, error)
 	DeleteRecord(context.Context, *ReqRecordDelete) (*ResponseDelete, error)
+	GetAlarmList(context.Context, *AlarmListRequest) (*AlarmListResponse, error)
+	GetSubscriptionProgress(context.Context, *StreamSnapRequest) (*SubscriptionProgressResponse, error)
+	StartPull(context.Context, *GlobalPullRequest) (*SuccessResponse, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -565,6 +631,12 @@ func (UnimplementedApiServer) GetConfig(context.Context, *GetConfigRequest) (*Ge
 func (UnimplementedApiServer) GetFormily(context.Context, *GetConfigRequest) (*GetConfigResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFormily not implemented")
 }
+func (UnimplementedApiServer) SetArming(context.Context, *SetArmingRequest) (*SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetArming not implemented")
+}
+func (UnimplementedApiServer) ModifyConfig(context.Context, *ModifyConfigRequest) (*SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ModifyConfig not implemented")
+}
 func (UnimplementedApiServer) GetPullProxyList(context.Context, *emptypb.Empty) (*PullProxyListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPullProxyList not implemented")
 }
@@ -574,7 +646,7 @@ func (UnimplementedApiServer) AddPullProxy(context.Context, *PullProxyInfo) (*Su
 func (UnimplementedApiServer) RemovePullProxy(context.Context, *RequestWithId) (*SuccessResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemovePullProxy not implemented")
 }
-func (UnimplementedApiServer) UpdatePullProxy(context.Context, *PullProxyInfo) (*SuccessResponse, error) {
+func (UnimplementedApiServer) UpdatePullProxy(context.Context, *UpdatePullProxyRequest) (*SuccessResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdatePullProxy not implemented")
 }
 func (UnimplementedApiServer) GetPushProxyList(context.Context, *emptypb.Empty) (*PushProxyListResponse, error) {
@@ -586,7 +658,7 @@ func (UnimplementedApiServer) AddPushProxy(context.Context, *PushProxyInfo) (*Su
 func (UnimplementedApiServer) RemovePushProxy(context.Context, *RequestWithId) (*SuccessResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemovePushProxy not implemented")
 }
-func (UnimplementedApiServer) UpdatePushProxy(context.Context, *PushProxyInfo) (*SuccessResponse, error) {
+func (UnimplementedApiServer) UpdatePushProxy(context.Context, *UpdatePushProxyRequest) (*SuccessResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdatePushProxy not implemented")
 }
 func (UnimplementedApiServer) GetRecording(context.Context, *emptypb.Empty) (*RecordingListResponse, error) {
@@ -595,14 +667,26 @@ func (UnimplementedApiServer) GetRecording(context.Context, *emptypb.Empty) (*Re
 func (UnimplementedApiServer) GetTransformList(context.Context, *emptypb.Empty) (*TransformListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTransformList not implemented")
 }
-func (UnimplementedApiServer) GetRecordList(context.Context, *ReqRecordList) (*ResponseList, error) {
+func (UnimplementedApiServer) GetRecordList(context.Context, *ReqRecordList) (*RecordResponseList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRecordList not implemented")
+}
+func (UnimplementedApiServer) GetEventRecordList(context.Context, *ReqRecordList) (*EventRecordResponseList, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetEventRecordList not implemented")
 }
 func (UnimplementedApiServer) GetRecordCatalog(context.Context, *ReqRecordCatalog) (*ResponseCatalog, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRecordCatalog not implemented")
 }
 func (UnimplementedApiServer) DeleteRecord(context.Context, *ReqRecordDelete) (*ResponseDelete, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteRecord not implemented")
+}
+func (UnimplementedApiServer) GetAlarmList(context.Context, *AlarmListRequest) (*AlarmListResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAlarmList not implemented")
+}
+func (UnimplementedApiServer) GetSubscriptionProgress(context.Context, *StreamSnapRequest) (*SubscriptionProgressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSubscriptionProgress not implemented")
+}
+func (UnimplementedApiServer) StartPull(context.Context, *GlobalPullRequest) (*SuccessResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartPull not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 
@@ -1103,6 +1187,42 @@ func _Api_GetFormily_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_SetArming_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetArmingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).SetArming(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/SetArming",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).SetArming(ctx, req.(*SetArmingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_ModifyConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModifyConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).ModifyConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/ModifyConfig",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).ModifyConfig(ctx, req.(*ModifyConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Api_GetPullProxyList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -1158,7 +1278,7 @@ func _Api_RemovePullProxy_Handler(srv interface{}, ctx context.Context, dec func
 }
 
 func _Api_UpdatePullProxy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PullProxyInfo)
+	in := new(UpdatePullProxyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -1170,7 +1290,7 @@ func _Api_UpdatePullProxy_Handler(srv interface{}, ctx context.Context, dec func
 		FullMethod: "/global.api/UpdatePullProxy",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ApiServer).UpdatePullProxy(ctx, req.(*PullProxyInfo))
+		return srv.(ApiServer).UpdatePullProxy(ctx, req.(*UpdatePullProxyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1230,7 +1350,7 @@ func _Api_RemovePushProxy_Handler(srv interface{}, ctx context.Context, dec func
 }
 
 func _Api_UpdatePushProxy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PushProxyInfo)
+	in := new(UpdatePushProxyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -1242,7 +1362,7 @@ func _Api_UpdatePushProxy_Handler(srv interface{}, ctx context.Context, dec func
 		FullMethod: "/global.api/UpdatePushProxy",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ApiServer).UpdatePushProxy(ctx, req.(*PushProxyInfo))
+		return srv.(ApiServer).UpdatePushProxy(ctx, req.(*UpdatePushProxyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1301,6 +1421,24 @@ func _Api_GetRecordList_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_GetEventRecordList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReqRecordList)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetEventRecordList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/GetEventRecordList",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetEventRecordList(ctx, req.(*ReqRecordList))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Api_GetRecordCatalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReqRecordCatalog)
 	if err := dec(in); err != nil {
@@ -1333,6 +1471,60 @@ func _Api_DeleteRecord_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ApiServer).DeleteRecord(ctx, req.(*ReqRecordDelete))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_GetAlarmList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AlarmListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetAlarmList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/GetAlarmList",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetAlarmList(ctx, req.(*AlarmListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_GetSubscriptionProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StreamSnapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetSubscriptionProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/GetSubscriptionProgress",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetSubscriptionProgress(ctx, req.(*StreamSnapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Api_StartPull_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GlobalPullRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).StartPull(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/global.api/StartPull",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).StartPull(ctx, req.(*GlobalPullRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1453,6 +1645,14 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Api_GetFormily_Handler,
 		},
 		{
+			MethodName: "SetArming",
+			Handler:    _Api_SetArming_Handler,
+		},
+		{
+			MethodName: "ModifyConfig",
+			Handler:    _Api_ModifyConfig_Handler,
+		},
+		{
 			MethodName: "GetPullProxyList",
 			Handler:    _Api_GetPullProxyList_Handler,
 		},
@@ -1497,12 +1697,28 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Api_GetRecordList_Handler,
 		},
 		{
+			MethodName: "GetEventRecordList",
+			Handler:    _Api_GetEventRecordList_Handler,
+		},
+		{
 			MethodName: "GetRecordCatalog",
 			Handler:    _Api_GetRecordCatalog_Handler,
 		},
 		{
 			MethodName: "DeleteRecord",
 			Handler:    _Api_DeleteRecord_Handler,
+		},
+		{
+			MethodName: "GetAlarmList",
+			Handler:    _Api_GetAlarmList_Handler,
+		},
+		{
+			MethodName: "GetSubscriptionProgress",
+			Handler:    _Api_GetSubscriptionProgress_Handler,
+		},
+		{
+			MethodName: "StartPull",
+			Handler:    _Api_StartPull_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -375,7 +375,7 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	return
 }
 
-func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *pb.SuccessResponse, err error) {
+func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
 		return nil, pkg.ErrNoDB
 	}
@@ -387,20 +387,45 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.PullProxyInfo) (re
 		return
 	}
 
-	target.ParentID = uint(req.ParentID)
-	target.Name = req.Name
-	target.Type = req.Type
-	target.URL = req.PullURL
-	target.PullOnStart = req.PullOnStart
-	target.StopOnIdle = req.StopOnIdle
-	target.Audio = req.Audio
-	target.Description = req.Description
-	target.Record.FilePath = req.RecordPath
+	if req.ParentID != nil {
+		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Name != nil {
+		target.Name = *req.Name
+	}
+	if req.Type != nil {
+		target.Type = *req.Type
+	}
+	if req.PullURL != nil {
+		target.URL = *req.PullURL
+	}
+	if req.PullOnStart != nil {
+		target.PullOnStart = *req.PullOnStart
+	}
+	if req.StopOnIdle != nil {
+		target.StopOnIdle = *req.StopOnIdle
+	}
+	if req.Audio != nil {
+		target.Audio = *req.Audio
+	}
+	if req.Description != nil {
+		target.Description = *req.Description
+	}
+	if req.RecordPath != nil {
+		target.Record.FilePath = *req.RecordPath
+	}
 	if req.RecordFragment != nil {
 		target.Record.Fragment = req.RecordFragment.AsDuration()
 	}
-	target.StreamPath = req.StreamPath
-	target.Status = byte(req.Status)
+	if req.StreamPath != nil {
+		target.StreamPath = *req.StreamPath
+	}
+	if req.Status != nil {
+		target.Status = byte(*req.Status)
+	}
+	if req.CheckInterval != nil {
+		target.CheckInterval = req.CheckInterval.AsDuration()
+	}
 
 	if target.PullOnStart {
 		target.Pull.MaxRetry = -1

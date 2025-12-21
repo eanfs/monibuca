@@ -42,4 +42,5 @@ shutdown.bat
 example/cluster/*.exe
 example/cluster/run-logs*/
 example/cluster/cluster-error-logs/
+example/cluster/old/
 example/cluster-test/
