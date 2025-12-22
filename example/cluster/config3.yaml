@@ -3,13 +3,24 @@ global:
   apiRoute:
     enable: true
   http:
-    listenaddr: :8082
-    listenaddrtls: :18557
+    listenaddr: :8083
+    listenaddrtls: :18553
   tcp:
-    listenaddr: :50054
+    listenaddr: :50053
   db:
     dsn: "test3.db"
     type: "sqlite"
+  storage:
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      accessKeyID: "xidinguser"     # 访问密钥ID
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+      bucket: "vidu-media-bucket"            # 存储桶名称
+      pathPrefix: "recordings"     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间    
   # storage:
   #   s3:
   #     region: "us-east-1"
@@ -25,13 +36,13 @@ rtmp:
   tcp:
     listenaddr: :19353
 rtsp:
-  tcp: :8556    
+  tcp: :8553
 gb28181:
   enable: false  
 webrtc:
   port: udp:9400-9500  
 webtransport:
-  listenAddr: :4435
+  listenAddr: :4433
 cascadeserver:
   quic:
     listenaddr: :44943
@@ -40,10 +51,12 @@ cluster:
     listenaddr: :44943
   sync:
     serverid: "node3"
-    address: "localhost:50054"
+    address: "localhost:50053"
     seedservers:
-      - "localhost:50052"
-      - "localhost:50053"
+      - "localhost:50051"
+      - "localhost:50052"    
+      - "localhost:50054"
+      - "localhost:50055"
     heartbeatinterval: 5s
     syncinterval: 30s
   role:

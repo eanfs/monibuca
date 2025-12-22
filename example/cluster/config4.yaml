@@ -3,12 +3,12 @@ global:
   apiRoute:
     enable: true
   http:
-    listenaddr: :8081
-    listenaddrtls: :18551
+    listenaddr: :8084
+    listenaddrtls: :18558
   tcp:
-    listenaddr: :50051
+    listenaddr: :50054
   db:
-    dsn: "test1.db"
+    dsn: "test4.db"
     type: "sqlite"
   storage:
     s3:
@@ -21,31 +21,42 @@ global:
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
       timeout: "600s"                        # 上传超时时间    
+  # storage:
+  #   s3:
+  #     region: "us-east-1"
+  #     endpoint: "s3.example.com"
+  #     accessKeyID: "REPLACE_ME"
+  #     secretAccessKey: "REPLACE_ME"
+  #     bucket: "example-bucket"
+  #     pathPrefix: ""
+  #     forcePathStyle: true
+  #     useSSL: true
+  #     timeout: "600s"
 rtmp:
   tcp:
-    listenaddr: :19351
+    listenaddr: :19354
 rtsp:
-  tcp: :8551
-webrtc:
-  port: udp:9000-9100  
-webtransport:
-  listenAddr: :4431
+  tcp: :8554
 gb28181:
-  enable: false
+  enable: false  
+webrtc:
+  port: udp:9400-9500  
+webtransport:
+  listenAddr: :4434
 cascadeserver:
   quic:
-    listenaddr: :44941
+    listenaddr: :44943
 cluster:
   quic:
-    listenaddr: :44941
+    listenaddr: :44943
   sync:
-    serverid: "node1"
-    address: "localhost:50051"
+    serverid: "node4"
+    address: "localhost:50054"
     seedservers:
+      - "localhost:50051"
       - "localhost:50052"
-      - "localhost:50054"
       - "localhost:50053"
-      - "localhost:50055"
+      - "localhost:50055"      
     heartbeatinterval: 5s
     syncinterval: 30s
   role:

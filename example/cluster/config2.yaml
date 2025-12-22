@@ -3,13 +3,24 @@ global:
   apiRoute:
     enable: true
   http:
-    listenaddr: :8081
-    listenaddrtls: :18556
+    listenaddr: :8082
+    listenaddrtls: :18552
   tcp:
-    listenaddr: :50053
+    listenaddr: :50052
   db:
     dsn: "test2.db"
     type: "sqlite"
+  storage:
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      accessKeyID: "xidinguser"     # 访问密钥ID
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+      bucket: "vidu-media-bucket"            # 存储桶名称
+      pathPrefix: "recordings"     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间    
   # storage:
   #   s3:
   #     region: "us-east-1"
@@ -25,14 +36,14 @@ rtmp:
   tcp:
     listenaddr: :19352
 rtsp:
-  tcp: :8555  
+  tcp: :8552
   pull:
     live/camera101:
       url: rtsp://user:pass@192.0.2.10:554/Streaming/Channels/101
 webrtc:
   port: udp:9200-9300  
 webtransport:
-  listenAddr: :4434
+  listenAddr: :4432
 gb28181:
   enable: false  
 cascadeserver:
@@ -43,10 +54,12 @@ cluster:
     listenaddr: :44942
   sync:
     serverid: "node2"
-    address: "localhost:50053"
+    address: "localhost:50052"
     seedservers:
-      - "localhost:50052"
+      - "localhost:50051"
       - "localhost:50054"
+      - "localhost:50053"
+      - "localhost:50055"      
     heartbeatinterval: 5s
     syncinterval: 30s
   role:
