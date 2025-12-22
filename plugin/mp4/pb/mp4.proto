@@ -83,6 +83,7 @@ message ReqStartRecord {
   string streamPath = 1;
   google.protobuf.Duration fragment = 2;
   string filePath = 3;
+  string fileName = 4;
 }
 
 message ResponseStartRecord {
@@ -99,4 +100,53 @@ message ResponseStopRecord {
   int32 code = 1;
   string message = 2;
   uint64 data = 3;
+}
+
+// 标签相关消息定义
+message TagInfo {
+  uint32 id = 1;
+  string tagName = 2;
+  string streamPath = 3;
+  string tagTime = 4;
+  string createdAt = 5;
+  string updatedAt = 6;
+}
+
+message ReqCreateTag {
+  string tagName = 1;
+  string streamPath = 2;
+  string tagTime = 3;
+}
+
+message ReqUpdateTag {
+  uint32 id = 1;
+  string tagName = 2;
+  string streamPath = 3;
+  string tagTime = 4;
+}
+
+message ReqDeleteTag {
+  uint32 id = 1;
+}
+
+message ReqListTag {
+  string streamPath = 1;
+  string tagName = 2;
+  string start = 3;
+  string end = 4;
+  uint32 page = 5;
+  uint32 count = 6;
+}
+
+message ResponseTag {
+  int32 code = 1;
+  string message = 2;
+  TagInfo data = 3;
+}
+
+message ResponseTagList {
+  int32 code = 1;
+  string message = 2;
+  repeated TagInfo list = 3;
+  uint32 total = 4;
 }

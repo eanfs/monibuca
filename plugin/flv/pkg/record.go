@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	task "github.com/langhuihui/gotask"
@@ -148,6 +149,12 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
+	if fn := job.RecConf.FileName; fn != "" {
+		if !strings.HasSuffix(strings.ToLower(fn), ".flv") {
+			fn = fn + ".flv"
+		}
+		return filepath.Join(job.RecConf.FilePath, fn)
+	}
 	if job.RecConf.Fragment == 0 || job.RecConf.Append {
 		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
 	}
@@ -160,6 +167,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if err != nil {
 		return
 	}
+	r.Debug("flv create file", "filePath", r.Event.FilePath)
 
 	// 获取存储实例
 	st := r.RecordJob.GetStorage()
