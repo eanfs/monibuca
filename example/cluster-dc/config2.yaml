@@ -1,0 +1,88 @@
+global:
+  loglevel: info
+  apiRoute:
+    enable: true
+  http:
+    listenaddr: :8082
+    listenaddrtls: :18552
+  tcp:
+    listenaddr: :50052
+  db:
+    dsn: "test2.db"
+    type: "sqlite"
+  storage:
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "REPLACE_ME"                # S3服务端点（示例：MinIO/OSS/COS endpoint）
+      accessKeyID: "REPLACE_ME"             # 访问密钥ID
+      secretAccessKey: "REPLACE_ME"         # 秘密访问密钥
+      bucket: "REPLACE_ME"                  # 存储桶名称
+      pathPrefix: "recordings"     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间    
+  # storage:
+  #   s3:
+  #     region: "us-east-1"
+  #     endpoint: "s3.example.com"
+  #     accessKeyID: "REPLACE_ME"
+  #     secretAccessKey: "REPLACE_ME"
+  #     bucket: "example-bucket"
+  #     pathPrefix: ""
+  #     forcePathStyle: true
+  #     useSSL: true
+  #     timeout: "600s"
+rtmp:
+  tcp:
+    listenaddr: :19352
+rtsp:
+  tcp: :5542
+webrtc:
+  port: udp:9200-9300  
+webtransport:
+  listenAddr: :4432
+gb28181:
+  enable: false  
+cascadeserver:
+  quic:
+    listenaddr: :44942
+cluster:
+  quic:
+    listenaddr: :44942
+  sync:
+    serverid: "node2"
+    address: "localhost:50052"
+    seedservers:
+      - "localhost:50051"
+      - "localhost:50053"
+      - "localhost:50054"
+      - "localhost:50055"
+    heartbeatinterval: 5s
+    syncinterval: 30s
+  role:
+    - name: "internal"
+      description: "内网角色"
+      canAccess:
+        - "public"
+        - "relay"
+      accessibleBy:
+        - "internal"
+        - "admin"
+    - name: "public"
+      description: "公网角色"
+      canAccess:
+        - "admin"
+        - "storage"
+      accessibleBy:
+        - "internal"
+        - "relay"
+  # routing:
+  #   redirect:
+  #     "^test/":
+  #       statusCode: 307
+  #       forceredirect: true
+  #       targetoverrides:
+  #         node1: localhost:18081
+  #         node2: localhost:18082
+  #         node3: localhost:18083
+  #         node4: localhost:18084
