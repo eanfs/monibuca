@@ -29,8 +29,9 @@ All gRPC services must follow these Proto file specifications:
 
 - Response structs must include code, message, and data fields
 - Error handling should return errors directly, without manually setting code and message
-- Run `sh scripts/protoc.sh` to generate pb files after modifying global.proto
-- Run `sh scripts/protoc.sh {pluginName}` to generate corresponding pb files after modifying plugin-related proto files
+- After modifying proto files, regenerate pb code:
+  - macOS/Linux: `sh scripts/protoc.sh` (global), `sh scripts/protoc.sh {pluginName}` (plugin)
+  - Windows: `.\scripts\protoc.bat` (global), `.\scripts\protoc.bat {pluginName}` (plugin)
 
 ## Service Implementation Mechanism
 

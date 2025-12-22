@@ -1,0 +1,58 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "go: run example/default (sqlite)",
+      "type": "shell",
+      "command": "go",
+      "args": ["run", "-tags", "sqlite", "main.go", "-c", "config.yaml"],
+      "options": {
+        "cwd": "${workspaceFolder}/example/default"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "go: test ./...",
+      "type": "shell",
+      "command": "go",
+      "args": ["test", "./..."],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "proto: generate (global)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/protoc.sh",
+      "windows": {
+        "command": "${workspaceFolder}\\scripts\\protoc.bat"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "proto: generate (plugin)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/protoc.sh",
+      "args": ["${input:pluginName}"],
+      "windows": {
+        "command": "${workspaceFolder}\\scripts\\protoc.bat",
+        "args": ["${input:pluginName}"]
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "pluginName",
+      "type": "promptString",
+      "description": "plugin 目录名（例如：rtsp / webrtc / mcp）"
+    }
+  ]
+}

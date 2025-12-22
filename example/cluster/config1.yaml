@@ -1,0 +1,64 @@
+global:
+  loglevel: info
+  apiRoute:
+    enable: true
+  http:
+    listenaddr: :8080
+    listenaddrtls: :18555
+  tcp:
+    listenaddr: :50052
+  db:
+    dsn: "test1.db"
+    type: "sqlite"
+rtmp:
+  tcp:
+    listenaddr: :19351
+rtsp:
+  tcp: :8554
+webrtc:
+  port: udp:9000-9100  
+webtransport:
+  listenAddr: :4433
+gb28181:
+  enable: false
+cascadeserver:
+  quic:
+    listenaddr: :44941
+cluster:
+  quic:
+    listenaddr: :44941
+  sync:
+    serverid: "node1"
+    address: "localhost:50052"
+    seedservers:
+      - "localhost:50053"
+      - "localhost:50054"
+    heartbeatinterval: 5s
+    syncinterval: 30s
+  role:
+    - name: "internal"
+      description: "内网角色"
+      canAccess:
+        - "public"
+        - "relay"
+      accessibleBy:
+        - "internal"
+        - "admin"
+    - name: "public"
+      description: "公网角色"
+      canAccess:
+        - "admin"
+        - "storage"
+      accessibleBy:
+        - "internal"
+        - "relay"
+  # routing:
+  #   redirect:
+  #     "^test/":
+  #       statusCode: 307
+  #       forceredirect: true
+  #       targetoverrides:
+  #         node1: localhost:18081
+  #         node2: localhost:18082
+  #         node3: localhost:18083
+  #         node4: localhost:18084

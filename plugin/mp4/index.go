@@ -7,15 +7,16 @@ import (
 	"time"
 
 	"m7s.live/v5"
+	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/util"
-	"m7s.live/v5/plugin/mp4/pb"
+	mp4pb "m7s.live/v5/plugin/mp4/pb"
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
 type MP4Plugin struct {
-	pb.UnimplementedApiServer
+	mp4pb.UnimplementedApiServer
 	m7s.Plugin
 	BeforeDuration       time.Duration `default:"30s" desc:"事件录像提前时长，不配置则默认30s"`
 	AfterDuration        time.Duration `default:"30s" desc:"事件录像结束时长，不配置则默认30s"`
@@ -33,12 +34,21 @@ const defaultConfig m7s.DefaultYaml = `publish:
 // var exceptionChannel = make(chan *Exception)
 var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
 	DefaultYaml:         defaultConfig,
-	ServiceDesc:         &pb.Api_ServiceDesc,
-	RegisterGRPCHandler: pb.RegisterApiHandler,
+	ServiceDesc:         &mp4pb.Api_ServiceDesc,
+	RegisterGRPCHandler: mp4pb.RegisterApiHandler,
 	NewPuller:           mp4pkg.NewPuller,
 	NewRecorder:         mp4pkg.NewRecorder,
 	NewPullProxy:        m7s.NewHTTPPullPorxy,
 })
+
+func init() {
+	// Register MP4 control-plane methods that can be routed to the node hosting the stream.
+	m7s.RegisterAPIRouteUnary("/mp4.api/List", func() any { return new(pb.RecordResponseList) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/Delete", func() any { return new(pb.ResponseDelete) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/EventStart", func() any { return new(mp4pb.ResponseEventRecord) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/StartRecord", func() any { return new(mp4pb.ResponseStartRecord) })
+	m7s.RegisterAPIRouteUnary("/mp4.api/StopRecord", func() any { return new(mp4pb.ResponseStopRecord) })
+}
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{

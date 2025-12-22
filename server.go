@@ -127,6 +127,8 @@ type (
 		disabledPlugins   []*Plugin
 		prometheusDesc    prometheusDesc
 		Storage           storage.Storage
+		apiRoute          *apiRouter
+		rawConfig         RawConfig
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -264,10 +266,32 @@ func (s *Server) Start() (err error) {
 			cg[key] = value
 		}
 	}
+	s.rawConfig = cg
 	s.Config.Parse(&s.config, "GLOBAL")
 	s.Config.Parse(&s.ServerConfig, "GLOBAL")
 	if cg != nil {
 		s.Config.ParseUserFile(cg["global"])
+	}
+	// Pragmatic cluster integration: if `cluster:` is configured, enable apiRoute by default
+	// (unless user explicitly set global.apiRoute.enable=false).
+	if s.rawConfig != nil && s.rawConfig["cluster"] != nil {
+		explicitDisable := false
+		if g := s.rawConfig["global"]; g != nil {
+			apiRouteAny, ok := g["apiRoute"]
+			if !ok {
+				apiRouteAny = g["apiroute"]
+			}
+			if m, ok := apiRouteAny.(map[string]any); ok {
+				if v, ok := m["enable"]; ok {
+					if b, ok := v.(bool); ok && !b {
+						explicitDisable = true
+					}
+				}
+			}
+		}
+		if !explicitDisable {
+			s.config.APIRoute.Enable = true
+		}
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
@@ -284,6 +308,7 @@ func (s *Server) Start() (err error) {
 		"/api/videotrack/sse/{streamPath...}": s.api_VideoTrack_SSE,
 		"/api/audiotrack/sse/{streamPath...}": s.api_AudioTrack_SSE,
 		"/annexb/{streamPath...}":             s.annexB,
+		"/api/storage/schemas":                s.GetStorageSchemas,
 	})
 
 	if s.config.DSN != "" {
@@ -357,10 +382,10 @@ func (s *Server) Start() (err error) {
 
 	var grpcServer *GRPCServer
 	if tcpConf.ListenAddr != "" {
-		var opts []grpc.ServerOption
-		// Add the auth interceptor
-		opts = append(opts, grpc.UnaryInterceptor(s.AuthInterceptor()))
-		s.grpcServer = grpc.NewServer(opts...)
+		s.grpcServer = grpc.NewServer(grpc.ChainUnaryInterceptor(
+			s.AuthInterceptor(),
+			s.RouteInterceptor(),
+		))
 		pb.RegisterApiServer(s.grpcServer, s)
 		pb.RegisterAuthServer(s.grpcServer, s)
 		s.grpcClientConn, err = grpc.DialContext(s.Context, tcpConf.ListenAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))

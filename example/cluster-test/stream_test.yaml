@@ -1,0 +1,27 @@
+cluster:
+  localNodeId: "streamnode"
+  localNodeRole: "worker"
+  listenAddr: ":8093"
+  advertiseAddr: "127.0.0.1:8093"
+  seedNodes: ["127.0.0.1:8090"]
+  enableMetrics: true
+  metricInterval: 5
+
+rtmp:
+  listen: ":1936"
+
+http:
+  listen: ":8893"
+
+flv:
+  enable: true
+
+hls:
+  enable: true
+  segmentDuration: 5
+  windowSize: 5
+
+record:
+  enable: true
+  folder: "./record"
+  segmentDuration: 180 

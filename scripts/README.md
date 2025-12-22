@@ -1,13 +1,27 @@
-# use protoc.sh to generate the go code from proto files
+# 生成 proto 的 Go 代码
 
-1. For global proto file:
+## macOS / Linux
+
+1. 全局 proto（`pb/*.proto`）:
 ```bash
 sh scripts/protoc.sh
 ```
 
-2. For plugin proto file:
+2. 插件 proto（`plugin/<name>/pb/*.proto`）:
 ```bash
 sh scripts/protoc.sh plugin_name
+```
+
+## Windows
+
+1. 全局 proto（`pb/*.proto`）:
+```powershell
+.\scripts\protoc.bat
+```
+
+2. 插件 proto（`plugin/<name>/pb/*.proto`）:
+```powershell
+.\scripts\protoc.bat plugin_name
 ```
 
 # use loop.py to loop the ffmpeg command

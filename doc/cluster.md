@@ -1,154 +1,49 @@
-# Monibuca 集群架构设计
+# Monibuca 集群（务实方案 A）
 
-本文档描述了 Monibuca 的集群架构设计，包括推流负载均衡和拉流负载均衡的实现方案。
+本文档描述当前仓库中“务实集群方案”的实现：**不做媒体流同步/复制**，只提供“控制面路由 + 播放重定向”，以最低成本实现：
 
-## 整体架构
+- 任何节点都可以对集群内任意节点的流执行录制等控制面操作（实际执行在源节点）
+- 任何节点都可以播放集群内任意节点的流（通过 302/RTSP Location 重定向到源节点）
 
-```mermaid
-graph TB
-    subgraph 负载均衡层
-    LB[负载均衡器/API网关]
-    end
-    
-    subgraph 集群节点
-    N1[节点1]
-    N2[节点2]
-    N3[节点3]
-    end
-    
-    subgraph 服务发现
-    Redis[(Redis/etcd)]
-    end
-    
-    Client1[推流客户端] --> LB
-    Client2[拉流客户端] --> LB
-    
-    LB --> N1
-    LB --> N2
-    LB --> N3
-    
-    N1 <--> Redis
-    N2 <--> Redis
-    N3 <--> Redis
-    
-    %% 节点间互通连接
-    N1 <-.流媒体同步.-> N2
-    N2 <-.流媒体同步.-> N3
-    N1 <-.流媒体同步.-> N3
+## 核心思路（控制面 vs 媒体面）
+
+- **媒体面**：不做跨节点的“流转发/回源/副本同步”（带宽/复杂度/一致性成本很高）。
+- **控制面**：当某节点收到“针对某条流”的 API 请求，但本机没有该流时，通过 gRPC 探测找到源节点并转发执行。
+- **播放入口**：当某节点收到播放请求，但本机没有该流时，返回重定向到源节点的地址（HTTP 302 或 RTSP Location）。
+
+## 配置与节点发现（静态 peers）
+
+节点发现保持静态：通过 `cluster.sync`（或 `cluster.peers`）维护邻居表，作为 APIRoute 的 peer discovery。
+
+```yaml
+cluster:
+  # 可选：更直观的静态 peers
+  # peers:
+  #   - "localhost:50052"
+  #   - "localhost:50053"
+  #   - "localhost:50054"
+  sync:
+    serverid: "node1"
+    address: "localhost:50052"
+    seedservers:
+      - "localhost:50053"
+      - "localhost:50054"
 ```
 
-## 节点间流媒体同步
+当配置了 `cluster:` 段时，系统会默认开启 `global.apiRoute.enable`（除非显式设置 `global.apiRoute.enable=false`）。
 
-```mermaid
-sequenceDiagram
-    participant C as 拉流客户端
-    participant N2 as 节点2
-    participant R as Redis/etcd
-    participant N1 as 节点1(源流所在)
-    
-    C->>N2: 请求拉流(Stream1)
-    N2->>R: 查询Stream1位置
-    R-->>N2: 返回Stream1在节点1
-    N2->>N1: 请求Stream1
-    N1-->>N2: 建立节点间流传输
-    Note over N1,N2: 使用高效的节点间传输协议
-    N2->>R: 注册Stream1副本信息
-    N2-->>C: 向客户端推送流
-```
+## 需要的插件
 
-## 推流负载均衡
+- `plugin/apiroute`：负责播放重定向（HTTP/RTSP）。
+- `plugin/mp4`：提供录制 API（通过控制面路由在源节点执行）。
+- `plugin/cluster`：消费 `cluster:` 配置并补全 APIRoute peers（静态方式），作为“务实集群”的配置入口。
 
-```mermaid
-sequenceDiagram
-    participant P as 推流客户端
-    participant LB as 负载均衡器
-    participant R as Redis/etcd
-    participant N1 as 节点1
-    participant N2 as 节点2
-    
-    P->>LB: 发起推流请求
-    LB->>R: 获取可用节点列表
-    R-->>LB: 返回节点信息
-    LB->>LB: 根据负载算法选择节点
-    LB-->>P: 返回推流节点地址
-    P->>N1: 建立推流连接
-    N1->>R: 注册流信息
-```
+示例工程见 `example/cluster/`。
 
-## 拉流负载均衡
+## 非目标（当前不做）
 
-```mermaid
-sequenceDiagram
-    participant C as 拉流客户端
-    participant LB as 负载均衡器
-    participant R as Redis/etcd
-    participant N1 as 源节点
-    participant N2 as 边缘节点
-    
-    C->>LB: 发起拉流请求
-    LB->>R: 查询流信息
-    R-->>LB: 返回流所在节点
-    alt 就近节点已有流
-        LB-->>C: 返回就近节点地址
-        C->>N2: 建立拉流连接
-    else 需要回源
-        LB-->>C: 返回边缘节点地址
-        C->>N2: 建立拉流连接
-        N2->>N1: 回源拉流
-        N2->>R: 注册流信息
-    end
-```
+- 基于 etcd/Redis 的动态服务发现
+- 负载均衡调度
+- 跨节点媒体回源/副本同步/边缘缓存
 
-## 关键特性
-
-1. **高可用性**
-   - 节点故障自动切换
-   - 无单点故障设计
-   - 服务自动发现
-   - 多节点流媒体冗余备份
-
-2. **负载均衡策略**
-   - 基于节点负载的动态调度
-   - 就近接入原则
-   - 带宽占用均衡
-   - 考虑节点间流量成本
-
-3. **扩展性**
-   - 支持水平扩展
-   - 动态添加删除节点
-   - 平滑扩容/缩容
-   - 节点间按需同步流
-
-4. **监控和管理**
-   - 集群状态实时监控
-   - 流量统计和分析
-   - 节点健康检查
-   - 跨节点流媒体质量监控
-
-## 实现考虑
-
-1. **服务发现**
-   - 使用 Redis 或 etcd 存储集群节点信息
-   - 定期更新节点状态和负载信息
-   - 支持节点心跳检测
-   - 维护流媒体在各节点的分布信息
-
-2. **负载均衡算法**
-   - 考虑 CPU 使用率
-   - 考虑内存使用情况
-   - 考虑带宽使用情况
-   - 考虑地理位置因素
-   - 考虑节点间网络质量
-
-3. **容错机制**
-   - 节点故障自动摘除
-   - 流媒体自动切换
-   - 会话保持机制
-   - 节点间流媒体备份策略
-
-4. **节点间通信**
-   - 高效的流媒体转发协议
-   - 节点间带宽优化
-   - 流媒体缓存策略
-   - 按需拉流和预加载策略
-   - QoS保证机制 
+这些能力可以作为后续“方案 B（平台化集群）”演进方向，但不属于当前务实方案。 

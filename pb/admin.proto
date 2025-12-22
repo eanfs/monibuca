@@ -1,5 +1,5 @@
 syntax = "proto3";
-package pb;
+package global;
 option go_package = "m7s.live/v5/pb";
 
 import "google/api/annotations.proto";

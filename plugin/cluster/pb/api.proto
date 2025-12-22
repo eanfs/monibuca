@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "m7s.live/v5/plugin/cluster/pb";
+import "google/api/annotations.proto";
+import "common.proto";
+import "cluster.proto";
+import "node.proto";
+import "stream.proto";
+
+// API 服务
+service Api {
+  // 集群管理接口
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/status"
+    };
+  }
+  rpc GetNodes(GetNodesRequest) returns (GetNodesResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/nodes"
+    };
+  }
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/health"
+    };
+  }
+  rpc UpdateNodeConfig(UpdateNodeConfigRequest) returns (UpdateNodeConfigResponse) {
+    option (google.api.http) = {
+      put: "/cluster/api/nodes/{node_id}/config"
+      body: "config"
+    };
+  }
+  rpc GetClusterMetrics(GetClusterMetricsRequest) returns (GetClusterMetricsResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/cluster/metrics"
+    };
+  }
+  rpc GetClusterConfig(GetClusterConfigRequest) returns (GetClusterConfigResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/cluster/config"
+    };
+  }
+  rpc UpdateClusterConfig(UpdateClusterConfigRequest) returns (UpdateClusterConfigResponse) {
+    option (google.api.http) = {
+      put: "/cluster/api/cluster/config"
+      body: "config"
+    };
+  }
+
+  // 节点管理接口
+  rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (google.api.http) = {
+      post: "/cluster/api/nodes/{node_id}/heartbeat"
+      body: "*"
+    };
+  }
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/nodes/{node_id}"
+    };
+  }
+
+  // 流管理接口
+  rpc RegisterStream(RegisterStreamRequest) returns (RegisterStreamResponse) {
+    option (google.api.http) = {
+      post: "/cluster/api/streams"
+      body: "stream_info"
+    };
+  }
+  rpc UnregisterStream(UnregisterStreamRequest) returns (UnregisterStreamResponse) {
+    option (google.api.http) = {
+      delete: "/cluster/api/streams/{stream_path}"
+    };
+  }
+  rpc GetStreamInfo(GetStreamInfoRequest) returns (GetStreamInfoResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/streams/{stream_path}"
+    };
+  }
+  rpc GetClusterStreams(GetClusterStreamsRequest) returns (GetClusterStreamsResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/streams"
+    };
+  }
+  rpc GetOptimalNodeForPublisher(GetOptimalNodeForPublisherRequest) returns (GetOptimalNodeForPublisherResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/nodes/optimal/publisher"
+    };
+  }
+  rpc GetOptimalNodeForSubscriber(GetOptimalNodeForSubscriberRequest) returns (GetOptimalNodeForSubscriberResponse) {
+    option (google.api.http) = {
+      get: "/cluster/api/nodes/optimal/subscriber/{stream_path}"
+    };
+  }
+  rpc UpdateStreamState(UpdateStreamStateRequest) returns (UpdateStreamStateResponse) {
+    option (google.api.http) = {
+      put: "/cluster/api/streams/{stream_path}/state"
+      body: "*"
+    };
+  }
+
+  // 流同步服务接口
+  rpc SyncStreams(SyncStreamsRequest) returns (SyncStreamsResponse) {
+    option (google.api.http) = {
+      post: "/cluster/api/sync/streams"
+      body: "*"
+    };
+  }
+  rpc RemoveStream(RemoveStreamRequest) returns (RemoveStreamResponse) {
+    option (google.api.http) = {
+      delete: "/cluster/api/sync/streams/{stream_path}"
+    };
+  }
+  rpc RequestFullSync(RequestFullSyncRequest) returns (RequestFullSyncResponse) {
+    option (google.api.http) = {
+      post: "/cluster/api/sync/full"
+      body: "*"
+    };
+  }
+}
+
+// 同步流请求
+message SyncStreamsRequest {
+  repeated StreamInfo streams = 1;
+  bool full_sync = 2;         // 是否为全量同步
+  int64 timestamp = 3;        // Unix timestamp in milliseconds
+  string node_id = 4;         // 发送节点ID
+  string auth_token = 5;      // 授权令牌
+}
+
+// 同步流响应数据
+message SyncStreamsResponseData {
+  int32 accepted_count = 1;   // 成功接受的流数量
+  int32 rejected_count = 2;   // 被拒绝的流数量
+  repeated string rejected_streams = 3; // 被拒绝的流路径
+  int64 timestamp = 4;        // Unix timestamp in milliseconds
+}
+
+// 同步流响应
+message SyncStreamsResponse {
+  int32 code = 1;
+  string message = 2;
+  SyncStreamsResponseData data = 3;
+}
+
+// 删除流请求
+message RemoveStreamRequest {
+  string stream_path = 1;
+  int64 timestamp = 2;        // Unix timestamp in milliseconds
+  string node_id = 3;         // 发送节点ID
+  string auth_token = 4;      // 授权令牌
+}
+
+// 删除流响应数据
+message RemoveStreamResponseData {
+  bool removed = 1;           // 是否成功移除
+  int64 timestamp = 2;        // Unix timestamp in milliseconds
+}
+
+// 删除流响应
+message RemoveStreamResponse {
+  int32 code = 1;
+  string message = 2;
+  RemoveStreamResponseData data = 3;
+}
+
+// 请求全量同步请求
+message RequestFullSyncRequest {
+  string node_id = 1;         // 请求节点ID
+  int64 timestamp = 2;        // Unix timestamp in milliseconds
+  string auth_token = 3;      // 授权令牌
+}
+
+// 请求全量同步响应数据
+message RequestFullSyncResponseData {
+  bool accepted = 1;          // 是否接受同步请求
+  int64 sync_id = 2;          // 同步ID
+  int64 timestamp = 3;        // Unix timestamp in milliseconds
+}
+
+// 请求全量同步响应
+message RequestFullSyncResponse {
+  int32 code = 1;
+  string message = 2;
+  RequestFullSyncResponseData data = 3;
+}

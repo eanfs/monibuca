@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "m7s.live/v5/plugin/cluster/pb";
+import "common.proto";
+
+// 心跳请求
+message HeartbeatRequest {
+  string node_id = 1;
+  ResourceUsage resource_usage = 2;
+  int64 timestamp = 3;  // Unix timestamp in milliseconds
+  repeated string active_streams = 4;
+  map<string, double> latency_ms = 5;  // 与其他节点的延迟
+  map<string, StreamDynamicInfo> stream_dynamic_info = 6;  // 流动态信息
+}
+
+// 节点变化信息
+message NodeChange {
+  string node_id = 1;
+  string change_type = 2;  // "added", "updated", "removed"
+  NodeInfo node_info = 3;  // 仅在 added 和 updated 时包含
+}
+
+// 节点更新信息（仅包含心跳时更新的字段）
+message NodeUpdate {
+  string node_id = 1;
+  ResourceUsage resource_usage = 2;
+  int32 stream_count = 3;
+  map<string, double> latency_ms = 4;
+}
+
+// 心跳响应数据
+message HeartbeatResponseData {
+  int64 server_time = 1;  // 服务器时间（Unix timestamp in milliseconds）
+  repeated string action_required = 2;  // 需要节点执行的操作，例如"sync_streams"
+  bool need_full_sync = 3;  // 是否需要全量同步节点信息
+  repeated NodeUpdate node_updates = 4;  // 其他节点的更新信息
+  repeated StreamUpdate stream_updates = 5;  // 流更新信息
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  int32 code = 1;
+  string message = 2;
+  HeartbeatResponseData data = 3;
+}
+
+// 获取节点信息请求
+message GetNodeInfoRequest {
+  string node_id = 1;
+}
+
+// 获取节点信息响应数据
+message GetNodeInfoResponseData {
+  NodeInfo node_info = 1;
+}
+
+// 获取节点信息响应
+message GetNodeInfoResponse {
+  int32 code = 1;
+  string message = 2;
+  GetNodeInfoResponseData data = 3;
+}
+
+// 获取集群节点列表请求
+message GetClusterNodesRequest {
+  string role_filter = 1;  // 可选，按角色筛选
+  string region_filter = 2;  // 可选，按区域筛选
+  string status_filter = 3;  // 可选，按状态筛选
+}
+
+// 获取集群节点列表响应数据
+message GetClusterNodesResponseData {
+  repeated NodeInfo nodes = 1;
+}
+
+// 获取集群节点列表响应
+message GetClusterNodesResponse {
+  int32 code = 1;
+  string message = 2;
+  GetClusterNodesResponseData data = 3;
+}
+
+// 更新节点状态请求
+message UpdateNodeStatusRequest {
+  string node_id = 1;
+  string status = 2;
+  string auth_token = 3;
+}
+
+// 更新节点状态响应数据
+message UpdateNodeStatusResponseData {
+  bool success = 1;
+}
+
+// 更新节点状态响应
+message UpdateNodeStatusResponse {
+  int32 code = 1;
+  string message = 2;
+  UpdateNodeStatusResponseData data = 3;
+}

@@ -344,9 +344,6 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	pullProxyConfig.StopOnIdle = req.StopOnIdle
 	pullProxyConfig.Record.FilePath = req.RecordPath
 	pullProxyConfig.Record.Fragment = req.RecordFragment.AsDuration()
-	if req.CheckInterval != nil {
-		pullProxyConfig.CheckInterval = req.CheckInterval.AsDuration()
-	}
 	if pullProxyConfig.CheckInterval == 0 {
 		pullProxyConfig.CheckInterval = time.Second * 10
 	}
@@ -380,69 +377,30 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 
 func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
-		err = pkg.ErrNoDB
-		return
+		return nil, pkg.ErrNoDB
+	}
+	if req == nil || req.ID == 0 {
+		return nil, pkg.ErrNotFound
 	}
 	target := &PullProxyConfig{}
-	err = s.DB.First(target, req.ID).Error
-	if err != nil {
+	if err = s.DB.First(target, req.ID).Error; err != nil {
 		return
 	}
 
-	// 只有当字段有值时才进行赋值
-	if req.Name != nil {
-		target.Name = *req.Name
-	}
-	if req.PullURL != nil {
-		target.URL = *req.PullURL
-	}
 	if req.ParentID != nil {
 		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Name != nil {
+		target.Name = *req.Name
 	}
 	if req.Type != nil {
 		target.Type = *req.Type
 	}
-
-	// 如果Type字段被更新或者原来为空，则尝试从URL推导类型
-	if (req.Type != nil && *req.Type == "") || (req.PullURL != nil && target.Type == "") {
-		var urlToParse string
-		if req.PullURL != nil {
-			urlToParse = *req.PullURL
-		} else {
-			urlToParse = target.URL
-		}
-
-		if urlToParse != "" {
-			var u *url.URL
-			u, err = url.Parse(urlToParse)
-			if err != nil {
-				s.Error("parse pull url failed", "error", err)
-				return
-			}
-			switch u.Scheme {
-			case "srt", "rtsp", "rtmp", "webrtc":
-				target.Type = u.Scheme
-			default:
-				ext := filepath.Ext(u.Path)
-				switch ext {
-				case ".m3u8":
-					target.Type = "hls"
-				case ".flv":
-					target.Type = "flv"
-				case ".mp4":
-					target.Type = "mp4"
-				}
-			}
-		}
+	if req.PullURL != nil {
+		target.URL = *req.PullURL
 	}
-
 	if req.PullOnStart != nil {
 		target.PullOnStart = *req.PullOnStart
-	}
-	if target.PullOnStart {
-		target.Pull.MaxRetry = -1
-	} else {
-		target.Pull.MaxRetry = 0
 	}
 	if req.StopOnIdle != nil {
 		target.StopOnIdle = *req.StopOnIdle
@@ -462,79 +420,24 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	if req.StreamPath != nil {
 		target.StreamPath = *req.StreamPath
 	}
+	if req.Status != nil {
+		target.Status = byte(*req.Status)
+	}
 	if req.CheckInterval != nil {
 		target.CheckInterval = req.CheckInterval.AsDuration()
 	}
-	if target.CheckInterval == 0 {
-		target.CheckInterval = time.Second * 10
-	}
-	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
-	if req.Status != nil && *req.Status != uint32(PullProxyStatusDisabled) {
-		var existingCount int64
-		streamPath := target.StreamPath
-		if streamPath == "" {
-			streamPath = target.GetStreamPath()
-		}
-		s.DB.Model(&PullProxyConfig{}).Where("stream_path = ? AND id != ? AND status != ?", streamPath, req.ID, PullProxyStatusDisabled).Count(&existingCount)
 
-		// 如果存在相同 streamPath 且状态不是 disabled 的其他记录，更新失败
-		if existingCount > 0 {
-			err = fmt.Errorf("已存在相同 streamPath [%s] 的非禁用代理，更新失败", streamPath)
-			return
-		}
-		target.Status = byte(*req.Status)
-	} else if req.Status != nil {
-		target.Status = PullProxyStatusDisabled
+	if target.PullOnStart {
+		target.Pull.MaxRetry = -1
+	} else {
+		target.Pull.MaxRetry = 0
 	}
 
-	s.DB.Save(target)
-
-	// 检查是否从 disable 状态变为非 disable 状态
-	isNowDisabled := target.Status == PullProxyStatusDisabled
-
-	if device, ok := s.PullProxies.Get(uint(req.ID)); ok {
-		conf := device.GetConfig()
-		originalStatus := conf.Status
-		wasEnabled := originalStatus != PullProxyStatusDisabled
-		// 如果现在变为 disable 状态，需要停止并移除代理
-		if wasEnabled && isNowDisabled {
-			device.Stop(task.ErrStopByUser)
-			return
-		}
-
-		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath || conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment {
-			device.Stop(task.ErrStopByUser)
-			device.WaitStopped()
-			device, err = s.createPullProxy(target)
-			device.WaitStarted()
-			if originalStatus == PullProxyStatusPulling {
-				device.Pull()
-			}
-		} else {
-			conf.Name = target.Name
-			conf.PullOnStart = target.PullOnStart
-			conf.StopOnIdle = target.StopOnIdle
-			conf.Description = target.Description
-			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
-				device.Pull()
-			} else if originalStatus == PullProxyStatusPulling {
-				if pullJob := device.GetPullJob(); pullJob != nil {
-					pullJob.PublishConfig.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
-					if pullJob.Publisher != nil {
-						pullJob.Publisher.Publish.DelayCloseTimeout = pullJob.PublishConfig.DelayCloseTimeout
-					}
-				}
-			}
-		}
-	} else if !isNowDisabled {
-		// 尝试再次激活
-		_, err = s.createPullProxy(target)
-		if err != nil {
-			s.Error("create pull proxy failed", "error", err)
-		}
+	if err = s.DB.Save(target).Error; err != nil {
+		return
 	}
-	res = &pb.SuccessResponse{}
-	return
+	_, _ = s.createPullProxy(target)
+	return &pb.SuccessResponse{}, nil
 }
 
 func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {

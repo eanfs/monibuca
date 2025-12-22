@@ -1,5 +1,10 @@
 .history
-.vscode
+.vscode/*
+!.vscode/
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+.runlogs/
 logs
 fatal
 .idea
@@ -9,6 +14,9 @@ record
 bin
 .DS_Store
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 !plugin/record
 *.flv
 pullcf.yaml
@@ -36,3 +44,15 @@ example/cascade/config1.yaml
 example/cascade/config2.yaml
 example/cascade/config3.yaml
 example/cascade/config4.yaml
+node_modules
+data
+shutdown.bat
+3rd/ffmpeg6
+
+# local build/run artifacts
+/cluster
+example/cluster/*.exe
+example/cluster/run-logs*/
+example/cluster/cluster-error-logs/
+example/cluster/old/
+example/cluster-test/

@@ -1,0 +1,9 @@
+# Generated runtime artifacts (do not commit)
+run-logs*/
+run-logs*
+cluster-error-logs/
+*.db
+recordings/
+node*.log
+node*.pid
+*.out.log

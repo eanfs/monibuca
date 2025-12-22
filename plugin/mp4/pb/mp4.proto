@@ -41,29 +41,6 @@ service api {
       body: "*"
     };
   }
-  rpc CreateTag (ReqCreateTag) returns (ResponseTag) {
-    option (google.api.http) = {
-      post: "/mp4/api/tag/add"
-      body: "*"
-    };
-  }
-  rpc UpdateTag (ReqUpdateTag) returns (ResponseTag) {
-    option (google.api.http) = {
-      post: "/mp4/api/tag/update/{id}"
-      body: "*"
-    };
-  }
-  rpc DeleteTag (ReqDeleteTag) returns (ResponseTag) {
-    option (google.api.http) = {
-      post: "/mp4/api/tag/delete/{id}"
-      body: "*"
-    };
-  }
-  rpc ListTag (ReqListTag) returns (ResponseTagList) {
-    option (google.api.http) = {
-      get: "/mp4/api/tag/list"
-    };
-  }
 }
 
 message ReqRecordList {
