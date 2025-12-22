@@ -36,7 +36,7 @@ rtmp:
   tcp:
     listenaddr: :19354
 rtsp:
-  tcp: :8554
+  tcp: :5544
 gb28181:
   enable: false  
 webrtc:

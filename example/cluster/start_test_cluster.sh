@@ -8,13 +8,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 节点配置 (格式: config|http_port|stream_path|rtsp_url|proxy_name)
+# 节点配置 (格式: config|http_port|rtsp_port|stream_path|rtsp_url|proxy_name)
 # 使用 | 分隔 URL，避免 URL 中的 : 和 @ 符号干扰
-NODE1="config1.yaml|8081|live/camera91|rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream|proxy91"
-NODE2="config2.yaml|8082|live/camera92|rtsp://admin:a1234567@192.168.10.92/ch1/main/av_stream|proxy92"
-NODE3="config3.yaml|8083|live/camera93|rtsp://admin:a1234567@192.168.10.93/ch1/main/av_stream|proxy93"
-NODE4="config4.yaml|8084|live/camera94|rtsp://admin:a1234567@192.168.12.91:554/cam/realmonitor?channel=1&subtype=0|proxy94"
-NODE5="config5.yaml|8085|live/camera95|rtsp://admin:a1234567@192.168.12.92:554/cam/realmonitor?channel=1&subtype=0|proxy95"
+NODE1="config1.yaml|8081|5541|live/camera91|rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream|proxy91"
+NODE2="config2.yaml|8082|5542|live/camera92|rtsp://admin:a1234567@192.168.10.92/ch1/main/av_stream|proxy92"
+NODE3="config3.yaml|8083|5543|live/camera93|rtsp://admin:a1234567@192.168.10.93/ch1/main/av_stream|proxy93"
+NODE4="config4.yaml|8084|5544|live/camera94|rtsp://admin:a1234567@192.168.12.91:554/cam/realmonitor?channel=1&subtype=0|proxy94"
+NODE5="config5.yaml|8085|5545|live/camera95|rtsp://admin:a1234567@192.168.12.92:554/cam/realmonitor?channel=1&subtype=0|proxy95"
 
 NODES=("$NODE1" "$NODE2" "$NODE3" "$NODE4" "$NODE5")
 
@@ -90,6 +90,37 @@ stop_recording() {
     echo "停止录制响应: $response"
 }
 
+# 测试播放流
+# 参数: node_id rtsp_port stream_path
+test_playback() {
+    local node_id=$1
+    local rtsp_port=$2
+    local stream_path=$3
+
+    local rtsp_url="rtsp://localhost:$rtsp_port/$stream_path"
+
+    echo "节点 $node_id 测试播放流 $stream_path (URL: $rtsp_url)"
+
+    # 使用 ffprobe 探测流信息
+    # -rtsp_transport tcp: 使用 TCP 传输
+    # -v quiet: 安静模式，不输出日志
+    # -print_format json: 输出 JSON 格式
+    # -show_streams: 显示流信息
+    # -timeout 10000000: 设置超时时间（10秒，单位是微秒）
+    # 使用 || exit_code=$? 来捕获退出码，避免触发 set -e
+    local exit_code=0
+    ffprobe -rtsp_transport tcp -timeout 10000000 -v quiet -print_format json -show_streams -i "$rtsp_url" > /dev/null 2>&1 || exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        echo "  ✓ 节点 $node_id 播放流 $stream_path 成功"
+    else
+        echo "  ✗ 节点 $node_id 播放流 $stream_path 失败 (退出码: $exit_code)"
+    fi
+
+    # 总是返回 0，确保测试失败不会导致脚本退出
+    return 0
+}
+
 # 注意：节点由用户手动管理，此脚本不负责停止节点
 
 # 等待集群同步完成
@@ -117,7 +148,7 @@ echo "=== 添加拉流代理（集群同步后） ==="
 for i in 0 1 2 3 4; do
     node="${NODES[$i]}"
     id=$((i + 1))
-    IFS='|' read -r config http_port stream_path source_url proxy_name <<< "$node"
+    IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
     echo "节点 $id 拉流: $stream_path <- $source_url"
     pull_stream $http_port $stream_path "$source_url" $proxy_name
     sleep 1
@@ -128,13 +159,33 @@ echo ""
 echo "=== 等待拉流成功 ==="
 sleep 5
 
+# 测试播放 - 每个节点播放所有流
+echo ""
+echo "=== 测试播放（每个节点播放所有流） ==="
+for i in 0 1 2 3 4; do
+    node="${NODES[$i]}"
+    node_id=$((i + 1))
+    IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
+
+    echo "节点 $node_id (RTSP端口 $rtsp_port) 测试播放所有流..."
+
+    # 对每个流都进行播放测试
+    for stream in "${STREAM_PATHS[@]}"; do
+        test_playback $node_id $rtsp_port $stream
+        sleep 0.5
+    done
+
+    echo "节点 $node_id 已完成所有流的播放测试"
+    sleep 1
+done
+
 # 开始录制 - 每个节点对所有5个流都发起录制
 echo ""
 echo "=== 开始录制（每个节点录制所有流） ==="
 for i in 0 1 2 3 4; do
     node="${NODES[$i]}"
     node_id=$((i + 1))
-    IFS='|' read -r config http_port stream_path source_url proxy_name <<< "$node"
+    IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
 
     echo "节点 $node_id (端口 $http_port) 开始录制所有流..."
 
@@ -154,8 +205,8 @@ echo "当前运行状态:"
 for i in 0 1 2 3 4; do
     node="${NODES[$i]}"
     id=$((i + 1))
-    IFS='|' read -r config http_port stream_path source_url proxy_name <<< "$node"
-    echo "  节点 $id: HTTP :$http_port, 拉取流: $stream_path, 录制所有5个流"
+    IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
+    echo "  节点 $id: HTTP :$http_port, RTSP :$rtsp_port, 拉取流: $stream_path, 录制所有5个流"
 done
 echo ""
 echo "总计: 5个节点 × 5个流 = 25个录制任务"
@@ -171,7 +222,7 @@ echo "=== 停止所有录制 ==="
 for i in 0 1 2 3 4; do
     node="${NODES[$i]}"
     node_id=$((i + 1))
-    IFS='|' read -r config http_port stream_path source_url proxy_name <<< "$node"
+    IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
 
     echo "节点 $node_id (端口 $http_port) 停止录制所有流..."
 
