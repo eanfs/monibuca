@@ -1,5 +1,7 @@
 global:
   loglevel: info
+  apiRoute:
+    enable: true
   http:
     listenaddr: :8081
     listenaddrtls: :18556
@@ -33,6 +35,9 @@ webtransport:
   listenAddr: :4434
 gb28181:
   enable: false  
+cascadeserver:
+  quic:
+    listenaddr: :44942
 cluster:
   quic:
     listenaddr: :44942
