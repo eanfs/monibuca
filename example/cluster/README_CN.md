@@ -9,7 +9,9 @@
 该示例采用“务实方案（A）”：
 
 - **媒体流不做全量同步**（不复制媒体数据）。
-- **播放/拉取**：任何节点访问某条流时，如果流不在本机，会 **302 重定向** 到真正持有该流的节点。
+- **播放/拉取**：
+  - HTTP/WS 类协议（MP4/FLV/HLS 等）仍采用 **302 重定向** 到真正持有该流的节点。
+  - RTSP 在启用 `rtsp.proxyOnRedirect: true` 时，会在本地创建拉流代理，**不依赖客户端重定向**。
 - **录制等控制面 API**：可从任意节点调用，但会自动 **路由到持有该流的节点执行**（更省资源）。
 
 > 注意：`config2.yaml` 里的 RTSP URL 是占位符（RFC 5737 的 `192.0.2.0/24`），你需要在本机运行时替换为真实摄像机 URL；不要把真实账号密码提交到仓库。
@@ -73,7 +75,7 @@ go run -tags sqlite ./example/cluster/main.go -c /tmp/config2.local.yaml
 
 ## 4. 验证“任意节点都能访问到集群内某节点的流”
 
-当 node2 成功拉到 `live/camera101` 后，从 node1 / node3 访问同一个流，应该被 302 重定向到 node2。
+当 node2 成功拉到 `live/camera101` 后，通过 HTTP 播放入口（MP4/FLV 等）从 node1 / node3 访问同一个流，应该被 302 重定向到 node2。
 
 ### 4.1 MP4（从 node1 访问）
 
@@ -102,6 +104,17 @@ Location: http://localhost:8081/flv/live/camera101.flv
 ```
 
 > 如果你直接访问源节点（node2），通常是 `200`（并开始输出流数据）。
+
+### 4.3 RTSP（从 node1 / node3 访问）
+
+当 `rtsp.proxyOnRedirect: true` 时，RTSP 会在本地自动拉流代理，因此无需客户端支持重定向。
+
+```bash
+ffprobe -rtsp_transport tcp -timeout 10000000 -v quiet -show_streams -i rtsp://localhost:8554/live/camera101
+ffprobe -rtsp_transport tcp -timeout 10000000 -v quiet -show_streams -i rtsp://localhost:8556/live/camera101
+```
+
+期望：两条命令都能成功返回（无 302 重定向）。
 
 ---
 
@@ -206,7 +219,7 @@ wait_http() {
 }
 wait_http 8080; wait_http 8081; wait_http 8082
 
-# 302 验证
+# MP4 HTTP 302 验证（RTSP 不再重定向）
 curl -sS -D- -o /dev/null http://localhost:8080/mp4/live/camera101.mp4 | rg -n "HTTP/|Location:"
 
 # 录制：从 node3 发起，实际由源节点执行
@@ -237,5 +250,5 @@ kill -INT $(cat example/cluster/run-logs-*/node*.pid)
 
 - **访问不重定向 / 仍然 404**：通常是 node2 尚未成功拉到流，或集群发现尚未同步完成；先查看 node2 日志中是否出现 `publish streamPath=live/camera101`。
 - **录制 API 返回成功但没文件**：优先检查是否触发了磁盘清理（建议临时配置 `mp4.overwritePercent: 0`），以及 `filePath` 是否使用相对路径/指向你有权限写入的位置。
+- **RTSP 仍然返回重定向/拉流失败**：确认 `rtsp.proxyOnRedirect: true`，并确保 `global.apiRoute.enable` 已开启（cluster 插件会自动开启）。
 - **端口被占用**：`ss -lntp | rg ":(8080|8081|8082|50052|50053|50054|8554|8555|8556)\\b"` 查占用进程并停止。
-

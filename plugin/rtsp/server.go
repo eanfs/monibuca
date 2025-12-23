@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/util"
 	. "m7s.live/v5/plugin/rtsp/pkg"
 )
@@ -109,35 +110,44 @@ func (task *RTSPServer) Go() (err error) {
 			task.Using(sender.Dispose)
 			sender.NetConnection = task.NetConnection
 			rawQuery := req.URL.RawQuery
-			streamPath := strings.TrimPrefix(task.URL.Path, "/")
+			streamPathOnly := strings.TrimPrefix(task.URL.Path, "/")
+			streamPath := streamPathOnly
 			if rawQuery != "" {
 				streamPath += "?" + rawQuery
 			}
 			if advisor := task.conf.Server.GetRedirectAdvisor(); advisor != nil {
-				if target, statusCode, ok := advisor.GetRedirectTarget("rtsp", streamPath, task.URL.Host); ok && target != "" {
-					location := "rtsp://" + target
-					if streamPath != "" {
-						if !strings.HasPrefix(streamPath, "/") {
-							location += "/"
+				if task.conf.ProxyOnRedirect {
+					if streamPathOnly != "" && !task.conf.Server.Streams.SafeHas(streamPathOnly) {
+						if target, _, ok := advisor.GetRedirectTarget("rtsp", streamPath, task.URL.Host); ok && target != "" {
+							task.ensureRTSPPullProxy(streamPathOnly, streamPath, target)
 						}
-						location += streamPath
 					}
+				} else {
+					if target, statusCode, ok := advisor.GetRedirectTarget("rtsp", streamPath, task.URL.Host); ok && target != "" {
+						location := "rtsp://" + target
+						if streamPath != "" {
+							if !strings.HasPrefix(streamPath, "/") {
+								location += "/"
+							}
+							location += streamPath
+						}
 
-					if statusCode == 0 {
-						statusCode = http.StatusFound
-					}
+						if statusCode == 0 {
+							statusCode = http.StatusFound
+						}
 
-					res := &util.Response{
-						StatusCode: statusCode,
-						Status:     http.StatusText(statusCode),
-						Header: textproto.MIMEHeader{
-							"Location": {location},
-						},
-						Request: req,
+						res := &util.Response{
+							StatusCode: statusCode,
+							Status:     http.StatusText(statusCode),
+							Header: textproto.MIMEHeader{
+								"Location": {location},
+							},
+							Request: req,
+						}
+						task.Info("RTSP redirect issued", "location", location, "streamPath", streamPath)
+						_ = task.WriteResponse(res)
+						return nil
 					}
-					task.Info("RTSP redirect issued", "location", location, "streamPath", streamPath)
-					_ = task.WriteResponse(res)
-					return nil
 				}
 			}
 			sender.Subscriber, err = task.conf.Subscribe(task, streamPath)
@@ -304,6 +314,65 @@ func (task *RTSPServer) Go() (err error) {
 			task.Warn("unsupported method", "method", req.Method)
 		}
 	}
+}
+
+func (task *RTSPServer) ensureRTSPPullProxy(streamPathOnly, streamPath, target string) {
+	if streamPathOnly == "" || target == "" {
+		return
+	}
+	pullURL := buildRTSPPullURL(target, streamPath)
+	if pullURL == "" {
+		return
+	}
+	conf := &m7s.PullProxyConfig{
+		Name:        fmt.Sprintf("rtsp-proxy-%s", sanitizeRTSPProxyName(streamPathOnly)),
+		StreamPath:  streamPathOnly,
+		PullOnStart: true,
+		StopOnIdle:  true,
+		Audio:       true,
+		Type:        "rtsp",
+	}
+	conf.URL = pullURL
+	pullProxy, _, err := task.conf.Server.EnsurePullProxy(conf)
+	if err != nil || pullProxy == nil {
+		task.Warn("RTSP proxy ensure failed", "streamPath", streamPathOnly, "pullURL", pullURL, "error", err)
+		return
+	}
+	cfg := pullProxy.GetConfig()
+	if cfg.Status == m7s.PullProxyStatusDisabled {
+		task.Warn("RTSP proxy disabled", "streamPath", streamPathOnly)
+		return
+	}
+	if cfg.Status == m7s.PullProxyStatusOffline {
+		pullProxy.ChangeStatus(m7s.PullProxyStatusOnline)
+	}
+}
+
+func buildRTSPPullURL(target, streamPath string) string {
+	if target == "" {
+		return ""
+	}
+	if streamPath == "" {
+		return "rtsp://" + target
+	}
+	pathPart, queryPart, _ := strings.Cut(streamPath, "?")
+	if pathPart != "" && !strings.HasPrefix(pathPart, "/") {
+		pathPart = "/" + pathPart
+	}
+	u := url.URL{
+		Scheme:   "rtsp",
+		Host:     target,
+		Path:     pathPart,
+		RawQuery: queryPart,
+	}
+	return u.String()
+}
+
+func sanitizeRTSPProxyName(streamPath string) string {
+	if streamPath == "" {
+		return "unknown"
+	}
+	return strings.NewReplacer("/", "_", "?", "_", "&", "_", "=", "_").Replace(streamPath)
 }
 
 func reqTrackID(req *util.Request) int {

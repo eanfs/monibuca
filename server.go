@@ -116,6 +116,7 @@ type (
 		LogHandler        MultiLogHandler
 		redirectAdvisor   RedirectAdvisor
 		redirectOnce      sync.Once
+		pullProxyMu       sync.Mutex
 		apiList           []string
 		grpcServer        *grpc.Server
 		grpcClientConn    *grpc.ClientConn

@@ -19,6 +19,7 @@ rtsp:
     listenaddr: :554        # RTSP server listening address
   username: ""              # Authentication username (optional)
   password: ""              # Authentication password (optional)
+  proxyOnRedirect: false    # Use local pull proxy instead of RTSP 302 redirects
   udpport: 20001-30000      # UDP port range for media transmission
 ```
 
@@ -29,6 +30,7 @@ rtsp:
 | `tcp.listenaddr` | string | `:554` | RTSP server listening address and port |
 | `username` | string | `""` | Authentication username (empty = no auth) |
 | `password` | string | `""` | Authentication password |
+| `proxyOnRedirect` | bool | `false` | Use local pull proxy instead of RTSP redirect (useful in clusters) |
 | `udpport` | range | `20001-30000` | UDP port range for RTP/RTCP transmission |
 
 ## Usage
@@ -270,4 +272,3 @@ This plugin references code and implementation ideas from the excellent [go2rtc]
 ## License
 
 This plugin is part of the Monibuca project and follows the same license terms.
-

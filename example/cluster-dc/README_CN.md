@@ -7,7 +7,9 @@
 1. **指定某个节点拉 RTSP**（通过配置 `rtsp.pull`），并发布为 `STREAM_PATH`（默认 `live/camera101`）。
 2. **集群内其它节点都能访问该流**：从任意节点对本地 RTSP 端口发起 `DESCRIBE`，应返回：
    - 拉流节点：`RTSP/1.0 200 OK`
-   - 非拉流节点：`RTSP/1.0 Found` 且 `Location: rtsp://<pull-node>/...`（重定向到真正持有流的节点）
+   - 非拉流节点：`RTSP/1.0 200 OK`（由节点在本地自动拉流代理，不依赖客户端重定向）
+
+> 说明：RTSP 代理能力需开启 `rtsp.proxyOnRedirect: true`（本目录配置已包含）。
 
 > 说明：本方案不使用 `POST /api/proxy/pull/add`，也不依赖外部“代理服务器”。拉流完全通过运行时生成配置里的 `rtsp.pull` 实现。
 

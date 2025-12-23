@@ -23,7 +23,8 @@ rtmp:
   tcp:
     listenaddr: :19352
 rtsp:
-  tcp: :8555  
+  tcp: :8555
+  proxyOnRedirect: true
   pull:
     live/camera101:
       url: rtsp://user:pass@192.0.2.10:554/Streaming/Channels/101
