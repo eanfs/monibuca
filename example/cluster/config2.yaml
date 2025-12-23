@@ -37,9 +37,6 @@ rtmp:
     listenaddr: :19352
 rtsp:
   tcp: :5542
-  pull:
-    live/camera101:
-      url: rtsp://user:pass@192.0.2.10:554/Streaming/Channels/101
 webrtc:
   port: udp:9200-9300  
 webtransport:
@@ -57,9 +54,9 @@ cluster:
     address: "localhost:50052"
     seedservers:
       - "localhost:50051"
-      - "localhost:50054"
       - "localhost:50053"
-      - "localhost:50055"      
+      - "localhost:50054"
+      - "localhost:50055"
     heartbeatinterval: 5s
     syncinterval: 30s
   role:
