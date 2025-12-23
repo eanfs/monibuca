@@ -16,10 +16,10 @@ NODE3="config3.yaml|8083|5543|live/camera93|rtsp://admin:a1234567@192.168.10.93/
 NODE4="config4.yaml|8084|5544|live/camera94|rtsp://admin:a1234567@192.168.12.91:554/cam/realmonitor?channel=1&subtype=0|proxy94"
 NODE5="config5.yaml|8085|5545|live/camera95|rtsp://admin:a1234567@192.168.12.92:554/cam/realmonitor?channel=1&subtype=0|proxy95"
 
-NODES=("$NODE1" "$NODE2" "$NODE3" "$NODE4" "$NODE5")
+NODES=("$NODE1" "$NODE2" "$NODE3")
 
 # 所有流的路径（用于录制）
-STREAM_PATHS=("live/camera91" "live/camera92" "live/camera93" "live/camera94" "live/camera95")
+STREAM_PATHS=("live/camera91" "live/camera92" "live/camera93")
 
 # 注意：请先手动启动所有节点，然后再运行此脚本
 # 启动节点命令示例：
@@ -145,7 +145,7 @@ wait_cluster_sync
 # 重新添加拉流代理（确保集群已同步）
 echo ""
 echo "=== 添加拉流代理（集群同步后） ==="
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     node="${NODES[$i]}"
     id=$((i + 1))
     IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
@@ -162,7 +162,7 @@ sleep 5
 # 测试播放 - 每个节点播放所有流
 echo ""
 echo "=== 测试播放（每个节点播放所有流） ==="
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     node="${NODES[$i]}"
     node_id=$((i + 1))
     IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
@@ -182,7 +182,7 @@ done
 # 开始录制 - 每个节点对所有5个流都发起录制
 echo ""
 echo "=== 开始录制（每个节点录制所有流） ==="
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     node="${NODES[$i]}"
     node_id=$((i + 1))
     IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
@@ -202,14 +202,14 @@ done
 echo ""
 echo "=== 所有录制任务已发起 ==="
 echo "当前运行状态:"
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     node="${NODES[$i]}"
     id=$((i + 1))
     IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
-    echo "  节点 $id: HTTP :$http_port, RTSP :$rtsp_port, 拉取流: $stream_path, 录制所有5个流"
+    echo "  节点 $id: HTTP :$http_port, RTSP :$rtsp_port, 拉取流: $stream_path, 录制所有3个流"
 done
 echo ""
-echo "总计: 5个节点 × 5个流 = 25个录制任务"
+echo "总计: 3个节点 × 3个流 = 9个录制任务"
 
 # 等待录制2分钟
 echo ""
@@ -219,7 +219,7 @@ sleep 120
 # 停止所有录制
 echo ""
 echo "=== 停止所有录制 ==="
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     node="${NODES[$i]}"
     node_id=$((i + 1))
     IFS='|' read -r config http_port rtsp_port stream_path source_url proxy_name <<< "$node"
@@ -246,7 +246,7 @@ check_s3_files() {
     echo ""
     echo "=== 检查 MinIO 存储中的录制文件 ==="
 
-    local expected_count=25
+    local expected_count=9
     local bucket="vidu-media-bucket"
     local path_prefix="recordings"
     local endpoint="storage-dev.xiding.tech"

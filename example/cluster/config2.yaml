@@ -36,11 +36,8 @@ rtmp:
   tcp:
     listenaddr: :19352
 rtsp:
-  tcp: :8555
+  tcp: :5542
   proxyOnRedirect: true
-  pull:
-    live/camera101:
-      url: rtsp://user:pass@192.0.2.10:554/Streaming/Channels/101
 webrtc:
   port: udp:9200-9300  
 webtransport:

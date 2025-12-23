@@ -9,8 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # 节点配置
-CONFIGS=("config1.yaml" "config2.yaml" "config3.yaml" "config4.yaml" "config5.yaml")
-HTTP_PORTS=("8081" "8082" "8083" "8084" "8085")
+CONFIGS=("config1.yaml" "config2.yaml" "config3.yaml")
+HTTP_PORTS=("8081" "8082" "8083")
 PIDS=()
 
 echo "=== 启动所有集群节点 ==="
@@ -20,7 +20,7 @@ echo ""
 mkdir -p logs
 
 # 启动所有节点
-for i in 0 1 2 3 4; do
+for i in 0 1 2; do
     config="${CONFIGS[$i]}"
     http_port="${HTTP_PORTS[$i]}"
     node_id=$((i + 1))
@@ -38,7 +38,7 @@ echo "=== 所有节点已启动 ==="
 echo "节点进程 PIDs: ${PIDS[@]}"
 echo ""
 echo "查看日志:"
-for i in 1 2 3 4 5; do
+for i in 1 2 3; do
     echo "  tail -f logs/node${i}.log"
 done
 echo ""

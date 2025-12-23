@@ -24,22 +24,24 @@ if [ -d "$PID_DIR" ]; then
   pids_files=("$PID_DIR"/*.pid)
 fi
 
-for pidfile in "${pids_files[@]}"; do
-  pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -INT "$pid" 2>/dev/null || true
-  fi
-done
+if [ ${#pids_files[@]} -gt 0 ]; then
+  for pidfile in "${pids_files[@]}"; do
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -INT "$pid" 2>/dev/null || true
+    fi
+  done
 
-sleep 1
+  sleep 1
 
-for pidfile in "${pids_files[@]}"; do
-  pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  rm -f "$pidfile" || true
-done
+  for pidfile in "${pids_files[@]}"; do
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile" || true
+  done
+fi
 
 # Best-effort: kill any leftover listeners on known ports.
 PORTS=(8081 8082 8083 8084 8085 50051 50052 50053 50054 50055 5541 5542 5543 5544 5545)
@@ -47,7 +49,7 @@ extra_pids=()
 for port in "${PORTS[@]}"; do
   while IFS= read -r pid; do
     [ -n "$pid" ] && extra_pids+=("$pid")
-  done < <(ss -lntp 2>/dev/null | rg ":${port}\\b" | rg -o "pid=\\d+" | sed 's/pid=//' | sort -u || true)
+  done < <(ss -lntp 2>/dev/null | grep -E ":${port}\\b" | grep -oE "pid=[0-9]+" | sed 's/pid=//' | sort -u || true)
 done
 
 if [ ${#extra_pids[@]} -gt 0 ]; then
