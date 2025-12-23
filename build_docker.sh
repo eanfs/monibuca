@@ -26,7 +26,7 @@ fi
 group=swr.cn-east-3.myhuaweicloud.com/intetech
 
 # 切换到 example/default 目录进行编译
-cd example/default || exit 1
+cd example/cluster || exit 1
 
 # 清理旧的编译产物
 echo "清理旧的编译产物..."
