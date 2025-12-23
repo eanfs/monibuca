@@ -36,7 +36,8 @@ rtmp:
   tcp:
     listenaddr: :19353
 rtsp:
-  tcp: :5543
+  tcp: :8556
+  proxyOnRedirect: true
 gb28181:
   enable: false  
 webrtc:

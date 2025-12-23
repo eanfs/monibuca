@@ -23,10 +23,11 @@ var _ = m7s.InstallPlugin[RTSPPlugin](m7s.PluginMeta{
 
 type RTSPPlugin struct {
 	m7s.Plugin
-	UserName string             `desc:"用户名"`
-	Password string             `desc:"密码"`
-	UdpPort  util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
-	udpPorts chan uint16
+	UserName        string             `desc:"用户名"`
+	Password        string             `desc:"密码"`
+	ProxyOnRedirect bool               `default:"false" desc:"当集群启用 apiRoute 时，用本地拉流代理替代 RTSP 302 重定向"`
+	UdpPort         util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
+	udpPorts        chan uint16
 }
 
 func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {

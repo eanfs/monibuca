@@ -1,0 +1,22 @@
+# Generated runtime artifacts (do not commit)
+run-logs*/
+run-logs*
+cluster-error-logs/
+*.db
+recordings/
+node*.log
+node*.pid
+*.out.log
+
+# cluster-dc local artifacts
+runtime/
+logs/
+fatal/
+record/
+
+# local binaries / UI bundles (customer-provided, keep local)
+m7s
+admin.zip
+
+# m7s writes this file automatically on Linux
+shutdown.sh

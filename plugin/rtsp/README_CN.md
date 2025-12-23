@@ -19,6 +19,7 @@ rtsp:
     listenaddr: :554        # RTSP 服务器监听地址
   username: ""              # 认证用户名（可选）
   password: ""              # 认证密码（可选）
+  proxyOnRedirect: false    # 开启后使用本地拉流代理替代 RTSP 302 重定向
   udpport: 20001-30000      # 媒体传输的 UDP 端口范围
 ```
 
@@ -29,6 +30,7 @@ rtsp:
 | `tcp.listenaddr` | string | `:554` | RTSP 服务器监听地址和端口 |
 | `username` | string | `""` | 认证用户名（为空表示不启用认证）|
 | `password` | string | `""` | 认证密码 |
+| `proxyOnRedirect` | bool | `false` | 启用本地拉流代理替代 RTSP 重定向（常用于集群） |
 | `udpport` | range | `20001-30000` | RTP/RTCP 传输使用的 UDP 端口范围 |
 
 ## 使用方法
@@ -270,4 +272,3 @@ POST /api/stream/stop/{streamPath}
 ## 许可证
 
 本插件是 Monibuca 项目的一部分，遵循相同的许可证条款。
-

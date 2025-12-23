@@ -25,7 +25,8 @@ rtmp:
   tcp:
     listenaddr: :19351
 rtsp:
-  tcp: :5541
+  tcp: :8554
+  proxyOnRedirect: true
 webrtc:
   port: udp:9000-9100  
 webtransport:

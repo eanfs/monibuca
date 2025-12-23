@@ -3,20 +3,20 @@ global:
   apiRoute:
     enable: true
   http:
-    listenaddr: :8082
-    listenaddrtls: :18552
+    listenaddr: :8085
+    listenaddrtls: :18555
   tcp:
-    listenaddr: :50052
+    listenaddr: :50055
   db:
-    dsn: "test2.db"
+    dsn: "test5.db"
     type: "sqlite"
   storage:
     s3:
       region: "us-east-1"                   # AWS区域
-      endpoint: "storage-dev.xiding.tech"          # S3服务端点
-      accessKeyID: "xidinguser"     # 访问密钥ID
-      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
-      bucket: "vidu-media-bucket"            # 存储桶名称
+      endpoint: "REPLACE_ME"                # S3服务端点（示例：MinIO/OSS/COS endpoint）
+      accessKeyID: "REPLACE_ME"             # 访问密钥ID
+      secretAccessKey: "REPLACE_ME"         # 秘密访问密钥
+      bucket: "REPLACE_ME"                  # 存储桶名称
       pathPrefix: "recordings"     # 文件路径前缀
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
       useSSL: true                          # 是否使用SSL
@@ -34,33 +34,30 @@ global:
   #     timeout: "600s"
 rtmp:
   tcp:
-    listenaddr: :19352
+    listenaddr: :19355
 rtsp:
-  tcp: :8555
+  tcp: :5545
   proxyOnRedirect: true
-  pull:
-    live/camera101:
-      url: rtsp://user:pass@192.0.2.10:554/Streaming/Channels/101
-webrtc:
-  port: udp:9200-9300  
-webtransport:
-  listenAddr: :4432
 gb28181:
   enable: false  
+webrtc:
+  port: udp:9400-9500  
+webtransport:
+  listenAddr: :4435
 cascadeserver:
   quic:
-    listenaddr: :44942
+    listenaddr: :44943
 cluster:
   quic:
-    listenaddr: :44942
+    listenaddr: :44943
   sync:
-    serverid: "node2"
-    address: "localhost:50052"
+    serverid: "node5"
+    address: "localhost:50055"
     seedservers:
       - "localhost:50051"
+      - "localhost:50052"
       - "localhost:50053"
       - "localhost:50054"
-      - "localhost:50055"
     heartbeatinterval: 5s
     syncinterval: 30s
   role:

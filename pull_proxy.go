@@ -252,6 +252,45 @@ func (s *Server) createPullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, e
 	return
 }
 
+// EnsurePullProxy creates an in-memory pull proxy for the given streamPath if one does not already exist.
+// It is intended for runtime/on-demand usage and does not persist anything to DB.
+func (s *Server) EnsurePullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, created bool, err error) {
+	if conf == nil {
+		return nil, false, pkg.ErrNotFound
+	}
+	streamPath := conf.StreamPath
+	if streamPath == "" {
+		streamPath = conf.GetStreamPath()
+	}
+
+	s.pullProxyMu.Lock()
+	defer s.pullProxyMu.Unlock()
+
+	if existing, ok := s.PullProxies.Find(func(pullProxy IPullProxy) bool {
+		return pullProxy.GetStreamPath() == streamPath
+	}); ok {
+		return existing, false, nil
+	}
+
+	if conf.ID == 0 {
+		conf.ID = uint(task.GetNextTaskID())
+	}
+	defaults.SetDefaults(&conf.Pull)
+	defaults.SetDefaults(&conf.Record)
+	if conf.CheckInterval == 0 {
+		conf.CheckInterval = time.Second * 10
+	}
+	conf.InitializeWithServer(s)
+	pullProxy, err = s.createPullProxy(conf)
+	if err != nil {
+		return nil, false, err
+	}
+	if pullProxy == nil {
+		return nil, false, pkg.ErrNotFound
+	}
+	return pullProxy, true, nil
+}
+
 func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res *pb.PullProxyListResponse, err error) {
 	res = &pb.PullProxyListResponse{}
 
