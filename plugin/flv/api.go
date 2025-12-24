@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gobwas/ws"
@@ -102,7 +103,26 @@ func (plugin *FLVPlugin) RegisterHandler() map[string]http.HandlerFunc {
 
 // /jessica/{streamPath}
 func (plugin *FLVPlugin) jessica(rw http.ResponseWriter, r *http.Request) {
-	subscriber, err := plugin.Subscribe(r.Context(), r.PathValue("streamPath"))
+	streamPath := r.PathValue("streamPath")
+	streamPathOnly := strings.TrimPrefix(streamPath, "/")
+	if plugin.Server != nil && plugin.ProxyOnRedirect && isWebSocketRequest(r) {
+		if streamPathOnly != "" && !plugin.Server.Streams.SafeHas(streamPathOnly) {
+			if advisor := plugin.Server.GetRedirectAdvisor(); advisor != nil {
+				scheme := requestScheme(r)
+				var target string
+				if adv2, ok := advisor.(m7s.RedirectAdvisorV2); ok {
+					target, _, _ = adv2.GetRedirectTargetV2("flv", streamPathOnly, r.Host, scheme)
+				} else {
+					target, _, _ = advisor.GetRedirectTarget("flv", streamPathOnly, r.Host)
+				}
+				if target != "" {
+					plugin.ensureFLVPullProxy(streamPathOnly, streamPathOnly, target, scheme)
+				}
+			}
+		}
+	}
+
+	subscriber, err := plugin.Subscribe(r.Context(), streamPathOnly)
 	defer func() {
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)

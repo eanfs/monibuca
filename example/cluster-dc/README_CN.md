@@ -13,7 +13,7 @@
    - 非拉流节点：`302` 重定向到拉流节点，随后可 `101` 成功
 
 > 说明：RTSP 代理能力需开启 `rtsp.proxyOnRedirect: true`（本目录配置已包含）。
-> 说明：浏览器的 WebSocket 不会自动跟随 302，因此需要开启 `flv.proxyOnRedirect: true`（本目录配置已包含）。
+> 说明：浏览器的 WebSocket 不会自动跟随 302，因此需要开启 `flv.proxyOnRedirect: true`（本目录配置已包含，适用于 ws-flv 与 ws-raw/jessica）。
 
 > 说明：本方案不使用 `POST /api/proxy/pull/add`，也不依赖外部“代理服务器”。拉流完全通过运行时生成配置里的 `rtsp.pull` 实现。
 
