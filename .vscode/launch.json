@@ -8,6 +8,14 @@
       "mode": "auto",
       "program": "${workspaceFolder}/example/default",
       "cwd": "${workspaceFolder}/example/default",
+      "linux": {
+        "program": "${workspaceFolder}/example/default",
+        "cwd": "${workspaceFolder}/example/default",
+        "dlvToolPath": "/root/go/bin/dlv",
+        "env": {
+          "CGO_ENABLED": "0"
+        }
+      },
       "buildFlags": "-tags=sqlite",
       "env": {
         "CGO_ENABLED": "0"

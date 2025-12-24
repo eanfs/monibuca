@@ -125,7 +125,7 @@ func DecodeSDP(req *sip.Request) (*InviteInfo, error) {
 		case strings.HasPrefix(line, "y="):
 			tmpSSRC, err := strconv.ParseUint(strings.TrimPrefix(line, "y="), 10, 32)
 			if err != nil {
-				return nil, fmt.Errorf(err.Error())
+				return nil, fmt.Errorf("parse ssrc from sdp: %w", err)
 			}
 			inviteInfo.SSRC = uint32(tmpSSRC)
 
