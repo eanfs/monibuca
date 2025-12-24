@@ -27,7 +27,6 @@ func GetTLSConfig(certFile, keyFile string) (tslConfig *tls.Config, err error) {
 	if err == nil {
 		tslConfig = &tls.Config{
 			Certificates: []tls.Certificate{keyPair},
-			NextProtos:   []string{"monibuca"},
 		}
 	}
 	return
@@ -60,7 +59,7 @@ func (config *TCP) CreateTCPTLSWork(logger *slog.Logger, handler TCPHandler) *Li
 	return ret
 }
 
-type TCPHandler = func(conn *net.TCPConn) task.ITask
+type TCPHandler = func(conn net.Conn) task.ITask
 
 type ListenTCPWork struct {
 	task.Work
@@ -109,6 +108,17 @@ func (task *ListenTCPTLSWork) Start() (err error) {
 		task.Info("listen tcp tls")
 	} else {
 		task.Error("failed to listen tcp tls", "error", err)
+		return
+	}
+	if task.handler == nil {
+		return nil
+	}
+	count := task.ListenNum
+	if count == 0 {
+		count = runtime.NumCPU()
+	}
+	for range count {
+		go task.listen(task.handler)
 	}
 	return
 }
@@ -156,7 +166,7 @@ func (task *ListenTCPWork) listen(handler TCPHandler) {
 			}
 		}
 		tempDelay = 0
-		subTask := handler(tcpConn)
+		subTask := handler(conn)
 		task.AddTask(subTask)
 	}
 }

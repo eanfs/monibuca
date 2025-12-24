@@ -34,7 +34,7 @@ import (
 
 type SipConfig struct {
 	ListenAddr    []string
-	ListenTLSAddr []string
+	ListenAddrTLS []string
 	CertFile      string `desc:"证书文件"`
 	KeyFile       string `desc:"私钥文件"`
 }
@@ -242,9 +242,9 @@ func (gb *GB28181Plugin) Start() (err error) {
 			}
 			go gb.server.ListenAndServe(gb, netWork, addr)
 		}
-		if len(gb.Sip.ListenTLSAddr) > 0 {
+		if len(gb.Sip.ListenAddrTLS) > 0 {
 			if tslConfig, err := config.GetTLSConfig(gb.Sip.CertFile, gb.Sip.KeyFile); err == nil {
-				for _, addr := range gb.Sip.ListenTLSAddr {
+				for _, addr := range gb.Sip.ListenAddrTLS {
 					netWork, addr, _ := strings.Cut(addr, ":")
 					gb.SetDescription(netWork+"TLS", strings.TrimPrefix(addr, ":"))
 					if port, err := strconv.Atoi(strings.TrimPrefix(addr, ":")); err == nil {

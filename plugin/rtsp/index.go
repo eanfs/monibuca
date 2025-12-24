@@ -29,7 +29,7 @@ type RTSPPlugin struct {
 	udpPorts chan uint16
 }
 
-func (p *RTSPPlugin) OnTCPConnect(conn *net.TCPConn) task.ITask {
+func (p *RTSPPlugin) OnTCPConnect(conn net.Conn) task.ITask {
 	ret := &RTSPServer{NetConnection: NewNetConnection(conn), conf: p}
 	ret.Logger = p.Logger.With("remote", conn.RemoteAddr().String())
 	return ret
