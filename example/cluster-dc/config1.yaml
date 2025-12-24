@@ -27,6 +27,8 @@ rtmp:
 rtsp:
   tcp: :5541
   proxyOnRedirect: true
+flv:
+  proxyOnRedirect: true
 webrtc:
   port: udp:9000-9100  
 webtransport:

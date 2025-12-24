@@ -116,6 +116,36 @@ ffprobe -rtsp_transport tcp -timeout 10000000 -v quiet -show_streams -i rtsp://l
 
 期望：两条命令都能成功返回（无 302 重定向）。
 
+### 4.4 WSS（WebSocket FLV）
+
+WSS 通过 HTTPS 端口进行 WebSocket 握手（自签名证书需 `-k` 跳过校验）。
+浏览器的 WebSocket 不会自动跟随 302 重定向，如需从任意节点直接播放，可开启 `flv.proxyOnRedirect: true`。
+
+从非源节点（node1）访问时，会 302 重定向到源节点：
+
+```bash
+curl -k -sS -D- -o /dev/null --http1.1 \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://localhost:18555/flv/live/camera101
+```
+
+期望看到类似：
+
+```text
+HTTP/1.1 302 Found
+Location: wss://localhost:18556/flv/live/camera101
+```
+
+再对源节点（node2）发起握手，应返回 `101 Switching Protocols`：
+
+```bash
+curl -k -sS -D- -o /dev/null --http1.1 \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://localhost:18556/flv/live/camera101
+```
+
 ---
 
 ## 5. 验证“从任意节点都能录制这条流”
@@ -221,6 +251,16 @@ wait_http 8080; wait_http 8081; wait_http 8082
 
 # MP4 HTTP 302 验证（RTSP 不再重定向）
 curl -sS -D- -o /dev/null http://localhost:8080/mp4/live/camera101.mp4 | rg -n "HTTP/|Location:"
+
+# WSS 握手验证（node1 重定向，node2 返回 101）
+curl -k -sS -D- -o /dev/null --http1.1 \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://localhost:18555/flv/live/camera101 | rg -n "HTTP/|Location:"
+curl -k -sS -D- -o /dev/null --http1.1 \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://localhost:18556/flv/live/camera101 | rg -n "HTTP/"
 
 # 录制：从 node3 发起，实际由源节点执行
 mkdir -p "$RUN_DIR/recordings"
