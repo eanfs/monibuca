@@ -8,32 +8,15 @@ global:
   loglevel: info
   admin:
     enablelogin: false
-  # S3存储配置示例（需要时取消注释并填写实际值）
-  storage:
-    s3:
-      region: "us-east-1"                   # AWS区域
-      endpoint: "storage-dev.xiding.tech"          # S3服务端点
-      accessKeyID: "xidinguser"     # 访问密钥ID
-      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
-      bucket: "vidu-media-bucket"            # 存储桶名称
-      pathPrefix: "recordings"     # 文件路径前缀
-      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
-      useSSL: true                          # 是否使用SSL
-      timeout: "600s"                        # 上传超时时间
   db:
-    dsn: "host=172.16.12.54 user=gaussdb password=Xiding@2023 dbname=m7s_prod port=5432 sslmode=disable TimeZone=Asia/Shanghai search_path=m7s_prod"
-    dbtype: postgres      
-  # storage:
-  #   s3:
-  #     endpoint: "s3.amazonaws.com"          # S3服务端点
-  #     region: "us-east-1"                   # AWS区域
-  #     accessKeyID: "your-access-key-id"     # 访问密钥ID
-  #     secretAccessKey: "your-secret-access-key" # 秘密访问密钥
-  #     bucket: "your-bucket-name"            # 存储桶名称
-  #     pathPrefix: "monibuca/recordings"     # 文件路径前缀
-  #     forcePathStyle: false                 # 强制路径样式（MinIO需要设为true）
-  #     useSSL: true                          # 是否使用SSL
-  #     timeout: "30s"                        # 上传超时时间
+    dbtype: sqlite  
+    dsn: m7s.db
+logrotate:
+  path: logs              # 日志目录
+  level: debug            # 将日志输出到文件，保留 debug 级别
+  formatter: 2006-01-02T15  # 按小时切分
+  size: 10485760          # 单文件最大约10MB
+  maxfiles: 2            # 保留最近 2 个文件
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
   #     name: "camera-1"             # 拉流代理名称
@@ -51,12 +34,24 @@ srt:
   # passphrase: foobarfoobar
 gb28181:
   enable: true # 是否启用GB28181协议
-  autoinvite: false #建议使用false，开启后会自动邀请设备推流
-  mediaip: 192.168.15.115 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
-  sipip: 192.168.15.115 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  autoinvite: true #建议使用false，开启后会自动邀请设备推流
+  mediaip: 10.10.10.8 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
+  sipip: 10.10.10.8 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  mediaport: "38200-38202"   #默认收流端口范围,可选
+  advertise:
+    routes:
+      - name: lan-10
+        cidr: 10.0.0.0/8
+        sipip: 10.10.10.8
+        mediaip: 10.10.10.8
+      - name: wan
+        cidr: 0.0.0.0/0
+        sipip: 111.198.72.198
+        mediaip: 111.198.72.198       
+
   sip:
     listenaddr:
-      - udp::5060
+      - udp::35060
   onsub:
     pull:
       ^\d{20}/\d{20}$: $0

@@ -26,6 +26,7 @@ import (
 ```yaml
 flv:
   pull: # Format: https://m7s.live/guide/config.html#%E6%8F%92%E4%BB%B6%E9%85%8D%E7%BD%AE
+  proxyOnRedirect: false # Enable local pull proxy for WebSocket playback in cluster (avoid 302)
 ```
 
 ## Plugin Features

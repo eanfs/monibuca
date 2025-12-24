@@ -38,6 +38,8 @@ rtmp:
 rtsp:
   tcp: :5543
   proxyOnRedirect: true
+flv:
+  proxyOnRedirect: true
 gb28181:
   enable: false  
 webrtc:

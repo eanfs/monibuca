@@ -217,8 +217,7 @@ func (task *registerHandlerTask) Run() (err error) {
 				channel.Status = "OFF"
 				return true
 			})
-			d.DeviceKeepaliveTickTask.seconds = time.Minute * 1440
-			d.DeviceKeepaliveTickTask.Tick(nil)
+			d.resetKeepaliveTick(time.Minute * 1440)
 			//d.Stop(errors.New("unregister"))
 		}
 	} else {
@@ -274,7 +273,13 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 	}
 
 	if task.gb.MediaIP != "" {
-		myWanIP = task.gb.MediaIP
+		configMediaIP := net.ParseIP(task.gb.MediaIP)
+		// 如果配置的是内网IP而设备来自公网，则优先使用请求的目标地址作为外网IP，避免 c= 行给到内网地址导致无法连接
+		if sourceIPParse != nil && !sourceIPParse.IsPrivate() && configMediaIP != nil && configMediaIP.IsPrivate() {
+			myWanIP = myIP
+		} else {
+			myWanIP = task.gb.MediaIP
+		}
 	}
 	if task.gb.SipIP != "" {
 		myLanIP = task.gb.SipIP
@@ -327,8 +332,8 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 		//}
 		task.gb.DB.Save(d)
 	}
-	d.DeviceKeepaliveTickTask.seconds = time.Second * 30
-	d.DeviceKeepaliveTickTask.Tick(nil)
+	d.resetKeepaliveTick(time.Second * 30)
+	d.ensureCatalogSubscribeTask()
 	go d.catalog()
 	return
 }
@@ -392,7 +397,12 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 	}
 
 	if task.gb.MediaIP != "" {
-		myWanIP = task.gb.MediaIP
+		configMediaIP := net.ParseIP(task.gb.MediaIP)
+		if sourceIPParse != nil && !sourceIPParse.IsPrivate() && configMediaIP != nil && configMediaIP.IsPrivate() {
+			myWanIP = myIP
+		} else {
+			myWanIP = task.gb.MediaIP
+		}
 	}
 	if task.gb.SipIP != "" {
 		myLanIP = task.gb.SipIP
@@ -471,6 +481,7 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 		}
 	})
 	task.gb.devices.AddTask(d).WaitStarted()
+	d.ensureCatalogSubscribeTask()
 
 	if task.gb.DB != nil {
 		//var existing Device

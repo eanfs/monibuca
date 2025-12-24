@@ -162,6 +162,37 @@ func (d *Device) GetKey() string {
 	return d.DeviceId
 }
 
+func (d *Device) resetKeepaliveTick(interval time.Duration) {
+	if d.DeviceKeepaliveTickTask == nil {
+		d.DeviceKeepaliveTickTask = &DeviceKeepaliveTickTask{
+			seconds: interval,
+			device:  d,
+		}
+		d.AddTask(d.DeviceKeepaliveTickTask)
+	} else {
+		d.DeviceKeepaliveTickTask.seconds = interval
+		if ticker := d.DeviceKeepaliveTickTask.GetTicker(); ticker != nil {
+			ticker.Reset(interval)
+		}
+	}
+	d.DeviceKeepaliveTickTask.Tick(nil)
+}
+
+func (d *Device) ensureCatalogSubscribeTask() {
+	if d.SubscribeCatalog <= 0 {
+		return
+	}
+	if d.CatalogSubscribeTask == nil {
+		d.CatalogSubscribeTask = NewCatalogSubscribeTask(d)
+		d.AddTask(d.CatalogSubscribeTask)
+	}
+	interval := d.CatalogSubscribeTask.GetTickInterval()
+	if ticker := d.CatalogSubscribeTask.GetTicker(); ticker != nil {
+		ticker.Reset(interval)
+	}
+	d.CatalogSubscribeTask.Tick(nil)
+}
+
 // CatalogRequest 目录请求结构体
 // 注意：由于 catalogHandlerTask.Run() 在 Work 的串行协程中执行，
 // 所有对 CatalogRequest 字段的访问都是串行的，不需要锁保护
@@ -338,6 +369,19 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 	d.Port = port
 	d.HostAddress = hostname + ":" + portStr
 	d.Debug("onMessage", "d.IP", d.IP, "d.Port", d.Port, "d.HostAddress", d.HostAddress)
+
+	// 如果当前媒体IP是内网地址，但收到的 To 头部使用公网地址，则更新媒体IP，保证后续 INVITE 的 c= 行可达
+	if to := req.To(); to != nil {
+		if ip := net.ParseIP(to.Address.Host); ip != nil && !ip.IsPrivate() {
+			if mediaIP := net.ParseIP(d.MediaIp); mediaIP == nil || mediaIP.IsPrivate() {
+				d.MediaIp = to.Address.Host
+			}
+			if sipIP := net.ParseIP(d.SipIp); sipIP == nil || sipIP.IsPrivate() {
+				d.SipIp = to.Address.Host
+			}
+		}
+	}
+
 	var body []byte
 	switch msg.CmdType {
 	case "Keepalive":
@@ -555,15 +599,7 @@ func (d *Device) Go() (err error) {
 	}
 
 	// 创建并启动目录订阅任务
-	if d.SubscribeCatalog > 0 {
-		if d.CatalogSubscribeTask != nil {
-			d.CatalogSubscribeTask.Ticker.Reset(time.Second * time.Duration(d.SubscribeCatalog))
-		} else {
-			d.CatalogSubscribeTask = NewCatalogSubscribeTask(d)
-			d.AddTask(d.CatalogSubscribeTask)
-		}
-		d.CatalogSubscribeTask.Tick(nil)
-	}
+	d.ensureCatalogSubscribeTask()
 
 	// 创建并启动位置订阅任务
 	if d.SubscribePosition > 0 {

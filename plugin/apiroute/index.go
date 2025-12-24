@@ -435,6 +435,17 @@ func (p *APIRoutePlugin) GetRedirectTargetV2(protocol, streamPath, currentHost, 
 	if !conf.Enable {
 		return "", 0, false
 	}
+	// If the stream is already local, don't redirect (prevents ping-pong when multiple nodes have the stream).
+	if p.Server != nil {
+		for _, candidate := range candidateStreamPaths(protocol, streamPath) {
+			if candidate == "" {
+				continue
+			}
+			if p.Server.Streams.SafeHas(candidate) {
+				return "", 0, false
+			}
+		}
+	}
 	nodes := apiRoutePeers(p, conf)
 	var targetGRPC string
 	for _, candidate := range candidateStreamPaths(protocol, streamPath) {

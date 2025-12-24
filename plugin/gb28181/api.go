@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2579,11 +2580,79 @@ func (gb *GB28181Plugin) PlaybackSeek(ctx context.Context, req *pb.PlaybackSeekR
 		return resp, nil
 	}
 
-	// TODO: 实现拖动播放逻辑
+	// 查找对应的dialog
+	dialog, ok := gb.dialogs.Find(func(d *Dialog) bool {
+		return d.pullCtx.StreamPath == req.StreamPath
+	})
+	if !ok {
+		resp.Code = 404
+		resp.Message = "未找到对应的回放会话"
+		return resp, nil
+	}
+
+	target := req.SeekTime
+	var (
+		startVal int64
+		endVal   int64
+		hasStart bool
+		hasEnd   bool
+	)
+	if dialog.start != "" {
+		if v, err := strconv.ParseInt(dialog.start, 10, 64); err == nil {
+			startVal = v
+			hasStart = true
+		} else {
+			gb.Warn("解析回放开始时间失败，按偏移量处理", "streamPath", req.StreamPath, "start", dialog.start, "err", err)
+		}
+	}
+	if dialog.end != "" {
+		if v, err := strconv.ParseInt(dialog.end, 10, 64); err == nil {
+			endVal = v
+			hasEnd = true
+		} else {
+			gb.Warn("解析回放结束时间失败", "streamPath", req.StreamPath, "end", dialog.end, "err", err)
+		}
+	}
+
+	if hasStart {
+		if target < startVal || (hasEnd && target > endVal) {
+			target = startVal + target
+		}
+		if hasEnd && target > endVal {
+			target = endVal
+		}
+	}
+
+	// 构建RTSP PLAY消息内容
+	content := strings.Builder{}
+	content.WriteString("PLAY RTSP/1.0\r\n")
+	content.WriteString(fmt.Sprintf("CSeq: %d\r\n", int(time.Now().UnixNano()/1e6%1000000)))
+	if hasEnd && endVal > 0 {
+		content.WriteString(fmt.Sprintf("Range: npt=%d-%d\r\n", target, endVal))
+	} else {
+		content.WriteString(fmt.Sprintf("Range: npt=%d-\r\n", target))
+	}
+
+	// 创建INFO请求
+	request := sip.NewRequest(sip.INFO, dialog.session.InviteRequest.Recipient)
+	request.SetBody([]byte(content.String()))
+	contentType := sip.ContentTypeHeader("Application/MANSRTSP")
+	request.AppendHeader(&contentType)
+
+	// 发送请求
+	if _, err := dialog.session.TransactionRequest(ctx, request); err != nil {
+		resp.Code = 500
+		resp.Message = fmt.Sprintf("发送拖动请求失败: %v", err)
+		return resp, nil
+	}
+	if s, ok := gb.Server.Streams.SafeGet(req.StreamPath); ok {
+		s.Seek(time.Unix(target, 0))
+	}
 
 	gb.Info("拖动回放",
 		"streampath", req.StreamPath,
-		"seekTime", req.SeekTime)
+		"seekTime", req.SeekTime,
+		"target", target)
 
 	resp.Code = 0
 	resp.Message = "success"
