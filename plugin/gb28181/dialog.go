@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	sipgo "github.com/emiago/sipgo"
@@ -91,6 +92,16 @@ func (d *Dialog) Start() (err error) {
 	// Initialize progress tracking for pull operations
 	d.pullCtx.SetProgressStepsDefs(gbPullSteps)
 
+	// Ensure plugin reference is available
+	if d.gb == nil && d.pullCtx.Plugin != nil {
+		if handler, ok := d.pullCtx.Plugin.GetHandler().(*GB28181Plugin); ok {
+			d.gb = handler
+		}
+	}
+	if d.gb == nil {
+		return errors.New("gb28181 plugin is nil")
+	}
+
 	// 处理时间范围
 	d.InviteOptions.Start = d.start
 	d.InviteOptions.End = d.End
@@ -113,9 +124,12 @@ func (d *Dialog) Start() (err error) {
 	}
 	deviceId, channelId := sss[len(sss)-2], sss[len(sss)-1]
 	var device *Device
-	if deviceTmp, ok := d.gb.devices.Get(deviceId); ok {
+	if deviceTmp, ok := d.gb.devices.Get(deviceId); ok && deviceTmp != nil {
 		device = deviceTmp
 		d.StreamMode = device.StreamMode
+		if device.channels.L == nil {
+			device.channels.L = new(sync.RWMutex)
+		}
 		if channel, ok := deviceTmp.channels.Get(deviceId + "_" + channelId); ok {
 			d.Channel = channel
 		} else if channel, ok := deviceTmp.channels.Find(func(c *Channel) bool {
@@ -128,8 +142,9 @@ func (d *Dialog) Start() (err error) {
 			return errors.Join(fmt.Errorf("channel %s not found", channelId))
 		}
 	} else {
-		d.pullCtx.Fail(fmt.Sprintf("device %s not found", deviceId))
-		return errors.Join(fmt.Errorf("device %s not found", deviceId))
+		err := fmt.Errorf("device %s not found", deviceId)
+		d.pullCtx.Fail(err.Error())
+		return err
 	}
 
 	d.pullCtx.GoToStepConst(StepSIPPrepare)
@@ -150,6 +165,20 @@ func (d *Dialog) Start() (err error) {
 			} else {
 				d.MediaPort = d.gb.MediaPort[0]
 			}
+		}
+	case mrtp.StreamModeTCPActive:
+		// 主动模式也需要提供有效的媒体端口给对端，否则设备会返回端口不可用
+		if d.gb.tcpPort > 0 {
+			d.MediaPort = d.gb.tcpPort
+		} else if d.gb.MediaPort.Valid() {
+			var ok bool
+			d.MediaPort, ok = d.gb.tcpPB.Allocate()
+			if !ok {
+				d.pullCtx.Fail("no available tcp port")
+				return errors.Join(fmt.Errorf("no available tcp port"))
+			}
+		} else {
+			d.MediaPort = d.gb.MediaPort[0]
 		}
 	case mrtp.StreamModeUDP:
 		if d.gb.udpPort > 0 {
@@ -381,6 +410,8 @@ func (d *Dialog) setupReceiver(pub *mrtp.PSReceiver) {
 			})
 		}
 		pub.ListenAddr = fmt.Sprintf(":%d", d.MediaPort)
+	case mrtp.StreamModeTCPActive:
+		// 主动模式的连接地址依赖 INVITE 响应中的目标地址，后续再设置
 	}
 	pub.StreamMode = d.StreamMode
 }
@@ -392,14 +423,19 @@ func (d *Dialog) Run() (err error) {
 
 	// 如果不是 BroadcastPushAfterAck 模式，提前创建监听器（多端口模式需要）
 	if !d.Channel.Device.BroadcastPushAfterAck {
-		d.Info("creating listener before WaitAnswer", "broadcastPushAfterAck", false, "addr", d.MediaPort)
-		d.setupReceiver(&pub)
+		if d.StreamMode == mrtp.StreamModeTCPActive {
+			d.Info("TCP-ACTIVE mode, defer listener until Invite response", "broadcastPushAfterAck", false)
+			pub.StreamMode = d.StreamMode
+		} else {
+			d.Info("creating listener before WaitAnswer", "broadcastPushAfterAck", false, "addr", d.MediaPort)
+			d.setupReceiver(&pub)
 
-		// 提前启动监听器
-		err = pub.Receiver.Start()
-		if err != nil {
-			d.Error("start listener before WaitAnswer failed", "err", err)
-			return err
+			// 提前启动监听器
+			err = pub.Receiver.Start()
+			if err != nil {
+				d.Error("start listener before WaitAnswer failed", "err", err)
+				return err
+			}
 		}
 	}
 
@@ -475,6 +511,8 @@ func (d *Dialog) Run() (err error) {
 	if d.StreamMode == mrtp.StreamModeTCPActive {
 		pub.ListenAddr = fmt.Sprintf("%s:%d", d.targetIP, d.targetPort)
 		d.Info("set TCP-ACTIVE connect address", "addr", pub.ListenAddr)
+		// 确保接收器拿到最新的连接地址
+		pub.StreamMode = d.StreamMode
 	}
 
 	// 如果是 BroadcastPushAfterAck 模式，在 Ack 后创建监听器配置
@@ -496,26 +534,28 @@ func (d *Dialog) GetKey() string {
 }
 
 func (d *Dialog) Dispose() {
-	go func() {
-		time.Sleep(90 * time.Second)
-		switch d.StreamMode {
-		case mrtp.StreamModeUDP:
-			if d.gb.udpPort == 0 { //多端口模式
-				// 回收端口，防止重复回收
-				if !d.gb.udpPB.Release(d.MediaPort) {
-					d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "udp")
-				}
-			}
-		case mrtp.StreamModeTCPPassive:
-			if d.gb.tcpPort == 0 { //多端口模式
-				// 回收端口，防止重复回收
-				if !d.gb.tcpPB.Release(d.MediaPort) {
-					d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
-				}
+	// 释放端口，避免连续回放/拖动时端口耗尽
+	switch d.StreamMode {
+	case mrtp.StreamModeUDP:
+		if d.gb.udpPort == 0 && d.MediaPort > 0 { // 多端口模式
+			if !d.gb.udpPB.Release(d.MediaPort) {
+				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "udp")
 			}
 		}
-		d.Info("listener port release", "port", d.MediaPort)
-	}()
+	case mrtp.StreamModeTCPPassive:
+		if d.gb.tcpPort == 0 && d.MediaPort > 0 { // 多端口模式
+			if !d.gb.tcpPB.Release(d.MediaPort) {
+				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp")
+			}
+		}
+	case mrtp.StreamModeTCPActive:
+		if d.gb.tcpPort == 0 && d.MediaPort > 0 { // 多端口模式
+			if !d.gb.tcpPB.Release(d.MediaPort) {
+				d.Warn("port already released or not allocated", "port", d.MediaPort, "type", "tcp-active")
+			}
+		}
+	}
+	d.Info("listener port release", "port", d.MediaPort)
 	d.Info("dialog dispose", "ssrc", d.SSRC, "listener", d.MediaPort, "streamMode", d.StreamMode, "deviceId", d.Channel.DeviceId, "channelId", d.Channel.ChannelId)
 	if d.session != nil && d.session.InviteResponse != nil {
 		err := d.session.Bye(d)

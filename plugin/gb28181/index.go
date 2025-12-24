@@ -226,8 +226,9 @@ func (gb *GB28181Plugin) Start() (err error) {
 				})
 			} else {
 				// 初始化位图
-				gb.tcpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
-				gb.udpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
+				// Range.Size() 是高低端口之差，需 +1 才能包含闭区间
+				gb.tcpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()+1))
+				gb.udpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()+1))
 			}
 		} else {
 			gb.SetDescription("tcp", fmt.Sprintf("%d", gb.MediaPort[0]))

@@ -6,6 +6,15 @@ global:
   loglevel: debug
   admin:
     enablelogin: false
+  db:
+    dbtype: sqlite  
+    dsn: m7s.db
+logrotate:
+  path: logs              # 日志目录
+  level: debug            # 将日志输出到文件，保留 debug 级别
+  formatter: 2006-01-02T15  # 按小时切分
+  size: 10485760          # 单文件最大约10MB
+  maxfiles: 2            # 保留最近 2 个文件
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
   #     name: "camera-1"             # 拉流代理名称
@@ -22,13 +31,25 @@ srt:
   listenaddr: :6000
   # passphrase: foobarfoobar
 gb28181:
-  enable: false # 是否启用GB28181协议
-  autoinvite: false #建议使用false，开启后会自动邀请设备推流
-  mediaip: 192.168.1.21 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
-  sipip: 192.168.1.21 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  enable: true # 是否启用GB28181协议
+  autoinvite: true #建议使用false，开启后会自动邀请设备推流
+  mediaip: 10.10.10.8 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
+  sipip: 10.10.10.8 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  mediaport: "38200-38202"   #默认收流端口范围,可选
+  advertise:
+    routes:
+      - name: lan-10
+        cidr: 10.0.0.0/8
+        sipip: 10.10.10.8
+        mediaip: 10.10.10.8
+      - name: wan
+        cidr: 0.0.0.0/0
+        sipip: 111.198.72.198
+        mediaip: 111.198.72.198       
+
   sip:
     listenaddr:
-      - udp::5060
+      - udp::35060
   onsub:
     pull:
       ^\d{20}/\d{20}$: $0
