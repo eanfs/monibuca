@@ -46,6 +46,7 @@ func (plugin *FLVPlugin) Start() (err error) {
 	} else if port != "" {
 		plugin.PlayAddr = append(plugin.PlayAddr, fmt.Sprintf("https://{hostName}:%s/flv/{streamPath}", port), fmt.Sprintf("wss://{hostName}:%s/flv/{streamPath}", port))
 	}
+	plugin.registerJessicaRoot()
 	return
 }
 
