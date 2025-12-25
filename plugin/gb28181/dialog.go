@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -423,10 +424,15 @@ func (d *Dialog) Run() (err error) {
 
 	// 如果不是 BroadcastPushAfterAck 模式，提前创建监听器（多端口模式需要）
 	if !d.Channel.Device.BroadcastPushAfterAck {
-		if d.StreamMode == mrtp.StreamModeTCPActive {
+		switch d.StreamMode {
+		case mrtp.StreamModeTCPActive:
 			d.Info("TCP-ACTIVE mode, defer listener until Invite response", "broadcastPushAfterAck", false)
 			pub.StreamMode = d.StreamMode
-		} else {
+		case mrtp.StreamModeTCPPassive:
+			// 先等待设备响应，便于根据返回的媒体地址调整策略（如切为主动拨号）
+			d.Info("TCP-PASSIVE mode, defer listener until Invite response", "broadcastPushAfterAck", false)
+			pub.StreamMode = d.StreamMode
+		default:
 			d.Info("creating listener before WaitAnswer", "broadcastPushAfterAck", false, "addr", d.MediaPort)
 			d.setupReceiver(&pub)
 
@@ -507,6 +513,22 @@ func (d *Dialog) Run() (err error) {
 	// 移动到流数据接收步骤
 	d.pullCtx.GoToStepConst(pkg.StepStreaming)
 
+	// 仅当设备要求我们“主动”拨号（setup:passive）且媒体地址不可达时，才切换为 TCP-ACTIVE
+	if d.StreamMode == mrtp.StreamModeTCPPassive && strings.Contains(inviteResponseBody, "setup:passive") {
+		if ip := net.ParseIP(d.targetIP); ip == nil || ip.IsPrivate() {
+			sourceIP := d.Channel.Device.IP
+			d.Info("invite response requests passive (we active), media IP is private, switch to TCP-ACTIVE", "targetIP", d.targetIP, "sourceIP", sourceIP, "targetPort", d.targetPort)
+			d.StreamMode = mrtp.StreamModeTCPActive
+			pub.StreamMode = d.StreamMode
+			if d.targetPort == 0 {
+				d.targetPort = int(d.MediaPort)
+			}
+			// 用设备的信令源地址作为拨号目标
+			d.targetIP = sourceIP
+			pub.ListenAddr = fmt.Sprintf("%s:%d", d.targetIP, d.targetPort)
+		}
+	}
+
 	// TCP-ACTIVE 模式需要在解析 targetIP 后设置连接地址
 	if d.StreamMode == mrtp.StreamModeTCPActive {
 		pub.ListenAddr = fmt.Sprintf("%s:%d", d.targetIP, d.targetPort)
@@ -519,6 +541,25 @@ func (d *Dialog) Run() (err error) {
 	if d.Channel.Device.BroadcastPushAfterAck {
 		d.Info("setup receiver after Ack", "broadcastPushAfterAck", true)
 		d.setupReceiver(&pub)
+	}
+	// 如果前面为了等待响应没有创建监听，这里补充
+	if pub.Listener == nil && pub.StreamMode == mrtp.StreamModeTCPPassive {
+		d.setupReceiver(&pub)
+	}
+
+	// 启动接收器（针对延迟创建监听的场景）
+	if pub.Listener == nil && pub.StreamMode != mrtp.StreamModeTCPActive {
+		if err := pub.Receiver.Start(); err != nil {
+			d.pullCtx.Fail("start receiver failed: " + err.Error())
+			return err
+		}
+	}
+	if pub.StreamMode == mrtp.StreamModeTCPActive {
+		// 对于主动模式，此时的 ListenAddr/StreamMode 已经在上面设置好
+		if err := pub.Receiver.Start(); err != nil {
+			d.pullCtx.Fail("TCP-ACTIVE start failed: " + err.Error())
+			return errors.Join(errors.New("tcp-active start failed"), err)
+		}
 	}
 
 	err = d.session.Ack(d)
