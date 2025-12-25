@@ -332,6 +332,7 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 		//}
 		task.gb.DB.Save(d)
 	}
+	task.Info("task recoverdevice", "d.DeviceKeepaliveTickTask==nil", d.DeviceKeepaliveTickTask == nil)
 	d.resetKeepaliveTick(time.Second * 30)
 	d.ensureCatalogSubscribeTask()
 	go d.catalog()
