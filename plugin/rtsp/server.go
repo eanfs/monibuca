@@ -87,7 +87,12 @@ func (task *RTSPServer) Go() (err error) {
 			receiver = &Receiver{}
 			task.Using(receiver.Dispose)
 			receiver.NetConnection = task.NetConnection
-			if receiver.Publisher, err = task.conf.Publish(task, strings.TrimPrefix(task.URL.Path, "/")); err != nil {
+			rawQuery := req.URL.RawQuery
+			streamPath := strings.TrimPrefix(task.URL.Path, "/")
+			if rawQuery != "" {
+				streamPath += "?" + rawQuery
+			}
+			if receiver.Publisher, err = task.conf.Publish(task, streamPath); err != nil {
 				receiver = nil
 				err = task.WriteResponse(&util.Response{
 					StatusCode: 500, Status: err.Error(),

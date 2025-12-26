@@ -139,6 +139,7 @@ func (d *DemuxerConverterRange[TA, TV]) Demux(ctx context.Context) error {
 		videoFrame.BaseSample = &pkg.BaseSample{}
 		videoFrame.Raw = &video.Memory
 		videoFrame.SetTS32(video.Timestamp)
+		videoFrame.IDR = video.KeyFrame
 		videoFrame.CTS = time.Duration(video.CTS) / time.Millisecond
 		err := pkg.ConvertFrameType(&videoFrame, targetVideo)
 		if err == nil {
