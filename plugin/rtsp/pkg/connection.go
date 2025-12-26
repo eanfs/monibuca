@@ -207,8 +207,8 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 		res.Proto = ProtoRTSP
 	}
 
-	if res.Status == "" {
-		res.Status = "200 OK"
+	if res.StatusCode == 0 && res.Status == "" {
+		res.SetStatus(200, "OK")
 	}
 
 	if res.Header == nil {

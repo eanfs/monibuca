@@ -22,6 +22,11 @@ type Response struct {
 	Request    *Request
 }
 
+func (r *Response) SetStatus(code int, message string) {
+	r.StatusCode = code
+	r.Status = message
+}
+
 func (r Response) String() string {
 	statusCode := r.StatusCode
 	if statusCode == 0 {
