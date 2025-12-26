@@ -95,7 +95,7 @@ func (task *RTSPServer) Go() (err error) {
 			if receiver.Publisher, err = task.conf.Publish(task, streamPath); err != nil {
 				receiver = nil
 				res := &util.Response{}
-				res.SetStatus(500, err.Error())
+				res.SetStatusFromError(err)
 				err = task.WriteResponse(res)
 				return
 			}
