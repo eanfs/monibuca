@@ -23,7 +23,15 @@ type Response struct {
 }
 
 func (r Response) String() string {
-	s := r.Proto + " " + r.Status + EndLine
+	statusCode := r.StatusCode
+	if statusCode == 0 {
+		statusCode = 200
+	}
+	status := r.Status
+	if status == "" {
+		status = "OK"
+	}
+	s := r.Proto + " " + strconv.Itoa(statusCode) + " " + status + EndLine
 	for k, v := range r.Header {
 		s += k + ": " + v[0] + EndLine
 	}
@@ -54,7 +62,7 @@ func ReadResponse(r *BufReader) (*Response, error) {
 	}
 
 	res := &Response{
-		Status: ss[1] + " " + ss[2],
+		Status: ss[2],
 		Proto:  ss[0],
 	}
 

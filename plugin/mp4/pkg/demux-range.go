@@ -25,6 +25,7 @@ type DemuxerRange struct {
 
 func (d *DemuxerRange) Demux(ctx context.Context) error {
 	var ts, tsOffset int64
+	var audioInitialized, videoInitialized bool
 	for _, stream := range d.Streams {
 		// 检查流的时间范围是否在指定范围内
 		if stream.EndTime.Before(d.StartTime) || stream.StartTime.After(d.EndTime) {
@@ -44,16 +45,26 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			return err
 		}
 
-		// 处理每个轨道的额外数据 (序列头)
+		// 处理每个轨道的额外数据 (序列头)，并检查是否需要初始化
+		var newAudio, newVideo codec.ICodecCtx
 		for _, track := range demuxer.Tracks {
 			if track.Cid.IsAudio() {
 				d.AudioCodec = track.ICodecCtx
+				if !audioInitialized {
+					newAudio = track.ICodecCtx
+					audioInitialized = true
+				}
 			} else {
 				d.VideoCodec = track.ICodecCtx
+				if !videoInitialized {
+					newVideo = track.ICodecCtx
+					videoInitialized = true
+				}
 			}
 		}
-		if d.OnCodec != nil {
-			d.OnCodec(d.AudioCodec, d.VideoCodec)
+		// 只对新发现的音频或视频调用 OnCodec
+		if (newAudio != nil || newVideo != nil) && d.OnCodec != nil {
+			d.OnCodec(newAudio, newVideo)
 		}
 
 		// 计算起始时间戳偏移（用于 Seek）
