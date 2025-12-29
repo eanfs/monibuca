@@ -273,7 +273,7 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 		var size int
 		if magic[0] != '$' {
 			magicWord := string(magic)
-			c.Warn("not magic", "magic", magicWord)
+			c.Debug("not magic", "magic", magicWord)
 			switch magicWord {
 			case "RTSP":
 				var res *util.Response

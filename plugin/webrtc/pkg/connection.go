@@ -149,6 +149,13 @@ func (IO *MultipleConnection) Receive() {
 					mem.Free(buf)
 					continue
 				}
+				// 首包或空包情况：直接作为新帧处理
+				if len(frame.Packets) == 0 {
+					frame.AddRecycleBytes(buf)
+					packet = frame.Packets.GetNextPointer()
+					continue
+				}
+
 				if packet.Timestamp == frame.Packets[0].Timestamp {
 					frame.AddRecycleBytes(buf)
 					packet = frame.Packets.GetNextPointer()
@@ -210,6 +217,13 @@ func (IO *MultipleConnection) Receive() {
 				}
 				if len(packet.Payload) == 0 {
 					mem.Free(buf)
+					continue
+				}
+
+				// 首包或空包情况：直接作为新帧处理
+				if len(writer.VideoFrame.Packets) == 0 {
+					writer.VideoFrame.AddRecycleBytes(buf)
+					packet = writer.VideoFrame.Packets.GetNextPointer()
 					continue
 				}
 
