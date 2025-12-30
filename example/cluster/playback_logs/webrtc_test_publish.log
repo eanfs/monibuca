@@ -1,0 +1,10 @@
+========================================
+流名称: webrtc/test/publish
+播放时间: 2025-12-28 20:25:18
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/webrtc/test/publish
+========================================
+
+[rtsp @ 0x7f86b6210f00] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/webrtc/test/publish: Server returned 404 Not Found
+

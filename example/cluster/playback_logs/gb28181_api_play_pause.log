@@ -1,0 +1,10 @@
+========================================
+流名称: gb28181/api/play/pause
+播放时间: 2025-12-28 20:25:04
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/gb28181/api/play/pause
+========================================
+
+[rtsp @ 0x7fa161912540] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/gb28181/api/play/pause: Server returned 404 Not Found
+

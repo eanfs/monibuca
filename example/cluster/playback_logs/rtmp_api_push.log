@@ -1,0 +1,10 @@
+========================================
+流名称: rtmp/api/push
+播放时间: 2025-12-28 20:25:15
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/rtmp/api/push
+========================================
+
+[rtsp @ 0x7f94f4213000] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/rtmp/api/push: Server returned 404 Not Found
+

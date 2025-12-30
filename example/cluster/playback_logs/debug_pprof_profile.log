@@ -1,0 +1,10 @@
+========================================
+流名称: debug/pprof/profile
+播放时间: 2025-12-28 20:25:01
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/debug/pprof/profile
+========================================
+
+[rtsp @ 0x7fb3b8723ac0] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/debug/pprof/profile: Server returned 404 Not Found
+

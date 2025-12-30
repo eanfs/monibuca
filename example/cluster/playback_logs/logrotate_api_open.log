@@ -1,0 +1,10 @@
+========================================
+流名称: logrotate/api/open
+播放时间: 2025-12-28 20:25:08
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/logrotate/api/open
+========================================
+
+[rtsp @ 0x7fc0d5204780] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/logrotate/api/open: Server returned 404 Not Found
+

@@ -1,0 +1,10 @@
+========================================
+流名称: webrtc/test/screenshare
+播放时间: 2025-12-28 20:25:18
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/webrtc/test/screenshare
+========================================
+
+[rtsp @ 0x7fa870f21280] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/webrtc/test/screenshare: Server returned 404 Not Found
+

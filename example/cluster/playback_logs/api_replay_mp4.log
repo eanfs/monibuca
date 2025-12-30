@@ -1,0 +1,10 @@
+========================================
+流名称: api/replay/mp4
+播放时间: 2025-12-28 20:24:57
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/api/replay/mp4
+========================================
+
+[rtsp @ 0x7fb82b415e40] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/api/replay/mp4: Server returned 404 Not Found
+

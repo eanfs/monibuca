@@ -1,0 +1,10 @@
+========================================
+流名称: record/api/start
+播放时间: 2025-12-28 20:25:13
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/record/api/start
+========================================
+
+[rtsp @ 0x7fa247704400] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/record/api/start: Server returned 404 Not Found
+

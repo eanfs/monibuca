@@ -1,0 +1,10 @@
+========================================
+流名称: gb28181/api/control
+播放时间: 2025-12-28 20:25:02
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/gb28181/api/control
+========================================
+
+[rtsp @ 0x7f8e99417a80] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/gb28181/api/control: Server returned 404 Not Found
+

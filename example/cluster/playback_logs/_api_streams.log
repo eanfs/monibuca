@@ -1,0 +1,13 @@
+========================================
+流名称: /api/streams
+播放时间: 2025-12-28 20:24:50
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554//api/streams
+========================================
+
+[rtsp @ 0x7fd7e1939e80] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554//api/streams: Server returned 404 Not Found
+
+[rtsp @ 0x7fc172f44500] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554//api/streams: Server returned 404 Not Found
+

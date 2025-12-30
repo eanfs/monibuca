@@ -1,0 +1,10 @@
+========================================
+流名称: debug/profile
+播放时间: 2025-12-28 20:25:01
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/debug/profile
+========================================
+
+[rtsp @ 0x7f91aae04540] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/debug/profile: Server returned 404 Not Found
+

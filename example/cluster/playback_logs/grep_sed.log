@@ -1,0 +1,10 @@
+========================================
+流名称: grep/sed
+播放时间: 2025-12-28 20:24:53
+播放协议: rtsp
+流地址: rtsp://10.24.62.77:554/grep/sed
+========================================
+
+[rtsp @ 0x7fbf43213bc0] method DESCRIBE failed: 404 Not Found
+rtsp://10.24.62.77:554/grep/sed: Server returned 404 Not Found
+
