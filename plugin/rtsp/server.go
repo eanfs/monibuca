@@ -88,11 +88,16 @@ func (task *RTSPServer) Go() (err error) {
 			receiver = &Receiver{}
 			task.Using(receiver.Dispose)
 			receiver.NetConnection = task.NetConnection
-			if receiver.Publisher, err = task.conf.Publish(task, strings.TrimPrefix(task.URL.Path, "/")); err != nil {
+			rawQuery := req.URL.RawQuery
+			streamPath := strings.TrimPrefix(task.URL.Path, "/")
+			if rawQuery != "" {
+				streamPath += "?" + rawQuery
+			}
+			if receiver.Publisher, err = task.conf.Publish(task, streamPath); err != nil {
 				receiver = nil
-				err = task.WriteResponse(&util.Response{
-					StatusCode: 500, Status: err.Error(),
-				})
+				res := &util.Response{}
+				res.SetStatusFromError(err)
+				err = task.WriteResponse(res)
 				return
 			}
 			receiver.Publisher.RemoteAddr = task.Conn.RemoteAddr().String()
@@ -204,7 +209,7 @@ func (task *RTSPServer) Go() (err error) {
 						tr = fmt.Sprintf("RTP/AVP/TCP;unicast;mode=record;interleaved=%d-%d", i*2, i*2+1)
 						res.Header.Set("Transport", tr)
 					} else {
-						res.Status = "400 Bad Request"
+						res.SetStatus(400, "Bad Request")
 					}
 				} else {
 					res.Header.Set("Transport", tr)
@@ -229,13 +234,13 @@ func (task *RTSPServer) Go() (err error) {
 							serverRTPPort, err := task.conf.GetUDPPort()
 							if err != nil {
 								task.Error("Failed to get UDP port from pool", "error", err)
-								res.Status = "500 Internal Server Error: No available UDP ports"
+								res.SetStatus(500, "Internal Server Error: No available UDP ports")
 								break
 							}
 							serverRTCPPort, err := task.conf.GetUDPPort()
 							if err != nil {
 								task.Error("Failed to get UDP port from pool", "error", err)
-								res.Status = "500 Internal Server Error: No available UDP ports"
+								res.SetStatus(500, "Internal Server Error: No available UDP ports")
 								break
 							}
 							// 在sender中记录这些端口信息
@@ -261,16 +266,16 @@ func (task *RTSPServer) Go() (err error) {
 							// 标记为UDP传输模式
 							task.Transport = "UDP"
 						} else {
-							res.Status = "400 Bad Request: Invalid client_port format"
+							res.SetStatus(400, "Bad Request: Invalid client_port format")
 						}
 					} else {
-						res.Status = "400 Bad Request: Invalid track ID"
+						res.SetStatus(400, "Bad Request: Invalid track ID")
 					}
 				} else {
-					res.Status = "400 Bad Request: UDP only supported for PLAY mode"
+					res.SetStatus(400, "Bad Request: UDP only supported for PLAY mode")
 				}
 			} else {
-				res.Status = "461 Unsupported transport"
+				res.SetStatus(461, "Unsupported transport")
 			}
 
 			// 设置Session头

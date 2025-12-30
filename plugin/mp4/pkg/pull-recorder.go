@@ -47,9 +47,6 @@ func (p *RecordReader) Run() (err error) {
 		return realTime
 	}
 
-	// 简化的时间戳管理变量
-	var ts int64       // 当前时间戳
-	var tsOffset int64 // 时间戳偏移量
 	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
 	defer allocator.Recycle()
 	// 创建 PublishWriter
@@ -81,13 +78,8 @@ func (p *RecordReader) Run() (err error) {
 			return pkg.ErrSkip
 		}
 		frame.Memory = a.Memory
-		// 简化的时间戳处理
-		if int64(a.Timestamp)+tsOffset < 0 {
-			ts = 0
-		} else {
-			ts = int64(a.Timestamp) + tsOffset
-		}
-		frame.SetTS32(uint32(ts))
+		// DemuxerRange 已经处理了时间戳偏移，直接使用
+		frame.SetTS32(a.Timestamp)
 		return writer.NextAudio()
 	}
 	demuxerRange.OnVideo = func(v box.Sample) error {
@@ -103,25 +95,17 @@ func (p *RecordReader) Run() (err error) {
 			return pkg.ErrSkip
 		}
 
-		// 简化的时间戳处理
-		if int64(v.Timestamp)+tsOffset < 0 {
-			ts = 0
-		} else {
-			ts = int64(v.Timestamp) + tsOffset
-		}
 		frame.Memory = v.Memory
 		// 更新实时时间
 		realTime = time.Now() // 这里可以根据需要调整为更精确的时间计算
-		frame.SetTS32(uint32(ts))
+		// DemuxerRange 已经处理了时间戳偏移，直接使用
+		frame.SetTS32(v.Timestamp)
 		frame.IDR = v.KeyFrame
 		frame.CTS = time.Duration(v.CTS) * time.Millisecond
 		return writer.NextVideo()
 	}
 
 	for loop := 0; loop < p.Loop; loop++ {
-		// 每次循环时更新时间戳偏移量以保持连续性
-		tsOffset = ts
-
 		demuxerRange.StartTime = p.PullStartTime
 		if !p.PullEndTime.IsZero() {
 			demuxerRange.EndTime = p.PullEndTime

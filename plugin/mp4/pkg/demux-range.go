@@ -25,13 +25,15 @@ type DemuxerRange struct {
 
 func (d *DemuxerRange) Demux(ctx context.Context) error {
 	var ts, tsOffset int64
+	var audioInitialized, videoInitialized bool
 	for _, stream := range d.Streams {
 		// 检查流的时间范围是否在指定范围内
 		if stream.EndTime.Before(d.StartTime) || stream.StartTime.After(d.EndTime) {
 			continue
 		}
 
-		tsOffset = ts
+		// 保存上一个文件的最后时间戳，用于跨文件连续
+		baseOffset := ts
 		file, err := os.Open(stream.FilePath)
 		if err != nil {
 			continue
@@ -43,30 +45,41 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			return err
 		}
 
-		// 处理每个轨道的额外数据 (序列头)
+		// 处理每个轨道的额外数据 (序列头)，并检查是否需要初始化
+		var newAudio, newVideo codec.ICodecCtx
 		for _, track := range demuxer.Tracks {
 			if track.Cid.IsAudio() {
 				d.AudioCodec = track.ICodecCtx
+				if !audioInitialized {
+					newAudio = track.ICodecCtx
+					audioInitialized = true
+				}
 			} else {
 				d.VideoCodec = track.ICodecCtx
+				if !videoInitialized {
+					newVideo = track.ICodecCtx
+					videoInitialized = true
+				}
 			}
 		}
-		if d.OnCodec != nil {
-			d.OnCodec(d.AudioCodec, d.VideoCodec)
+		// 只对新发现的音频或视频调用 OnCodec
+		if (newAudio != nil || newVideo != nil) && d.OnCodec != nil {
+			d.OnCodec(newAudio, newVideo)
 		}
 
-		// 计算起始时间戳偏移
+		// 计算起始时间戳偏移（用于 Seek）
+		var seekOffset int64
 		if !d.StartTime.IsZero() {
 			startTimestamp := d.StartTime.Sub(stream.StartTime).Milliseconds()
 			if startTimestamp < 0 {
 				startTimestamp = 0
 			}
 			if startSample, err := demuxer.SeekTime(uint64(startTimestamp)); err == nil {
-				tsOffset = -int64(startSample.Timestamp)
-			} else {
-				tsOffset = 0
+				seekOffset = -int64(startSample.Timestamp)
 			}
 		}
+		// 合并偏移：跨文件连续偏移 + Seek 偏移
+		tsOffset = baseOffset + seekOffset
 
 		// 读取和处理样本
 		for track, sample := range demuxer.ReadSample {
@@ -91,7 +104,7 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			if int64(sample.Timestamp)+tsOffset < 0 {
 				ts = 0
 			} else {
-				ts = int64(sample.Timestamp + uint32(tsOffset))
+				ts = int64(sample.Timestamp) + tsOffset
 			}
 			sample.Timestamp = uint32(ts)
 			if track.Cid.IsAudio() {
@@ -139,6 +152,7 @@ func (d *DemuxerConverterRange[TA, TV]) Demux(ctx context.Context) error {
 		videoFrame.BaseSample = &pkg.BaseSample{}
 		videoFrame.Raw = &video.Memory
 		videoFrame.SetTS32(video.Timestamp)
+		videoFrame.IDR = video.KeyFrame
 		videoFrame.CTS = time.Duration(video.CTS) / time.Millisecond
 		err := pkg.ConvertFrameType(&videoFrame, targetVideo)
 		if err == nil {

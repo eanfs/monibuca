@@ -2,6 +2,7 @@ package plugin_crontab
 
 import (
 	"fmt"
+	task "github.com/langhuihui/gotask"
 
 	"m7s.live/v5/pkg/util"
 
@@ -13,7 +14,7 @@ import (
 type CrontabPlugin struct {
 	m7s.Plugin
 	pb.UnimplementedApiServer
-	crontabs    util.Collection[string, *Crontab]
+	crontabs    task.WorkCollection[string, *Crontab]
 	recordPlans util.Collection[uint, *pkg.RecordPlan]
 }
 
@@ -23,6 +24,7 @@ var _ = m7s.InstallPlugin[CrontabPlugin](m7s.PluginMeta{
 })
 
 func (ct *CrontabPlugin) Start() (err error) {
+	ct.AddTask(&ct.crontabs)
 	if ct.DB == nil {
 		ct.Error("DB is nil")
 	} else {
@@ -49,7 +51,7 @@ func (ct *CrontabPlugin) Start() (err error) {
 			// 如果计划已启用，查询对应的流信息并创建定时任务
 			if plan.Enable {
 				var streams []pkg.RecordPlanStream
-				model := &pkg.RecordPlanStream{PlanID: plan.ID}
+				model := &pkg.RecordPlanStream{PlanID: plan.ID, Enable: true}
 				if err = ct.DB.Model(model).Where(model).Find(&streams).Error; err != nil {
 					ct.Error("query record plan streams error: %v", err)
 					continue
@@ -62,10 +64,11 @@ func (ct *CrontabPlugin) Start() (err error) {
 						RecordPlan:       &plan,
 						RecordPlanStream: &stream,
 					}
-					crontab.OnStart(func() {
-						ct.crontabs.Set(crontab)
-					})
-					ct.AddTask(crontab)
+					crontab.Logger = ct.Logger.With("streamPath", crontab.StreamPath)
+					//crontab.OnStart(func() {
+					//	ct.crontabs.Set(crontab)
+					//})
+					ct.crontabs.AddTask(crontab)
 				}
 			}
 		}

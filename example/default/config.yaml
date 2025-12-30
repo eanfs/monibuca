@@ -149,6 +149,9 @@ rtsp:
   # pull:
   # live/test: rtsp://admin:1qaz2wsx3EDC@58.212.158.30/Streaming/Channels/101
   # live/test: rtsp://admin:1qaz2wsx3EDC@localhost:8554/live/test
+  tcp:
+    listenaddr: :554
+    listenaddrtls: :322
 # webrtc:
 #   publish:
 #     pubaudio: false
