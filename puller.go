@@ -307,8 +307,11 @@ func (p *HTTPFilePuller) Start() (err error) {
 	}
 	if err != nil {
 		p.PullJob.Fail(err.Error())
+		return
 	}
-	p.OnStop(p.ReadCloser.Close)
+	if p.ReadCloser != nil {
+		p.OnStop(p.ReadCloser.Close)
+	}
 	return
 }
 

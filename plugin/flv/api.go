@@ -104,6 +104,14 @@ func (plugin *FLVPlugin) RegisterHandler() map[string]http.HandlerFunc {
 	}
 }
 
+func (plugin *FLVPlugin) registerJessicaRoot() {
+	if plugin == nil {
+		return
+	}
+	handler := http.HandlerFunc(plugin.jessica)
+	plugin.GetGlobalCommonConf().HTTP.Handle("/jessica/{streamPath...}", handler, false)
+}
+
 // /jessica/{streamPath}
 func (plugin *FLVPlugin) jessica(rw http.ResponseWriter, r *http.Request) {
 	streamPath := r.PathValue("streamPath")
