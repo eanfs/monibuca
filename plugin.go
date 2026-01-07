@@ -79,7 +79,7 @@ type (
 	}
 
 	ITCPPlugin interface {
-		OnTCPConnect(conn *net.TCPConn) task.ITask
+		OnTCPConnect(conn net.Conn) task.ITask
 	}
 
 	IUDPPlugin interface {

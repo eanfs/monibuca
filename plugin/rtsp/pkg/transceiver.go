@@ -623,6 +623,13 @@ func (r *Receiver) Receive() (err error) {
 			rr.Reports[0].SSRC = audioPacket.SSRC
 			rr.Reports[0].LastSequenceNumber = uint32(audioPacket.SequenceNumber)
 
+			// 首包或空包情况：直接作为新帧处理
+			if len(writer.AudioFrame.Packets) == 0 {
+				writer.AudioFrame.AddRecycleBytes(buf)
+				audioPacket = writer.AudioFrame.Packets.GetNextPointer()
+				return pkg.ErrDiscard
+			}
+
 			if audioPacket.Timestamp == writer.AudioFrame.Packets[0].Timestamp {
 				writer.AudioFrame.AddRecycleBytes(buf)
 				audioPacket = writer.AudioFrame.Packets.GetNextPointer()
@@ -653,6 +660,13 @@ func (r *Receiver) Receive() (err error) {
 			rr.Reports[0].SSRC = videoPacket.SSRC
 			sdes.Chunks[0].Source = videoPacket.SSRC
 			rr.Reports[0].LastSequenceNumber = uint32(videoPacket.SequenceNumber)
+
+			// 首包或空包情况：直接作为新帧处理
+			if len(writer.VideoFrame.Packets) == 0 {
+				writer.VideoFrame.AddRecycleBytes(buf)
+				videoPacket = writer.VideoFrame.Packets.GetNextPointer()
+				return pkg.ErrDiscard
+			}
 
 			if videoPacket.Timestamp == writer.VideoFrame.Packets[0].Timestamp {
 				writer.VideoFrame.AddRecycleBytes(buf)

@@ -87,6 +87,9 @@ func (c *Stream) Options() error {
 
 	res, err := c.Do(req)
 	if err != nil {
+		if res != nil && (res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed) {
+			return nil
+		}
 		return err
 	}
 
@@ -225,6 +228,7 @@ func (c *Stream) SetupMedia(media *Media, mode string, index int) (byte, error) 
 			if i := strings.IndexByte(s, ';'); i > 0 {
 				c.Session = s[:i]
 				if i = strings.Index(s, "timeout="); i > 0 {
+					// 容错处理：非数字值（如 "no"）会被忽略，keepalive 保持默认值 0
 					c.keepalive, _ = strconv.Atoi(s[i+8:])
 				}
 			} else {
