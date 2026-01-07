@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	task "github.com/langhuihui/gotask"
-	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/config"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 	"unsafe"
+
+	task "github.com/langhuihui/gotask"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/config"
 
 	"github.com/gobwas/ws"
 	"github.com/langhuihui/gomem"
