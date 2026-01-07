@@ -12,6 +12,20 @@ import (
 
 const EndLine = "\r\n"
 
+// StatusError is an error with HTTP status code
+type StatusError struct {
+	Code    int
+	Message string
+}
+
+func (e *StatusError) Error() string {
+	return e.Message
+}
+
+func NewStatusError(code int, message string) *StatusError {
+	return &StatusError{Code: code, Message: message}
+}
+
 // Response like http.Response, but with any proto
 type Response struct {
 	Status     string
@@ -22,8 +36,32 @@ type Response struct {
 	Request    *Request
 }
 
+func (r *Response) SetStatus(code int, message string) {
+	r.StatusCode = code
+	r.Status = message
+}
+
+func (r *Response) SetStatusFromError(err error) {
+	var se *StatusError
+	if errors.As(err, &se) {
+		r.StatusCode = se.Code
+		r.Status = se.Message
+	} else {
+		r.StatusCode = 500
+		r.Status = err.Error()
+	}
+}
+
 func (r Response) String() string {
-	s := r.Proto + " " + r.Status + EndLine
+	statusCode := r.StatusCode
+	if statusCode == 0 {
+		statusCode = 200
+	}
+	status := r.Status
+	if status == "" {
+		status = "OK"
+	}
+	s := r.Proto + " " + strconv.Itoa(statusCode) + " " + status + EndLine
 	for k, v := range r.Header {
 		s += k + ": " + v[0] + EndLine
 	}
@@ -54,7 +92,7 @@ func ReadResponse(r *BufReader) (*Response, error) {
 	}
 
 	res := &Response{
-		Status: ss[1] + " " + ss[2],
+		Status: ss[2],
 		Proto:  ss[0],
 	}
 

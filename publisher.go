@@ -643,23 +643,23 @@ func NewPublishAudioWriter[A IAVFrame](puber *Publisher, allocator *gomem.Scalab
 	if !puber.PubAudio {
 		return nil
 	}
+	if puber.AudioTrack.AVTrack != nil {
+		panic("audio track already exists")
+	}
 	pw := &PublishAudioWriter[A]{
 		Publisher:               puber,
 		ScalableMemoryAllocator: allocator,
 	}
-	t := pw.audioTrack
-	if t == nil {
-		var tmp A
-		t = NewAVTrack(reflect.TypeOf(tmp), pw.Logger.With("track", "audio"), &pw.Publish, pw.audioReady)
-		pw.AudioTrack.Set(t)
-	}
+	var tmp A
+	t := NewAVTrack(reflect.TypeOf(tmp), pw.Logger.With("track", "audio"), &pw.Publish, pw.audioReady)
+	pw.AudioTrack.Set(t)
 	pw.audioTrack = t
 	pw.AudioFrame = pw.getAudioFrameToWrite()
 	return pw
 }
 
 func (pw *PublishAudioWriter[A]) getAudioFrameToWrite() (frame A) {
-	if !pw.PubAudio || pw.audioTrack == nil {
+	if !pw.PubAudio {
 		return
 	}
 	t := pw.audioTrack
@@ -695,23 +695,23 @@ func NewPublishVideoWriter[V IAVFrame](puber *Publisher, allocator *gomem.Scalab
 	if !puber.PubVideo {
 		return nil
 	}
+	if puber.VideoTrack.AVTrack != nil {
+		panic("video track already exists")
+	}
 	pw := &PublishVideoWriter[V]{
 		Publisher:               puber,
 		ScalableMemoryAllocator: allocator,
 	}
-	t := pw.videoTrack
-	if t == nil {
-		var tmp V
-		t = NewAVTrack(reflect.TypeOf(tmp), pw.Logger.With("track", "video"), &pw.Publish, pw.videoReady)
-		pw.VideoTrack.Set(t)
-	}
+	var tmp V
+	t := NewAVTrack(reflect.TypeOf(tmp), pw.Logger.With("track", "video"), &pw.Publish, pw.videoReady)
+	pw.VideoTrack.Set(t)
 	pw.videoTrack = t
 	pw.VideoFrame = pw.getVideoFrameToWrite()
 	return pw
 }
 
 func (pw *PublishVideoWriter[V]) getVideoFrameToWrite() (frame V) {
-	if !pw.PubVideo || pw.videoTrack == nil {
+	if !pw.PubVideo {
 		return
 	}
 	t := pw.videoTrack

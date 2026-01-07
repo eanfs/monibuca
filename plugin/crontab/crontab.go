@@ -38,7 +38,7 @@ type Crontab struct {
 }
 
 func (cron *Crontab) GetKey() string {
-	return strconv.Itoa(int(cron.PlanID)) + "_" + cron.StreamPath
+	return strconv.Itoa(int(cron.PlanID)) + "_" + cron.StreamPath + "_" + cron.RecordType
 }
 
 // 初始化
@@ -370,9 +370,11 @@ func (cron *Crontab) startRecording() {
 	if addr[0] == ':' {
 		addr = "localhost" + addr
 	}
-
+	client := &http.Client{
+		Timeout: 10 * time.Second, // 设置总超时时间
+	}
 	// 发送开始录制请求
-	resp, err := http.Post(fmt.Sprintf("http://%s/mp4/api/start/%s", addr, cron.StreamPath), "application/json", bytes.NewBuffer(jsonBody))
+	resp, err := client.Post(fmt.Sprintf("http://%s/%s/api/start/%s", addr, cron.RecordType, cron.StreamPath), "application/json", bytes.NewBuffer(jsonBody))
 	cron.Debug("crontab", "record_request_url", fmt.Sprintf("http://%s/mp4/api/start/%s", addr,
 		cron.StreamPath), "body", string(jsonBody))
 	if err != nil {
@@ -430,7 +432,7 @@ func (cron *Crontab) stopRecording() {
 	}
 
 	// 发送停止录制请求
-	resp, err := http.Post(fmt.Sprintf("http://%s/mp4/api/stop/%s", addr, cron.StreamPath), "application/json", nil)
+	resp, err := http.Post(fmt.Sprintf("http://%s/%s/api/stop/%s", addr, cron.RecordType, cron.StreamPath), "application/json", nil)
 	if err != nil {
 		cron.Error("crontab", "err", "stop recording failed", "detail", err)
 		// 如果请求失败，恢复状态以便下次重试

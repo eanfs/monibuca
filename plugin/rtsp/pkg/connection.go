@@ -20,7 +20,7 @@ import (
 	"m7s.live/v5/pkg/util"
 )
 
-const Timeout = time.Second * 10
+const Timeout = time.Second * 30
 
 func NewNetConnection(conn net.Conn) *NetConnection {
 	c := &NetConnection{
@@ -207,8 +207,8 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 		res.Proto = ProtoRTSP
 	}
 
-	if res.Status == "" {
-		res.Status = "200 OK"
+	if res.StatusCode == 0 && res.Status == "" {
+		res.SetStatus(200, "OK")
 	}
 
 	if res.Header == nil {
@@ -239,7 +239,9 @@ func (c *NetConnection) WriteResponse(res *util.Response) (err error) {
 		return err
 	}
 	resStr := res.String()
-	c.SetDescription("lastRes", res.Request.Method)
+	if res.Request != nil {
+		c.SetDescription("lastRes", res.Request.Method)
+	}
 	c.Debug("->", "res", resStr)
 	_, err = c.Conn.Write([]byte(resStr))
 	return
