@@ -37,8 +37,8 @@ func (gb *GB28181Plugin) List(ctx context.Context, req *pb.GetDevicesRequest) (*
 	gb.devices.Range(func(device *Device) bool {
 		// 应用筛选条件
 		if req.Query != "" {
-			// 检查设备ID或名称是否包含查询字符串
-			if !strings.Contains(device.DeviceId, req.Query) && !strings.Contains(device.Name, req.Query) && !strings.Contains(device.CustomName, req.Query) {
+			// 检查设备ID、名称或IP是否包含查询字符串
+			if !strings.Contains(device.DeviceId, req.Query) && !strings.Contains(device.Name, req.Query) && !strings.Contains(device.CustomName, req.Query) && !strings.Contains(device.IP, req.Query) {
 				return true // 继续遍历
 			}
 		}
@@ -239,7 +239,7 @@ func (gb *GB28181Plugin) GetDevices(ctx context.Context, req *pb.GetDevicesReque
 	// 遍历内存中的设备
 	for d := range gb.devices.Range {
 		// 应用查询条件过滤
-		if req.Query != "" && !strings.Contains(d.DeviceId, req.Query) && !strings.Contains(d.Name, req.Query) {
+		if req.Query != "" && !strings.Contains(d.DeviceId, req.Query) && !strings.Contains(d.Name, req.Query) && !strings.Contains(d.IP, req.Query) {
 			continue
 		}
 		if req.Status == 1 && !d.Online {
@@ -4262,4 +4262,62 @@ func (gb *GB28181Plugin) API_talk_start(w http.ResponseWriter, r *http.Request) 
 	}
 
 	gb.Info("WebSocket talk session started", "taskId", talkTask.ID)
+}
+
+// GetChannelByIp 根据IP地址查询通道，返回设备ID和通道ID
+func (gb *GB28181Plugin) GetChannelByIp(ctx context.Context, req *pb.GetChannelByIpRequest) (*pb.GetChannelByIpResponse, error) {
+	resp := &pb.GetChannelByIpResponse{
+		Code:    0,
+		Message: "success",
+		Data:    []*pb.ChannelByIpItem{},
+	}
+
+	// 参数校验
+	if req.Ip == "" {
+		resp.Code = 400
+		resp.Message = "IP地址不能为空"
+		return resp, nil
+	}
+
+	// 遍历所有通道，查找匹配的IP地址
+	var matchedChannels []*pb.ChannelByIpItem
+
+	gb.channels.Range(func(channel *Channel) bool {
+		if channel.DeviceChannel == nil {
+			return true
+		}
+
+		// 检查通道的 IPAddress 字段是否包含查询的 IP
+		if channel.DeviceChannel.IPAddress != "" && strings.Contains(channel.DeviceChannel.IPAddress, req.Ip) {
+			item := &pb.ChannelByIpItem{
+				DeviceId:          channel.DeviceId,
+				ChannelId:         channel.ChannelId,
+				ChannelName:       channel.Name,
+				CustomChannelId:   channel.CustomChannelId,
+				CustomChannelName: util.Conditional(channel.CustomName == "", channel.Name, channel.CustomName),
+				IpAddress:         channel.IPAddress,
+				Status:            string(channel.Status),
+				StreamPath:        channel.StreamPath,
+			}
+			matchedChannels = append(matchedChannels, item)
+		}
+
+		return true
+	})
+
+	// 按 ChannelId 排序
+	sort.Slice(matchedChannels, func(i, j int) bool {
+		return matchedChannels[i].ChannelId < matchedChannels[j].ChannelId
+	})
+
+	resp.Total = int32(len(matchedChannels))
+	resp.Data = matchedChannels
+
+	if len(matchedChannels) == 0 {
+		resp.Message = "未找到匹配的通道"
+	} else {
+		resp.Message = fmt.Sprintf("找到 %d 个匹配的通道", len(matchedChannels))
+	}
+
+	return resp, nil
 }

@@ -573,6 +573,13 @@ service api {
       get: "/gb28181/api/download/progress/{downloadId}"
     };
   }
+
+  // 根据IP查询通道（返回设备ID和通道ID）
+  rpc GetChannelByIp (GetChannelByIpRequest) returns (GetChannelByIpResponse) {
+    option (google.api.http) = {
+      get: "/gb28181/api/channel/ip/{ip}"
+    };
+  }
 }
 
 // 请求和响应消息定义
@@ -1443,5 +1450,30 @@ message DownloadProgressResponse {
   string message = 2;               // 响应消息
   int32 total = 3;                  // 总数（统一格式，这里为0）
   DownloadProgressData data = 4;    // 下载进度数据
+}
+
+// 根据IP查询通道请求
+message GetChannelByIpRequest {
+  string ip = 1;                    // 通道IP地址
+}
+
+// 根据IP查询通道响应项
+message ChannelByIpItem {
+  string deviceId = 1;              // 设备ID
+  string channelId = 2;             // 通道ID
+  string channelName = 3;           // 通道名称
+  string customChannelId = 4;       // 自定义通道ID
+  string customChannelName = 5;     // 自定义通道名称
+  string ipAddress = 6;             // IP地址
+  string status = 7;                // 通道状态
+  string streamPath = 8;            // 流路径
+}
+
+// 根据IP查询通道响应
+message GetChannelByIpResponse {
+  int32 code = 1;                   // 响应代码
+  string message = 2;               // 响应消息
+  int32 total = 3;                  // 匹配的通道总数
+  repeated ChannelByIpItem data = 4; // 匹配的通道列表
 }
 

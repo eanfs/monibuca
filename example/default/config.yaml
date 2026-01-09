@@ -35,23 +35,12 @@ srt:
 gb28181:
   enable: true # 是否启用GB28181协议
   autoinvite: true #建议使用false，开启后会自动邀请设备推流
-  mediaip: 10.10.10.8 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
-  sipip: 10.10.10.8 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
-  mediaport: "38200-38202"   #默认收流端口范围,可选
-  advertise:
-    routes:
-      - name: lan-10
-        cidr: 10.0.0.0/8
-        sipip: 10.10.10.8
-        mediaip: 10.10.10.8
-      - name: wan
-        cidr: 0.0.0.0/0
-        sipip: 111.198.72.198
-        mediaip: 111.198.72.198       
-
+  mediaip: 192.168.15.115 #流媒体收流IP,外网情况下使用公网IP,内网情况下使用网卡IP,不要用127.0.0.1
+  sipip: 192.168.15.115 #SIP通讯IP,不管公网还是内网都使用本机网卡IP,不要用127.0.0.1
+  mediaport: "38200-38600"   #默认收流端口范围,可选
   sip:
-    listenaddr:
-      - udp::35060
+    listenaddr:@
+      - udp::5060
   onsub:
     pull:
       ^\d{20}/\d{20}$: $0

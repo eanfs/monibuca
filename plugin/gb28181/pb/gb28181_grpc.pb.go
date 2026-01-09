@@ -100,6 +100,7 @@ const (
 	Api_DeleteChannelWithProxy_FullMethodName            = "/gb28181pro.api/DeleteChannelWithProxy"
 	Api_StartDownload_FullMethodName                     = "/gb28181pro.api/StartDownload"
 	Api_GetDownloadProgress_FullMethodName               = "/gb28181pro.api/GetDownloadProgress"
+	Api_GetChannelByIp_FullMethodName                    = "/gb28181pro.api/GetChannelByIp"
 )
 
 // ApiClient is the client API for Api service.
@@ -262,6 +263,8 @@ type ApiClient interface {
 	StartDownload(ctx context.Context, in *StartDownloadRequest, opts ...grpc.CallOption) (*StartDownloadResponse, error)
 	// 查询下载进度
 	GetDownloadProgress(ctx context.Context, in *GetDownloadProgressRequest, opts ...grpc.CallOption) (*DownloadProgressResponse, error)
+	// 根据IP查询通道（返回设备ID和通道ID）
+	GetChannelByIp(ctx context.Context, in *GetChannelByIpRequest, opts ...grpc.CallOption) (*GetChannelByIpResponse, error)
 }
 
 type apiClient struct {
@@ -1052,6 +1055,16 @@ func (c *apiClient) GetDownloadProgress(ctx context.Context, in *GetDownloadProg
 	return out, nil
 }
 
+func (c *apiClient) GetChannelByIp(ctx context.Context, in *GetChannelByIpRequest, opts ...grpc.CallOption) (*GetChannelByIpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetChannelByIpResponse)
+	err := c.cc.Invoke(ctx, Api_GetChannelByIp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility.
@@ -1212,6 +1225,8 @@ type ApiServer interface {
 	StartDownload(context.Context, *StartDownloadRequest) (*StartDownloadResponse, error)
 	// 查询下载进度
 	GetDownloadProgress(context.Context, *GetDownloadProgressRequest) (*DownloadProgressResponse, error)
+	// 根据IP查询通道（返回设备ID和通道ID）
+	GetChannelByIp(context.Context, *GetChannelByIpRequest) (*GetChannelByIpResponse, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -1376,22 +1391,22 @@ func (UnimplementedApiServer) AddPlatformChannel(context.Context, *AddPlatformCh
 	return nil, status.Error(codes.Unimplemented, "method AddPlatformChannel not implemented")
 }
 func (UnimplementedApiServer) GetPlatformChannels(context.Context, *GetPlatformChannelsRequest) (*PlatformChannelsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetPlatformChannels not implemented")
+	return nil, status.Error(codes.Unimplemented, "method GetPlatformChannels not implemented")
 }
 func (UnimplementedApiServer) RemovePlatformChannel(context.Context, *RemovePlatformChannelRequest) (*BaseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RemovePlatformChannel not implemented")
+	return nil, status.Error(codes.Unimplemented, "method RemovePlatformChannel not implemented")
 }
 func (UnimplementedApiServer) AddPlatformChannelShared(context.Context, *AddPlatformChannelSharedRequest) (*BaseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method AddPlatformChannelShared not implemented")
+	return nil, status.Error(codes.Unimplemented, "method AddPlatformChannelShared not implemented")
 }
 func (UnimplementedApiServer) ChannelManageList(context.Context, *GetChannelManageListRequest) (*ChannelsPageInfo, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ChannelManageList not implemented")
+	return nil, status.Error(codes.Unimplemented, "method ChannelManageList not implemented")
 }
 func (UnimplementedApiServer) AddChannel(context.Context, *AddChannelRequest) (*BaseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method AddChannel not implemented")
+	return nil, status.Error(codes.Unimplemented, "method AddChannel not implemented")
 }
 func (UnimplementedApiServer) DeleteChannel(context.Context, *DeleteChannelRequest) (*BaseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DeleteChannel not implemented")
+	return nil, status.Error(codes.Unimplemented, "method DeleteChannel not implemented")
 }
 func (UnimplementedApiServer) Recording(context.Context, *RecordingRequest) (*BaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Recording not implemented")
@@ -1455,6 +1470,9 @@ func (UnimplementedApiServer) StartDownload(context.Context, *StartDownloadReque
 }
 func (UnimplementedApiServer) GetDownloadProgress(context.Context, *GetDownloadProgressRequest) (*DownloadProgressResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDownloadProgress not implemented")
+}
+func (UnimplementedApiServer) GetChannelByIp(context.Context, *GetChannelByIpRequest) (*GetChannelByIpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetChannelByIp not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 func (UnimplementedApiServer) testEmbeddedByValue()             {}
@@ -2881,6 +2899,24 @@ func _Api_GetDownloadProgress_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_GetChannelByIp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetChannelByIpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetChannelByIp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Api_GetChannelByIp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetChannelByIp(ctx, req.(*GetChannelByIpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3199,6 +3235,10 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDownloadProgress",
 			Handler:    _Api_GetDownloadProgress_Handler,
+		},
+		{
+			MethodName: "GetChannelByIp",
+			Handler:    _Api_GetChannelByIp_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
