@@ -1,10 +1,23 @@
 # Repository Guidelines
 
+## WHERE TO LOOK
+
+**工作前先查看相关AGENTS.md**:
+
+| 任务类型 | 查看文档 |
+|---------|---------|
+| GB28181协议 (SIP/国标) | `plugin/gb28181/AGENTS.md` |
+| 性能调试/监控 | `plugin/debug/AGENTS.md` |
+| MP4录制/点播 | `plugin/mp4/AGENTS.md` |
+| 核心工具包/编解码 | `pkg/AGENTS.md` |
+| 全面参考 | `CLAUDE.md` (375行详尽文档) |
+
 ## Project Structure & Module Organization
 
 - `/*.go`: core server/framework entrypoints and types (module: `m7s.live/v5`).
-- `pkg/`: shared building blocks (config, codecs/formats, utilities).
+- `pkg/`: shared building blocks (config, codecs/formats, utilities) - **详见 `pkg/AGENTS.md`**
 - `plugin/`: built-in plugins, one per folder (e.g., `plugin/rtsp/`, `plugin/webrtc/`); see `plugin/README.md`.
+  - **复杂插件有专门AGENTS.md**: `gb28181/`, `debug/`, `mp4/`
 - `pb/` and `plugin/*/pb/`: Protocol Buffer `.proto` definitions and generated Go code.
 - `example/`: runnable examples and YAML configs (recommended starting point for local dev).
 - `test/` and `**/*_test.go`: integration and unit tests.
