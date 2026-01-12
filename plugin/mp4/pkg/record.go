@@ -148,12 +148,20 @@ func (r *Recorder) writeTailer(end time.Time) {
 var CustomFileName = func(job *m7s.RecordJob) string {
 	// 如果指定了文件名，使用指定的文件名
 	if fn := job.RecConf.FileName; fn != "" {
+		// 安全验证：清理文件名，移除路径分隔符，防止路径遍历攻击
+		fn = filepath.Base(fn)
+		// 验证文件名不为空且不是特殊路径
+		if fn == "" || fn == "." || fn == ".." {
+			// 回退到默认命名
+			goto defaultNaming
+		}
 		// 确保文件名包含 .mp4 扩展名
 		if !strings.HasSuffix(strings.ToLower(fn), ".mp4") {
 			fn = fn + ".mp4"
 		}
 		return filepath.Join(job.RecConf.FilePath, fn)
 	}
+defaultNaming:
 	// 否则使用时间戳生成文件名
 	now := time.Now()
 	return filepath.Join(job.RecConf.FilePath, fmt.Sprintf("%s_%09d.mp4", time.Now().Local().Format("2006-01-02-15-04-05"), now.Nanosecond()))

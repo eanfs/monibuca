@@ -45,7 +45,7 @@ type (
 		StartTime    time.Time `gorm:"default:NULL"`
 		EndTime      time.Time `gorm:"default:NULL"`
 		Duration     uint32    `gorm:"comment:录像时长;default:0"`
-		Filename     string    `json:"fileName" desc:"文件名" gorm:"type:varchar(255);comment:文件名"`
+		FileName     string    `json:"fileName" desc:"文件名" gorm:"type:varchar(255);comment:文件名"`
 		Type         string    `json:"type" desc:"录像文件类型" gorm:"type:varchar(255);comment:录像文件类型,flv,mp4,raw,fmp4,hls"`
 		FilePath     string
 		StreamPath   string
@@ -89,7 +89,7 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		StartTime:    start,
 		StreamPath:   sub.StreamPath,
 		FilePath:     filePath,
-		Filename:     fileName,
+		FileName:     fileName,
 		Type:         recordJob.RecConf.Type,
 		StorageLevel: 1, // 默认为主存储
 		StorageType:  storageType,

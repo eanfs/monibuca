@@ -376,7 +376,11 @@ func (config *Config) ParseUserFile(conf map[string]any) {
 						prop.ParseUserFile(vv)
 					default:
 						// If the value is not a map (single non-struct value), assign it to the first field
-						prop.props[0].Ptr.Set(reflect.ValueOf(v))
+						// Use unmarshal to handle type conversion properly
+						fv := unmarshal(prop.props[0].Ptr.Type(), v)
+						if fv.IsValid() {
+							prop.props[0].Ptr.Set(fv)
+						}
 					}
 				}
 			} else {
