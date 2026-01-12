@@ -4264,7 +4264,7 @@ func (gb *GB28181Plugin) API_talk_start(w http.ResponseWriter, r *http.Request) 
 	gb.Info("WebSocket talk session started", "taskId", talkTask.ID)
 }
 
-// GetChannelByIp 根据IP地址查询通道，返回设备ID和通道ID
+// GetChannelByIp 根据IP地址查询通道，返回设备ID和通道ID（仅从数据库查询）
 func (gb *GB28181Plugin) GetChannelByIp(ctx context.Context, req *pb.GetChannelByIpRequest) (*pb.GetChannelByIpResponse, error) {
 	resp := &pb.GetChannelByIpResponse{
 		Code:    0,
@@ -4279,31 +4279,52 @@ func (gb *GB28181Plugin) GetChannelByIp(ctx context.Context, req *pb.GetChannelB
 		return resp, nil
 	}
 
-	// 遍历所有通道，查找匹配的IP地址
+	// 检查数据库连接
+	if gb.DB == nil {
+		resp.Code = 500
+		resp.Message = "数据库未初始化"
+		return resp, nil
+	}
+
+	// 从数据库中查询（不过滤状态，同时检查 ip_address 和 address 两个字段，使用精确匹配）
+	var dbChannels []gb28181.DeviceChannel
+	if err := gb.DB.Where("ip_address = ? OR address = ?", req.Ip, req.Ip).Find(&dbChannels).Error; err != nil {
+		gb.Error("从数据库查询通道失败", "error", err, "ip", req.Ip)
+		resp.Code = 500
+		resp.Message = fmt.Sprintf("查询失败: %v", err)
+		return resp, nil
+	}
+
+	// 统计信息
+	gb.Info("数据库查询结果", "ip", req.Ip, "total", len(dbChannels))
+
+	// 转换为响应格式
 	var matchedChannels []*pb.ChannelByIpItem
+	var statusCount = make(map[string]int) // 统计各状态的通道数量
 
-	gb.channels.Range(func(channel *Channel) bool {
-		if channel.DeviceChannel == nil {
-			return true
+	for _, dbChannel := range dbChannels {
+		// 统计状态
+		statusCount[string(dbChannel.Status)]++
+
+		item := &pb.ChannelByIpItem{
+			DeviceId:          dbChannel.DeviceId,
+			ChannelId:         dbChannel.ChannelId,
+			ChannelName:       dbChannel.Name,
+			CustomChannelId:   dbChannel.CustomChannelId,
+			CustomChannelName: util.Conditional(dbChannel.CustomName == "", dbChannel.Name, dbChannel.CustomName),
+			IpAddress:         util.Conditional(dbChannel.IPAddress == "", dbChannel.Address, dbChannel.IPAddress),
+			Status:            string(dbChannel.Status),
+			StreamPath:        dbChannel.StreamPath,
 		}
+		matchedChannels = append(matchedChannels, item)
 
-		// 检查通道的 IPAddress 字段是否包含查询的 IP
-		if channel.DeviceChannel.IPAddress != "" && strings.Contains(channel.DeviceChannel.IPAddress, req.Ip) {
-			item := &pb.ChannelByIpItem{
-				DeviceId:          channel.DeviceId,
-				ChannelId:         channel.ChannelId,
-				ChannelName:       channel.Name,
-				CustomChannelId:   channel.CustomChannelId,
-				CustomChannelName: util.Conditional(channel.CustomName == "", channel.Name, channel.CustomName),
-				IpAddress:         channel.IPAddress,
-				Status:            string(channel.Status),
-				StreamPath:        channel.StreamPath,
-			}
-			matchedChannels = append(matchedChannels, item)
-		}
-
-		return true
-	})
+		gb.Debug("找到匹配通道",
+			"ip", req.Ip,
+			"deviceId", dbChannel.DeviceId,
+			"channelId", dbChannel.ChannelId,
+			"ipAddress", dbChannel.IPAddress,
+			"status", dbChannel.Status)
+	}
 
 	// 按 ChannelId 排序
 	sort.Slice(matchedChannels, func(i, j int) bool {
@@ -4316,8 +4337,10 @@ func (gb *GB28181Plugin) GetChannelByIp(ctx context.Context, req *pb.GetChannelB
 	if len(matchedChannels) == 0 {
 		resp.Message = "未找到匹配的通道"
 	} else {
-		resp.Message = fmt.Sprintf("找到 %d 个匹配的通道", len(matchedChannels))
+		resp.Message = fmt.Sprintf("找到 %d 个匹配的通道（数据库），状态分布: %v", len(matchedChannels), statusCount)
 	}
+
+	gb.Info("查询完成", "ip", req.Ip, "total", len(matchedChannels), "statusCount", statusCount)
 
 	return resp, nil
 }
