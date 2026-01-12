@@ -1,11 +1,11 @@
 package hls
 
 import (
-    "context"
-    "fmt"
-    "strings"
-    "path/filepath"
-    "time"
+	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
@@ -29,26 +29,34 @@ type Recorder struct {
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
-    if fn := job.RecConf.FileName; fn != "" {
-        if !strings.HasSuffix(strings.ToLower(fn), ".ts") {
-            fn = fn + ".ts"
-        }
-        return filepath.Join(job.RecConf.FilePath, fn)
-    }
-    if job.RecConf.Fragment == 0 || job.RecConf.Append {
-        return fmt.Sprintf("%s/%s.ts", job.RecConf.FilePath, time.Now().Format("20060102150405"))
-    }
-    return filepath.Join(job.RecConf.FilePath, time.Now().Format("20060102150405")+".ts")
+	if fn := job.RecConf.FileName; fn != "" {
+		// 安全验证：清理文件名，移除路径分隔符，防止路径遍历攻击
+		fn = filepath.Base(fn)
+		// 验证文件名不为空且不是特殊路径
+		if fn == "" || fn == "." || fn == ".." {
+			// 回退到默认命名
+			goto defaultNaming
+		}
+		if !strings.HasSuffix(strings.ToLower(fn), ".ts") {
+			fn = fn + ".ts"
+		}
+		return filepath.Join(job.RecConf.FilePath, fn)
+	}
+defaultNaming:
+	if job.RecConf.Fragment == 0 || job.RecConf.Append {
+		return fmt.Sprintf("%s/%s.ts", job.RecConf.FilePath, time.Now().Format("20060102150405"))
+	}
+	return filepath.Join(job.RecConf.FilePath, time.Now().Format("20060102150405")+".ts")
 }
 
 func (r *Recorder) createStream(start time.Time) (err error) {
-    r.RecordJob.RecConf.Type = "ts"
-    err = r.CreateStream(start, CustomFileName)
-    if err != nil {
-        return err
-    }
-    r.Debug("ts create file", "filePath", r.Event.FilePath)
-    return nil
+	r.RecordJob.RecConf.Type = "ts"
+	err = r.CreateStream(start, CustomFileName)
+	if err != nil {
+		return err
+	}
+	r.Debug("ts create file", "filePath", r.Event.FilePath)
+	return nil
 }
 
 func (r *Recorder) writeTailer(end time.Time) {

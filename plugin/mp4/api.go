@@ -572,7 +572,15 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
-		return job.StreamPath == req.StreamPath && job.RecConf.FilePath == req.FilePath && job.RecConf.FileName == req.FileName
+		if job.StreamPath != req.StreamPath {
+			return false
+		}
+		// 如果两者都指定了文件名，需要完全匹配
+		if req.FileName != "" && job.RecConf.FileName != "" {
+			return job.RecConf.FilePath == req.FilePath && job.RecConf.FileName == req.FileName
+		}
+		// 如果只有路径匹配，也认为是同一个录制任务
+		return job.RecConf.FilePath == req.FilePath
 	})
 	if recordExists {
 		err = pkg.ErrRecordExists

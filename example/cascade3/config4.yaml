@@ -1,0 +1,56 @@
+global:
+  loglevel: debug
+  http:
+    listenaddr: :8083
+    listenaddrtls: :18558
+  tcp:
+    listenaddr: :50055
+  db:
+    dsn: "test4.db"
+    type: "sqlite"
+  # S3存储配置示例（需要时取消注释并填写实际值）
+  storage:
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      accessKeyID: "xidinguser"     # 访问密钥ID
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+      bucket: "vidu-media-bucket"            # 存储桶名称
+      pathPrefix: ""     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间    
+rtmp:
+  tcp:
+    listenaddr: :19354
+cluster:
+  quic:
+    listenaddr: :44944
+  sync:
+    serverid: "node4"
+    address: "localhost:50055"
+    seedservers:
+      - "localhost:50052"
+      - "localhost:50053"
+      - "localhost:50054"
+    heartbeatinterval: 5s
+    syncinterval: 30s
+  role:
+    - name: "relay"
+      description: "中继角色"
+      canAccess:
+        - "public"
+        - "storage"
+      accessibleBy:
+        - "internal"
+        - "admin"
+  # routing:
+  #   redirect:
+  #     "^test/":
+  #       statusCode: 307
+  #       forceredirect: true
+  #       targetoverrides:
+  #         node1: localhost:18081
+  #         node2: localhost:18082
+  #         node3: localhost:18083
+  #         node4: localhost:18084

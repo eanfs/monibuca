@@ -150,11 +150,19 @@ type Recorder struct {
 
 var CustomFileName = func(job *m7s.RecordJob) string {
 	if fn := job.RecConf.FileName; fn != "" {
+		// 安全验证：清理文件名，移除路径分隔符，防止路径遍历攻击
+		fn = filepath.Base(fn)
+		// 验证文件名不为空且不是特殊路径
+		if fn == "" || fn == "." || fn == ".." {
+			// 回退到默认命名
+			goto defaultNaming
+		}
 		if !strings.HasSuffix(strings.ToLower(fn), ".flv") {
 			fn = fn + ".flv"
 		}
 		return filepath.Join(job.RecConf.FilePath, fn)
 	}
+defaultNaming:
 	if job.RecConf.Fragment == 0 || job.RecConf.Append {
 		return fmt.Sprintf("%s.flv", job.RecConf.FilePath)
 	}
