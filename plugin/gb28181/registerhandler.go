@@ -330,7 +330,9 @@ func (task *registerHandlerTask) RecoverDevice(d *Device, req *sip.Request) {
 		//} else {
 		//	gb.Info("RecoverDevice", "type", "新增设备", "deviceId", d.DeviceId)
 		//}
-		task.gb.DB.Save(d)
+		if err := d.SyncDeviceToStorage(); err != nil {
+			task.gb.Error("RecoverDevice sync failed", "error", err)
+		}
 	}
 	task.Info("task recoverdevice", "d.DeviceKeepaliveTickTask==nil", d.DeviceKeepaliveTickTask == nil)
 	d.resetKeepaliveTick(time.Second * 30)
@@ -491,7 +493,9 @@ func (task *registerHandlerTask) StoreDevice(deviceid string, req *sip.Request, 
 		//	task.gb.DB.Save(d).Omit("create_time")
 		//	task.gb.Info("StoreDevice", "type", "更新设备", "deviceId", d.DeviceId)
 		//} else {
-		task.gb.DB.Save(d)
+		if err := d.SyncDeviceToStorage(); err != nil {
+			task.gb.Error("StoreDevice sync failed", "error", err)
+		}
 		task.gb.Info("StoreDevice", "type", "新增设备", "deviceId", d.DeviceId)
 		//}
 	}

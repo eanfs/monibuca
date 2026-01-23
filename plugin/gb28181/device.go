@@ -158,6 +158,100 @@ func (d *Device) Dispose() {
 	}
 }
 
+// SyncDeviceToStorage 同步设备数据到存储（数据库）
+// 该方法统一处理设备信息的持久化，确保内存与数据库的一致性
+func (d *Device) SyncDeviceToStorage() error {
+	if d.plugin.DB == nil {
+		return nil
+	}
+	d.UpdateTime = time.Now()
+	if err := d.plugin.DB.Save(d).Error; err != nil {
+		d.Error("同步设备到数据库失败", "error", err, "deviceId", d.DeviceId)
+		return err
+	}
+	d.Debug("设备数据已同步到数据库", "deviceId", d.DeviceId)
+	return nil
+}
+
+// SyncChannelsToStorage 批量同步通道数据到存储（数据库）
+// 该方法在 Catalog 响应完成后调用，批量保存所有通道信息
+func (d *Device) SyncChannelsToStorage() error {
+	if d.plugin.DB == nil {
+		return nil
+	}
+	if d.channels.Length == 0 {
+		return nil
+	}
+
+	var channels []gb28181.DeviceChannel
+	d.channels.Range(func(channel *Channel) bool {
+		if channel.DeviceChannel != nil {
+			channels = append(channels, *channel.DeviceChannel)
+		}
+		return true
+	})
+
+	if len(channels) == 0 {
+		return nil
+	}
+
+	// 使用事务批量保存通道
+	err := d.plugin.DB.Transaction(func(tx *gorm.DB) error {
+		for _, c := range channels {
+			if err := tx.Save(&c).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		d.Error("批量同步通道到数据库失败", "error", err, "deviceId", d.DeviceId, "channelCount", len(channels))
+		return err
+	}
+
+	d.Debug("通道数据已批量同步到数据库", "deviceId", d.DeviceId, "channelCount", len(channels))
+	return nil
+}
+
+// SyncToStorage 同步设备及其通道数据到存储（数据库）
+// 该方法作为统一入口，在设备注册或更新后调用
+func (d *Device) SyncToStorage() error {
+	if d.plugin.DB == nil {
+		return nil
+	}
+
+	// 使用事务确保设备和通道的原子性保存
+	err := d.plugin.DB.Transaction(func(tx *gorm.DB) error {
+		// 保存设备信息
+		d.UpdateTime = time.Now()
+		if err := tx.Save(d).Error; err != nil {
+			return fmt.Errorf("保存设备失败: %w", err)
+		}
+
+		// 批量保存通道信息
+		if d.channels.Length > 0 {
+			d.channels.Range(func(channel *Channel) bool {
+				if channel.DeviceChannel != nil {
+					if err := tx.Save(channel.DeviceChannel).Error; err != nil {
+						d.Error("保存通道失败", "error", err, "channelId", channel.ChannelId)
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+
+	if err != nil {
+		d.Error("同步设备数据到数据库失败", "error", err, "deviceId", d.DeviceId)
+		return err
+	}
+
+	d.Debug("设备及通道数据已同步到数据库", "deviceId", d.DeviceId, "channelCount", d.channels.Length)
+	return nil
+}
+
 func (d *Device) GetKey() string {
 	return d.DeviceId
 }
@@ -346,6 +440,12 @@ func (c *catalogHandlerTask) Run() (err error) {
 			"SumNum", catalogReq.SumNum,
 			"TotalCount", catalogReq.TotalCount,
 			"耗时", time.Since(catalogReq.CreateTime))
+
+		// 批量同步通道数据到数据库
+		d.SyncChannelsToStorage()
+		// 同步设备信息（如通道数量更新）
+		d.SyncDeviceToStorage()
+
 		catalogReq.Resolve()
 		d.catalogReqs.RemoveByKey(msg.SN)
 		d.Cataloging = false
@@ -797,6 +897,7 @@ func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
 	}
 	d.channels.Set(resultChannel)
 	d.plugin.channels.Set(resultChannel)
+	// 注意：通道数据库同步已移至 SyncChannelsToStorage 方法，在 Catalog 响应完成后批量执行
 }
 
 func (d *Device) GetID() string {
