@@ -212,8 +212,8 @@ func (gb *GB28181Plugin) Start() (err error) {
 		InitRTPPayloadSize()
 
 		if gb.MediaPort.Valid() {
-			gb.SetDescription("media port", fmt.Sprintf("%d-%d", gb.MediaPort[0], gb.MediaPort[1]))
 			if gb.MediaPort.Size() == 0 {
+				gb.SetDescription("media port", fmt.Sprintf("%d-%d (单端口模式)", gb.MediaPort[0], gb.MediaPort[1]))
 				gb.tcpPort = gb.MediaPort[0]
 				gb.AddTask(&gb28181.SinglePortTCP{
 					Port:       gb.tcpPort,
@@ -226,9 +226,16 @@ func (gb *GB28181Plugin) Start() (err error) {
 				})
 			} else {
 				// 初始化位图
-				// Range.Size() 是高低端口之差，需 +1 才能包含闭区间
-				gb.tcpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()+1))
-				gb.udpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()+1))
+				gb.tcpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
+				gb.udpPB.Init(gb.MediaPort[0], uint16(gb.MediaPort.Size()))
+				// 显示端口范围和剩余数量
+				tcpAvailable := gb.tcpPB.GetAvailablePorts()
+				udpAvailable := gb.udpPB.GetAvailablePorts()
+				tcpUsed := gb.tcpPB.GetUsedPorts()
+				udpUsed := gb.udpPB.GetUsedPorts()
+				gb.SetDescription("media port", fmt.Sprintf("%d-%d (多端口模式)", gb.MediaPort[0], gb.MediaPort[1]))
+				gb.SetDescription("tcp ports", fmt.Sprintf("可用:%d/已用:%d", tcpAvailable, tcpUsed))
+				gb.SetDescription("udp ports", fmt.Sprintf("可用:%d/已用:%d", udpAvailable, udpUsed))
 			}
 		} else {
 			gb.SetDescription("tcp", fmt.Sprintf("%d", gb.MediaPort[0]))
@@ -584,7 +591,7 @@ func (gb *GB28181Plugin) checkPlatform() {
 		gb.Error("查询平台失败", "error", err.Error())
 		return
 	}
-	if gb.Platforms != nil && len(gb.Platforms) > 0 {
+	if len(gb.Platforms) > 0 {
 		// 将 gb.Platforms 中的平台设置为只读
 		for _, platform := range gb.Platforms {
 			platform.ReadOnly = true
@@ -597,7 +604,7 @@ func (gb *GB28181Plugin) checkPlatform() {
 		// 创建Platform实例
 		platform := NewPlatform(platformModel, gb, true)
 
-		if platformModel.PlatformChannels != nil && len(platformModel.PlatformChannels) > 0 {
+		if len(platformModel.PlatformChannels) > 0 {
 			for i := range platformModel.PlatformChannels {
 				channelDbId := platformModel.PlatformChannels[i].ChannelDBID
 				if channelDbId != "" {
@@ -617,7 +624,7 @@ func (gb *GB28181Plugin) checkPlatform() {
 					Find(&channels).Error; err != nil {
 					gb.Error("<UNK>", "error", err.Error())
 				}
-				if channels != nil && len(channels) > 0 {
+				if len(channels) > 0 {
 					for i := range channels {
 						if channel, ok := gb.channels.Get(channels[i].ID); ok {
 							platform.channels.Set(channel)
@@ -627,6 +634,7 @@ func (gb *GB28181Plugin) checkPlatform() {
 			}
 		}
 		platform.PlatformModel.ChannelCount = platform.channels.Length
+		platform.Logger = gb.Logger.With("platform_server_gb_id", platformModel.ServerGBID)
 		// 添加到任务系统
 		gb.platforms.AddTask(platform)
 		gb.Info("平台初始化完成", "ID", platformModel.ServerGBID, "Name", platformModel.Name)
@@ -970,8 +978,17 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		return true
 	})
+	if channel == nil {
+		gb.Debug("OnInvite", "error", "channel not found", "channel", inviteInfo.TargetChannelId, "find channel from req.to", req.To().Address.User)
+		platform.channels.Range(func(channelTmp *Channel) bool {
+			if channelTmp.CustomChannelId == req.To().Address.User {
+				channel = channelTmp
+			}
+			return true
+		})
+	}
 
-	gb.Info("OnInvite", "action", "channel found", "channel.ChannelId", channel.ChannelId, "channel.CustomChannelId", channel.CustomChannelId, "channelName", channel.Name)
+	gb.Info("OnInvite", "action", "channel found", "channel.ChannelId", channel.ChannelId, "channelName", channel.Name)
 
 	// 通道存在，发送100 Trying响应
 	tryingResp := sip.NewResponseFromRequest(req, sip.StatusTrying, "Trying", nil)
@@ -989,19 +1006,31 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// 获取媒体信息
 	mediaPort := uint16(0)
-	if inviteInfo.StreamMode != mrtp.StreamModeTCPPassive {
-		if gb.MediaPort.Valid() {
-			var ok bool
-			mediaPort, ok = gb.tcpPB.Allocate()
-			if !ok {
-				gb.Error("OnInvite", "error", "no available port")
-				_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "No Available Port", nil))
-				return
-			}
-			gb.Debug("OnInvite", "action", "allocate port", "port", mediaPort)
+	switch inviteInfo.StreamMode {
+	case mrtp.StreamModeTCPPassive:
+		// TCP Passive 模式：我们主动连接上级平台，无需分配端口
+		// mediaPort 保持为 0
+	case mrtp.StreamModeUDP:
+		// UDP 模式：我们直接将设备的数据转发给上级平台的UDP地址，无需分配端口
+		// mediaPort 保持为 0
+	case mrtp.StreamModeTCPActive:
+		// TCP Active 模式：上级平台会连接我们，需要分配TCP端口
+		if gb.tcpPort > 0 {
+			mediaPort = gb.tcpPort
 		} else {
-			mediaPort = gb.MediaPort[0]
-			gb.Debug("OnInvite", "action", "use default port", "port", mediaPort)
+			if gb.MediaPort.Valid() {
+				var ok bool
+				mediaPort, ok = gb.tcpPB.Allocate()
+				if !ok {
+					gb.Error("[PORT_ALLOCATE_FAILED] TCP端口分配失败 - 无可用端口 (OnInvite)", "platformId", inviteInfo.RequesterId, "channelId", inviteInfo.TargetChannelId)
+					_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "No Available Port", nil))
+					return
+				}
+				gb.Info("[PORT_ALLOCATE_SUCCESS] TCP端口分配成功 (OnInvite)", "port", mediaPort, "platformId", inviteInfo.RequesterId, "channelId", inviteInfo.TargetChannelId, "streamMode", inviteInfo.StreamMode)
+				gb.updatePortStats()
+			} else {
+				mediaPort = gb.MediaPort[0]
+			}
 		}
 	}
 
@@ -1053,14 +1082,31 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 	response := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
 	contentType := sip.ContentTypeHeader("application/sdp")
 	response.AppendHeader(&contentType)
+	contactHDR := sip.ContactHeader{
+		Address: sip.Uri{
+			User: gb.Serial,
+			Host: platform.PlatformModel.DeviceIP,
+			Port: platform.PlatformModel.DevicePort,
+		},
+	}
+	response.AppendHeader(&contactHDR)
 	response.SetBody([]byte(strings.Join(content, "\r\n") + "\r\n"))
 	var ip = ""
-	var streamMode mrtp.StreamMode
 	if channel.StreamPath == "" {
 		ip = channel.Device.MediaIp
-		streamMode = channel.Device.StreamMode
 	}
 	// 创建并保存SendRtpInfo，以供OnAck方法使用
+	// 根据上级平台的传输模式决定回复给上级平台的端口
+	targetPort := inviteInfo.Port // 默认使用上级平台指定的端口
+	switch inviteInfo.StreamMode {
+	case mrtp.StreamModeTCPPassive:
+		targetPort = inviteInfo.Port // TCP被动模式：我们连接上级平台，使用上级平台的端口
+	case mrtp.StreamModeTCPActive:
+		targetPort = mediaPort // TCP主动模式：上级平台连接我们，使用我们分配的端口
+	case mrtp.StreamModeUDP:
+		targetPort = inviteInfo.Port // UDP模式：我们发送数据到上级平台的端口
+	}
+
 	forwardDialog := &ForwardDialog{
 		gb:             gb,
 		platformCallId: req.CallID().Value(),
@@ -1073,15 +1119,15 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 			Source: mrtp.ConnectionConfig{
 				//IP:   util.Conditional(channel.StreamPath != "", "", channel.Device.MediaIp),    // 将在 Run 方法中从 SDP 响应中获取
 				IP:   ip, // 将在 Run 方法中从 SDP 响应中获取
-				Port: 0,  // 将在 Run 方法中从 SDP 响应中获取
+				Port: 0,  // 将在 Run 方法中从设备SDP响应解析
 				//Mode: util.Conditional(channel.StreamPath != "", "", channel.Device.StreamMode), // 默认值，将在 Run 方法中根据 StreamMode 更新
-				Mode: streamMode, // 默认值，将在 Run 方法中根据 StreamMode 更新
-				SSRC: 0,          // 将在 Start 方法中设置
+				Mode: channel.Device.StreamMode, // 使用下级设备的传输模式
+				SSRC: 0,                         // 将在 Start 方法中设置
 			},
 			Target: mrtp.ConnectionConfig{
 				IP:   inviteInfo.IP,
-				Port: inviteInfo.Port,
-				Mode: inviteInfo.StreamMode, // 默认值，将在 Run 方法中根据 StreamMode 更新
+				Port: targetPort,            // 根据上级平台模式决定端口
+				Mode: inviteInfo.StreamMode, // 使用上级平台的传输模式
 				SSRC: inviteInfo.SSRC,       // 将在 Run 方法中从 platformSSRC 解析
 			},
 			Relay: false,
@@ -1098,7 +1144,6 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	gb.Info("OnInvite", "action", "complete", "platformId", inviteInfo.RequesterId, "channelId", channel.ChannelId,
 		"ip", inviteInfo.IP, "port", inviteInfo.Port, "StreamMode", inviteInfo.StreamMode)
-	return
 }
 
 func (gb *GB28181Plugin) OnAck(req *sip.Request, tx sip.ServerTransaction) {
@@ -1268,4 +1313,40 @@ func (gb *GB28181Plugin) sendPSToUpstream(forwardDialog *ForwardDialog) {
 	muxer.Mux(writeRTP)
 
 	gb.Info("sendPSToUpstream", "action", "stream ended", "streamPath", streamPath)
+}
+
+// updatePortStats 更新端口使用统计信息
+func (gb *GB28181Plugin) updatePortStats() {
+	if gb.MediaPort.Valid() && gb.MediaPort.Size() > 0 {
+		tcpAvailable := gb.tcpPB.GetAvailablePorts()
+		udpAvailable := gb.udpPB.GetAvailablePorts()
+		tcpUsed := gb.tcpPB.GetUsedPorts()
+		udpUsed := gb.udpPB.GetUsedPorts()
+		gb.SetDescription("tcp ports", fmt.Sprintf("可用:%d/已用:%d", tcpAvailable, tcpUsed))
+		gb.SetDescription("udp ports", fmt.Sprintf("可用:%d/已用:%d", udpAvailable, udpUsed))
+
+		// 显示被占用的端口详情（限制显示前20个）
+		tcpUsedPorts := gb.tcpPB.GetUsedPortList()
+		udpUsedPorts := gb.udpPB.GetUsedPortList()
+
+		if len(tcpUsedPorts) > 0 {
+			displayPorts := tcpUsedPorts
+			if len(displayPorts) > 20 {
+				displayPorts = displayPorts[:20]
+			}
+			gb.SetDescription("tcp used ports", fmt.Sprintf("%v... (共%d个)", displayPorts, len(tcpUsedPorts)))
+		} else {
+			gb.SetDescription("tcp used ports", "无")
+		}
+
+		if len(udpUsedPorts) > 0 {
+			displayPorts := udpUsedPorts
+			if len(displayPorts) > 20 {
+				displayPorts = displayPorts[:20]
+			}
+			gb.SetDescription("udp used ports", fmt.Sprintf("%v... (共%d个)", displayPorts, len(udpUsedPorts)))
+		} else {
+			gb.SetDescription("udp used ports", "无")
+		}
+	}
 }
