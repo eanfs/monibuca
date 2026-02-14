@@ -231,7 +231,7 @@ func (r *Recorder) Run() (err error) {
 		r.Event.Duration = sub.AudioReader.AbsTime
 		if sub.VideoReader == nil {
 			if recordJob.Event != nil {
-				err = checkEventRecordStop(sub.VideoReader.AbsTime)
+				err = checkEventRecordStop(sub.AudioReader.AbsTime)
 				if err != nil {
 					return err
 				}
@@ -258,6 +258,9 @@ func (r *Recorder) Run() (err error) {
 				track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
 				audioTrack = track
 				track.ICodecCtx = at.ICodecCtx
+			}
+			if audioTrack == nil {
+				return fmt.Errorf("unsupported audio codec for mp4 record: %T", at.ICodecCtx.GetBase())
 			}
 		}
 		sample := box.Sample{
@@ -299,6 +302,9 @@ func (r *Recorder) Run() (err error) {
 				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
 				videoTrack = track
 				track.ICodecCtx = video.ICodecCtx
+			}
+			if videoTrack == nil {
+				return fmt.Errorf("unsupported video codec for mp4 record: %T", video.ICodecCtx.GetBase())
 			}
 		}
 		//ctx := video.ICodecCtx.(pkg.IVideoCodecCtx)
