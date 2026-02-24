@@ -5,17 +5,30 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"m7s.live/v5/pkg/config"
 )
+
+// isS3NotFoundError 使用 AWS SDK 类型断言判断是否为 404 错误，避免脆弱的字符串匹配
+func isS3NotFoundError(err error) bool {
+	if aerr, ok := err.(awserr.Error); ok {
+		switch aerr.Code() {
+		case s3.ErrCodeNoSuchKey, "NotFound", "NoSuchBucket":
+			return true
+		}
+	}
+	return false
+}
 
 // S3StorageConfig S3存储配置
 type S3StorageConfig struct {
@@ -146,8 +159,7 @@ func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
 	})
 
 	if err != nil {
-		// 检查是否是404错误
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return false, nil
 		}
 		return false, err
@@ -165,7 +177,7 @@ func (s *S3Storage) GetSize(ctx context.Context, path string) (int64, error) {
 	})
 
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return 0, ErrFileNotFound
 		}
 		return 0, err
@@ -324,20 +336,13 @@ func (w *S3File) Sync() error {
 		return nil
 	}
 
-	// 如果使用临时文件，先同步到磁盘
+	// 先将临时文件同步到磁盘
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
 			return err
 		}
-		// 获取文件大小用于日志
-		if stat, err := w.tempFile.Stat(); err == nil {
-			fmt.Printf("[S3File.Sync] tempFile size: %d bytes, path: %s\n", stat.Size(), w.filePath)
-		}
 	}
-	if err := w.uploadTempFile(); err != nil {
-		return err
-	}
-	return nil
+	return w.uploadTempFile()
 }
 
 func (w *S3File) Seek(offset int64, whence int) (int64, error) {
@@ -353,17 +358,18 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (w *S3File) Close() error {
-	if err := w.Sync(); err != nil {
-		return err
-	}
-	if w.tempFile != nil {
-		w.tempFile.Close()
-	}
-	// 清理临时文件
-	if w.filePath != "" {
-		os.Remove(w.filePath)
-	}
-	return nil
+	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
+	defer func() {
+		if w.tempFile != nil {
+			w.tempFile.Close()
+			w.tempFile = nil
+		}
+		if w.filePath != "" {
+			os.Remove(w.filePath)
+			w.filePath = ""
+		}
+	}()
+	return w.Sync()
 }
 
 // createTempFile 创建临时文件
@@ -379,23 +385,30 @@ func (w *S3File) createTempFile() error {
 }
 
 func (w *S3File) Stat() (os.FileInfo, error) {
+	if w.tempFile == nil {
+		return nil, fmt.Errorf("s3 file not initialized")
+	}
 	return w.tempFile.Stat()
 }
 
 // uploadTempFile 上传临时文件到S3
 func (w *S3File) uploadTempFile() (err error) {
 	// 重置文件指针到开头
-	if _, err := w.tempFile.Seek(0, 0); err != nil {
-		fmt.Printf("[S3File.uploadTempFile] failed to seek: %v\n", err)
+	if _, err = w.tempFile.Seek(0, 0); err != nil {
 		return fmt.Errorf("failed to seek temp file: %w", err)
 	}
 
-	// 获取文件大小
 	stat, _ := w.tempFile.Stat()
-	fmt.Printf("[S3File.uploadTempFile] uploading to S3: bucket=%s, key=%s, size=%d\n",
-		w.storage.config.Bucket, w.objectKey, stat.Size())
+	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, stat.Size())
 
-	// 构建上传请求，携带用户自定义元数据
+	// 使用带超时的 background context，避免因录像 context 取消而中断上传
+	timeout := w.storage.config.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	uploadInput := &s3manager.UploadInput{
 		Bucket:      aws.String(w.storage.config.Bucket),
 		Key:         aws.String(w.objectKey),
@@ -405,21 +418,17 @@ func (w *S3File) uploadTempFile() (err error) {
 	if len(w.metadata) > 0 {
 		uploadInput.Metadata = aws.StringMap(w.metadata)
 	}
-	// 上传到S3
-	_, err = w.storage.uploader.UploadWithContext(w.ctx, uploadInput)
 
-	if err != nil {
-		fmt.Printf("[S3File.uploadTempFile] upload failed: %v\n", err)
+	if _, err = w.storage.uploader.UploadWithContext(ctx, uploadInput); err != nil {
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
-	fmt.Printf("[S3File.uploadTempFile] upload successful: %s\n", w.objectKey)
+	log.Printf("[S3] upload successful: %s", w.objectKey)
 	return nil
 }
 
 // downloadToTemp 下载S3对象到本地临时文件
 func (w *S3File) downloadToTemp() error {
-	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "s3reader_*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
@@ -428,7 +437,6 @@ func (w *S3File) downloadToTemp() error {
 	w.tempFile = tempFile
 	w.filePath = tempFile.Name()
 
-	// 下载S3对象
 	_, err = w.storage.downloader.DownloadWithContext(w.ctx, tempFile, &s3.GetObjectInput{
 		Bucket: aws.String(w.storage.config.Bucket),
 		Key:    aws.String(w.objectKey),
@@ -437,15 +445,14 @@ func (w *S3File) downloadToTemp() error {
 	if err != nil {
 		tempFile.Close()
 		os.Remove(w.filePath)
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return ErrFileNotFound
 		}
 		return fmt.Errorf("failed to download from S3: %w", err)
 	}
 
 	// 重置文件指针到开始位置
-	_, err = tempFile.Seek(0, 0)
-	if err != nil {
+	if _, err = tempFile.Seek(0, 0); err != nil {
 		tempFile.Close()
 		os.Remove(w.filePath)
 		return fmt.Errorf("failed to seek temp file: %w", err)
