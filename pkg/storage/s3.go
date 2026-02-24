@@ -249,9 +249,18 @@ type S3File struct {
 	storage   *S3Storage
 	objectKey string
 	ctx       context.Context
-	tempFile  *os.File // 本地临时文件，用于支持随机访问
-	filePath  string   // 临时文件路径
-	readOnly  bool     // 只读模式，不上传到S3
+	tempFile  *os.File          // 本地临时文件，用于支持随机访问
+	filePath  string            // 临时文件路径
+	readOnly  bool              // 只读模式，不上传到S3
+	metadata  map[string]string // 用户自定义元数据，上传时携带
+}
+
+// SetMetadata 设置上传到 S3 时携带的用户元数据，须在 Close 前调用。
+func (w *S3File) SetMetadata(key, value string) {
+	if w.metadata == nil {
+		w.metadata = make(map[string]string)
+	}
+	w.metadata[key] = value
 }
 
 func (w *S3File) Name() string {
@@ -386,13 +395,18 @@ func (w *S3File) uploadTempFile() (err error) {
 	fmt.Printf("[S3File.uploadTempFile] uploading to S3: bucket=%s, key=%s, size=%d\n",
 		w.storage.config.Bucket, w.objectKey, stat.Size())
 
-	// 上传到S3
-	_, err = w.storage.uploader.UploadWithContext(w.ctx, &s3manager.UploadInput{
+	// 构建上传请求，携带用户自定义元数据
+	uploadInput := &s3manager.UploadInput{
 		Bucket:      aws.String(w.storage.config.Bucket),
 		Key:         aws.String(w.objectKey),
 		Body:        w.tempFile,
 		ContentType: aws.String("application/octet-stream"),
-	})
+	}
+	if len(w.metadata) > 0 {
+		uploadInput.Metadata = aws.StringMap(w.metadata)
+	}
+	// 上传到S3
+	_, err = w.storage.uploader.UploadWithContext(w.ctx, uploadInput)
 
 	if err != nil {
 		fmt.Printf("[S3File.uploadTempFile] upload failed: %v\n", err)

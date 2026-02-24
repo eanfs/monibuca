@@ -59,11 +59,12 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 			return
 		}
 		// fMP4：直接打开文件
-		file, err = os.Open(stream.FilePath)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to open file: %v", err), http.StatusInternalServerError)
-			p.Error("failed to open file", "err", err, "path", stream.FilePath)
+		if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
+			http.Error(w, fmt.Sprintf("failed to open file: %v", osErr), http.StatusInternalServerError)
+			p.Error("failed to open file", "err", osErr, "path", stream.FilePath)
 			return
+		} else {
+			file = &storage.LocalFile{File: osFile}
 		}
 		defer file.Close()
 		p.Info("reading file for fmp4 conversion from absolute path", "path", stream.FilePath)
@@ -158,11 +159,12 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		} else {
 			// 兜底逻辑：直接使用 stream.FilePath 作为本地文件
 			if isLocalStorage {
-				file, err = os.Open(stream.FilePath)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("failed to open local file: %v", err), http.StatusInternalServerError)
-					p.Error("failed to open local file", "err", err)
+				if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
+					http.Error(w, fmt.Sprintf("failed to open local file: %v", osErr), http.StatusInternalServerError)
+					p.Error("failed to open local file", "err", osErr)
 					return
+				} else {
+					file = &storage.LocalFile{File: osFile}
 				}
 				defer file.Close()
 				p.Info("reading file for fmp4 conversion from local path", "path", stream.FilePath)
@@ -308,7 +310,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	sampleOffset := muxer.CurrentOffset + mp4.BeforeMdatData // 样本数据偏移量
 	mdatOffset := sampleOffset                               // 媒体数据偏移量
 	var audioTrack, videoTrack *mp4.Track                    // 音频和视频轨道
-	var file *os.File                                        // 当前处理的文件
+	var file storage.File                                    // 当前处理的文件
 	var moov box.IBox                                        // MOOV box，包含元数据
 	streamCount := len(streams)                              // 流的总数
 
@@ -381,9 +383,10 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		tsOffset = lastTs // 设置时间戳偏移
 
 		// 打开录制文件
-		file, err = os.Open(stream.FilePath)
-		if err != nil {
+		if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
 			return
+		} else {
+			file = &storage.LocalFile{File: osFile}
 		}
 
 		// 创建解复用器并解析文件

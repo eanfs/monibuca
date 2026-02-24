@@ -202,6 +202,9 @@ type OSSFile struct {
 	filePath  string   // 临时文件路径
 }
 
+// SetMetadata OSS 元数据支持的空实现，满足 File 接口。
+func (f *OSSFile) SetMetadata(key, value string) {}
+
 func (f *OSSFile) Name() string {
 	return f.objectKey
 }

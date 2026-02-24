@@ -3,12 +3,13 @@ package mp4
 import (
 	"context"
 	"log/slog"
-	"m7s.live/v5/pkg/storage"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"time"
+
+	"m7s.live/v5/pkg/storage"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
@@ -42,9 +43,10 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			continue
 		}
 		if filepath.IsAbs(stream.FilePath) {
-			file, err = os.Open(stream.FilePath)
-			if err != nil {
+			if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
 				continue
+			} else {
+				file = &storage.LocalFile{File: osFile}
 			}
 		} else {
 			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
@@ -53,9 +55,10 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 				if isLocalStorage {
 					if localStorage, ok := st.(*storage.LocalStorage); ok {
 						fullPath := localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
-						file, err = os.Open(fullPath)
-						if err != nil {
+						if osFile, osErr := os.Open(fullPath); osErr != nil {
 							continue
+						} else {
+							file = &storage.LocalFile{File: osFile}
 						}
 					} else {
 						// 类型不匹配，使用 OpenFile 作为兜底
@@ -75,9 +78,10 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 					}
 				}
 			} else {
-				file, err = os.Open(stream.FilePath)
-				if err != nil {
+				if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
 					continue
+				} else {
+					file = &storage.LocalFile{File: osFile}
 				}
 			}
 		}

@@ -209,6 +209,9 @@ type COSFile struct {
 	filePath  string   // 临时文件路径
 }
 
+// SetMetadata COS 元数据支持的空实现，满足 File 接口。
+func (f *COSFile) SetMetadata(key, value string) {}
+
 func (f *COSFile) Name() string {
 	return f.objectKey
 }

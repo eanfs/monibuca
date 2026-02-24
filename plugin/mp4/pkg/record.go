@@ -37,6 +37,7 @@ type writeTrailerTask struct {
 	targetStorage map[string]any // 目标存储配置
 	deleteLocal   bool           // 上传成功后是否删除本地文件
 	db            *gorm.DB       // 数据库连接
+	durationMs    uint32         // 录像时长（毫秒），用于上传 S3 元数据
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -106,9 +107,17 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("seek temp file", "err", err)
 		return
 	}
+	// 获取最终文件大小（从 temp 文件，因为它包含完整数据）
+	tempStat, _ := temp.Stat()
+	fileSize := tempStat.Size()
 	if _, err = io.Copy(t.file, temp); err != nil {
 		t.Error("copy file", "err", err)
 		return
+	}
+	// 在关闭前设置元数据（文件大小 + 时长）
+	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", fileSize))
+	if t.durationMs > 0 {
+		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 	if err = t.file.Close(); err != nil {
 		t.Error("close file", "err", err)
@@ -139,9 +148,10 @@ type Recorder struct {
 func (r *Recorder) writeTailer(end time.Time) {
 	r.WriteTail(end, &writeTrailerQueueTask)
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:    r.muxer,
-		file:     r.file,
-		filePath: r.Event.FilePath,
+		muxer:      r.muxer,
+		file:       r.file,
+		filePath:   r.Event.FilePath,
+		durationMs: r.Event.Duration, // 录像时长（毫秒）
 	}, r.Logger)
 }
 

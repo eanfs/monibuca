@@ -199,7 +199,7 @@ func (s *LocalStorage) CreateFile(ctx context.Context, path string) (File, error
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 
-	return file, nil
+	return &LocalFile{file}, nil
 }
 
 func (s *LocalStorage) OpenFileFromStorageLevel(ctx context.Context, path string, storageLevel int) (File, error) {
@@ -211,7 +211,7 @@ func (s *LocalStorage) OpenFileFromStorageLevel(ctx context.Context, path string
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	return file, nil
+	return &LocalFile{file}, nil
 }
 
 func (s *LocalStorage) OpenFile(ctx context.Context, path string) (File, error) {
@@ -229,7 +229,7 @@ func (s *LocalStorage) OpenFile(ctx context.Context, path string) (File, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	return file, nil
+	return &LocalFile{file}, nil
 }
 
 func (s *LocalStorage) Delete(ctx context.Context, path string) error {
@@ -626,6 +626,14 @@ func (s *LocalStorage) deleteOldestFiles(path string) error {
 
 	return nil
 }
+
+// LocalFile 封装 *os.File 以实现 File 接口（包括 SetMetadata）
+type LocalFile struct {
+	*os.File
+}
+
+// SetMetadata 本地存储无需元数据，提供空实现以满足 File 接口。
+func (f *LocalFile) SetMetadata(key, value string) {}
 
 func init() {
 	Factory["local"] = func(config any) (Storage, error) {
