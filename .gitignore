@@ -24,3 +24,5 @@ monitor
 .history
 /sqlite.db
 /m7sdb.db
+m7sv4.db
+shutdown.sh

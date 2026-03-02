@@ -90,9 +90,9 @@ gb28181:
 record:
   subscribe: # 参考全局配置格式
   # exceptionposturl: "http://192.168.15.168:8441/web/vidu/callback/recording" # 录制异常回调地址
-  recordfileexpiredays: 2 # 录制文件过期时间，单位天，默认7天
+  recordfileexpiredays: 1 # 录制文件过期时间，单位天，默认7天
   storage: 
-    endpoint: 192.168.1.198:9000
+    endpoint: storage-dev.xiding.tech
     accesskey: xidinguser
     secretkey: U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=
     bucket: vidu-media-bucket
