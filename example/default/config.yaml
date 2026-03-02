@@ -8,6 +8,18 @@ global:
   loglevel: info
   admin:
     enablelogin: false
+  # S3存储配置示例（需要时取消注释并填写实际值）
+  storage:
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      accessKeyID: "xidinguser"     # 访问密钥ID
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+      bucket: "vidu-media-bucket"            # 存储桶名称
+      pathPrefix: "recordings"     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间    
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
   #     name: "camera-1"             # 拉流代理名称
@@ -56,7 +68,7 @@ gb28181:
       civilCode: "340200" #行政区划代码
       manufacturer: "Monibuca" #设备制造商
       model: "GB28181" #设备型号
-      address: "江苏南京" #设备地址
+      address: "江苏南京" #设备地址 
       register_way: 1
       platformchannels:
         - platformservergbid: "34020000002000000002" #上级平台GBID
