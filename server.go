@@ -331,19 +331,39 @@ func (s *Server) Start() (err error) {
 						s.Info("updated user from config", "username", userConfig.Username)
 					}
 				}
-			}
-			// Create default admin user if no users exist
-			var count int64
-			s.DB.Model(&db.User{}).Count(&count)
-			if count == 0 {
-				adminUser := &db.User{
-					Username: "admin",
-					Password: "admin",
-					Role:     "admin",
+				if len(s.ServerConfig.Admin.Users) > 0 {
+					configuredUsers := make(map[string]struct{}, len(s.ServerConfig.Admin.Users))
+					for _, userConfig := range s.ServerConfig.Admin.Users {
+						configuredUsers[strings.ToLower(strings.TrimSpace(userConfig.Username))] = struct{}{}
+					}
+
+					var defaultAdmin db.User
+					if err = s.DB.Where("username = ?", "admin").First(&defaultAdmin).Error; err == nil {
+						_, hasAdminInConfig := configuredUsers["admin"]
+						if !hasAdminInConfig && defaultAdmin.Role == "admin" && defaultAdmin.CheckPassword("admin") {
+							if err = s.DB.Delete(&defaultAdmin).Error; err != nil {
+								s.Error("failed to delete default admin user", "error", err)
+							} else {
+								s.Info("deleted default admin user because admin.users is configured")
+							}
+						}
+					}
 				}
-				if err = s.DB.Create(adminUser).Error; err != nil {
-					s.Error("failed to create default admin user", "error", err)
-					return
+			}
+			// Create default admin user only when login is enabled, no users are configured, and no users exist in DB
+			if s.ServerConfig.Admin.EnableLogin && len(s.ServerConfig.Admin.Users) == 0 {
+				var count int64
+				s.DB.Model(&db.User{}).Count(&count)
+				if count == 0 {
+					adminUser := &db.User{
+						Username: "admin",
+						Password: "admin",
+						Role:     "admin",
+					}
+					if err = s.DB.Create(adminUser).Error; err != nil {
+						s.Error("failed to create default admin user", "error", err)
+						return
+					}
 				}
 			}
 		}
