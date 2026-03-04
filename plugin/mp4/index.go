@@ -26,6 +26,7 @@ type MP4Plugin struct {
 	AutoRecovery         bool          `default:"false" desc:"是否自动恢复"`
 	ExceptionPostUrl     string        `desc:"第三方异常上报地址"`
 	EventRecordFilePath  string        `desc:"事件录像存放地址"`
+	UploadConcurrency    int           `default:"5" desc:"云端上传最大并发数，建议3-10，防止大量录像同时上传压垮对象存储"`
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
@@ -60,6 +61,10 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 }
 
 func (p *MP4Plugin) Start() (err error) {
+	// 初始化上传并发控制
+	mp4pkg.InitUploadSemaphore(p.UploadConcurrency)
+	p.Info("upload concurrency initialized", "max_concurrent_uploads", p.UploadConcurrency)
+
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
 		if err != nil {

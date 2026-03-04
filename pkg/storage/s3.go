@@ -32,15 +32,19 @@ func isS3NotFoundError(err error) bool {
 
 // S3StorageConfig S3存储配置
 type S3StorageConfig struct {
-	Endpoint        string        `desc:"S3服务端点"`
-	Region          string        `desc:"AWS区域" default:"us-east-1"`
-	AccessKeyID     string        `desc:"S3访问密钥ID"`
-	SecretAccessKey string        `desc:"S3秘密访问密钥"`
-	Bucket          string        `desc:"S3存储桶名称"`
-	PathPrefix      string        `desc:"文件路径前缀"`
-	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
-	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
-	Timeout         time.Duration `desc:"上传超时时间" default:"30s"`
+	Endpoint           string        `desc:"S3服务端点"`
+	Region             string        `desc:"AWS区域" default:"us-east-1"`
+	AccessKeyID        string        `desc:"S3访问密钥ID"`
+	SecretAccessKey    string        `desc:"S3秘密访问密钥"`
+	Bucket             string        `desc:"S3存储桶名称"`
+	PathPrefix         string        `desc:"文件路径前缀"`
+	ForcePathStyle     bool          `desc:"强制路径样式（MinIO需要）"`
+	UseSSL             bool          `desc:"是否使用SSL" default:"true"`
+	Timeout            time.Duration `desc:"基础上传超时时间" default:"60s"`
+	TimeoutPerMB       time.Duration `desc:"每MB额外超时时间，用于大文件动态计算超时" default:"3s"`
+	MaxTimeout         time.Duration `desc:"最大超时时间限制" default:"15m"`
+	UploadPartSize     int64         `desc:"multipart上传分片大小(字节)，大文件建议64MB(67108864)" default:"67108864"`
+	UploadConcurrency  int           `desc:"单文件multipart并发分片数，建议1-2避免大文件占满带宽" default:"1"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -112,7 +116,14 @@ func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
 	return &S3Storage{
 		config:     config,
 		s3Client:   s3Client,
-		uploader:   s3manager.NewUploader(sess),
+		uploader: s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+			if config.UploadPartSize > 0 {
+				u.PartSize = config.UploadPartSize
+			}
+			if config.UploadConcurrency > 0 {
+				u.Concurrency = config.UploadConcurrency
+			}
+		}),
 		downloader: s3manager.NewDownloader(sess),
 	}, nil
 }
@@ -258,13 +269,14 @@ func testS3Connection(s3Client *s3.S3, bucket string) error {
 
 // S3File S3文件读写器
 type S3File struct {
-	storage   *S3Storage
-	objectKey string
-	ctx       context.Context
-	tempFile  *os.File          // 本地临时文件，用于支持随机访问
-	filePath  string            // 临时文件路径
-	readOnly  bool              // 只读模式，不上传到S3
-	metadata  map[string]string // 用户自定义元数据，上传时携带
+	storage      *S3Storage
+	objectKey    string
+	ctx          context.Context
+	tempFile     *os.File          // 本地临时文件，用于支持随机访问
+	filePath     string            // 临时文件路径
+	readOnly     bool              // 只读模式，不上传到S3
+	metadata     map[string]string // 用户自定义元数据，上传时携带
+	uploadFailed bool              // 标记上传是否失败，用于重试时保留临时文件
 }
 
 // SetMetadata 设置上传到 S3 时携带的用户元数据，须在 Close 前调用。
@@ -358,18 +370,94 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (w *S3File) Close() error {
-	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
-	defer func() {
-		if w.tempFile != nil {
-			w.tempFile.Close()
-			w.tempFile = nil
+	var errs []error
+
+	// 先执行上传
+	if uploadErr := w.Sync(); uploadErr != nil {
+		errs = append(errs, uploadErr)
+	}
+
+	// 清理临时文件句柄
+	if w.tempFile != nil {
+		if closeErr := w.tempFile.Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("close temp file: %w", closeErr))
 		}
+		w.tempFile = nil
+	}
+
+	// 只有上传成功时才删除临时文件
+	// 上传失败时保留临时文件，以便重试
+	if len(errs) == 0 {
+		// 上传成功，删除临时文件
 		if w.filePath != "" {
-			os.Remove(w.filePath)
+			if removeErr := os.Remove(w.filePath); removeErr != nil && !os.IsNotExist(removeErr) {
+				errs = append(errs, fmt.Errorf("remove temp file: %w", removeErr))
+			}
 			w.filePath = ""
 		}
-	}()
-	return w.Sync()
+	} else {
+		// 上传失败，标记状态并保留临时文件
+		w.uploadFailed = true
+		log.Printf("[S3] upload failed, temp file preserved for retry: %s", w.filePath)
+	}
+
+	// 返回第一个错误（通常是上传错误）
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+// Reopen 重新打开文件以支持上传重试
+func (w *S3File) Reopen() error {
+	if w.filePath == "" {
+		return fmt.Errorf("no temp file to reopen")
+	}
+
+	// 关闭旧的文件句柄（如果存在）
+	if w.tempFile != nil {
+		w.tempFile.Close()
+	}
+
+	// 重新打开临时文件
+	tempFile, err := os.OpenFile(w.filePath, os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to reopen temp file: %w", err)
+	}
+
+	w.tempFile = tempFile
+	w.uploadFailed = false
+	log.Printf("[S3] temp file reopened for retry: %s", w.filePath)
+	return nil
+}
+
+// CleanupTempFile 清理临时文件（用于所有重试失败后的最终清理）
+func (w *S3File) CleanupTempFile() error {
+	var errs []error
+
+	// 关闭文件句柄
+	if w.tempFile != nil {
+		if closeErr := w.tempFile.Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("close temp file: %w", closeErr))
+		}
+		w.tempFile = nil
+	}
+
+	// 删除临时文件
+	if w.filePath != "" {
+		if removeErr := os.Remove(w.filePath); removeErr != nil && !os.IsNotExist(removeErr) {
+			errs = append(errs, fmt.Errorf("remove temp file: %w", removeErr))
+		} else {
+			log.Printf("[S3] temp file cleaned up: %s", w.filePath)
+		}
+		w.filePath = ""
+	}
+
+	// 返回所有错误
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup errors: %v", errs)
+	}
+	return nil
 }
 
 // createTempFile 创建临时文件
@@ -399,13 +487,14 @@ func (w *S3File) uploadTempFile() (err error) {
 	}
 
 	stat, _ := w.tempFile.Stat()
-	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, stat.Size())
+	fileSize := stat.Size()
+
+	// 计算动态超时时间
+	timeout := w.calculateTimeout(fileSize)
+	log.Printf("[S3] uploading: bucket=%s key=%s size=%d timeout=%s",
+		w.storage.config.Bucket, w.objectKey, fileSize, timeout)
 
 	// 使用带超时的 background context，避免因录像 context 取消而中断上传
-	timeout := w.storage.config.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -423,8 +512,45 @@ func (w *S3File) uploadTempFile() (err error) {
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
-	log.Printf("[S3] upload successful: %s", w.objectKey)
+	log.Printf("[S3] upload successful: %s (size=%d, timeout=%s)", w.objectKey, fileSize, timeout)
 	return nil
+}
+
+// calculateTimeout 根据文件大小动态计算超时时间
+// 公式：timeout = min(baseTimeout + fileSizeMB * timeoutPerMB, maxTimeout)
+func (w *S3File) calculateTimeout(fileSize int64) time.Duration {
+	config := w.storage.config
+
+	// 基础超时
+	baseTimeout := config.Timeout
+	if baseTimeout <= 0 {
+		baseTimeout = 60 * time.Second
+	}
+
+	// 如果没有配置动态超时，直接返回基础超时
+	if config.TimeoutPerMB <= 0 {
+		return baseTimeout
+	}
+
+	// 计算文件大小（MB）
+	fileSizeMB := float64(fileSize) / (1024 * 1024)
+
+	// 动态超时 = 基础超时 + 文件大小(MB) × 每MB超时
+	dynamicTimeout := baseTimeout + time.Duration(fileSizeMB*float64(config.TimeoutPerMB))
+
+	// 应用最大超时限制
+	maxTimeout := config.MaxTimeout
+	if maxTimeout <= 0 {
+		maxTimeout = 15 * time.Minute
+	}
+
+	if dynamicTimeout > maxTimeout {
+		log.Printf("[S3] calculated timeout %s exceeds max %s, using max timeout",
+			dynamicTimeout, maxTimeout)
+		return maxTimeout
+	}
+
+	return dynamicTimeout
 }
 
 // downloadToTemp 下载S3对象到本地临时文件
