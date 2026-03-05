@@ -56,9 +56,6 @@ type (
 		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
 		StorageLevel int               `json:"storageLevel" desc:"存储级别" gorm:"comment:存储级别,1=主存储,2=次级存储;default:1"`
 		StorageType  string            `json:"storageType" desc:"存储类型" gorm:"type:varchar(20);comment:存储类型(local/s3/oss/cos);default:'local'"`
-		UploadStatus string            `json:"uploadStatus" desc:"上传状态" gorm:"type:varchar(20);comment:上传状态(pending/uploading/success/failed);default:'pending'"`
-		UploadError  string            `json:"uploadError" desc:"上传错误信息" gorm:"type:text;comment:上传失败时的错误信息"`
-		UploadRetry  int               `json:"uploadRetry" desc:"上传重试次数" gorm:"comment:已重试次数;default:0"`
 	}
 )
 

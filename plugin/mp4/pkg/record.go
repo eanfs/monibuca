@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	task "github.com/langhuihui/gotask"
@@ -28,33 +27,12 @@ type WriteTrailerQueueTask struct {
 
 var writeTrailerQueueTask WriteTrailerQueueTask
 
-// uploadSemaphore 限制同时进行云端上传的并发数量，防止大量并发上传压垮对象存储服务。
-// 初始值为 nil（不限制），由 InitUploadSemaphore 按配置初始化。
-var (
-	uploadSemaphore     chan struct{}
-	uploadSemaphoreOnce sync.Once
-)
-
-// InitUploadSemaphore 初始化上传并发信号量。
-// n 为最大并发上传数，应在插件 Start() 时调用（建议配置范围 3~10）。
-// 使用 sync.Once 确保只初始化一次，避免重复初始化导致的 goroutine 泄漏。
-func InitUploadSemaphore(n int) {
-	uploadSemaphoreOnce.Do(func() {
-		if n <= 0 {
-			n = 5
-		}
-		uploadSemaphore = make(chan struct{}, n)
-	})
-}
-
 type writeTrailerTask struct {
 	task.Task
-	muxer        *Muxer
-	file         storage.File
-	filePath     string
-	durationMs   uint32 // 录像时长（毫秒），用于上传 S3 元数据
-	recordID     uint   // 录像记录 ID，用于更新上传状态
-	pluginLogger *m7s.Plugin
+	muxer      *Muxer
+	file       storage.File
+	filePath   string
+	durationMs uint32 // 录像时长（毫秒），用于上传 S3 元数据
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -76,9 +54,6 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
-
-	// 更新数据库状态为 uploading
-	t.updateUploadStatus("uploading", "", 0)
 
 	// 确保任何错误路径下 t.file 都被关闭
 	defer func() {
@@ -148,129 +123,14 @@ func (t *writeTrailerTask) Run() (err error) {
 	if t.durationMs > 0 {
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
-	// temp 由 defer temp.Close() 负责关闭
-
-	// ---- 云端上传阶段：受并发信号量保护 + 指数退避重试 ----
-	// 获取上传令牌，限制全局并发上传数（防止大量录像同时结束时瞬时并发过高）。
-	// 注意：信号量只在上传阶段持有，不影响前面的文件重组操作
-	if uploadSemaphore != nil {
-		t.Info("waiting for upload slot", "file", t.filePath)
-		uploadSemaphore <- struct{}{}
-		t.Info("upload slot acquired", "file", t.filePath)
-	}
-
-	// 上传重试逻辑（信号量保护范围内）
-	const maxRetry = 3
-	var uploadErr error
-	for attempt := 1; attempt <= maxRetry; attempt++ {
-		// 尝试上传（通过 Close 触发）
-		uploadErr = t.file.Close()
-		if uploadErr == nil {
-			// 上传成功
-			t.file = nil
-			t.Info("file upload successful", "file", t.filePath, "attempt", attempt, "fileSize", fileSize)
-
-			// 释放信号量
-			if uploadSemaphore != nil {
-				<-uploadSemaphore
-			}
-
-			// 更新数据库状态为 success
-			t.updateUploadStatus("success", "", attempt)
-			return nil
-		}
-
-		// 上传失败，记录错误
-		t.Warn("upload failed",
-			"file", t.filePath,
-			"attempt", attempt,
-			"err", uploadErr,
-		)
-
-		// 更新数据库重试次数
-		t.updateUploadStatus("uploading", uploadErr.Error(), attempt)
-
-		// 如果还有重试机会
-		if attempt < maxRetry {
-			// 指数退避：第1次5s，第2次20s
-			waitDur := time.Duration(attempt*attempt) * 5 * time.Second
-			t.Info("will retry upload",
-				"file", t.filePath,
-				"nextRetryIn", waitDur,
-			)
-			time.Sleep(waitDur)
-
-			// 重新打开文件准备重试
-			// 注意：这里需要存储层支持重新打开已写入的文件
-			// 对于 S3File，需要重新创建 File 对象并从临时文件读取
-			if reopenable, ok := t.file.(interface{ Reopen() error }); ok {
-				if reopenErr := reopenable.Reopen(); reopenErr != nil {
-					t.Error("failed to reopen file for retry", "err", reopenErr)
-					uploadErr = fmt.Errorf("reopen failed: %w", reopenErr)
-					break
-				}
-			} else {
-				// 存储层不支持 Reopen，无法重试
-				t.Error("storage does not support reopen, cannot retry")
-				uploadErr = fmt.Errorf("storage does not support reopen: %w", uploadErr)
-				break
-			}
-		}
-	}
-
-	// 释放信号量（失败路径）
-	if uploadSemaphore != nil {
-		<-uploadSemaphore
-	}
-
-	// 所有重试都失败
-	finalErr := fmt.Errorf("upload permanently failed after %d attempts: %w", maxRetry, uploadErr)
-	t.Error("upload permanently failed",
-		"file", t.filePath,
-		"attempts", maxRetry,
-		"fileSize", fileSize,
-		"fileSizeMB", fileSize/(1024*1024),
-		"durationMs", t.durationMs,
-		"recordID", t.recordID,
-		"err", uploadErr,
-	)
-
-	// 更新数据库状态为 failed
-	t.updateUploadStatus("failed", finalErr.Error(), maxRetry)
-
-	// 清理临时文件（所有重试都失败后）
-	if t.file != nil {
-		if closer, ok := t.file.(interface{ CleanupTempFile() error }); ok {
-			if cleanErr := closer.CleanupTempFile(); cleanErr != nil {
-				t.Warn("failed to cleanup temp file", "err", cleanErr)
-			}
-		}
-		t.file = nil
-	}
-
-	return finalErr
-}
-
-// updateUploadStatus 更新数据库中的上传状态
-func (t *writeTrailerTask) updateUploadStatus(status string, errMsg string, retryCount int) {
-	if t.pluginLogger == nil || t.pluginLogger.DB == nil || t.recordID == 0 {
+	if err = t.file.Close(); err != nil {
+		t.Error("close file", "err", err)
+		t.file = nil // 防止 defer 重复关闭
 		return
 	}
-
-	updates := map[string]interface{}{
-		"upload_status": status,
-		"upload_retry":  retryCount,
-	}
-
-	if errMsg != "" {
-		updates["upload_error"] = errMsg
-	}
-
-	if err := t.pluginLogger.DB.Model(&m7s.RecordStream{}).
-		Where("id = ?", t.recordID).
-		Updates(updates).Error; err != nil {
-		t.Error("failed to update upload status in database", "err", err)
-	}
+	t.file = nil // 标记已关闭，防止 defer 重复关闭
+	// temp 由 defer temp.Close() 负责关闭
+	return
 }
 
 func init() {
@@ -290,20 +150,11 @@ type Recorder struct {
 
 func (r *Recorder) writeTailer(end time.Time) {
 	r.WriteTail(end, &writeTrailerQueueTask)
-
-	// 获取 plugin 引用以访问数据库
-	var plugin *m7s.Plugin
-	if r.RecordJob.Plugin != nil {
-		plugin = r.RecordJob.Plugin
-	}
-
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:        r.muxer,
-		file:         r.file,
-		filePath:     r.Event.FilePath,
-		durationMs:   r.Event.Duration, // 录像时长（毫秒）
-		recordID:     r.Event.ID,       // 录像记录 ID
-		pluginLogger: plugin,           // Plugin 引用，用于访问数据库
+		muxer:      r.muxer,
+		file:       r.file,
+		filePath:   r.Event.FilePath,
+		durationMs: r.Event.Duration, // 录像时长（毫秒）
 	}, r.Logger)
 }
 
