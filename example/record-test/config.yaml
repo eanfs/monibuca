@@ -1,0 +1,102 @@
+global:
+  loglevel: info
+  http:
+    listenaddr: :8080
+  admin:
+    enablelogin: false
+  db:
+    dsn: "record-test.db"
+    type: "sqlite"
+  # 本地存储配置（测试阶段）
+  storage:
+    local:
+      path: "record"  # 本地录制目录
+
+# MP4 录制插件配置
+mp4:
+  enable: true
+  publish:
+    delayclosetimeout: 3s
+  # 自动录制配置（流发布时自动开始录制）
+  # onpub:
+  #   record:
+  #     ^live/.+:
+  #         fragment: 0  # 0 表示不分片，录制完整文件
+  #         filepath: record/$0  # 录制到 record/live/ 目录
+  #         storage:
+  #           local:
+  #             path: ""
+
+# RTSP 插件配置
+rtsp:
+  tcp:
+    listenaddr: :554
+  # 拉流配置（36 个摄像头）
+  pull:
+    # 海康威视 - 192.168.12.7x 系列
+    live/camera1: rtsp://admin:a1234567@192.168.12.71/ch1/main/av_stream
+    live/camera2: rtsp://admin:a1234567@192.168.12.72/ch1/main/av_stream
+    live/camera3: rtsp://admin:a1234567@192.168.12.73/ch1/main/av_stream
+    # 海康威视 - 192.168.10.x 系列
+    live/camera4: rtsp://admin:a1234567@192.168.10.81/ch1/main/av_stream
+    live/camera5: rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream
+    live/camera6: rtsp://admin:a1234567@192.168.10.83/ch1/main/av_stream
+    # 海康威视 - 192.168.12.3x 系列（俯视/侧视/正视）
+    live/camera7: rtsp://admin:a1234567@192.168.12.31/ch1/main/av_stream
+    live/camera8: rtsp://admin:a1234567@192.168.12.32/ch1/main/av_stream
+    live/camera9: rtsp://admin:a1234567@192.168.12.33/ch1/main/av_stream
+    # 大华 - 192.168.12.1x 系列
+    live/camera10: rtsp://admin:a1234567@192.168.12.11:554/cam/realmonitor?channel=1&subtype=0
+    live/camera11: rtsp://admin:a1234567@192.168.12.12:554/cam/realmonitor?channel=1&subtype=0
+    live/camera12: rtsp://admin:a1234567@192.168.12.13:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.5x 系列（俯视/侧视/正视）
+    live/camera13: rtsp://admin:a1234567@192.168.12.51:554/cam/realmonitor?channel=1&subtype=0
+    live/camera14: rtsp://admin:a1234567@192.168.12.52:554/cam/realmonitor?channel=1&subtype=0
+    live/camera15: rtsp://admin:a1234567@192.168.12.53:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.6x 系列（俯视/侧视/正视）
+    live/camera16: rtsp://admin:a1234567@192.168.12.61:554/cam/realmonitor?channel=1&subtype=0
+    live/camera17: rtsp://admin:a1234567@192.168.12.62:554/cam/realmonitor?channel=1&subtype=0
+    live/camera18: rtsp://admin:a1234567@192.168.12.63:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.9x 系列（俯视/侧视/正视）
+    live/camera19: rtsp://admin:a1234567@192.168.12.91:554/cam/realmonitor?channel=1&subtype=0
+    live/camera20: rtsp://admin:a1234567@192.168.12.92:554/cam/realmonitor?channel=1&subtype=0
+    live/camera21: rtsp://admin:a1234567@192.168.12.93:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.10x 系列（俯视/侧视/正视）
+    live/camera22: rtsp://admin:a1234567@192.168.12.101:554/cam/realmonitor?channel=1&subtype=0
+    live/camera23: rtsp://admin:a1234567@192.168.12.102:554/cam/realmonitor?channel=1&subtype=0
+    live/camera24: rtsp://admin:a1234567@192.168.12.103:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.20x 系列（俯视/侧视/正视）
+    live/camera25: rtsp://admin:a1234567@192.168.12.201:554/cam/realmonitor?channel=1&subtype=0
+    live/camera26: rtsp://admin:a1234567@192.168.12.202:554/cam/realmonitor?channel=1&subtype=0
+    live/camera27: rtsp://admin:a1234567@192.168.12.203:554/cam/realmonitor?channel=1&subtype=0
+    live/camera28: rtsp://admin:a1234567@192.168.12.204:554/cam/realmonitor?channel=1&subtype=0
+    # 大华 - 192.168.12.22x 系列（俯视/侧视/正视）
+    live/camera29: rtsp://admin:a1234567@192.168.12.221:554/cam/realmonitor?channel=1&subtype=0
+    live/camera30: rtsp://admin:a1234567@192.168.12.222:554/cam/realmonitor?channel=1&subtype=0
+    live/camera31: rtsp://admin:a1234567@192.168.12.223:554/cam/realmonitor?channel=1&subtype=0
+    live/camera32: rtsp://admin:a1234567@192.168.12.224:554/cam/realmonitor?channel=1&subtype=0
+    # 海康威视 - 192.168.12.2x 系列（俯视/侧视/正视）
+    live/camera33: rtsp://admin:a1234567@192.168.12.21/ch1/main/av_stream
+    live/camera34: rtsp://admin:a1234567@192.168.12.22/ch1/main/av_stream
+    live/camera35: rtsp://admin:a1234567@192.168.12.23/ch1/main/av_stream
+
+# FLV 插件配置
+flv:
+  publish:
+    delayclosetimeout: 3s
+
+# HLS 插件配置
+hls:
+  enable: true
+
+# WebRTC 插件配置
+webrtc:
+  port: udp:9000-9100
+
+# Debug 插件配置
+debug:
+  enableTaskHistory: true
+
+# 日志轮转插件
+logrotate:
+  enable: true

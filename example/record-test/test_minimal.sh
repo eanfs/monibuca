@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# 最简化的测试脚本 - 直接开始录制，不做任何检查
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+NODE_IP="${NODE_IP:-localhost}"
+HTTP_PORT="${HTTP_PORT:-8080}"
+RECORD_DURATION="${RECORD_DURATION:-60}"
+
+# 35 个摄像头流路径
+STREAMS=(
+    "live/camera1" "live/camera2" "live/camera3"
+    "live/camera4" "live/camera5" "live/camera6"
+    "live/camera7" "live/camera8" "live/camera9"
+    "live/camera10" "live/camera11" "live/camera12"
+    "live/camera13" "live/camera14" "live/camera15"
+    "live/camera16" "live/camera17" "live/camera18"
+    "live/camera19" "live/camera20" "live/camera21"
+    "live/camera22" "live/camera23" "live/camera24"
+    "live/camera25" "live/camera26" "live/camera27"
+    "live/camera28" "live/camera29" "live/camera30"
+    "live/camera31" "live/camera32" "live/camera33"
+    "live/camera34" "live/camera35"
+)
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo ""
+echo "=========================================="
+echo "  极简版录制测试"
+echo "=========================================="
+echo ""
+echo "流数量: ${#STREAMS[@]}"
+echo "录制时长: ${RECORD_DURATION}秒"
+echo ""
+
+# 1. 检查服务
+echo -e "${CYAN}[1/5]${NC} 检查服务..."
+if curl -s "http://$NODE_IP:$HTTP_PORT/api/sysinfo" > /dev/null 2>&1; then
+    echo -e "${GREEN}✓${NC} Monibuca 运行正常"
+else
+    echo -e "${RED}✗${NC} Monibuca 未运行，请先执行: ./start.sh"
+    exit 1
+fi
+echo ""
+
+# 2. 等待拉流
+echo -e "${CYAN}[2/5]${NC} 等待拉流（20秒）..."
+for i in {1..3}; do
+    echo -ne "\r  等待中... $i/3 秒"
+    sleep 1
+done
+echo ""
+echo ""
+
+# 3. 开始录制
+echo -e "${CYAN}[3/5]${NC} 开始录制..."
+success=0
+failed=0
+for stream in "${STREAMS[@]}"; do
+    # 使用正确的 API: POST /mp4/api/start/{streamPath}
+    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/start/$stream" \
+        -H "Content-Type: application/json" \
+        -d '{}')
+
+    if echo "$response" | grep -q '"code":0'; then
+        success=$((success + 1))
+    else
+        failed=$((failed + 1))
+        # 显示第一个失败的详细信息
+        if [ $failed -eq 1 ]; then
+            echo ""
+            echo "第一个失败的流: $stream"
+            echo "响应: $response"
+        fi
+    fi
+    echo -ne "\r  已启动: $success/${#STREAMS[@]} (失败: $failed)"
+done
+echo ""
+echo -e "${GREEN}✓${NC} 成功启动 $success 个录制"
+if [ $failed -gt 0 ]; then
+    echo -e "${YELLOW}⚠${NC} 失败 $failed 个录制"
+fi
+echo ""
+
+# 4. 录制中
+echo -e "${CYAN}[4/5]${NC} 录制中..."
+for i in $(seq 1 "$RECORD_DURATION"); do
+    echo -ne "\r  进度: $i/$RECORD_DURATION 秒"
+    sleep 1
+done
+echo ""
+echo ""
+
+# 5. 停止录制
+echo -e "${CYAN}[5/5]${NC} 停止录制..."
+stopped=0
+for stream in "${STREAMS[@]}"; do
+    # 使用正确的 API: POST /mp4/api/stop/{streamPath}
+    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/stop/$stream")
+
+    if echo "$response" | grep -q '"code":0'; then
+        stopped=$((stopped + 1))
+    fi
+    echo -ne "\r  已停止: $stopped/${#STREAMS[@]}"
+done
+echo ""
+echo -e "${GREEN}✓${NC} 成功停止 $stopped 个录制"
+echo ""
+
+# 等待文件写入
+echo "等待文件写入（10秒）..."
+sleep 10
+echo ""
+
+# 检查结果
+echo "=========================================="
+echo "  结果"
+echo "=========================================="
+echo ""
+
+if [ -d "record/live" ]; then
+    file_count=$(find record/live -name "*.mp4" -type f 2>/dev/null | wc -l | tr -d ' ')
+    total_size=$(du -sh record/live 2>/dev/null | cut -f1)
+
+    echo "录制文件数: $file_count"
+    echo "总大小: $total_size"
+    echo ""
+
+    if [ "$file_count" -gt 0 ]; then
+        echo "文件列表（前10个）:"
+        find record/live -name "*.mp4" -type f -exec ls -lh {} \; | head -10
+
+        if [ "$file_count" -gt 10 ]; then
+            echo "... 还有 $((file_count - 10)) 个文件"
+        fi
+    fi
+else
+    echo "录制目录不存在"
+fi
+
+echo ""
+echo "查看详细日志: tail -100 logs/m7s.log"
+echo "查看所有文件: find record/live -name '*.mp4' -exec ls -lh {} \\;"
+echo ""
