@@ -102,7 +102,9 @@ start_recording() {
     log_info "开始录制: $stream_path"
 
     local response
-    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/StartRecord?streamPath=$stream_path")
+    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/start/$stream_path" \
+        -H "Content-Type: application/json" \
+        -d '{}')
 
     if echo "$response" | grep -q '"code":0'; then
         log_success "录制开始成功: $stream_path"
@@ -118,7 +120,7 @@ stop_recording() {
     log_info "停止录制: $stream_path"
 
     local response
-    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/StopRecord?streamPath=$stream_path")
+    response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/stop/$stream_path")
 
     if echo "$response" | grep -q '"code":0'; then
         log_success "录制停止成功: $stream_path"

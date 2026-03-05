@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 NODE_IP="${NODE_IP:-localhost}"
 HTTP_PORT="${HTTP_PORT:-8080}"
-RECORD_DURATION="${RECORD_DURATION:-60}"
+RECORD_DURATION="${RECORD_DURATION:-600}"
 
 # 35 个摄像头流路径
 STREAMS=(
@@ -28,6 +28,8 @@ STREAMS=(
 )
 
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
@@ -42,7 +44,7 @@ echo "录制时长: ${RECORD_DURATION}秒"
 echo ""
 
 # 1. 检查服务
-echo -e "${CYAN}[1/5]${NC} 检查服务..."
+echo -e "${CYAN}[1/6]${NC} 检查服务..."
 if curl -s "http://$NODE_IP:$HTTP_PORT/api/sysinfo" > /dev/null 2>&1; then
     echo -e "${GREEN}✓${NC} Monibuca 运行正常"
 else
@@ -51,24 +53,40 @@ else
 fi
 echo ""
 
-# 2. 等待拉流
-echo -e "${CYAN}[2/5]${NC} 等待拉流（20秒）..."
-for i in {1..3}; do
-    echo -ne "\r  等待中... $i/3 秒"
+# 2. 停止所有录制并清理录制目录
+echo -e "${CYAN}[2/6]${NC} 停止所有录制并清理录制目录..."
+for stream in "${STREAMS[@]}"; do
+    curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/stop/$stream" > /dev/null 2>&1
+done
+# 清理录制目录
+rm -rf record/live 2>/dev/null || true
+echo -e "${GREEN}✓${NC} 清理完成"
+echo ""
+
+# 3. 等待系统释放资源
+echo -e "${CYAN}[3/6]${NC} 等待系统释放资源（5秒）..."
+for i in {1..5}; do
+    echo -ne "\r  等待中... $i/5 秒"
     sleep 1
 done
 echo ""
 echo ""
 
-# 3. 开始录制
-echo -e "${CYAN}[3/5]${NC} 开始录制..."
+# 4. 开始录制
+echo -e "${CYAN}[4/6]${NC} 开始录制..."
 success=0
 failed=0
 for stream in "${STREAMS[@]}"; do
+    # 生成文件名（将 live/camera1 转换为 camera1.mp4）
+    camera_name="${stream##*/}"
+    filename="${camera_name}.mp4"
+    # 使用流路径作为 filePath，确保每个流的录制路径唯一，避免与历史录制任务冲突
+    filepath="live/${stream}"
+
     # 使用正确的 API: POST /mp4/api/start/{streamPath}
     response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/start/$stream" \
         -H "Content-Type: application/json" \
-        -d '{}')
+        -d "{\"fragment\": \"600s\", \"filePath\": \"$filepath\", \"fileName\": \"$filename\"}")
 
     if echo "$response" | grep -q '"code":0'; then
         success=$((success + 1))
@@ -90,8 +108,8 @@ if [ $failed -gt 0 ]; then
 fi
 echo ""
 
-# 4. 录制中
-echo -e "${CYAN}[4/5]${NC} 录制中..."
+# 5. 录制中
+echo -e "${CYAN}[5/6]${NC} 录制中..."
 for i in $(seq 1 "$RECORD_DURATION"); do
     echo -ne "\r  进度: $i/$RECORD_DURATION 秒"
     sleep 1
@@ -99,8 +117,8 @@ done
 echo ""
 echo ""
 
-# 5. 停止录制
-echo -e "${CYAN}[5/5]${NC} 停止录制..."
+# 6. 停止录制
+echo -e "${CYAN}[6/6]${NC} 停止录制..."
 stopped=0
 for stream in "${STREAMS[@]}"; do
     # 使用正确的 API: POST /mp4/api/stop/{streamPath}
@@ -135,11 +153,41 @@ if [ -d "record/live" ]; then
     echo ""
 
     if [ "$file_count" -gt 0 ]; then
-        echo "文件列表（前10个）:"
-        find record/live -name "*.mp4" -type f -exec ls -lh {} \; | head -10
-
-        if [ "$file_count" -gt 10 ]; then
-            echo "... 还有 $((file_count - 10)) 个文件"
+        echo "所有录制文件及时长:"
+        echo "----------------------------------------"
+        total_duration=0
+        failed_count=0
+        while IFS= read -r file; do
+            # 获取文件大小
+            size=$(ls -lh "$file" | awk '{print $5}')
+            # 使用 ffprobe 获取时长（秒）- 尝试多种方式
+            duration=$(ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
+            if [ -z "$duration" ] || [ "$duration" = "N/A" ]; then
+                # 尝试从流信息获取
+                duration=$(ffprobe -v quiet -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+            fi
+            if [ -n "$duration" ] && [ "$duration" != "N/A" ] && [ "$duration" != "0" ]; then
+                duration_int=${duration%.*}
+                if [ -n "$duration_int" ] && [ "$duration_int" -gt 0 ] 2>/dev/null; then
+                    total_duration=$((total_duration + duration_int))
+                    mins=$((duration_int / 60))
+                    secs=$((duration_int % 60))
+                    printf "%-60s %6s %3d:%02d\n" "$file" "$size" "$mins" "$secs"
+                else
+                    printf "%-60s %6s 时长异常(%s)\n" "$file" "$size" "$duration"
+                    failed_count=$((failed_count + 1))
+                fi
+            else
+                printf "%-60s %6s 获取失败\n" "$file" "$size"
+                failed_count=$((failed_count + 1))
+            fi
+        done < <(find record/live -name "*.mp4" -type f 2>/dev/null | sort)
+        echo "----------------------------------------"
+        total_mins=$((total_duration / 60))
+        total_secs=$((total_duration % 60))
+        echo "总时长: ${total_mins}分${total_secs}秒 (${total_duration}秒)"
+        if [ $failed_count -gt 0 ]; then
+            echo -e "${YELLOW}警告: ${failed_count} 个文件获取时长失败（可能是文件未完整写入或格式异常）${NC}"
         fi
     fi
 else
@@ -148,5 +196,4 @@ fi
 
 echo ""
 echo "查看详细日志: tail -100 logs/m7s.log"
-echo "查看所有文件: find record/live -name '*.mp4' -exec ls -lh {} \\;"
 echo ""
