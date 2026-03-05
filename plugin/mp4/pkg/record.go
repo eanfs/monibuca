@@ -10,6 +10,7 @@ import (
 	"time"
 
 	task "github.com/langhuihui/gotask"
+	"gorm.io/gorm"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -29,48 +30,43 @@ var writeTrailerQueueTask WriteTrailerQueueTask
 
 type writeTrailerTask struct {
 	task.Task
-	muxer      *Muxer
-	file       storage.File
-	filePath   string
-	durationMs uint32 // 录像时长（毫秒），用于上传 S3 元数据
+	muxer         *Muxer
+	file          storage.File
+	filePath      string
+	recordID      uint           // 录像记录ID
+	targetStorage map[string]any // 目标存储配置
+	deleteLocal   bool           // 上传成功后是否删除本地文件
+	db            *gorm.DB       // 数据库连接
+	durationMs    uint32         // 录像时长（毫秒），用于上传 S3 元数据
 }
 
 func (task *writeTrailerTask) Start() (err error) {
 	task.Info("write trailer start")
-	if err = task.muxer.WriteTrailer(task.file); err != nil {
+	err = task.muxer.WriteTrailer(task.file)
+	if err != nil {
 		task.Error("write trailer", "err", err)
-		// 关闭文件，忽略关闭错误以保留原始错误
 		if task.file != nil {
-			task.file.Close()
-			task.file = nil
+			if errClose := task.file.Close(); errClose != nil {
+				return errClose
+			}
 		}
 	}
 	return
 }
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
-
 // 将 moov 从末尾移动到前方
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
-
-	// 确保任何错误路径下 t.file 都被关闭
-	defer func() {
-		if err != nil && t.file != nil {
-			t.file.Close()
-			t.file = nil
-		}
-	}()
-
 	var temp *os.File
 	temp, err = os.CreateTemp("", "*.mp4")
 	if err != nil {
 		t.Error("create temp file", "err", err)
 		return
 	}
+
 	defer os.Remove(temp.Name())
-	defer temp.Close()
 
 	_, err = t.file.Seek(0, io.SeekStart)
 	if err != nil {
@@ -125,11 +121,12 @@ func (t *writeTrailerTask) Run() (err error) {
 	}
 	if err = t.file.Close(); err != nil {
 		t.Error("close file", "err", err)
-		t.file = nil // 防止 defer 重复关闭
 		return
 	}
-	t.file = nil // 标记已关闭，防止 defer 重复关闭
-	// temp 由 defer temp.Close() 负责关闭
+	if err = temp.Close(); err != nil {
+		t.Error("close temp file", "err", err)
+	}
+
 	return
 }
 
