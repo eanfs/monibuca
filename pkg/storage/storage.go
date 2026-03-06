@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 )
+
+var logger *slog.Logger
+
+// SetLogger 设置 storage 包使用的 logger
+func SetLogger(l *slog.Logger) {
+	logger = l
+}
 
 // StorageType 存储类型
 type StorageType string

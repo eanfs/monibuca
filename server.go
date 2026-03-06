@@ -224,6 +224,7 @@ func (s *Server) Start() (err error) {
 	s.LogHandler.SetLevel(slog.LevelDebug)
 	s.LogHandler.Add(defaultLogHandler)
 	s.Logger = slog.New(&s.LogHandler).With("server", s.ID)
+	storage.SetLogger(s.Logger) // 设置 storage 包的 logger
 	s.Waiting.Logger = s.Logger
 
 	var httpMux http.Handler = httpConf.CreateHttpMux()

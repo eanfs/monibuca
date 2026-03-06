@@ -332,7 +332,7 @@ func (w *S3File) Sync() error {
 		}
 		// 获取文件大小用于日志
 		if stat, err := w.tempFile.Stat(); err == nil {
-			fmt.Printf("[S3File.Sync] tempFile size: %d bytes, path: %s\n", stat.Size(), w.filePath)
+			logger.Debug("S3File sync tempFile", "size", stat.Size(), "path", w.filePath)
 		}
 	}
 	if err := w.uploadTempFile(); err != nil {
@@ -394,14 +394,13 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 func (w *S3File) uploadTempFile() (err error) {
 	// 重置文件指针到开头
 	if _, err := w.tempFile.Seek(0, 0); err != nil {
-		fmt.Printf("[S3File.uploadTempFile] failed to seek: %v\n", err)
+		logger.Error("S3File upload failed to seek", "error", err)
 		return fmt.Errorf("failed to seek temp file: %w", err)
 	}
 
 	// 获取文件大小
 	stat, _ := w.tempFile.Stat()
-	fmt.Printf("[S3File.uploadTempFile] uploading to S3: bucket=%s, key=%s, size=%d\n",
-		w.storage.config.Bucket, w.objectKey, stat.Size())
+	logger.Info("S3File uploading to S3", "bucket", w.storage.config.Bucket, "key", w.objectKey, "size", stat.Size())
 
 	// 构建上传请求，携带用户自定义元数据
 	uploadInput := &s3manager.UploadInput{
@@ -417,11 +416,11 @@ func (w *S3File) uploadTempFile() (err error) {
 	_, err = w.storage.uploader.UploadWithContext(w.ctx, uploadInput)
 
 	if err != nil {
-		fmt.Printf("[S3File.uploadTempFile] upload failed: %v\n", err)
+		logger.Error("S3File upload failed", "error", err)
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
-	fmt.Printf("[S3File.uploadTempFile] upload successful: %s\n", w.objectKey)
+	logger.Info("S3File upload successful", "key", w.objectKey)
 	return nil
 }
 

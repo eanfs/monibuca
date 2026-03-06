@@ -10,9 +10,9 @@ TEMP_DIR="${SCRIPT_DIR}/record"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始清理 S3 临时文件..."
 
-# 清理超过 24 小时的临时文件
+# 清理 S3 临时文件
 if [ -d "$TEMP_DIR" ]; then
-    deleted_count=$(find "$TEMP_DIR" -name "s3writer_*.tmp" -mtime +1 -delete -print | wc -l | tr -d ' ')
+    deleted_count=$(find "$TEMP_DIR" -name "s3writer_*.tmp" -delete -print | wc -l | tr -d ' ')
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 已删除 $deleted_count 个临时文件"
 else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 临时目录不存在: $TEMP_DIR"

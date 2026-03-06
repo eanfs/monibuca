@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 NODE_IP="${NODE_IP:-localhost}"
 HTTP_PORT="${HTTP_PORT:-8080}"
-RECORD_DURATION="${RECORD_DURATION:-600}"
+RECORD_DURATION="${RECORD_DURATION:-100}"
 
 # MinIO 配置（从 config.yaml 读取）
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-storage-dev.xiding.tech}"
@@ -295,3 +295,10 @@ fi
 echo ""
 echo "查看详细日志: tail -100 logs/m7s.log"
 echo ""
+
+# # 7. 清理本地临时文件
+# echo -e "${CYAN}[7/7]${NC} 清理本地临时文件..."
+# rm -rf record/*.tmp 2>/dev/null || true
+# rm -rf record/live 2>/dev/null || true
+# echo -e "${GREEN}✓${NC} 本地临时文件清理完成"
+# echo ""
