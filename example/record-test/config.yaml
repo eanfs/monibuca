@@ -7,10 +7,19 @@ global:
   db:
     dsn: "record-test.db"
     type: "sqlite"
-  # 本地存储配置（测试阶段）
+  # S3存储配置示例（需要时取消注释并填写实际值）
   storage:
-    local:
-      path: "record"  # 本地录制目录
+    s3:
+      region: "us-east-1"                   # AWS区域
+      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      accessKeyID: "xidinguser"     # 访问密钥ID
+      secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
+      bucket: "vidu-media-bucket"            # 存储桶名称
+      pathPrefix: "recordings"     # 文件路径前缀
+      forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
+      useSSL: true                          # 是否使用SSL
+      timeout: "600s"                        # 上传超时时间
+      tempDir: "record"                     # 本地临时文件目录（与local存储相同目录），为空则使用系统临时目录
 
 # MP4 录制插件配置
 mp4:

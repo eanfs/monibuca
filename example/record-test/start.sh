@@ -62,4 +62,4 @@ echo "=========================================="
 echo ""
 
 # 启动服务
-go run -tags sqlite main.go
+go run -tags sqlite,s3 main.go

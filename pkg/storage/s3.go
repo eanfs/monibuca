@@ -28,6 +28,7 @@ type S3StorageConfig struct {
 	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
 	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
 	Timeout         time.Duration `desc:"上传超时时间" default:"30s"`
+	TempDir         string        `desc:"本地临时文件目录，为空则使用系统临时目录"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -359,17 +360,24 @@ func (w *S3File) Close() error {
 	if w.tempFile != nil {
 		w.tempFile.Close()
 	}
-	// 清理临时文件
-	if w.filePath != "" {
-		os.Remove(w.filePath)
-	}
+	// 不自动删除临时文件，由定时任务清理
 	return nil
 }
 
 // createTempFile 创建临时文件
 func (w *S3File) createTempFile() error {
+	// 使用配置的临时目录，如果未配置则使用系统默认临时目录
+	tempDir := w.storage.config.TempDir
+
+	// 如果配置了临时目录，确保目录存在
+	if tempDir != "" {
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+	}
+
 	// 创建临时文件
-	tempFile, err := os.CreateTemp("", "s3writer_*.tmp")
+	tempFile, err := os.CreateTemp(tempDir, "s3writer_*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
