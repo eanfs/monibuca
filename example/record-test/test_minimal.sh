@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 NODE_IP="${NODE_IP:-localhost}"
 HTTP_PORT="${HTTP_PORT:-8080}"
-RECORD_DURATION="${RECORD_DURATION:-600}"
+RECORD_DURATION="${RECORD_DURATION:-180}"
 
 # 35 个摄像头流路径
 STREAMS=(
@@ -134,8 +134,8 @@ echo -e "${GREEN}✓${NC} 成功停止 $stopped 个录制"
 echo ""
 
 # 等待文件写入
-echo "等待文件写入（10秒）..."
-sleep 10
+echo "等待文件写入（15秒）..."
+sleep 15
 echo ""
 
 # 检查结果
