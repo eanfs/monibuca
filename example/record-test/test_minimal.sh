@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 NODE_IP="${NODE_IP:-localhost}"
 HTTP_PORT="${HTTP_PORT:-8080}"
-RECORD_DURATION="${RECORD_DURATION:-180}"
+RECORD_DURATION="${RECORD_DURATION:-300}"
 
 # 35 个摄像头流路径
 STREAMS=(
@@ -81,12 +81,12 @@ for stream in "${STREAMS[@]}"; do
     camera_name="${stream##*/}"
     filename="${camera_name}.mp4"
     # 使用流路径作为 filePath，确保每个流的录制路径唯一，避免与历史录制任务冲突
-    filepath="live/${stream}"
+    filepath="${stream}"
 
     # 使用正确的 API: POST /mp4/api/start/{streamPath}
     response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/start/$stream" \
         -H "Content-Type: application/json" \
-        -d "{\"fragment\": \"600s\", \"filePath\": \"$filepath\", \"fileName\": \"$filename\"}")
+        -d "{\"fragment\": \"300s\", \"filePath\": \"$filepath\", \"fileName\": \"$filename\"}")
 
     if echo "$response" | grep -q '"code":0'; then
         success=$((success + 1))
@@ -157,38 +157,49 @@ if [ -d "record/live" ]; then
         echo "----------------------------------------"
         total_duration=0
         failed_count=0
-        while IFS= read -r file; do
+        # 关闭 pipefail 避免管道中非零退出码导致脚本中断
+        set +e
+        find record/live -name "*.mp4" -type f 2>/dev/null | sort | while IFS= read -r file; do
             # 获取文件大小
             size=$(ls -lh "$file" | awk '{print $5}')
-            # 使用 ffprobe 获取时长（秒）- 尝试多种方式
-            duration=$(ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
-            if [ -z "$duration" ] || [ "$duration" = "N/A" ]; then
-                # 尝试从流信息获取
-                duration=$(ffprobe -v quiet -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+            # 使用 ffprobe 获取时长
+            # 由于某些视频音频流有问题，直接从 Duration 行解析更可靠
+            duration_str=$(ffprobe "$file" 2>&1 | grep Duration | awk '{print $2}' | tr -d ',')
+            if [ -n "$duration_str" ] && [ "$duration_str" != "N/A" ]; then
+                # 将 HH:MM:SS.ms 转换为秒
+                hours=$(echo "$duration_str" | cut -d: -f1)
+                mins=$(echo "$duration_str" | cut -d: -f2)
+                secs=$(echo "$duration_str" | cut -d: -f3)
+                # 移除小数部分
+                secs_int=${secs%%.*}
+                duration_int=$((10#$hours * 3600 + 10#$mins * 60 + 10#$secs_int))
+            else
+                duration_int=0
             fi
-            if [ -n "$duration" ] && [ "$duration" != "N/A" ] && [ "$duration" != "0" ]; then
-                duration_int=${duration%.*}
-                if [ -n "$duration_int" ] && [ "$duration_int" -gt 0 ] 2>/dev/null; then
-                    total_duration=$((total_duration + duration_int))
-                    mins=$((duration_int / 60))
-                    secs=$((duration_int % 60))
-                    printf "%-60s %6s %3d:%02d\n" "$file" "$size" "$mins" "$secs"
-                else
-                    printf "%-60s %6s 时长异常(%s)\n" "$file" "$size" "$duration"
-                    failed_count=$((failed_count + 1))
-                fi
+            if [ -n "$duration_int" ] && [ "$duration_int" -gt 0 ] 2>/dev/null; then
+                mins=$((duration_int / 60))
+                secs=$((duration_int % 60))
+                printf "%-60s %6s %3d:%02d\n" "$file" "$size" "$mins" "$secs"
+                echo "DURATION:$duration_int"
             else
                 printf "%-60s %6s 获取失败\n" "$file" "$size"
-                failed_count=$((failed_count + 1))
+                echo "FAILED:1"
             fi
-        done < <(find record/live -name "*.mp4" -type f 2>/dev/null | sort)
-        echo "----------------------------------------"
-        total_mins=$((total_duration / 60))
-        total_secs=$((total_duration % 60))
-        echo "总时长: ${total_mins}分${total_secs}秒 (${total_duration}秒)"
-        if [ $failed_count -gt 0 ]; then
-            echo -e "${YELLOW}警告: ${failed_count} 个文件获取时长失败（可能是文件未完整写入或格式异常）${NC}"
-        fi
+        done | awk '
+            /^DURATION:/ { split($0, arr, ":"); total += arr[2] }
+            /^FAILED:/ { failed++ }
+            !/^(DURATION|FAILED):/ { print $0 }
+            END {
+                print "----------------------------------------"
+                total_mins = int(total / 60)
+                total_secs = int(total % 60)
+                printf "总时长: %d分%d秒 (%d秒)\n", total_mins, total_secs, total
+                if (failed > 0) {
+                    printf "\033[1;33m警告: %d 个文件获取时长失败\033[0m\n", failed
+                }
+            }
+        '
+        set -e
     fi
 else
     echo "录制目录不存在"
