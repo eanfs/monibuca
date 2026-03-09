@@ -1,7 +1,6 @@
 syntax = "proto3";
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
-import "google/protobuf/duration.proto";
 import "global.proto";
 package mp4;
 option go_package="m7s.live/v5/plugin/mp4/pb";
@@ -81,9 +80,10 @@ message ResponseEventRecord {
 
 message ReqStartRecord {
   string streamPath = 1;
-  google.protobuf.Duration fragment = 2;
+  string fragment = 2;
   string filePath = 3;
   string fileName = 4;
+  string duration = 5; // 录制时长，支持纯数字（秒）或带单位格式如 "60s"、"1m"
 }
 
 message ResponseStartRecord {

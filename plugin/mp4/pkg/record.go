@@ -230,6 +230,9 @@ func (r *Recorder) Run() (err error) {
 	sub := recordJob.Subscriber
 	var audioTrack, videoTrack *Track
 	var at, vt *pkg.AVTrack
+	// totalElapsedMs 累计整个录制任务的时长（毫秒），不受分片 ResetAbsTime 的影响
+	var totalElapsedMs uint32
+	var lastAbsTimeMs uint32 // 上次分片时的 absTime 基线
 	checkEventRecordStop := func(absTime uint32) (err error) {
 		if absTime >= recordJob.Event.AfterDuration+recordJob.Event.BeforeDuration {
 			r.RecordJob.Stop(task.ErrStopByUser)
@@ -237,8 +240,21 @@ func (r *Recorder) Run() (err error) {
 		return
 	}
 
+	checkDurationStop := func(absTime uint32) error {
+		if recordJob.RecConf.Duration > 0 {
+			elapsed := totalElapsedMs + (absTime - lastAbsTimeMs)
+			if time.Duration(elapsed)*time.Millisecond >= recordJob.RecConf.Duration {
+				r.RecordJob.Stop(task.ErrStopByUser)
+				return task.ErrStopByUser
+			}
+		}
+		return nil
+	}
+
 	checkFragment := func(reader *pkg.AVRingReader) (err error) {
 		if duration := int64(reader.AbsTime); time.Duration(duration)*time.Millisecond >= recordJob.RecConf.Fragment {
+			// 分片前累计已过去的时长
+			totalElapsedMs += reader.AbsTime - lastAbsTimeMs
 			r.writeTailer(reader.Value.WriteTime)
 			err = r.createStream(reader.Value.WriteTime)
 			if err != nil {
@@ -251,6 +267,7 @@ func (r *Recorder) Run() (err error) {
 			if ar := sub.AudioReader; ar != nil {
 				ar.ResetAbsTime()
 			}
+			lastAbsTimeMs = 0
 		}
 		return
 	}
@@ -267,6 +284,11 @@ func (r *Recorder) Run() (err error) {
 			if recordJob.Event != nil {
 				err = checkEventRecordStop(sub.AudioReader.AbsTime)
 				if err != nil {
+					return err
+				}
+			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.AudioReader.AbsTime); err != nil {
 					return err
 				}
 			}
@@ -314,6 +336,11 @@ func (r *Recorder) Run() (err error) {
 			if recordJob.Event != nil {
 				err = checkEventRecordStop(sub.VideoReader.AbsTime)
 				if err != nil {
+					return err
+				}
+			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.VideoReader.AbsTime); err != nil {
 					return err
 				}
 			}

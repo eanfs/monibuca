@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monibuca is a high-performance streaming server framework written in Go. It's designed to be a modular, scalable platform for real-time audio/video streaming with support for multiple protocols including RTMP, RTSP, HLS, WebRTC, GB28181, and more.
+Monibuca is a high-performance streaming server framework written in Go. It's designed to be a modular, scalable platform for real-time audio/video streaming with support for multiple protocols including RTMP, RTSP, HLS, WebRTC, GB28181, and more. Key features include:
+
+- 🚀 High Performance - Lock-free design, partial manual memory management, multi-core computing
+- ⚡ Low Latency - Zero-wait forwarding, sub-second latency across the entire chain
+- 📦 Modular - Load on demand, unlimited extensibility via plugins
+- 🔧 Flexible - Highly configurable to meet various streaming scenarios
+- 💪 Scalable - Supports distributed deployment, easily handles large-scale scenarios
+- 🔍 Debug Friendly - Built-in debug plugin, real-time performance monitoring and analysis
 
 ## Development Commands
 
@@ -19,12 +26,13 @@ go run -tags sqlite main.go
 **Build Tags:**
 - `sqlite` - Enable SQLite database support
 - `sqliteCGO` - Enable SQLite with CGO
-- `mysql` - Enable MySQL database support  
+- `mysql` - Enable MySQL database support
 - `postgres` - Enable PostgreSQL database support
 - `duckdb` - Enable DuckDB database support
 - `disable_rm` - Disable memory pool
 - `fasthttp` - Use fasthttp instead of net/http
 - `taskpanic` - Enable panics for testing
+- `enable_buddy` - Enable buddy memory pre-allocation
 
 **Protocol Buffer Generation:**
 ```bash
@@ -45,33 +53,95 @@ Windows:
 ```bash
 # Uses goreleaser configuration
 goreleaser build
+
+# Build directly with custom tags
+go build -tags "sqlite mysql postgres" -o monibuca main.go
 ```
 
 **Testing:**
 ```bash
+# Run all tests
 go test ./...
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run tests for specific package
+go test -v ./plugin/rtmp
+
+# Run tests with race detector
+go test -race ./...
 ```
 
 ## Architecture Overview
 
+### Project Structure
+
+```
+/
+├── example/              # Example configurations and entry points
+│   ├── default/          # Default configuration (main entry point)
+│   ├── custom/           # Custom configuration example
+│   └── multiple/         # Multiple server instance example
+├── plugin/               # Built-in plugins
+│   ├── rtmp/             # RTMP protocol support
+│   ├── rtsp/             # RTSP protocol support
+│   ├── webrtc/           # WebRTC protocol support
+│   ├── hls/              # HLS protocol support
+│   ├── flv/              # FLV protocol support
+│   ├── mp4/              # MP4 recording with post-processing
+│   ├── gb28181/          # GB28181 Chinese surveillance standard
+│   ├── srt/              # SRT protocol support
+│   ├── debug/            # Debug and profiling tools
+│   ├── cluster/          # Cluster management
+│   └── ... (other plugins)
+├── pkg/                  # Core packages
+│   ├── config/           # Configuration system
+│   ├── db/               # Database integration (SQLite, MySQL, PostgreSQL, DuckDB)
+│   ├── util/             # Utility functions
+│   ├── codec/            # Audio/video codec handling
+│   ├── format/           # Media format parsing (PS, TS, etc.)
+│   └── storage/          # Storage abstraction layer
+├── pb/                   # Protocol buffer definitions
+├── server.go             # Server core implementation
+├── plugin.go             # Plugin system implementation
+├── publisher.go          # Publisher (input stream) management
+├── subscriber.go         # Subscriber (output stream) management
+└── recoder.go            # Recording management
+```
+
 ### Core Components
 
-**Server (`server.go`):** Main server instance that manages plugins, streams, and configurations. Implements the central event loop and lifecycle management.
+**Server (`server.go`):** Main server instance that manages plugins, streams, and configurations. Implements the central event loop and lifecycle management. Key responsibilities:
+- Plugin initialization and management
+- Stream lifecycle management
+- HTTP/gRPC API serving
+- Database integration
+- Configuration loading and merging
 
-**Plugin System (`plugin.go`):** Modular architecture where functionality is provided through plugins. Each plugin implements the `IPlugin` interface and can provide:
-- Protocol handlers (RTMP, RTSP, etc.)
-- Media transformers
-- Pull/Push proxies
-- Recording capabilities
-- Custom HTTP endpoints
+**Plugin System (`plugin.go`):** Modular architecture where functionality is provided through plugins. Each plugin embeds `Plugin` struct and can optionally implement:
+- `ITCPPlugin` - TCP server protocol handler
+- `IUDPPlugin` - UDP server protocol handler
+- `IQUICPlugin` - QUIC server protocol handler
+- `IRegisterHandler` - Custom HTTP endpoint registration
+- `IPublishHookPlugin` - Stream publishing hooks
+- `ISubscribeHookPlugin` - Stream subscription hooks
 
-**Configuration System (`pkg/config/`):** Hierarchical configuration system with priority order: dynamic modifications > environment variables > config files > default YAML > global config > defaults.
+Plugins are registered using `InstallPlugin[YourPluginType](meta)` and auto-discovered via imports.
 
-**Task System (`pkg/task/`):** Advanced asynchronous task management system with multiple layers:
+**Configuration System (`pkg/config/`):** Hierarchical configuration system with priority order: dynamic modifications > environment variables > config files > default YAML > global config > defaults. Supports:
+- Structured configuration with struct tags
+- Environment variable overrides (uppercase plugin name prefix)
+- YAML-based config files
+- Runtime config updates via API
+
+**Task System (github.com/langhuihui/gotask):** Advanced asynchronous task management system with multiple layers:
 - **Task:** Basic unit of work with lifecycle management (Start/Run/Dispose)
 - **Job:** Container that manages multiple child tasks and provides event loops
 - **Work:** Special type of Job that acts as a persistent queue manager (keepalive=true)
-- **Channel:** Event-driven task for handling continuous data streams
+- **TickTask:** Periodic task execution
+
+The server uses `task.RootManager` to manage the entire task hierarchy.
 
 ### Task System Deep Dive
 
@@ -165,21 +235,93 @@ This workflow uses queue-based task processing to avoid blocking the main record
 
 ### Creating a Plugin
 
-1. Implement the `IPlugin` interface
-2. Define plugin metadata using `PluginMeta`
-3. Register with `InstallPlugin[YourPluginType](meta)`
+1. Define your plugin struct with embedded `Plugin`:
+```go
+type MyPlugin struct {
+    Plugin
+    // Custom configuration fields
+    MyConfig string `default:"value" desc:"Description of config"`
+}
+```
+
+2. Define plugin metadata using `PluginMeta`:
+```go
+var MyPluginMeta = PluginMeta{
+    Name:        "MyPlugin",
+    Version:     "1.0.0",
+    DefaultYaml: DefaultYaml(`# My plugin default config`),
+    NewPuller:   NewMyPuller,  // Optional
+    NewPusher:   NewMyPusher,  // Optional
+    NewRecorder: NewMyRecorder, // Optional
+    // ... other fields
+}
+```
+
+3. Register with `InstallPlugin[MyPlugin](MyPluginMeta)` in `init()`
+
 4. Optionally implement protocol-specific interfaces:
-   - `ITCPPlugin` for TCP servers
-   - `IUDPPlugin` for UDP servers  
-   - `IQUICPlugin` for QUIC servers
-   - `IRegisterHandler` for HTTP endpoints
+   - `ITCPPlugin` for TCP servers: `OnTCPConnect(conn net.Conn) task.ITask`
+   - `IUDPPlugin` for UDP servers: `OnUDPConnect(conn *net.UDPConn) task.ITask`
+   - `IQUICPlugin` for QUIC servers: `OnQUICConnect(*quic.Conn) task.ITask`
+   - `IRegisterHandler` for HTTP endpoints: `RegisterHandler() map[string]http.HandlerFunc`
+   - `IPublishHookPlugin` - `OnPublish(pub *Publisher)`
+   - `ISubscribeHookPlugin` - `OnSubscribe(streamPath string, args url.Values)`
 
 ### Plugin Lifecycle
 
-1. **Init:** Configuration parsing and initialization
-2. **Start:** Network listeners and task registration
-3. **Run:** Active operation
-4. **Dispose:** Cleanup and shutdown
+1. **Init:** Configuration parsing and initialization (called by framework)
+2. **Start:** Network listeners and task registration (implement in your plugin)
+3. **Run:** Active operation (event loop managed by task system)
+4. **Dispose:** Cleanup and shutdown (implement `OnDispose` hook if needed)
+
+### Plugin Example Structure
+
+See existing plugins in `plugin/` directory for reference patterns:
+- `plugin/rtmp/` - TCP protocol example
+- `plugin/webrtc/` - Complex plugin with multiple interfaces
+- `plugin/mp4/` - Recorder plugin with post-processing
+
+### Entry Point and Plugin Importing
+
+Plugins are imported in the main entry point (see `example/default/main.go`). To enable a plugin, add its import:
+
+```go
+import (
+    _ "m7s.live/v5/plugin/rtmp"   // Enables RTMP plugin
+    _ "m7s.live/v5/plugin/webrtc" // Enables WebRTC plugin
+    // ... more plugins
+)
+```
+
+The blank import triggers the plugin's `init()` function which registers it with the framework.
+
+### Cross-Plugin Communication
+
+**Global Instance Pattern:** Plugins can expose global instances for cross-plugin access:
+```go
+var myPluginInstance *MyPlugin
+
+func (p *MyPlugin) Start() error {
+    myPluginInstance = p
+    // ...
+}
+
+// Exported API
+func DoSomething() {
+    if myPluginInstance != nil {
+        // Use myPluginInstance
+    }
+}
+```
+
+**Event-Based:** Use webhook system or task queues for decoupled communication.
+
+### Configuration Best Practices
+
+- Use struct tags for default values and descriptions: `default:"value" desc:"Description"`
+- Config field names are mapped to YAML keys (case-insensitive, hyphens/underscores stripped)
+- Environment variables override config: `PLUGINNAME_CONFIGKEY=value`
+- Use `s.Config.Parse(&s.MyConfig, "PLUGINNAME")` for custom config parsing
 
 ### Cross-Plugin Communication Patterns
 
@@ -324,52 +466,152 @@ Automatic migration is handled for core models including users, proxies, and str
 - Efficient buffer management with ring buffers
 - Queue-based processing prevents blocking main threads
 
-## Debugging
+## Debugging & Monitoring
 
 ### Built-in Debug Plugin
-- Performance monitoring and profiling
-- Real-time metrics via Prometheus endpoint (`/api/metrics`)
-- pprof integration for memory/cpu profiling
+The `debug` plugin provides extensive debugging capabilities:
+- **Performance Metrics:** Real-time server metrics via Prometheus endpoint (`/api/metrics`)
+- **pprof Integration:** CPU and memory profiling (`/debug/pprof/`)
+- **Trace View:** Visual task execution timeline
+- **Heap Analysis:** Memory allocation tracking
+- **GC Stats:** Garbage collection metrics
+- **Connection Tracking:** Detailed info on all network connections
+
+**Enable debug plugin in main.go:**
+```go
+import _ "m7s.live/v5/plugin/debug"
+```
 
 ### Logging
-- Structured logging with zerolog
-- Configurable log levels
-- Log rotation support
-- Fatal crash logging
+- **Structured Logging:** Uses slog with JSON format for structured analysis
+- **Log Rotation:** Built-in support via `logrotate` plugin
+- **Fatal Crash Logging:** Crashes are automatically logged to `fatal/` directory with stack traces
+- **Configurable Levels:** Debug, Info, Warn, Error, Fatal (default: Info)
+- **Multi-Output:** Supports console, file, and custom outputs
 
 ### Task System Debugging
 - Tasks automatically include detailed logging with task IDs and types
-- Use `task.Debug/Info/Warn/Error` methods for consistent logging
-- Task state and progress can be monitored through descriptions
+- Task descriptions dynamically update with progress information
 - Event loop status and queue lengths are logged automatically
+- Use `task.Debug/Info/Warn/Error` methods for consistent logging
+- Monitor task retry counts and failure reasons in logs
+
+### Prometheus Monitoring
+Add this to your Prometheus config to scrape metrics:
+```yaml
+scrape_configs:
+  - job_name: "monibuca"
+    metrics_path: "/api/metrics"
+    static_configs:
+      - targets: ["localhost:8080"]
+```
 
 ## Web Admin Interface
 
-- Web-based admin UI served from `admin.zip`
-- RESTful API for all operations
-- Real-time stream monitoring
-- Configuration management
-- User management (when auth enabled)
+- **Web-based UI:** Served from `admin.zip` file (automatically loaded if present)
+- **API Documentation:** Swagger UI available at `/swagger/`
+- **RESTful API:** Complete API for all server operations at `/api/`
+- **Real-time Monitoring:** Dashboard showing streams, subscribers, and system status
+- **Configuration Management:** Edit server and plugin configs via UI
+- **User Management:** Role-based access control (admin/user roles)
+- **Stream Playback:** Preview streams directly in the browser
 
-## Common Issues
+To enable login mechanism:
+```yaml
+global:
+  admin:
+    enableLogin: true
+    users:
+      - username: admin
+        password: admin
+        role: admin
+```
+
+## Deployment
+
+### Docker Deployment
+
+**Build from source:**
+```bash
+docker build -t monibuca .
+docker run -p 8080:8080 -p 1935:1935 monibuca
+```
+
+**Using Docker Compose:**
+```yaml
+version: '3.8'
+services:
+  monibuca:
+    build: .
+    ports:
+      - "8080:8080"   # HTTP API
+      - "1935:1935"   # RTMP
+      - "554:554"     # RTSP
+    volumes:
+      - ./config.yaml:/config.yaml
+      - ./records:/records
+    environment:
+      - TZ=Asia/Shanghai
+```
+
+### Production Considerations
+
+**Performance Tuning:**
+- Enable memory pool (default enabled)
+- Use `enable_buddy` tag for memory pre-allocation
+- Tune file descriptor limits (ulimit -n 65535)
+- Adjust GOMAXPROCS (defaults to CPU count)
+
+**Security:**
+- Always enable authentication in production
+- Use HTTPS/WSS for secure communication
+- Set strong passwords for admin users
+- Restrict API access to trusted networks
+
+**Reliability:**
+- Use process manager (systemd, supervisor)
+- Enable log rotation
+- Set up monitoring and alerting
+- Regularly update to latest version
+
+## Common Issues & Troubleshooting
 
 ### Port Conflicts
 - Default HTTP port: 8080
 - Default gRPC port: 50051
-- Check plugin-specific port configurations
+- Default RTMP port: 1935
+- Default RTSP port: 554
+- Check plugin-specific port configurations in `config.yaml`
 
 ### Database Connection
 - Ensure proper build tags for database support
-- Check DSN configuration strings
-- Verify database file permissions
+- Check DSN format (examples in `config.yaml`)
+- Verify database server is reachable
+- Check database user permissions and credentials
+- For SQLite, ensure write permissions to database file location
 
 ### Plugin Loading
-- Plugins are auto-discovered from imports
-- Check plugin enable/disable status
-- Verify configuration merging
+- Plugins are auto-discovered from imports (must be imported in main.go)
+- Check plugin enable/disable status (env var: `PLUGINNAME_ENABLE=false`)
+- Verify plugin is listed in imports
+- Check configuration merging in logs (level: Debug)
 
 ### Task System Issues
 - Ensure Work instances are added to server during initialization
-- Check task queue status if tasks aren't executing
+- Check task queue status if tasks aren't executing (debug plugin UI)
 - Verify proper error handling in task implementation
 - Monitor task retry counts and failure reasons in logs
+- Check that task's `Start()` method completes successfully
+
+### Stream Publishing/Subscribing
+- Check stream path format (alphanumeric with optional slashes)
+- Verify authentication (check secret and expire parameters)
+- Check codec compatibility (H.264/H.265 for video, AAC/MP3 for audio)
+- Monitor network connectivity between publisher and server
+
+### Performance Issues
+- Check CPU and memory usage via debug plugin
+- Look for memory leaks in pprof heap dump
+- Check for blocked goroutines in pprof goroutine dump
+- Verify no long-running tasks are blocking event loops
+- Check network bandwidth and latency

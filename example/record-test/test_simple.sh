@@ -94,7 +94,7 @@ for stream in "${STREAMS[@]}"; do
     # 使用正确的 API: POST /mp4/api/start/{streamPath}
     response=$(curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/start/$stream" \
         -H "Content-Type: application/json" \
-        -d "{\"fragment\": \"0s\", \"filePath\": \"$filepath\", \"fileName\": \"$filename\"}")
+        -d "{\"duration\": \"100\", \"fragment\": \"0\", \"filePath\": \"$filepath\", \"fileName\": \"$filename\"}")
 
     if echo "$response" | grep -q '"code":0'; then
         success=$((success + 1))

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -26,6 +27,16 @@ import (
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
+
+// parseDurationWithDefault 解析时长字符串，支持纯数字（默认单位秒）或带单位格式（如 "60s"、"1m"）
+func parseDurationWithDefault(s string) (time.Duration, error) {
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		// 纯数字，默认单位为秒
+		seconds, _ := strconv.ParseFloat(s, 64)
+		return time.Duration(seconds * float64(time.Second)), nil
+	}
+	return time.ParseDuration(s)
+}
 
 type ContentPart struct {
 	file   storage.File
@@ -561,8 +572,18 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	var filePath = "."
 	var fileName = ""
 	var fragment = time.Minute
-	if req.Fragment != nil {
-		fragment = req.Fragment.AsDuration()
+	var duration time.Duration // 录制时长
+	if req.Fragment != "" {
+		fragment, err = parseDurationWithDefault(req.Fragment)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fragment: %w", err)
+		}
+	}
+	if req.Duration != "" {
+		duration, err = parseDurationWithDefault(req.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration: %w", err)
+		}
 	}
 	if req.FilePath != "" {
 		filePath = req.FilePath
@@ -571,7 +592,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		fileName = req.FileName
 	}
 
-	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
+	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment, "duration", duration)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		if job.StreamPath != req.StreamPath {
@@ -592,6 +613,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	recordConf := config.Record{
 		Append:   false,
 		Fragment: fragment,
+		Duration: duration,
 		FilePath: filePath,
 		FileName: fileName,
 	}

@@ -7,16 +7,14 @@
 package pb
 
 import (
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
-
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	pb "m7s.live/v5/pb"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -365,9 +363,10 @@ func (x *ResponseEventRecord) GetData() uint32 {
 type ReqStartRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StreamPath    string                 `protobuf:"bytes,1,opt,name=streamPath,proto3" json:"streamPath,omitempty"`
-	Fragment      *durationpb.Duration   `protobuf:"bytes,2,opt,name=fragment,proto3" json:"fragment,omitempty"`
+	Fragment      string                 `protobuf:"bytes,2,opt,name=fragment,proto3" json:"fragment,omitempty"`
 	FilePath      string                 `protobuf:"bytes,3,opt,name=filePath,proto3" json:"filePath,omitempty"`
 	FileName      string                 `protobuf:"bytes,4,opt,name=fileName,proto3" json:"fileName,omitempty"`
+	Duration      string                 `protobuf:"bytes,5,opt,name=duration,proto3" json:"duration,omitempty"` // 录制时长，支持纯数字（秒）或带单位格式如 "60s"、"1m"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -409,11 +408,11 @@ func (x *ReqStartRecord) GetStreamPath() string {
 	return ""
 }
 
-func (x *ReqStartRecord) GetFragment() *durationpb.Duration {
+func (x *ReqStartRecord) GetFragment() string {
 	if x != nil {
 		return x.Fragment
 	}
-	return nil
+	return ""
 }
 
 func (x *ReqStartRecord) GetFilePath() string {
@@ -426,6 +425,13 @@ func (x *ReqStartRecord) GetFilePath() string {
 func (x *ReqStartRecord) GetFileName() string {
 	if x != nil {
 		return x.FileName
+	}
+	return ""
+}
+
+func (x *ReqStartRecord) GetDuration() string {
+	if x != nil {
+		return x.Duration
 	}
 	return ""
 }
@@ -1067,7 +1073,7 @@ var File_mp4_proto protoreflect.FileDescriptor
 
 const file_mp4_proto_rawDesc = "" +
 	"\n" +
-	"\tmp4.proto\x12\x03mp4\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\fglobal.proto\"\xd7\x01\n" +
+	"\tmp4.proto\x12\x03mp4\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\fglobal.proto\"\xd7\x01\n" +
 	"\rReqRecordList\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x01 \x01(\tR\n" +
@@ -1105,14 +1111,15 @@ const file_mp4_proto_rawDesc = "" +
 	"\x13ResponseEventRecord\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\rR\x04data\"\x9f\x01\n" +
+	"\x04data\x18\x03 \x01(\rR\x04data\"\xa0\x01\n" +
 	"\x0eReqStartRecord\x12\x1e\n" +
 	"\n" +
 	"streamPath\x18\x01 \x01(\tR\n" +
-	"streamPath\x125\n" +
-	"\bfragment\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\bfragment\x12\x1a\n" +
+	"streamPath\x12\x1a\n" +
+	"\bfragment\x18\x02 \x01(\tR\bfragment\x12\x1a\n" +
 	"\bfilePath\x18\x03 \x01(\tR\bfilePath\x12\x1a\n" +
-	"\bfileName\x18\x04 \x01(\tR\bfileName\"W\n" +
+	"\bfileName\x18\x04 \x01(\tR\bfileName\x12\x1a\n" +
+	"\bduration\x18\x05 \x01(\tR\bduration\"W\n" +
 	"\x13ResponseStartRecord\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
@@ -1207,33 +1214,31 @@ var file_mp4_proto_goTypes = []any{
 	(*ReqListTag)(nil),            // 12: mp4.ReqListTag
 	(*ResponseTag)(nil),           // 13: mp4.ResponseTag
 	(*ResponseTagList)(nil),       // 14: mp4.ResponseTagList
-	(*durationpb.Duration)(nil),   // 15: google.protobuf.Duration
-	(*emptypb.Empty)(nil),         // 16: google.protobuf.Empty
-	(*pb.RecordResponseList)(nil), // 17: global.RecordResponseList
-	(*pb.ResponseCatalog)(nil),    // 18: global.ResponseCatalog
-	(*pb.ResponseDelete)(nil),     // 19: global.ResponseDelete
+	(*emptypb.Empty)(nil),         // 15: google.protobuf.Empty
+	(*pb.RecordResponseList)(nil), // 16: global.RecordResponseList
+	(*pb.ResponseCatalog)(nil),    // 17: global.ResponseCatalog
+	(*pb.ResponseDelete)(nil),     // 18: global.ResponseDelete
 }
 var file_mp4_proto_depIdxs = []int32{
-	15, // 0: mp4.ReqStartRecord.fragment:type_name -> google.protobuf.Duration
-	8,  // 1: mp4.ResponseTag.data:type_name -> mp4.TagInfo
-	8,  // 2: mp4.ResponseTagList.list:type_name -> mp4.TagInfo
-	0,  // 3: mp4.api.List:input_type -> mp4.ReqRecordList
-	16, // 4: mp4.api.Catalog:input_type -> google.protobuf.Empty
-	1,  // 5: mp4.api.Delete:input_type -> mp4.ReqRecordDelete
-	2,  // 6: mp4.api.EventStart:input_type -> mp4.ReqEventRecord
-	4,  // 7: mp4.api.StartRecord:input_type -> mp4.ReqStartRecord
-	6,  // 8: mp4.api.StopRecord:input_type -> mp4.ReqStopRecord
-	17, // 9: mp4.api.List:output_type -> global.RecordResponseList
-	18, // 10: mp4.api.Catalog:output_type -> global.ResponseCatalog
-	19, // 11: mp4.api.Delete:output_type -> global.ResponseDelete
-	3,  // 12: mp4.api.EventStart:output_type -> mp4.ResponseEventRecord
-	5,  // 13: mp4.api.StartRecord:output_type -> mp4.ResponseStartRecord
-	7,  // 14: mp4.api.StopRecord:output_type -> mp4.ResponseStopRecord
-	9,  // [9:15] is the sub-list for method output_type
-	3,  // [3:9] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	8,  // 0: mp4.ResponseTag.data:type_name -> mp4.TagInfo
+	8,  // 1: mp4.ResponseTagList.list:type_name -> mp4.TagInfo
+	0,  // 2: mp4.api.List:input_type -> mp4.ReqRecordList
+	15, // 3: mp4.api.Catalog:input_type -> google.protobuf.Empty
+	1,  // 4: mp4.api.Delete:input_type -> mp4.ReqRecordDelete
+	2,  // 5: mp4.api.EventStart:input_type -> mp4.ReqEventRecord
+	4,  // 6: mp4.api.StartRecord:input_type -> mp4.ReqStartRecord
+	6,  // 7: mp4.api.StopRecord:input_type -> mp4.ReqStopRecord
+	16, // 8: mp4.api.List:output_type -> global.RecordResponseList
+	17, // 9: mp4.api.Catalog:output_type -> global.ResponseCatalog
+	18, // 10: mp4.api.Delete:output_type -> global.ResponseDelete
+	3,  // 11: mp4.api.EventStart:output_type -> mp4.ResponseEventRecord
+	5,  // 12: mp4.api.StartRecord:output_type -> mp4.ResponseStartRecord
+	7,  // 13: mp4.api.StopRecord:output_type -> mp4.ResponseStopRecord
+	8,  // [8:14] is the sub-list for method output_type
+	2,  // [2:8] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_mp4_proto_init() }
