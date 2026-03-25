@@ -873,7 +873,7 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 			EndTime:    timestamppb.New(recordFile.EndTime),
 			FilePath:   recordFile.FilePath,
 			StreamPath: recordFile.StreamPath,
-			Filename:   recordFile.Filename,
+			Filename:   recordFile.FileName,
 			Type:       recordFile.Type,
 			Duration:   recordFile.Duration,
 			AudioCodec: recordFile.AudioCodec,

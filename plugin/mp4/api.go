@@ -88,7 +88,10 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		}
 
 		// 打开临时文件进行 fMP4 转换
-		file, err = os.Open(tmpPath)
+		tmpFile, err = os.Open(tmpPath)
+		if err == nil {
+			file = &storage.LocalFile{File: tmpFile}
+		}
 		if err != nil {
 			os.Remove(tmpPath)
 			http.Error(w, fmt.Sprintf("failed to open downloaded file: %v", err), http.StatusInternalServerError)

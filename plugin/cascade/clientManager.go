@@ -920,7 +920,7 @@ func (cm *ClientManager) syncRecords() {
 			newRecord := m7s.RecordStream{
 				StreamPath: rec.StreamPath,
 				FilePath:   filePath,
-				Filename:   rec.Filename,
+				FileName:   rec.Filename,
 				Type:       rec.Type,
 				StartTime:  startTimeRec,
 				EndTime:    endTimeRec,

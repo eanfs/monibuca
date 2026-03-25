@@ -72,12 +72,13 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			}
 
 			// 打开临时文件
-			file, err = os.Open(tmpPath)
+			tmpFile, err = os.Open(tmpPath)
 			if err != nil {
 				os.Remove(tmpPath)
 				d.Error("failed to open downloaded file", "err", err)
 				continue
 			}
+			file = &storage.LocalFile{File: tmpFile}
 			// 延迟关闭和删除临时文件
 			defer func() {
 				if file != nil {
@@ -87,9 +88,11 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			}()
 			d.Info("reading downloaded file from URL", "url", stream.FilePath)
 		} else if filepath.IsAbs(stream.FilePath) {
-			file, err = os.Open(stream.FilePath)
-			if err != nil {
+			if f, openErr := os.Open(stream.FilePath); openErr != nil {
+				err = openErr
 				continue
+			} else {
+				file = &storage.LocalFile{File: f}
 			}
 		} else {
 			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
@@ -98,9 +101,11 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 				if isLocalStorage {
 					if localStorage, ok := st.(*storage.LocalStorage); ok {
 						fullPath := localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
-						file, err = os.Open(fullPath)
-						if err != nil {
+						if f, openErr := os.Open(fullPath); openErr != nil {
+							err = openErr
 							continue
+						} else {
+							file = &storage.LocalFile{File: f}
 						}
 					} else {
 						// 类型不匹配，使用 OpenFile 作为兜底
@@ -120,9 +125,11 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 					}
 				}
 			} else {
-				file, err = os.Open(stream.FilePath)
-				if err != nil {
+				if f, openErr := os.Open(stream.FilePath); openErr != nil {
+					err = openErr
 					continue
+				} else {
+					file = &storage.LocalFile{File: f}
 				}
 			}
 		}
