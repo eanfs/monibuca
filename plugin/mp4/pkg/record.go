@@ -124,7 +124,7 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 	if err = t.file.Close(); err != nil {
-		t.Error("close file", "err", err)
+		t.Error("close file (upload may have failed after retries)", "err", err, "filePath", t.filePath, "durationMs", t.durationMs)
 		t.file = nil // 防止 defer 重复关闭
 		return
 	}
