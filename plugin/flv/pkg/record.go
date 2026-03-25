@@ -59,11 +59,16 @@ type writeMetaTagTask struct {
 
 func (task *writeMetaTagTask) Start() (err error) {
 	defer func() {
-		err = task.file.Close()
-		if info, err := task.file.Stat(); err == nil && info.Size() == 0 {
-			err = os.Remove(info.Name())
-			if err != nil {
-				task.Error("writeMetaTagTask", "remove file err", err)
+		closeErr := task.file.Close()
+		if closeErr != nil {
+			task.Error("writeMetaTagTask close file (upload may have failed after retries)", "err", closeErr, "file", task.file.Name())
+			if err == nil {
+				err = closeErr
+			}
+		}
+		if info, statErr := task.file.Stat(); statErr == nil && info.Size() == 0 {
+			if removeErr := os.Remove(info.Name()); removeErr != nil {
+				task.Error("writeMetaTagTask", "remove file err", removeErr)
 			}
 		}
 	}()

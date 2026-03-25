@@ -4,8 +4,11 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -40,7 +43,11 @@ type S3StorageConfig struct {
 	PathPrefix      string        `desc:"文件路径前缀"`
 	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
 	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
-	Timeout         time.Duration `desc:"上传超时时间" default:"30s"`
+	Timeout         time.Duration `desc:"单次上传超时时间" default:"15m"`
+	MaxRetries      int           `desc:"上传失败最大重试次数" default:"3"`
+	RetryInterval   time.Duration `desc:"重试基础间隔（指数退避）" default:"5s"`
+	PartSize        int64         `desc:"multipart 分片大小（字节），默认 64MB" default:"67108864"`
+	ConnectTimeout  time.Duration `desc:"TCP 连接超时" default:"10s"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -60,6 +67,49 @@ func (c *S3StorageConfig) Validate() error {
 	return nil
 }
 
+// getTimeout 获取上传超时时间，默认 15 分钟
+func (c *S3StorageConfig) getTimeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return 15 * time.Minute
+}
+
+// retryConfig 获取重试配置
+func (c *S3StorageConfig) retryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    c.MaxRetries,
+		RetryInterval: c.RetryInterval,
+	}
+}
+
+// getConnectTimeout 获取 TCP 连接超时，默认 10 秒
+func (c *S3StorageConfig) getConnectTimeout() time.Duration {
+	if c.ConnectTimeout > 0 {
+		return c.ConnectTimeout
+	}
+	return 10 * time.Second
+}
+
+// newHTTPClient 创建带优化配置的 HTTP Client
+func (c *S3StorageConfig) newHTTPClient() *http.Client {
+	connectTimeout := c.getConnectTimeout()
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   connectTimeout,
+			ResponseHeaderTimeout: 60 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   10,
+			ExpectContinueTimeout: 5 * time.Second,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
+}
+
 // S3Storage S3存储实现
 type S3Storage struct {
 	config     *S3StorageConfig
@@ -69,30 +119,31 @@ type S3Storage struct {
 }
 
 // NewS3Storage 创建S3存储实例
-func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
-	if err := config.Validate(); err != nil {
+func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	// 创建AWS配置
 	awsConfig := &aws.Config{
-		Region:           aws.String(config.Region),
-		Credentials:      credentials.NewStaticCredentials(config.AccessKeyID, config.SecretAccessKey, ""),
-		S3ForcePathStyle: aws.Bool(config.ForcePathStyle),
+		Region:           aws.String(cfg.Region),
+		Credentials:      credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		S3ForcePathStyle: aws.Bool(cfg.ForcePathStyle),
+		HTTPClient:       cfg.newHTTPClient(),
 	}
 
 	// 设置端点（用于MinIO或其他S3兼容服务）
-	if config.Endpoint != "" {
-		endpoint := config.Endpoint
+	if cfg.Endpoint != "" {
+		endpoint := cfg.Endpoint
 		if !strings.HasPrefix(endpoint, "http") {
 			protocol := "http"
-			if config.UseSSL {
+			if cfg.UseSSL {
 				protocol = "https"
 			}
 			endpoint = protocol + "://" + endpoint
 		}
 		awsConfig.Endpoint = aws.String(endpoint)
-		awsConfig.DisableSSL = aws.Bool(!config.UseSSL)
+		awsConfig.DisableSSL = aws.Bool(!cfg.UseSSL)
 	}
 
 	// 创建AWS会话
@@ -105,14 +156,21 @@ func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
 	s3Client := s3.New(sess)
 
 	// 测试连接
-	if err := testS3Connection(s3Client, config.Bucket); err != nil {
+	if err := testS3Connection(s3Client, cfg.Bucket); err != nil {
 		return nil, fmt.Errorf("S3 connection test failed: %w", err)
 	}
 
+	// 创建 uploader，配置 PartSize
+	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		if cfg.PartSize > 0 {
+			u.PartSize = cfg.PartSize
+		}
+	})
+
 	return &S3Storage{
-		config:     config,
+		config:     cfg,
 		s3Client:   s3Client,
-		uploader:   s3manager.NewUploader(sess),
+		uploader:   uploader,
 		downloader: s3manager.NewDownloader(sess),
 	}, nil
 }
@@ -391,40 +449,51 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 	return w.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到S3
-func (w *S3File) uploadTempFile() (err error) {
+// uploadTempFile 上传临时文件到S3，带指数退避重试
+func (w *S3File) uploadTempFile() error {
 	// 重置文件指针到开头
-	if _, err = w.tempFile.Seek(0, 0); err != nil {
+	if _, err := w.tempFile.Seek(0, 0); err != nil {
 		return fmt.Errorf("failed to seek temp file: %w", err)
 	}
 
-	stat, _ := w.tempFile.Stat()
-	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, stat.Size())
-
-	// 使用带超时的 background context，避免因录像 context 取消而中断上传
-	timeout := w.storage.config.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	var fileSize int64
+	if stat, err := w.tempFile.Stat(); err == nil {
+		fileSize = stat.Size()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, fileSize)
 
-	uploadInput := &s3manager.UploadInput{
-		Bucket:      aws.String(w.storage.config.Bucket),
-		Key:         aws.String(w.objectKey),
-		Body:        w.tempFile,
-		ContentType: aws.String("application/octet-stream"),
-	}
-	if len(w.metadata) > 0 {
-		uploadInput.Metadata = aws.StringMap(w.metadata)
-	}
+	rc := w.storage.config.retryConfig()
 
-	if _, err = w.storage.uploader.UploadWithContext(ctx, uploadInput); err != nil {
-		return fmt.Errorf("failed to upload to S3: %w", err)
-	}
+	return UploadWithRetry(context.Background(), rc, "S3", w.objectKey,
+		// resetFn: 每次重试前重置文件指针
+		func() error {
+			_, err := w.tempFile.Seek(0, 0)
+			return err
+		},
+		// uploadFn: 执行单次上传
+		func() error {
+			timeout := w.storage.config.getTimeout()
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
 
-	log.Printf("[S3] upload successful: %s", w.objectKey)
-	return nil
+			uploadInput := &s3manager.UploadInput{
+				Bucket:      aws.String(w.storage.config.Bucket),
+				Key:         aws.String(w.objectKey),
+				Body:        w.tempFile,
+				ContentType: aws.String("application/octet-stream"),
+			}
+			if len(w.metadata) > 0 {
+				uploadInput.Metadata = aws.StringMap(w.metadata)
+			}
+
+			if _, err := w.storage.uploader.UploadWithContext(ctx, uploadInput); err != nil {
+				return fmt.Errorf("failed to upload to S3: %w", err)
+			}
+
+			log.Printf("[S3] upload successful: %s", w.objectKey)
+			return nil
+		},
+	)
 }
 
 // downloadToTemp 下载S3对象到本地临时文件
