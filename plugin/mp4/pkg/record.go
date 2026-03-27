@@ -10,6 +10,7 @@ import (
 	"time"
 
 	task "github.com/langhuihui/gotask"
+	"gorm.io/gorm"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -32,7 +33,10 @@ type writeTrailerTask struct {
 	muxer      *Muxer
 	file       storage.File
 	filePath   string
-	durationMs uint32 // 录像时长（毫秒），用于上传 S3 元数据
+	durationMs uint32   // 录像时长（毫秒），用于上传 S3 元数据
+	streamPath string   // 关联流路径（用于失败追踪）
+	storageKey string   // 存储类型 key（s3/oss/cos/local）
+	db         *gorm.DB // 数据库连接（用于保存失败记录）
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -52,6 +56,7 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 
 // 将 moov 从末尾移动到前方
 // 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
+// 采用先写后替换策略：完整写入临时文件并验证后才覆盖原文件，确保原子性
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
 
@@ -69,18 +74,29 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("create temp file", "err", err)
 		return
 	}
-	defer os.Remove(temp.Name())
-	defer temp.Close()
+	tempPath := temp.Name()
+	// 错误时保留临时文件用于手动恢复，成功时删除
+	tempCleanup := true
+	defer func() {
+		temp.Close()
+		if tempCleanup {
+			os.Remove(tempPath)
+		} else {
+			t.Error("preserving temp file for recovery", "tempPath", tempPath)
+		}
+	}()
 
 	_, err = t.file.Seek(0, io.SeekStart)
 	if err != nil {
 		t.Error("seek file", "err", err)
+		tempCleanup = false
 		return
 	}
 	// 复制 mdat box之前的内容
 	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData)
 	if err != nil {
-		t.Error("copy file", "err", err)
+		t.Error("copy pre-mdat data", "err", err)
+		tempCleanup = false
 		return
 	}
 	for _, track := range t.muxer.Tracks {
@@ -90,46 +106,93 @@ func (t *writeTrailerTask) Run() (err error) {
 	}
 	err = t.muxer.WriteMoov(temp)
 	if err != nil {
-		t.Error("rewrite with moov", "err", err)
+		t.Error("write moov to temp", "err", err)
+		tempCleanup = false
 		return
 	}
 	// 复制 mdat box
 	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatSize)+BeforeMdatData)
-
 	if err != nil {
 		if err == pkg.ErrSkip {
 			return task.ErrTaskComplete
 		}
-		t.Error("rewrite with moov", "err", err)
+		t.Error("copy mdat data", "err", err)
+		tempCleanup = false
 		return
 	}
+
+	// 验证临时文件完整性
+	tempStat, statErr := temp.Stat()
+	if statErr != nil {
+		err = statErr
+		t.Error("stat temp file", "err", err)
+		tempCleanup = false
+		return
+	}
+	expectedSize := tempStat.Size()
+	if expectedSize == 0 {
+		err = fmt.Errorf("temp file is empty after MOOV rewrite")
+		t.Error("temp file empty", "err", err)
+		tempCleanup = false
+		return
+	}
+
+	// 临时文件已包含完整数据，现在安全覆盖原文件
 	if _, err = t.file.Seek(0, io.SeekStart); err != nil {
-		t.Error("seek file", "err", err)
+		t.Error("seek file for overwrite", "err", err)
+		tempCleanup = false
 		return
 	}
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {
 		t.Error("seek temp file", "err", err)
+		tempCleanup = false
 		return
 	}
-	// 获取最终文件大小（从 temp 文件，因为它包含完整数据）
-	tempStat, _ := temp.Stat()
-	fileSize := tempStat.Size()
-	if _, err = io.Copy(t.file, temp); err != nil {
-		t.Error("copy file", "err", err)
+	written, copyErr := io.Copy(t.file, temp)
+	if copyErr != nil {
+		err = copyErr
+		t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
+		tempCleanup = false // 保留临时文件用于恢复
 		return
 	}
+	if written != expectedSize {
+		err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
+		t.Error("incomplete overwrite", "err", err)
+		tempCleanup = false
+		return
+	}
+
 	// 在关闭前设置元数据（文件大小 + 时长）
-	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", fileSize))
+	metadata := map[string]string{
+		"video-size-bytes": fmt.Sprintf("%d", expectedSize),
+	}
+	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", expectedSize))
 	if t.durationMs > 0 {
+		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 	if err = t.file.Close(); err != nil {
-		t.Error("close file (upload may have failed after retries)", "err", err, "filePath", t.filePath, "durationMs", t.durationMs)
-		t.file = nil // 防止 defer 重复关闭
+		t.Error("upload failed after retries", "err", err,
+			"filePath", t.filePath, "streamPath", t.streamPath,
+			"storageType", t.storageKey, "durationMs", t.durationMs)
+		t.file = nil
+		// 将 MOOV 重写后的临时文件移到暂存目录，保存失败记录到 DB 供定时补传
+		if tempCleanup && t.db != nil {
+			// tempCleanup=true 意味着 MOOV 临时文件还在，可以用来补传
+			pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
+			if moveErr == nil {
+				tempCleanup = false // 已移走，不需 defer 删除
+				m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+					t.streamPath, expectedSize, t.durationMs, metadata, err)
+				t.Info("saved failed upload for retry",
+					"pendingPath", pendingPath, "objectKey", t.filePath)
+			} else {
+				t.Error("move to pending dir failed", "err", moveErr)
+			}
+		}
 		return
 	}
-	t.file = nil // 标记已关闭，防止 defer 重复关闭
-	// temp 由 defer temp.Close() 负责关闭
+	t.file = nil
 	return
 }
 
@@ -150,11 +213,23 @@ type Recorder struct {
 
 func (r *Recorder) writeTailer(end time.Time) {
 	r.WriteTail(end, &writeTrailerQueueTask)
+	var db *gorm.DB
+	if r.RecordJob.Plugin != nil {
+		db = r.RecordJob.Plugin.DB
+	}
+	st := r.RecordJob.GetStorage()
+	var storageKey string
+	if st != nil {
+		storageKey = st.GetKey()
+	}
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
 		muxer:      r.muxer,
 		file:       r.file,
 		filePath:   r.Event.FilePath,
-		durationMs: r.Event.Duration, // 录像时长（毫秒）
+		durationMs: r.Event.Duration,
+		streamPath: r.Event.StreamPath,
+		storageKey: storageKey,
+		db:         db,
 	}, r.Logger)
 }
 
@@ -233,6 +308,9 @@ func (r *Recorder) Run() (err error) {
 	sub := recordJob.Subscriber
 	var audioTrack, videoTrack *Track
 	var at, vt *pkg.AVTrack
+	// totalElapsedMs 累计整个录制任务的时长（毫秒），不受分片 ResetAbsTime 的影响
+	var totalElapsedMs uint32
+	var lastAbsTimeMs uint32 // 上次分片时的 absTime 基线
 	checkEventRecordStop := func(absTime uint32) (err error) {
 		if absTime >= recordJob.Event.AfterDuration+recordJob.Event.BeforeDuration {
 			r.RecordJob.Stop(task.ErrStopByUser)
@@ -240,8 +318,23 @@ func (r *Recorder) Run() (err error) {
 		return
 	}
 
+	checkDurationStop := func(absTime uint32) error {
+		if recordJob.RecConf.Duration > 0 {
+			elapsed := totalElapsedMs + (absTime - lastAbsTimeMs)
+			if time.Duration(elapsed)*time.Millisecond >= recordJob.RecConf.Duration {
+				r.Info("duration reached, stopping recording",
+					"duration", recordJob.RecConf.Duration,
+					"elapsed", time.Duration(elapsed)*time.Millisecond)
+				return task.ErrTaskComplete
+			}
+		}
+		return nil
+	}
+
 	checkFragment := func(reader *pkg.AVRingReader) (err error) {
 		if duration := int64(reader.AbsTime); time.Duration(duration)*time.Millisecond >= recordJob.RecConf.Fragment {
+			// 分片前累计已过去的时长
+			totalElapsedMs += reader.AbsTime - lastAbsTimeMs
 			r.writeTailer(reader.Value.WriteTime)
 			err = r.createStream(reader.Value.WriteTime)
 			if err != nil {
@@ -254,6 +347,7 @@ func (r *Recorder) Run() (err error) {
 			if ar := sub.AudioReader; ar != nil {
 				ar.ResetAbsTime()
 			}
+			lastAbsTimeMs = 0
 		}
 		return
 	}
@@ -270,6 +364,11 @@ func (r *Recorder) Run() (err error) {
 			if recordJob.Event != nil {
 				err = checkEventRecordStop(sub.AudioReader.AbsTime)
 				if err != nil {
+					return err
+				}
+			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.AudioReader.AbsTime); err != nil {
 					return err
 				}
 			}
@@ -317,6 +416,11 @@ func (r *Recorder) Run() (err error) {
 			if recordJob.Event != nil {
 				err = checkEventRecordStop(sub.VideoReader.AbsTime)
 				if err != nil {
+					return err
+				}
+			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.VideoReader.AbsTime); err != nil {
 					return err
 				}
 			}

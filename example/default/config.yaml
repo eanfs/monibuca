@@ -12,13 +12,13 @@ global:
   storage:
     s3:
       region: "us-east-1"                   # AWS区域
-      endpoint: "storage-dev.xiding.tech"          # S3服务端点
+      endpoint: "172.16.12.52:9000"          # S3服务端点(MinIO)
       accessKeyID: "xidinguser"     # 访问密钥ID
       secretAccessKey: "U2FsdGVkX1/7uyvj0trCzSNFsfDZ66dMSAEZjNlvW1c=" # 秘密访问密钥
       bucket: "vidu-media-bucket"            # 存储桶名称
       pathPrefix: "recordings"     # 文件路径前缀
       forcePathStyle: true                 # 强制路径样式（MinIO需要设为true）
-      useSSL: true                          # 是否使用SSL
+      useSSL: false                          # 是否使用SSL
       timeout: "600s"                        # 上传超时时间    
   # pullproxy:
   #   - id: 1                        # 唯一ID标识，必须大于0
@@ -77,20 +77,14 @@ mp4:
   enable: true
   publish:
     delayclosetimeout: 3s
-  # 本地录制测试配置（不使用 S3）
-  onpub:
-    record:
-      ^live/.+:
-          fragment: 0  # 0 表示不分片，录制完整文件
-          filepath: record/$0  # 录制到 example/default/record/ 目录
-          storage:
-            local:  # 使用本地存储
-              path: ""  # 使用 filepath 指定的路径
-  # pull:
-  #   live/test: /Users/dexter/Movies/1744963190.mp4
-  onsub:
-    pull:
-      ^vod_mp4_\d+/(.+)$: $1
+  # onpub:
+  #   record:
+  #     ^live/.+:
+  #         fragment: 0  # 不分片，录制完整文件
+  #         filepath: record/$0
+  # onsub:
+  #   pull:
+  #     ^vod_mp4_\d+/(.+)$: $1
 cascadeserver:
   quic:
     listenaddr: :44944

@@ -297,6 +297,11 @@ func (s *Server) Start() (err error) {
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
+	// 初始化上传并发控制器
+	storage.InitUploadManager(storage.UploadConfig{
+		MaxConcurrentUploads: 4,
+		PendingDir:           "pending_uploads",
+	})
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})
 	if err != nil {
 		s.Error("SetCrashOutput", "error", err)
@@ -325,7 +330,7 @@ func (s *Server) Start() (err error) {
 			sqlDB.SetMaxOpenConns(100)
 			sqlDB.SetConnMaxLifetime(5 * time.Minute)
 			// Auto-migrate models
-			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}); err != nil {
+			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}, &UploadTask{}); err != nil {
 				s.Error("failed to auto-migrate models", "error", err)
 				return
 			}
@@ -439,6 +444,12 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
+	// 启动上传补传调度器（定时检查失败的上传任务并重试）
+	if s.DB != nil {
+		s.Records.OnStart(func() {
+			s.Records.AddTask(&UploadRetryScheduler{s: s})
+		})
+	}
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {

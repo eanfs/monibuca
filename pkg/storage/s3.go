@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -316,6 +317,7 @@ func testS3Connection(s3Client *s3.S3, bucket string) error {
 
 // S3File S3文件读写器
 type S3File struct {
+	mu        sync.Mutex
 	storage   *S3Storage
 	objectKey string
 	ctx       context.Context
@@ -327,6 +329,8 @@ type S3File struct {
 
 // SetMetadata 设置上传到 S3 时携带的用户元数据，须在 Close 前调用。
 func (w *S3File) SetMetadata(key, value string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.metadata == nil {
 		w.metadata = make(map[string]string)
 	}
@@ -338,63 +342,58 @@ func (w *S3File) Name() string {
 }
 
 func (w *S3File) Write(p []byte) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		if err = w.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件
 	return w.tempFile.Write(p)
 }
 
 func (w *S3File) Read(p []byte) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		if err = w.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件读取
 	return w.tempFile.Read(p)
 }
 
 func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		if err = w.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件的指定位置
 	return w.tempFile.WriteAt(p, off)
 }
 
 func (w *S3File) ReadAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		if err = w.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件的指定位置读取
 	return w.tempFile.ReadAt(p, off)
 }
 
 func (w *S3File) Sync() error {
-	// 只读模式不上传
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.readOnly {
 		if w.tempFile != nil {
 			return w.tempFile.Sync()
 		}
 		return nil
 	}
-
-	// 先将临时文件同步到磁盘
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
 			return err
@@ -404,30 +403,57 @@ func (w *S3File) Sync() error {
 }
 
 func (w *S3File) Seek(offset int64, whence int) (int64, error) {
-	// 如果还没有创建临时文件，先创建或下载
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		if err := w.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 使用临时文件进行随机访问
 	return w.tempFile.Seek(offset, whence)
 }
 
 func (w *S3File) Close() error {
-	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
-	defer func() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.readOnly {
+		defer w.cleanup(true)
 		if w.tempFile != nil {
-			w.tempFile.Close()
-			w.tempFile = nil
+			return w.tempFile.Sync()
 		}
-		if w.filePath != "" {
-			os.Remove(w.filePath)
-			w.filePath = ""
+		return nil
+	}
+	if w.tempFile != nil {
+		if err := w.tempFile.Sync(); err != nil {
+			defer w.cleanup(true)
+			return err
 		}
-	}()
-	return w.Sync()
+	}
+	err := w.uploadTempFile()
+	// 上传失败时保留临时文件（供补传），成功时删除
+	w.cleanup(err == nil)
+	if err != nil && OnUploadFailed != nil && w.filePath != "" {
+		var fileSize int64
+		if w.tempFile != nil {
+			if stat, statErr := w.tempFile.Stat(); statErr == nil {
+				fileSize = stat.Size()
+			}
+		}
+		OnUploadFailed(w.filePath, w.objectKey, "s3", fileSize, w.metadata, err)
+	}
+	return err
+}
+
+// cleanup 清理临时文件。deleteFile=true 时删除磁盘文件，否则仅关闭句柄保留文件。
+func (w *S3File) cleanup(deleteFile bool) {
+	if w.tempFile != nil {
+		w.tempFile.Close()
+		w.tempFile = nil
+	}
+	if deleteFile && w.filePath != "" {
+		os.Remove(w.filePath)
+		w.filePath = ""
+	}
 }
 
 // createTempFile 创建临时文件
@@ -449,8 +475,14 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 	return w.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到S3，带指数退避重试
+// uploadTempFile 上传临时文件到S3，带并发控制和指数退避重试
 func (w *S3File) uploadTempFile() error {
+	// 获取上传槽位（并发控制）
+	if err := AcquireUploadSlot(w.ctx); err != nil {
+		return fmt.Errorf("acquire upload slot: %w", err)
+	}
+	defer ReleaseUploadSlot()
+
 	// 重置文件指针到开头
 	if _, err := w.tempFile.Seek(0, 0); err != nil {
 		return fmt.Errorf("failed to seek temp file: %w", err)
@@ -460,11 +492,12 @@ func (w *S3File) uploadTempFile() error {
 	if stat, err := w.tempFile.Stat(); err == nil {
 		fileSize = stat.Size()
 	}
-	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, fileSize)
+	log.Printf("[S3] uploading: bucket=%s key=%s size=%d active=%d/%d",
+		w.storage.config.Bucket, w.objectKey, fileSize, GetActiveUploads(), GetMaxConcurrentUploads())
 
 	rc := w.storage.config.retryConfig()
 
-	return UploadWithRetry(context.Background(), rc, "S3", w.objectKey,
+	return UploadWithRetry(w.ctx, rc, "S3", w.objectKey,
 		// resetFn: 每次重试前重置文件指针
 		func() error {
 			_, err := w.tempFile.Seek(0, 0)
@@ -473,7 +506,7 @@ func (w *S3File) uploadTempFile() error {
 		// uploadFn: 执行单次上传
 		func() error {
 			timeout := w.storage.config.getTimeout()
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := context.WithTimeout(w.ctx, timeout)
 			defer cancel()
 
 			uploadInput := &s3manager.UploadInput{

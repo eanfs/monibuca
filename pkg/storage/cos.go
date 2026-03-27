@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tencentyun/cos-go-sdk-v5"
@@ -229,6 +230,7 @@ func testCOSConnection(client *cos.Client, bucket string) error {
 
 // COSFile COS文件读写器
 type COSFile struct {
+	mu        sync.Mutex
 	storage   *COSStorage
 	objectKey string
 	ctx       context.Context
@@ -244,91 +246,103 @@ func (f *COSFile) Name() string {
 }
 
 func (f *COSFile) Write(p []byte) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件
 	return f.tempFile.Write(p)
 }
 
 func (f *COSFile) Read(p []byte) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件读取
 	return f.tempFile.Read(p)
 }
 
 func (f *COSFile) WriteAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件的指定位置
 	return f.tempFile.WriteAt(p, off)
 }
 
 func (f *COSFile) ReadAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件的指定位置读取
 	return f.tempFile.ReadAt(p, off)
 }
 
 func (f *COSFile) Sync() error {
-	// 如果使用临时文件，先同步到磁盘
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile != nil {
 		if err := f.tempFile.Sync(); err != nil {
 			return err
 		}
 	}
-	if err := f.uploadTempFile(); err != nil {
-		return err
-	}
-	return nil
+	return f.uploadTempFile()
 }
 
 func (f *COSFile) Seek(offset int64, whence int) (int64, error) {
-	// 如果还没有创建临时文件，先创建或下载
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err := f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 使用临时文件进行随机访问
 	return f.tempFile.Seek(offset, whence)
 }
 
 func (f *COSFile) Close() error {
-	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
-	defer func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tempFile != nil {
+		if err := f.tempFile.Sync(); err != nil {
+			f.cleanup(true)
+			return err
+		}
+	}
+	err := f.uploadTempFile()
+	f.cleanup(err == nil)
+	if err != nil && OnUploadFailed != nil && f.filePath != "" {
+		var fileSize int64
 		if f.tempFile != nil {
-			f.tempFile.Close()
-			f.tempFile = nil
+			if stat, statErr := f.tempFile.Stat(); statErr == nil {
+				fileSize = stat.Size()
+			}
 		}
-		if f.filePath != "" {
-			os.Remove(f.filePath)
-			f.filePath = ""
-		}
-	}()
-	return f.Sync()
+		OnUploadFailed(f.filePath, f.objectKey, "cos", fileSize, nil, err)
+	}
+	return err
+}
+
+func (f *COSFile) cleanup(deleteFile bool) {
+	if f.tempFile != nil {
+		f.tempFile.Close()
+		f.tempFile = nil
+	}
+	if deleteFile && f.filePath != "" {
+		os.Remove(f.filePath)
+		f.filePath = ""
+	}
 }
 
 // createTempFile 创建临时文件
@@ -350,13 +364,19 @@ func (f *COSFile) Stat() (os.FileInfo, error) {
 	return f.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到COS，带指数退避重试
+// uploadTempFile 上传临时文件到COS，带并发控制和指数退避重试
 func (f *COSFile) uploadTempFile() error {
+	if err := AcquireUploadSlot(f.ctx); err != nil {
+		return fmt.Errorf("acquire upload slot: %w", err)
+	}
+	defer ReleaseUploadSlot()
+
 	var fileSize int64
 	if stat, err := f.tempFile.Stat(); err == nil {
 		fileSize = stat.Size()
 	}
-	log.Printf("[COS] uploading: key=%s size=%d", f.objectKey, fileSize)
+	log.Printf("[COS] uploading: key=%s size=%d active=%d/%d",
+		f.objectKey, fileSize, GetActiveUploads(), GetMaxConcurrentUploads())
 
 	rc := f.storage.config.retryConfig()
 
