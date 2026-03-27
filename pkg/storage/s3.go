@@ -4,18 +4,34 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"log"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"m7s.live/v5/pkg/config"
 )
+
+// isS3NotFoundError 使用 AWS SDK 类型断言判断是否为 404 错误，避免脆弱的字符串匹配
+func isS3NotFoundError(err error) bool {
+	if aerr, ok := err.(awserr.Error); ok {
+		switch aerr.Code() {
+		case s3.ErrCodeNoSuchKey, "NotFound", "NoSuchBucket":
+			return true
+		}
+	}
+	return false
+}
 
 // S3StorageConfig S3存储配置
 type S3StorageConfig struct {
@@ -27,8 +43,11 @@ type S3StorageConfig struct {
 	PathPrefix      string        `desc:"文件路径前缀"`
 	ForcePathStyle  bool          `desc:"强制路径样式（MinIO需要）"`
 	UseSSL          bool          `desc:"是否使用SSL" default:"true"`
-	Timeout         time.Duration `desc:"上传超时时间" default:"30s"`
-	TempDir         string        `desc:"本地临时文件目录，为空则使用系统临时目录"`
+	Timeout         time.Duration `desc:"单次上传超时时间" default:"15m"`
+	MaxRetries      int           `desc:"上传失败最大重试次数" default:"3"`
+	RetryInterval   time.Duration `desc:"重试基础间隔（指数退避）" default:"5s"`
+	PartSize        int64         `desc:"multipart 分片大小（字节），默认 64MB" default:"67108864"`
+	ConnectTimeout  time.Duration `desc:"TCP 连接超时" default:"10s"`
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -48,6 +67,49 @@ func (c *S3StorageConfig) Validate() error {
 	return nil
 }
 
+// getTimeout 获取上传超时时间，默认 15 分钟
+func (c *S3StorageConfig) getTimeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return 15 * time.Minute
+}
+
+// retryConfig 获取重试配置
+func (c *S3StorageConfig) retryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    c.MaxRetries,
+		RetryInterval: c.RetryInterval,
+	}
+}
+
+// getConnectTimeout 获取 TCP 连接超时，默认 10 秒
+func (c *S3StorageConfig) getConnectTimeout() time.Duration {
+	if c.ConnectTimeout > 0 {
+		return c.ConnectTimeout
+	}
+	return 10 * time.Second
+}
+
+// newHTTPClient 创建带优化配置的 HTTP Client
+func (c *S3StorageConfig) newHTTPClient() *http.Client {
+	connectTimeout := c.getConnectTimeout()
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   connectTimeout,
+			ResponseHeaderTimeout: 60 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   10,
+			ExpectContinueTimeout: 5 * time.Second,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
+}
+
 // S3Storage S3存储实现
 type S3Storage struct {
 	config     *S3StorageConfig
@@ -57,30 +119,31 @@ type S3Storage struct {
 }
 
 // NewS3Storage 创建S3存储实例
-func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
-	if err := config.Validate(); err != nil {
+func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	// 创建AWS配置
 	awsConfig := &aws.Config{
-		Region:           aws.String(config.Region),
-		Credentials:      credentials.NewStaticCredentials(config.AccessKeyID, config.SecretAccessKey, ""),
-		S3ForcePathStyle: aws.Bool(config.ForcePathStyle),
+		Region:           aws.String(cfg.Region),
+		Credentials:      credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		S3ForcePathStyle: aws.Bool(cfg.ForcePathStyle),
+		HTTPClient:       cfg.newHTTPClient(),
 	}
 
 	// 设置端点（用于MinIO或其他S3兼容服务）
-	if config.Endpoint != "" {
-		endpoint := config.Endpoint
+	if cfg.Endpoint != "" {
+		endpoint := cfg.Endpoint
 		if !strings.HasPrefix(endpoint, "http") {
 			protocol := "http"
-			if config.UseSSL {
+			if cfg.UseSSL {
 				protocol = "https"
 			}
 			endpoint = protocol + "://" + endpoint
 		}
 		awsConfig.Endpoint = aws.String(endpoint)
-		awsConfig.DisableSSL = aws.Bool(!config.UseSSL)
+		awsConfig.DisableSSL = aws.Bool(!cfg.UseSSL)
 	}
 
 	// 创建AWS会话
@@ -93,14 +156,21 @@ func NewS3Storage(config *S3StorageConfig) (*S3Storage, error) {
 	s3Client := s3.New(sess)
 
 	// 测试连接
-	if err := testS3Connection(s3Client, config.Bucket); err != nil {
+	if err := testS3Connection(s3Client, cfg.Bucket); err != nil {
 		return nil, fmt.Errorf("S3 connection test failed: %w", err)
 	}
 
+	// 创建 uploader，配置 PartSize
+	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		if cfg.PartSize > 0 {
+			u.PartSize = cfg.PartSize
+		}
+	})
+
 	return &S3Storage{
-		config:     config,
+		config:     cfg,
 		s3Client:   s3Client,
-		uploader:   s3manager.NewUploader(sess),
+		uploader:   uploader,
 		downloader: s3manager.NewDownloader(sess),
 	}, nil
 }
@@ -147,8 +217,7 @@ func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
 	})
 
 	if err != nil {
-		// 检查是否是404错误
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return false, nil
 		}
 		return false, err
@@ -166,7 +235,7 @@ func (s *S3Storage) GetSize(ctx context.Context, path string) (int64, error) {
 	})
 
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return 0, ErrFileNotFound
 		}
 		return 0, err
@@ -325,20 +394,13 @@ func (w *S3File) Sync() error {
 		return nil
 	}
 
-	// 如果使用临时文件，先同步到磁盘
+	// 先将临时文件同步到磁盘
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
 			return err
 		}
-		// 获取文件大小用于日志
-		if stat, err := w.tempFile.Stat(); err == nil {
-			logger.Debug("S3File sync tempFile", "size", stat.Size(), "path", w.filePath)
-		}
 	}
-	if err := w.uploadTempFile(); err != nil {
-		return err
-	}
-	return nil
+	return w.uploadTempFile()
 }
 
 func (w *S3File) Seek(offset int64, whence int) (int64, error) {
@@ -354,30 +416,24 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (w *S3File) Close() error {
-	if err := w.Sync(); err != nil {
-		return err
-	}
-	if w.tempFile != nil {
-		w.tempFile.Close()
-	}
-	// 不自动删除临时文件，由定时任务清理
-	return nil
+	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
+	defer func() {
+		if w.tempFile != nil {
+			w.tempFile.Close()
+			w.tempFile = nil
+		}
+		if w.filePath != "" {
+			os.Remove(w.filePath)
+			w.filePath = ""
+		}
+	}()
+	return w.Sync()
 }
 
 // createTempFile 创建临时文件
 func (w *S3File) createTempFile() error {
-	// 使用配置的临时目录，如果未配置则使用系统默认临时目录
-	tempDir := w.storage.config.TempDir
-
-	// 如果配置了临时目录，确保目录存在
-	if tempDir != "" {
-		if err := os.MkdirAll(tempDir, 0755); err != nil {
-			return fmt.Errorf("failed to create temp directory: %w", err)
-		}
-	}
-
 	// 创建临时文件
-	tempFile, err := os.CreateTemp(tempDir, "s3writer_*.tmp")
+	tempFile, err := os.CreateTemp("", "s3writer_*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -387,46 +443,61 @@ func (w *S3File) createTempFile() error {
 }
 
 func (w *S3File) Stat() (os.FileInfo, error) {
+	if w.tempFile == nil {
+		return nil, fmt.Errorf("s3 file not initialized")
+	}
 	return w.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到S3
-func (w *S3File) uploadTempFile() (err error) {
+// uploadTempFile 上传临时文件到S3，带指数退避重试
+func (w *S3File) uploadTempFile() error {
 	// 重置文件指针到开头
 	if _, err := w.tempFile.Seek(0, 0); err != nil {
-		logger.Error("S3File upload failed to seek", "error", err)
 		return fmt.Errorf("failed to seek temp file: %w", err)
 	}
 
-	// 获取文件大小
-	stat, _ := w.tempFile.Stat()
-	logger.Info("S3File uploading to S3", "bucket", w.storage.config.Bucket, "key", w.objectKey, "size", stat.Size())
-
-	// 构建上传请求，携带用户自定义元数据
-	uploadInput := &s3manager.UploadInput{
-		Bucket:      aws.String(w.storage.config.Bucket),
-		Key:         aws.String(w.objectKey),
-		Body:        w.tempFile,
-		ContentType: aws.String("application/octet-stream"),
+	var fileSize int64
+	if stat, err := w.tempFile.Stat(); err == nil {
+		fileSize = stat.Size()
 	}
-	if len(w.metadata) > 0 {
-		uploadInput.Metadata = aws.StringMap(w.metadata)
-	}
-	// 上传到S3
-	_, err = w.storage.uploader.UploadWithContext(w.ctx, uploadInput)
+	log.Printf("[S3] uploading: bucket=%s key=%s size=%d", w.storage.config.Bucket, w.objectKey, fileSize)
 
-	if err != nil {
-		logger.Error("S3File upload failed", "error", err)
-		return fmt.Errorf("failed to upload to S3: %w", err)
-	}
+	rc := w.storage.config.retryConfig()
 
-	logger.Info("S3File upload successful", "key", w.objectKey)
-	return nil
+	return UploadWithRetry(context.Background(), rc, "S3", w.objectKey,
+		// resetFn: 每次重试前重置文件指针
+		func() error {
+			_, err := w.tempFile.Seek(0, 0)
+			return err
+		},
+		// uploadFn: 执行单次上传
+		func() error {
+			timeout := w.storage.config.getTimeout()
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			uploadInput := &s3manager.UploadInput{
+				Bucket:      aws.String(w.storage.config.Bucket),
+				Key:         aws.String(w.objectKey),
+				Body:        w.tempFile,
+				ContentType: aws.String("application/octet-stream"),
+			}
+			if len(w.metadata) > 0 {
+				uploadInput.Metadata = aws.StringMap(w.metadata)
+			}
+
+			if _, err := w.storage.uploader.UploadWithContext(ctx, uploadInput); err != nil {
+				return fmt.Errorf("failed to upload to S3: %w", err)
+			}
+
+			log.Printf("[S3] upload successful: %s", w.objectKey)
+			return nil
+		},
+	)
 }
 
 // downloadToTemp 下载S3对象到本地临时文件
 func (w *S3File) downloadToTemp() error {
-	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "s3reader_*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
@@ -435,7 +506,6 @@ func (w *S3File) downloadToTemp() error {
 	w.tempFile = tempFile
 	w.filePath = tempFile.Name()
 
-	// 下载S3对象
 	_, err = w.storage.downloader.DownloadWithContext(w.ctx, tempFile, &s3.GetObjectInput{
 		Bucket: aws.String(w.storage.config.Bucket),
 		Key:    aws.String(w.objectKey),
@@ -444,15 +514,14 @@ func (w *S3File) downloadToTemp() error {
 	if err != nil {
 		tempFile.Close()
 		os.Remove(w.filePath)
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+		if isS3NotFoundError(err) {
 			return ErrFileNotFound
 		}
 		return fmt.Errorf("failed to download from S3: %w", err)
 	}
 
 	// 重置文件指针到开始位置
-	_, err = tempFile.Seek(0, 0)
-	if err != nil {
+	if _, err = tempFile.Seek(0, 0); err != nil {
 		tempFile.Close()
 		os.Remove(w.filePath)
 		return fmt.Errorf("failed to seek temp file: %w", err)

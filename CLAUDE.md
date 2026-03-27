@@ -4,14 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monibuca is a high-performance streaming server framework written in Go. It's designed to be a modular, scalable platform for real-time audio/video streaming with support for multiple protocols including RTMP, RTSP, HLS, WebRTC, GB28181, and more. Key features include:
-
-- 🚀 High Performance - Lock-free design, partial manual memory management, multi-core computing
-- ⚡ Low Latency - Zero-wait forwarding, sub-second latency across the entire chain
-- 📦 Modular - Load on demand, unlimited extensibility via plugins
-- 🔧 Flexible - Highly configurable to meet various streaming scenarios
-- 💪 Scalable - Supports distributed deployment, easily handles large-scale scenarios
-- 🔍 Debug Friendly - Built-in debug plugin, real-time performance monitoring and analysis
+Monibuca is a high-performance streaming server framework written in Go. It's designed to be a modular, scalable platform for real-time audio/video streaming with support for multiple protocols including RTMP, RTSP, HLS, WebRTC, GB28181, and more.
 
 ## Development Commands
 
@@ -32,15 +25,16 @@ go run -tags sqlite main.go
 - `disable_rm` - Disable memory pool
 - `fasthttp` - Use fasthttp instead of net/http
 - `taskpanic` - Enable panics for testing
-- `enable_buddy` - Enable buddy memory pre-allocation
+- `s3` - Enable AWS S3 / MinIO storage backend
+- `cos` - Enable Tencent Cloud COS storage backend
+- `oss` - Enable Alibaba Cloud OSS storage backend
+- `enable_buddy` - Enable buddy memory allocator
 
 **Protocol Buffer Generation:**
 ```bash
-# Generate all proto files
-sh scripts/protoc.sh
-
-# Generate specific plugin proto
-sh scripts/protoc.sh plugin_name
+# Must use scripts — never use raw protoc commands
+sh scripts/protoc.sh              # Generate all proto files
+sh scripts/protoc.sh plugin_name  # Generate specific plugin proto
 ```
 
 Windows:
@@ -51,108 +45,89 @@ Windows:
 
 **Release Building:**
 ```bash
-# Uses goreleaser configuration
 goreleaser build
-
-# Build directly with custom tags
-go build -tags "sqlite mysql postgres" -o monibuca main.go
 ```
 
 **Testing:**
 ```bash
-# Run all tests
-go test ./...
+go test ./...                                          # all tests
+go test ./plugin/rtsp/pkg                              # single package
+go test ./test -run '^TestRestart$' -count=1           # single test
+go test ./pkg/util -bench . -run '^$'                  # benchmarks only
+go test -race ./...                                    # race detector
+```
 
-# Run tests with coverage
-go test -cover ./...
-
-# Run tests for specific package
-go test -v ./plugin/rtmp
-
-# Run tests with race detector
-go test -race ./...
+**Lint / Static Analysis:**
+```bash
+gofmt -w <changed-files>
+go vet ./...
+staticcheck ./...    # config in staticcheck.conf
 ```
 
 ## Architecture Overview
 
-### Project Structure
-
-```
-/
-├── example/              # Example configurations and entry points
-│   ├── default/          # Default configuration (main entry point)
-│   ├── custom/           # Custom configuration example
-│   └── multiple/         # Multiple server instance example
-├── plugin/               # Built-in plugins
-│   ├── rtmp/             # RTMP protocol support
-│   ├── rtsp/             # RTSP protocol support
-│   ├── webrtc/           # WebRTC protocol support
-│   ├── hls/              # HLS protocol support
-│   ├── flv/              # FLV protocol support
-│   ├── mp4/              # MP4 recording with post-processing
-│   ├── gb28181/          # GB28181 Chinese surveillance standard
-│   ├── srt/              # SRT protocol support
-│   ├── debug/            # Debug and profiling tools
-│   ├── cluster/          # Cluster management
-│   └── ... (other plugins)
-├── pkg/                  # Core packages
-│   ├── config/           # Configuration system
-│   ├── db/               # Database integration (SQLite, MySQL, PostgreSQL, DuckDB)
-│   ├── util/             # Utility functions
-│   ├── codec/            # Audio/video codec handling
-│   ├── format/           # Media format parsing (PS, TS, etc.)
-│   └── storage/          # Storage abstraction layer
-├── pb/                   # Protocol buffer definitions
-├── server.go             # Server core implementation
-├── plugin.go             # Plugin system implementation
-├── publisher.go          # Publisher (input stream) management
-├── subscriber.go         # Subscriber (output stream) management
-└── recoder.go            # Recording management
-```
-
 ### Core Components
 
-**Server (`server.go`):** Main server instance that manages plugins, streams, and configurations. Implements the central event loop and lifecycle management. Key responsibilities:
-- Plugin initialization and management
-- Stream lifecycle management
-- HTTP/gRPC API serving
-- Database integration
-- Configuration loading and merging
+**Server (`server.go`):** Main server instance that manages plugins, streams, and configurations. Implements the central event loop and lifecycle management. Managed via `task.RootManager[uint32, *Server]`.
 
-**Plugin System (`plugin.go`):** Modular architecture where functionality is provided through plugins. Each plugin embeds `Plugin` struct and can optionally implement:
-- `ITCPPlugin` - TCP server protocol handler
-- `IUDPPlugin` - UDP server protocol handler
-- `IQUICPlugin` - QUIC server protocol handler
-- `IRegisterHandler` - Custom HTTP endpoint registration
-- `IPublishHookPlugin` - Stream publishing hooks
-- `ISubscribeHookPlugin` - Stream subscription hooks
+**Plugin System (`plugin.go`):** Modular architecture where functionality is provided through plugins. Each plugin embeds `task.Work` (persistent queue manager) and implements the `IPlugin` interface. Plugins can provide:
+- Protocol handlers (RTMP, RTSP, etc.)
+- Media transformers
+- Pull/Push proxies
+- Recording capabilities
+- Custom HTTP endpoints
 
-Plugins are registered using `InstallPlugin[YourPluginType](meta)` and auto-discovered via imports.
+**Configuration System (`pkg/config/`):** Hierarchical configuration system with priority order (high to low):
+1. **Modify** — dynamic runtime modifications
+2. **Env** — environment variables (uppercase, underscore-separated prefix)
+3. **File** — config file (e.g., `config.yaml`)
+4. **defaultYaml** — embedded default YAML
+5. **Global** — global config section
+6. **Default** — struct tag `default:"..."` values
 
-**Configuration System (`pkg/config/`):** Hierarchical configuration system with priority order: dynamic modifications > environment variables > config files > default YAML > global config > defaults. Supports:
-- Structured configuration with struct tags
-- Environment variable overrides (uppercase plugin name prefix)
-- YAML-based config files
-- Runtime config updates via API
-
-**Task System (github.com/langhuihui/gotask):** Advanced asynchronous task management system with multiple layers:
+**Task System (`pkg/task/`):** Advanced asynchronous task management system with multiple layers:
 - **Task:** Basic unit of work with lifecycle management (Start/Run/Dispose)
 - **Job:** Container that manages multiple child tasks and provides event loops
 - **Work:** Special type of Job that acts as a persistent queue manager (keepalive=true)
-- **TickTask:** Periodic task execution
+- **Channel:** Event-driven task for handling continuous data streams
 
-The server uses `task.RootManager` to manage the entire task hierarchy.
+**Storage System (`pkg/storage/`):** Abstracted file storage with pluggable backends:
+- **Local** — local filesystem (always available)
+- **S3** — AWS S3 / MinIO (build tag: `s3`)
+- **COS** — Tencent Cloud COS (build tag: `cos`)
+- **OSS** — Alibaba Cloud OSS (build tag: `oss`)
+
+All backends implement `Storage` and `File` interfaces. Upload retry logic is centralized in `pkg/storage/retry.go` via `UploadWithRetry()`.
 
 ### Task System Deep Dive
 
 #### Task Hierarchy and Lifecycle
 ```
-Work (Queue Manager)
+Work (Queue Manager, keepalive=true)
   └── Job (Container with Event Loop)
       └── Task (Basic Work Unit)
           ├── Start() - Initialization phase
           ├── Run() - Main execution phase
           └── Dispose() - Cleanup phase
+```
+
+#### Task Type Selection Rules
+- **No child tasks** → embed `task.Task`
+- **Need child tasks, stay alive** → embed `task.Work` (persistent queue manager)
+- **Need child tasks, auto-exit when children done** → embed `task.Job`
+- **Need timer** → embed `task.TickTask`
+- **Need semaphore/signal** → embed `task.ChannelTask`
+
+#### Critical Task Constraints
+- **CAN** override: `Start()`, `Dispose()`
+- **CANNOT** override: `Stop()` — use `Stop(reason)` to stop a task from outside
+- **CANNOT** call any `task.Task` method directly except `Stop()`
+- **CANNOT** call any `task.Job` method directly except `AddTask()`
+- Return `task.ErrTaskComplete` for successful completion in `Run()`
+
+#### Task State Machine
+```
+INIT → STARTING → STARTED → RUNNING → GOING → DISPOSING → DISPOSED
 ```
 
 #### Queue-based Asynchronous Processing
@@ -205,7 +180,7 @@ func TriggerUpload(filePath string, deleteAfter bool) {
 ### Key Interfaces
 
 **Publisher:** Handles incoming media streams and manages track information
-**Subscriber:** Handles outgoing media streams to clients  
+**Subscriber:** Handles outgoing media streams to clients
 **Puller:** Pulls streams from external sources
 **Pusher:** Pushes streams to external destinations
 **Transformer:** Processes/transcodes media streams
@@ -226,7 +201,7 @@ Monibuca implements a sophisticated post-recording processing pipeline:
 1. **Recording Completion:** MP4 recorder finishes writing stream data
 2. **Trailer Writing:** Asynchronous task moves MOOV box to file beginning for web compatibility
 3. **File Optimization:** Temporary file operations ensure atomic updates
-4. **External Storage Integration:** Automatic upload to S3-compatible services
+4. **External Storage Integration:** Automatic upload to S3-compatible services with retry
 5. **Cleanup:** Optional local file deletion after successful upload
 
 This workflow uses queue-based task processing to avoid blocking the main recording pipeline.
@@ -235,93 +210,22 @@ This workflow uses queue-based task processing to avoid blocking the main record
 
 ### Creating a Plugin
 
-1. Define your plugin struct with embedded `Plugin`:
-```go
-type MyPlugin struct {
-    Plugin
-    // Custom configuration fields
-    MyConfig string `default:"value" desc:"Description of config"`
-}
-```
-
-2. Define plugin metadata using `PluginMeta`:
-```go
-var MyPluginMeta = PluginMeta{
-    Name:        "MyPlugin",
-    Version:     "1.0.0",
-    DefaultYaml: DefaultYaml(`# My plugin default config`),
-    NewPuller:   NewMyPuller,  // Optional
-    NewPusher:   NewMyPusher,  // Optional
-    NewRecorder: NewMyRecorder, // Optional
-    // ... other fields
-}
-```
-
-3. Register with `InstallPlugin[MyPlugin](MyPluginMeta)` in `init()`
-
+1. Implement the `IPlugin` interface (which inherits `task.IJob`)
+2. Define plugin metadata using `PluginMeta`
+3. Register with `InstallPlugin[YourPluginType](meta)` — auto-detects name and version via reflection
 4. Optionally implement protocol-specific interfaces:
-   - `ITCPPlugin` for TCP servers: `OnTCPConnect(conn net.Conn) task.ITask`
-   - `IUDPPlugin` for UDP servers: `OnUDPConnect(conn *net.UDPConn) task.ITask`
-   - `IQUICPlugin` for QUIC servers: `OnQUICConnect(*quic.Conn) task.ITask`
-   - `IRegisterHandler` for HTTP endpoints: `RegisterHandler() map[string]http.HandlerFunc`
-   - `IPublishHookPlugin` - `OnPublish(pub *Publisher)`
-   - `ISubscribeHookPlugin` - `OnSubscribe(streamPath string, args url.Values)`
+   - `ITCPPlugin` for TCP servers
+   - `IUDPPlugin` for UDP servers
+   - `IQUICPlugin` for QUIC servers
+   - `IRegisterHandler` for HTTP endpoints
+   - `IPublishHookPlugin` / `ISubscribeHookPlugin` for stream hooks
 
 ### Plugin Lifecycle
 
-1. **Init:** Configuration parsing and initialization (called by framework)
-2. **Start:** Network listeners and task registration (implement in your plugin)
-3. **Run:** Active operation (event loop managed by task system)
-4. **Dispose:** Cleanup and shutdown (implement `OnDispose` hook if needed)
-
-### Plugin Example Structure
-
-See existing plugins in `plugin/` directory for reference patterns:
-- `plugin/rtmp/` - TCP protocol example
-- `plugin/webrtc/` - Complex plugin with multiple interfaces
-- `plugin/mp4/` - Recorder plugin with post-processing
-
-### Entry Point and Plugin Importing
-
-Plugins are imported in the main entry point (see `example/default/main.go`). To enable a plugin, add its import:
-
-```go
-import (
-    _ "m7s.live/v5/plugin/rtmp"   // Enables RTMP plugin
-    _ "m7s.live/v5/plugin/webrtc" // Enables WebRTC plugin
-    // ... more plugins
-)
-```
-
-The blank import triggers the plugin's `init()` function which registers it with the framework.
-
-### Cross-Plugin Communication
-
-**Global Instance Pattern:** Plugins can expose global instances for cross-plugin access:
-```go
-var myPluginInstance *MyPlugin
-
-func (p *MyPlugin) Start() error {
-    myPluginInstance = p
-    // ...
-}
-
-// Exported API
-func DoSomething() {
-    if myPluginInstance != nil {
-        // Use myPluginInstance
-    }
-}
-```
-
-**Event-Based:** Use webhook system or task queues for decoupled communication.
-
-### Configuration Best Practices
-
-- Use struct tags for default values and descriptions: `default:"value" desc:"Description"`
-- Config field names are mapped to YAML keys (case-insensitive, hyphens/underscores stripped)
-- Environment variables override config: `PLUGINNAME_CONFIGKEY=value`
-- Use `s.Config.Parse(&s.MyConfig, "PLUGINNAME")` for custom config parsing
+1. **Init:** Configuration parsing and initialization
+2. **Start:** Network listeners and task registration
+3. **Run:** Active operation
+4. **Dispose:** Cleanup and shutdown
 
 ### Cross-Plugin Communication Patterns
 
@@ -400,6 +304,12 @@ myQueue.AddTask(&MyTask{...}, logger)
 
 ## Configuration Structure
 
+### YAML Config Rules
+- **All field names must be lowercase** in YAML config files
+- Field name normalization: lowercase, removes underscores/hyphens
+- The `"plugin"` field is always skipped during parsing
+- Config structs use `default:"..."` and `desc:"..."` tags
+
 ### Global Configuration
 - HTTP/TCP/UDP/QUIC listeners
 - Database connections (SQLite, MySQL, PostgreSQL, DuckDB)
@@ -415,7 +325,7 @@ Each plugin can define its own configuration structure that gets merged with glo
 Supports multiple database backends:
 - **SQLite:** Default lightweight option
 - **MySQL:** Production deployments
-- **PostgreSQL:** Production deployments  
+- **PostgreSQL:** Production deployments
 - **DuckDB:** Analytics use cases
 
 Automatic migration is handled for core models including users, proxies, and stream aliases.
@@ -444,20 +354,31 @@ Automatic migration is handled for core models including users, proxies, and str
 
 ### Code Style
 - Follow existing patterns and naming conventions
-- Use the task system for async operations
+- Use the task system for async operations; **never use bare goroutines** — prefer `AddTask`
 - Implement proper error handling and logging
 - Use the configuration system for all settings
+- Dot imports are discouraged; exception: `staticcheck.conf` whitelists `. "m7s.live/v5/pkg"`
+
+### Logging
+- Use structured logging (`slog`): always pass **key-value pairs** — `t.Info("msg", "key", value)`
+- Use task's built-in logger methods (`t.Info/Warn/Error/Debug`) rather than `log.Printf`
+- Keep log messages short with context in key-value fields
+
+### Proto Generation
+- **Must use** `sh scripts/protoc.sh` (global) or `sh scripts/protoc.sh <plugin_name>` (per-plugin)
+- **Never** use raw `protoc` command lines directly
+
+### Storage Backend Development
+- Storage backends (S3, COS, OSS) are guarded by build tags (`s3`, `cos`, `oss`)
+- All backends implement the `Storage` and `File` interfaces in `pkg/storage/storage.go`
+- Upload retry logic is centralized in `pkg/storage/retry.go` via `UploadWithRetry()`
+- `File.Close()` triggers upload for object storage backends; use `defer` to ensure temp file cleanup
 
 ### Testing
 - Unit tests should be placed alongside source files
 - Integration tests can use the example configurations
 - Use the mock.py script for protocol testing
-
-### Async Task Development
-- Always use Work instances for queue management
-- Implement proper Start/Run lifecycle in tasks
-- Use global instance pattern for cross-plugin communication
-- Handle errors gracefully with appropriate retry strategies
+- After edits, at minimum: `gofmt -w <changed-files>` then `go test <affected-package> -count=1`
 
 ### Performance Considerations
 - Memory pool is enabled by default (disable with `disable_rm`)
@@ -466,152 +387,62 @@ Automatic migration is handled for core models including users, proxies, and str
 - Efficient buffer management with ring buffers
 - Queue-based processing prevents blocking main threads
 
-## Debugging & Monitoring
+## Debugging
 
 ### Built-in Debug Plugin
-The `debug` plugin provides extensive debugging capabilities:
-- **Performance Metrics:** Real-time server metrics via Prometheus endpoint (`/api/metrics`)
-- **pprof Integration:** CPU and memory profiling (`/debug/pprof/`)
-- **Trace View:** Visual task execution timeline
-- **Heap Analysis:** Memory allocation tracking
-- **GC Stats:** Garbage collection metrics
-- **Connection Tracking:** Detailed info on all network connections
-
-**Enable debug plugin in main.go:**
-```go
-import _ "m7s.live/v5/plugin/debug"
-```
+- Performance monitoring and profiling
+- Real-time metrics via Prometheus endpoint (`/api/metrics`)
+- pprof integration for memory/cpu profiling
 
 ### Logging
-- **Structured Logging:** Uses slog with JSON format for structured analysis
-- **Log Rotation:** Built-in support via `logrotate` plugin
-- **Fatal Crash Logging:** Crashes are automatically logged to `fatal/` directory with stack traces
-- **Configurable Levels:** Debug, Info, Warn, Error, Fatal (default: Info)
-- **Multi-Output:** Supports console, file, and custom outputs
+- Structured logging with slog
+- Configurable log levels
+- Log rotation support
+- Fatal crash logging
 
 ### Task System Debugging
 - Tasks automatically include detailed logging with task IDs and types
-- Task descriptions dynamically update with progress information
-- Event loop status and queue lengths are logged automatically
 - Use `task.Debug/Info/Warn/Error` methods for consistent logging
-- Monitor task retry counts and failure reasons in logs
-
-### Prometheus Monitoring
-Add this to your Prometheus config to scrape metrics:
-```yaml
-scrape_configs:
-  - job_name: "monibuca"
-    metrics_path: "/api/metrics"
-    static_configs:
-      - targets: ["localhost:8080"]
-```
+- Task state and progress can be monitored through descriptions
+- Event loop status and queue lengths are logged automatically
 
 ## Web Admin Interface
 
-- **Web-based UI:** Served from `admin.zip` file (automatically loaded if present)
-- **API Documentation:** Swagger UI available at `/swagger/`
-- **RESTful API:** Complete API for all server operations at `/api/`
-- **Real-time Monitoring:** Dashboard showing streams, subscribers, and system status
-- **Configuration Management:** Edit server and plugin configs via UI
-- **User Management:** Role-based access control (admin/user roles)
-- **Stream Playback:** Preview streams directly in the browser
+- Web-based admin UI served from `admin.zip`
+- RESTful API for all operations
+- Real-time stream monitoring
+- Configuration management
+- User management (when auth enabled)
 
-To enable login mechanism:
-```yaml
-global:
-  admin:
-    enableLogin: true
-    users:
-      - username: admin
-        password: admin
-        role: admin
-```
-
-## Deployment
-
-### Docker Deployment
-
-**Build from source:**
-```bash
-docker build -t monibuca .
-docker run -p 8080:8080 -p 1935:1935 monibuca
-```
-
-**Using Docker Compose:**
-```yaml
-version: '3.8'
-services:
-  monibuca:
-    build: .
-    ports:
-      - "8080:8080"   # HTTP API
-      - "1935:1935"   # RTMP
-      - "554:554"     # RTSP
-    volumes:
-      - ./config.yaml:/config.yaml
-      - ./records:/records
-    environment:
-      - TZ=Asia/Shanghai
-```
-
-### Production Considerations
-
-**Performance Tuning:**
-- Enable memory pool (default enabled)
-- Use `enable_buddy` tag for memory pre-allocation
-- Tune file descriptor limits (ulimit -n 65535)
-- Adjust GOMAXPROCS (defaults to CPU count)
-
-**Security:**
-- Always enable authentication in production
-- Use HTTPS/WSS for secure communication
-- Set strong passwords for admin users
-- Restrict API access to trusted networks
-
-**Reliability:**
-- Use process manager (systemd, supervisor)
-- Enable log rotation
-- Set up monitoring and alerting
-- Regularly update to latest version
-
-## Common Issues & Troubleshooting
+## Common Issues
 
 ### Port Conflicts
 - Default HTTP port: 8080
 - Default gRPC port: 50051
-- Default RTMP port: 1935
-- Default RTSP port: 554
-- Check plugin-specific port configurations in `config.yaml`
+- Check plugin-specific port configurations
 
 ### Database Connection
 - Ensure proper build tags for database support
-- Check DSN format (examples in `config.yaml`)
-- Verify database server is reachable
-- Check database user permissions and credentials
-- For SQLite, ensure write permissions to database file location
+- Check DSN configuration strings
+- Verify database file permissions
 
 ### Plugin Loading
-- Plugins are auto-discovered from imports (must be imported in main.go)
-- Check plugin enable/disable status (env var: `PLUGINNAME_ENABLE=false`)
-- Verify plugin is listed in imports
-- Check configuration merging in logs (level: Debug)
+- Plugins are auto-discovered from imports
+- Check plugin enable/disable status
+- Verify configuration merging
 
 ### Task System Issues
 - Ensure Work instances are added to server during initialization
-- Check task queue status if tasks aren't executing (debug plugin UI)
+- Check task queue status if tasks aren't executing
 - Verify proper error handling in task implementation
 - Monitor task retry counts and failure reasons in logs
-- Check that task's `Start()` method completes successfully
 
-### Stream Publishing/Subscribing
-- Check stream path format (alphanumeric with optional slashes)
-- Verify authentication (check secret and expire parameters)
-- Check codec compatibility (H.264/H.265 for video, AAC/MP3 for audio)
-- Monitor network connectivity between publisher and server
-
-### Performance Issues
-- Check CPU and memory usage via debug plugin
-- Look for memory leaks in pprof heap dump
-- Check for blocked goroutines in pprof goroutine dump
-- Verify no long-running tasks are blocking event loops
-- Check network bandwidth and latency
+## Common Pitfalls
+- Forgetting required build tags for DB/protocol/storage-specific behavior
+- Editing `.proto` but not regenerating with `scripts/protoc.sh`
+- Adding non-whitelisted dot imports
+- Overriding `Stop()` instead of using `Stop(reason)` from outside
+- Calling `task.Task` methods directly (only `Stop()` is allowed)
+- Using uppercase field names in YAML config files
+- Using bare goroutines instead of the task system
+- Bypassing task lifecycle conventions in async plugin code

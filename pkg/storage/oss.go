@@ -5,21 +5,26 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
+	"m7s.live/v5/pkg/config"
 )
 
 // OSSStorageConfig OSS存储配置
 type OSSStorageConfig struct {
-	Endpoint        string `yaml:"endpoint" desc:"OSS服务端点"`
-	AccessKeyID     string `yaml:"access_key_id" desc:"OSS访问密钥ID"`
-	AccessKeySecret string `yaml:"access_key_secret" desc:"OSS访问密钥Secret"`
-	Bucket          string `yaml:"bucket" desc:"OSS存储桶名称"`
-	PathPrefix      string `yaml:"path_prefix" desc:"文件路径前缀"`
-	UseSSL          bool   `yaml:"use_ssl" desc:"是否使用SSL" default:"true"`
-	Timeout         int    `yaml:"timeout" desc:"上传超时时间（秒）" default:"30"`
+	Endpoint        string        `yaml:"endpoint" desc:"OSS服务端点"`
+	AccessKeyID     string        `yaml:"access_key_id" desc:"OSS访问密钥ID"`
+	AccessKeySecret string        `yaml:"access_key_secret" desc:"OSS访问密钥Secret"`
+	Bucket          string        `yaml:"bucket" desc:"OSS存储桶名称"`
+	PathPrefix      string        `yaml:"path_prefix" desc:"文件路径前缀"`
+	UseSSL          bool          `yaml:"use_ssl" desc:"是否使用SSL" default:"true"`
+	Timeout         int           `yaml:"timeout" desc:"上传超时时间（秒）" default:"900"`
+	MaxRetries      int           `yaml:"max_retries" desc:"上传失败最大重试次数" default:"3"`
+	RetryInterval   time.Duration `yaml:"retry_interval" desc:"重试基础间隔（指数退避）" default:"5s"`
 }
 
 func (c *OSSStorageConfig) GetType() StorageType {
@@ -42,6 +47,14 @@ func (c *OSSStorageConfig) Validate() error {
 	return nil
 }
 
+// retryConfig 获取重试配置
+func (c *OSSStorageConfig) retryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    c.MaxRetries,
+		RetryInterval: c.RetryInterval,
+	}
+}
+
 // OSSStorage OSS存储实现
 type OSSStorage struct {
 	config *OSSStorageConfig
@@ -57,7 +70,7 @@ func NewOSSStorage(config *OSSStorageConfig) (*OSSStorage, error) {
 
 	// 设置默认值
 	if config.Timeout == 0 {
-		config.Timeout = 30
+		config.Timeout = 900
 	}
 
 	// 创建OSS客户端
@@ -147,30 +160,40 @@ func (s *OSSStorage) GetURL(ctx context.Context, path string) (string, error) {
 	return url, nil
 }
 
+func (s *OSSStorage) OpenFile(ctx context.Context, path string) (File, error) {
+	objectKey := s.getObjectKey(path)
+	return &OSSFile{
+		storage:   s,
+		objectKey: objectKey,
+		ctx:       ctx,
+	}, nil
+}
+
 func (s *OSSStorage) List(ctx context.Context, prefix string) ([]FileInfo, error) {
 	objectPrefix := s.getObjectKey(prefix)
 
 	var files []FileInfo
 
-	err := s.bucket.ListObjects(oss.Prefix(objectPrefix), func(result oss.ListObjectsResult) error {
-		for _, obj := range result.Objects {
-			// 移除路径前缀
-			fileName := obj.Key
-			if s.config.PathPrefix != "" {
-				fileName = strings.TrimPrefix(fileName, strings.TrimSuffix(s.config.PathPrefix, "/")+"/")
-			}
-
-			files = append(files, FileInfo{
-				Name:         fileName,
-				Size:         obj.Size,
-				LastModified: obj.LastModified,
-				ETag:         obj.ETag,
-			})
+	result, err := s.bucket.ListObjects(oss.Prefix(objectPrefix))
+	if err != nil {
+		return nil, err
+	}
+	for _, obj := range result.Objects {
+		// 移除路径前缀
+		fileName := obj.Key
+		if s.config.PathPrefix != "" {
+			fileName = strings.TrimPrefix(fileName, strings.TrimSuffix(s.config.PathPrefix, "/")+"/")
 		}
-		return nil
-	})
 
-	return files, err
+		files = append(files, FileInfo{
+			Name:         fileName,
+			Size:         obj.Size,
+			LastModified: obj.LastModified,
+			ETag:         obj.ETag,
+		})
+	}
+
+	return files, nil
 }
 
 func (s *OSSStorage) Close() error {
@@ -283,17 +306,18 @@ func (f *OSSFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *OSSFile) Close() error {
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if f.tempFile != nil {
-		f.tempFile.Close()
-	}
-	// 清理临时文件
-	if f.filePath != "" {
-		os.Remove(f.filePath)
-	}
-	return nil
+	// 用 defer 确保无论上传成功与否，临时文件句柄和磁盘文件都被清理
+	defer func() {
+		if f.tempFile != nil {
+			f.tempFile.Close()
+			f.tempFile = nil
+		}
+		if f.filePath != "" {
+			os.Remove(f.filePath)
+			f.filePath = ""
+		}
+	}()
+	return f.Sync()
 }
 
 // createTempFile 创建临时文件
@@ -309,18 +333,32 @@ func (f *OSSFile) createTempFile() error {
 }
 
 func (f *OSSFile) Stat() (os.FileInfo, error) {
+	if f.tempFile == nil {
+		return nil, fmt.Errorf("oss file not initialized")
+	}
 	return f.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到OSS
-func (f *OSSFile) uploadTempFile() (err error) {
-	// 上传到OSS
-	err = f.storage.bucket.PutObjectFromFile(f.objectKey, f.filePath)
-	if err != nil {
-		return fmt.Errorf("failed to upload to OSS: %w", err)
+// uploadTempFile 上传临时文件到OSS，带指数退避重试
+func (f *OSSFile) uploadTempFile() error {
+	var fileSize int64
+	if stat, err := f.tempFile.Stat(); err == nil {
+		fileSize = stat.Size()
 	}
+	log.Printf("[OSS] uploading: key=%s size=%d", f.objectKey, fileSize)
 
-	return nil
+	rc := f.storage.config.retryConfig()
+
+	return UploadWithRetry(f.ctx, rc, "OSS", f.objectKey,
+		nil, // OSS PutObjectFromFile 不需要 resetFn（按文件路径上传）
+		func() error {
+			if err := f.storage.bucket.PutObjectFromFile(f.objectKey, f.filePath); err != nil {
+				return fmt.Errorf("failed to upload to OSS: %w", err)
+			}
+			log.Printf("[OSS] upload successful: %s", f.objectKey)
+			return nil
+		},
+	)
 }
 
 // downloadToTemp 下载OSS对象到本地临时文件
@@ -357,9 +395,9 @@ func (f *OSSFile) downloadToTemp() error {
 }
 
 func init() {
-	Factory["oss"] = func(config any) (Storage, error) {
+	Factory["oss"] = func(conf any) (Storage, error) {
 		var ossConfig OSSStorageConfig
-		config.Parse(&ossConfig, config.(map[string]any))
+		config.Parse(&ossConfig, conf.(map[string]any))
 		return NewOSSStorage(&ossConfig)
 	}
 
