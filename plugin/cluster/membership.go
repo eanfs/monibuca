@@ -127,14 +127,12 @@ func (m *Membership) replacePeers(np map[string]*PeerInfo) {
 
 type sessionTask struct {
 	task.Task
-	m       *Membership
-	firstRun bool
+	m *Membership
 }
 
 func (s *sessionTask) Start() error {
 	// 无限重试,间隔 SessionRenewInterval(默认 3s)。
 	s.SetRetry(-1, s.m.plugin.Consul.SessionRenewInterval)
-	s.firstRun = true
 	return nil
 }
 
@@ -157,11 +155,10 @@ func (s *sessionTask) Run() (err error) {
 		return fmt.Errorf("register node: %w", err)
 	}
 
-	// 第一次注册不算"重建",避免 Phase 2 的回调把刚刚 Acquire 的键再 Acquire 一遍。
-	if !s.firstRun {
-		s.m.fireSessionRebuilt(sid)
-	}
-	s.firstRun = false
+	// 每次 session 建立都通知回调(首次也通知)。Phase 2 的 RebindAllStreams
+	// 在首次 fire 时 localStreams 为空、是 no-op;但保证之后的 OnPublish
+	// 即使在 session 还没就绪时就发生,也能在 session 就绪后被 rebind 兜底。
+	s.m.fireSessionRebuilt(sid)
 
 	// session 重命名后,确保 destroy 用的是当前 sid(不是之前关闭的旧 sid)。
 	defer func() {
