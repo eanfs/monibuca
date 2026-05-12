@@ -23,6 +23,9 @@ type ClusterPlugin struct {
 
 	membership     *Membership
 	streamRegistry *StreamRegistry
+	// relayHook 是 Phase 3 Relay 创建 cluster-relay pull-proxy 的注入点。
+	// 默认 nil → ensureRelay 走 p.Server.EnsurePullProxy。测试可 swap。
+	relayHook RelayHook
 }
 
 var _ = m7s.InstallPlugin[ClusterPlugin](m7s.PluginMeta{})

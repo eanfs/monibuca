@@ -4,6 +4,9 @@ package plugin_cluster
 
 import (
 	"testing"
+	"time"
+
+	consulapi "github.com/hashicorp/consul/api"
 )
 
 // ---------------------------------------------------------------------
@@ -75,5 +78,64 @@ func TestRelay_BuildPullURL_NoMatchingProtocolReturnsError(t *testing.T) {
 	_, _, err := buildPullURL(peer, "live/foo", []string{"rtmp", "rtsp", "flv"})
 	if err == nil {
 		t.Fatalf("expected error when no protocol matches, got nil")
+	}
+}
+
+// TestRelay_EnsureRelay_SkipsWhenStreamUnknown 验证: streamRegistry.Lookup
+// 返回 false 时,ensureRelay 不应触发任何 EnsurePullProxy 调用(因为根本
+// 不知道去哪拉)。
+func TestRelay_EnsureRelay_SkipsWhenStreamUnknown(t *testing.T) {
+	_, addr := requireConsul(t)
+	nodeID := uniqNodeID(t)
+	p := startMembershipForTest(t, nodeID, addr)
+	_ = startStreamRegistryForTest(t, p)
+
+	// recorder fake:任何 EnsurePullProxy 调用都被记录。
+	var calls []string
+	p.relayHook = func(conf any) (bool, error) {
+		calls = append(calls, "called")
+		return false, nil
+	}
+
+	p.OnSubscribe("live/unknown-stream", nil)
+
+	if len(calls) != 0 {
+		t.Fatalf("relayHook called %d times for unknown stream, want 0", len(calls))
+	}
+}
+
+// TestRelay_EnsureRelay_SkipsWhenStreamLocal 验证: Lookup 返回的 owner ==
+// 本节点 NodeID 时(本地流),ensureRelay 跳过。订阅本地流不需要 cluster relay。
+func TestRelay_EnsureRelay_SkipsWhenStreamLocal(t *testing.T) {
+	client, addr := requireConsul(t)
+	nodeID := uniqNodeID(t)
+	streamPath := "live/" + nodeID + "-local"
+	p := startMembershipForTest(t, nodeID, addr)
+	sr := startStreamRegistryForTest(t, p)
+
+	// 直接 KV.Put 一个 owned-by-self 的流位置,等 watcher 看到。
+	if _, err := client.KV().Put(&consulapi.KVPair{
+		Key: keyStream(streamPath), Value: []byte(nodeID),
+	}, nil); err != nil {
+		t.Fatalf("kv put: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if owner, ok := sr.Lookup(streamPath); ok && owner == nodeID {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var calls []string
+	p.relayHook = func(conf any) (bool, error) {
+		calls = append(calls, "called")
+		return false, nil
+	}
+
+	p.OnSubscribe(streamPath, nil)
+
+	if len(calls) != 0 {
+		t.Fatalf("relayHook called %d times for local stream, want 0", len(calls))
 	}
 }
