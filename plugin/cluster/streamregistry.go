@@ -40,6 +40,9 @@ type StreamRegistry struct {
 
 	onStreamRemovedMu sync.Mutex
 	onStreamRemoved   []func(streamPath string)
+
+	onStopPublisherMu sync.Mutex
+	onStopPublisher   func(streamPath string, reason error)
 }
 
 func newStreamRegistry(p *ClusterPlugin) *StreamRegistry {
@@ -82,8 +85,15 @@ func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay b
 	sr.localMu.Unlock()
 
 	if err := sr.acquire(streamPath); err != nil {
-		// 失败不致命: localStreams 已记录,session 重建/就绪时会 rebind 兜底。
 		sr.Warn("acquire stream key failed", "streamPath", streamPath, "error", err)
+		// §4.3 first-write-wins: 失败意味着另一个 peer 已经拥有该 streamPath。
+		// 主动 Stop 本地 publisher,reason = ErrStreamPathTaken。
+		// 注:网络抖动也可能导致 acquire 失败,本 spec v1 把所有失败都当 "key 已被占",
+		// 实际生产里这是保守做法 —— 真的撞键 vs 网络抖动,效果都是 publisher 重连。
+		sr.fireStopPublisher(streamPath, ErrStreamPathTaken)
+		// localStreams 已记录,session 重建时仍会试 rebind;但我们已经请求 Stop,
+		// publisher 不久后会消失,localStreams 在 dispose hook 里也会被清。
+		// 不主动从 localStreams 删,避免与 dispose 钩子竞争。
 	}
 
 	if registerOnDispose != nil {
@@ -122,6 +132,27 @@ func (sr *StreamRegistry) fireStreamRemoved(streamPath string) {
 	sr.onStreamRemovedMu.Unlock()
 	for _, cb := range cbs {
 		cb(streamPath)
+	}
+}
+
+// SetOnStopPublisher 给 cluster 主插件设置一个回调:当 handleLocalPublish 发现
+// streamPath 已被别的 peer 占据(§4.3 first-write-wins 失败),用这个回调主动
+// Stop 本节点的 publisher 并报 ErrStreamPathTaken。
+//
+// 单一回调而非多 listener: 一个 streamPath 在一个进程里只对应一个 publisher,
+// 也只有 cluster 主插件知道怎么 Stop 它(通过 m7s API)。
+func (sr *StreamRegistry) SetOnStopPublisher(f func(streamPath string, reason error)) {
+	sr.onStopPublisherMu.Lock()
+	defer sr.onStopPublisherMu.Unlock()
+	sr.onStopPublisher = f
+}
+
+func (sr *StreamRegistry) fireStopPublisher(streamPath string, reason error) {
+	sr.onStopPublisherMu.Lock()
+	cb := sr.onStopPublisher
+	sr.onStopPublisherMu.Unlock()
+	if cb != nil {
+		cb(streamPath, reason)
 	}
 }
 

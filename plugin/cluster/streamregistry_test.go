@@ -3,6 +3,7 @@
 package plugin_cluster
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -182,5 +183,59 @@ func TestStreamRegistry_RebindAllReAcquiresLocalStreams(t *testing.T) {
 		if pair.Session != sid {
 			t.Errorf("key %s session = %q, want %q", sp, pair.Session, sid)
 		}
+	}
+}
+
+// TestStreamRegistry_HandleLocalPublishStopsPublisherWhenKeyOwnedByPeer
+// 验证 §4.3 first-write-wins 失败路径:外部已 KV.Acquire 了 m7s/streams/X(模拟
+// 另一个节点 A 持有该流),本节点 B 尝试 acquire(同 X) 应当 KV.Acquire 返回 ok=false,
+// 此时 handleLocalPublish 必须把 stopReason 投递到 onStopReason channel(测试用注入)。
+//
+// 注:生产路径下我们 pub.Stop(ErrStreamPathTaken),但测试直接用 *m7s.Publisher
+// 太重(需要完整 Server)。这个测试用 onStopReason 注入点解耦。
+func TestStreamRegistry_HandleLocalPublishStopsPublisherWhenKeyOwnedByPeer(t *testing.T) {
+	client, addr := requireConsul(t)
+	nodeID := uniqNodeID(t)
+	streamPath := "live/" + nodeID + "-contested"
+	p := startMembershipForTest(t, nodeID, addr)
+	sr := startStreamRegistryForTest(t, p)
+
+	// 用另一个独立 session 抢先占住 streamPath。
+	otherSession, _, err := client.Session().Create(&consulapi.SessionEntry{
+		Name:      "other-cluster-test",
+		TTL:       "10s",
+		Behavior:  consulapi.SessionBehaviorDelete,
+		LockDelay: time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("create other session: %v", err)
+	}
+	t.Cleanup(func() { _, _ = client.Session().Destroy(otherSession, nil) })
+
+	ok, _, err := client.KV().Acquire(&consulapi.KVPair{
+		Key: keyStream(streamPath), Value: []byte("peer-node"), Session: otherSession,
+	}, nil)
+	if err != nil || !ok {
+		t.Fatalf("seed acquire ok=%v err=%v", ok, err)
+	}
+
+	// 注入一个 onStopReason 通道。
+	stopCh := make(chan error, 1)
+	sr.SetOnStopPublisher(func(sp string, reason error) {
+		if sp == streamPath {
+			stopCh <- reason
+		}
+	})
+
+	// 模拟 OnPublish: 不是 cluster-relay,非空 streamPath,registerOnDispose=nil。
+	sr.handleLocalPublish(streamPath, false, nil)
+
+	select {
+	case got := <-stopCh:
+		if !errors.Is(got, ErrStreamPathTaken) {
+			t.Fatalf("stop reason = %v, want ErrStreamPathTaken", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("onStopPublisher not fired within 2s")
 	}
 }
