@@ -87,6 +87,16 @@ func (p *ClusterPlugin) setupRelayHooks() {
 			}
 			p.stopRelayPullProxy(streamPath, ErrOriginLost)
 		})
+		p.streamRegistry.SetOnStopPublisher(func(streamPath string, reason error) {
+			if p.Server == nil {
+				return
+			}
+			pub, ok := p.Server.Streams.SafeGet(streamPath)
+			if !ok {
+				return
+			}
+			pub.Stop(reason)
+		})
 	})
 }
 
