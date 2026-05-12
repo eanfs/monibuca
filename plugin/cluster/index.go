@@ -58,6 +58,9 @@ func (p *ClusterPlugin) Start() error {
 		return err
 	}
 	p.setupRelayHooks()
+	if err := p.AddTask(&peerSyncTask{plugin: p}).WaitStarted(); err != nil {
+		return err
+	}
 	return nil
 }
 
