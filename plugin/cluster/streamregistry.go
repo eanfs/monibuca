@@ -59,13 +59,18 @@ func (sr *StreamRegistry) Start() error {
 }
 
 // OnPublish 在 ClusterPlugin.OnPublish 转发过来时被调用。
-// 跳过 cluster-relay 派生的 publisher(Q2)。
+// 把 *m7s.Publisher 解耦成简单参数后交给 handleLocalPublish。
 func (sr *StreamRegistry) OnPublish(pub *m7s.Publisher) {
-	if pub.PullProxyConfig != nil && strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix) {
-		return
-	}
-	streamPath := pub.StreamPath
-	if streamPath == "" {
+	isClusterRelay := pub.PullProxyConfig != nil &&
+		strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix)
+	sr.handleLocalPublish(pub.StreamPath, isClusterRelay, pub.OnDispose)
+}
+
+// handleLocalPublish 是 OnPublish 的可测试核心。
+//   - isClusterRelay: 来自 cluster-relay 派生的 publisher(Q2)直接跳过,避免环回
+//   - registerOnDispose: 通常是 Publisher.OnDispose,测试可传 nil 自行管理生命周期
+func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay bool, registerOnDispose func(func())) {
+	if isClusterRelay || streamPath == "" {
 		return
 	}
 
@@ -78,14 +83,16 @@ func (sr *StreamRegistry) OnPublish(pub *m7s.Publisher) {
 		sr.Warn("acquire stream key failed", "streamPath", streamPath, "error", err)
 	}
 
-	pub.OnDispose(func() {
-		sr.localMu.Lock()
-		delete(sr.localStreams, streamPath)
-		sr.localMu.Unlock()
-		if err := sr.release(streamPath); err != nil {
-			sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
-		}
-	})
+	if registerOnDispose != nil {
+		registerOnDispose(func() {
+			sr.localMu.Lock()
+			delete(sr.localStreams, streamPath)
+			sr.localMu.Unlock()
+			if err := sr.release(streamPath); err != nil {
+				sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
+			}
+		})
+	}
 }
 
 // Lookup 给 Phase 3 (relay) / Phase 4 (StreamRouter) 用,
@@ -172,6 +179,9 @@ func (sr *StreamRegistry) replace(np map[string]string) {
 
 // ---------------------------------------------------------------------
 // streamWatcher: blocking query 循环监听 m7s/streams/ 前缀。
+//
+// 实现为 Go() 而不是 Run(),与 sessionTask/nodeWatcher 同理: Run() 同步
+// 阻塞父 Job 事件循环,兄弟 task 跑不到。错误时自行退避 2s。
 // ---------------------------------------------------------------------
 
 type streamWatcher struct {
@@ -180,12 +190,7 @@ type streamWatcher struct {
 	lastIndex uint64
 }
 
-func (w *streamWatcher) Start() error {
-	w.SetRetry(-1, time.Second*2)
-	return nil
-}
-
-func (w *streamWatcher) Run() (err error) {
+func (w *streamWatcher) Go() error {
 	for {
 		if w.Err() != nil {
 			return task.ErrTaskComplete
@@ -199,7 +204,13 @@ func (w *streamWatcher) Run() (err error) {
 			if w.Err() != nil {
 				return task.ErrTaskComplete
 			}
-			return fmt.Errorf("watch %s: %w", prefixStreams, err)
+			w.Warn("watch error, will retry", "prefix", prefixStreams, "error", err)
+			select {
+			case <-w.Done():
+				return task.ErrTaskComplete
+			case <-time.After(2 * time.Second):
+			}
+			continue
 		}
 		if meta != nil {
 			w.lastIndex = meta.LastIndex

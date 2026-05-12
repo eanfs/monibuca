@@ -121,8 +121,10 @@ func (m *Membership) replacePeers(np map[string]*PeerInfo) {
 
 // ---------------------------------------------------------------------
 // sessionTask: 创建 + 续期 Consul session,注册 m7s/nodes/<self>。
-// 续期失败立即返回 error,task 系统按 SetRetry(-1, RetryInterval) 重启,
-// Run 重新跑一遍 = session 重建 + 触发回调(Phase 2 用,A1)。
+// 注意:实现为 Go() 而不是 Run()。Go() 在 goroutine 里跑,允许 Membership 下
+// 的兄弟 task(nodeWatcher 等)并行运行;Run() 会同步阻塞父 Job 的事件循环,
+// 后续兄弟 task 永远跑不到。重试不依赖框架 SetRetry(对 TaskGo 无效),改成
+// runOnce 失败后 Go() 内部循环重建 session。
 // ---------------------------------------------------------------------
 
 type sessionTask struct {
@@ -130,18 +132,34 @@ type sessionTask struct {
 	m *Membership
 }
 
-func (s *sessionTask) Start() error {
-	// 无限重试,间隔 SessionRenewInterval(默认 3s)。
-	s.SetRetry(-1, s.m.plugin.Consul.SessionRenewInterval)
-	return nil
+func (s *sessionTask) Go() error {
+	for {
+		if s.Err() != nil {
+			return task.ErrTaskComplete
+		}
+		if err := s.runOnce(); err != nil {
+			s.Warn("session error, will retry", "error", err)
+			select {
+			case <-s.Done():
+				return task.ErrTaskComplete
+			case <-time.After(s.m.plugin.Consul.SessionRenewInterval):
+			}
+		}
+	}
 }
 
-func (s *sessionTask) Run() (err error) {
+// runOnce 跑一次完整的"创建 session → 注册节点 → 续期循环"。
+// 任何一步出错,destroy 当前 sid 后返回;Go() 负责退避后重新建立 session。
+func (s *sessionTask) runOnce() (err error) {
 	se := &consulapi.SessionEntry{
-		Name:      "m7s-cluster-" + s.m.plugin.NodeID,
-		TTL:       s.m.plugin.Consul.SessionTTL.String(),
-		Behavior:  consulapi.SessionBehaviorDelete,
-		LockDelay: 0,
+		Name:     "m7s-cluster-" + s.m.plugin.NodeID,
+		TTL:      s.m.plugin.Consul.SessionTTL.String(),
+		Behavior: consulapi.SessionBehaviorDelete,
+		// 注: consul 把 LockDelay=0 (Go time.Duration 零值) 当作"用 15s 默认值"。
+		// 节点意外失联后,我们希望尽快(秒级)重新选取流位置,15s 太久;且
+		// 同一 nodeID 只会被自己的 sessionTask 抢占,不需要长 lock-delay 防互踩。
+		// 用 1ms 实质上是 0,但避免落到默认分支。
+		LockDelay: time.Millisecond,
 	}
 	sid, _, err := s.m.client.Session().Create(se, nil)
 	if err != nil {
@@ -150,8 +168,14 @@ func (s *sessionTask) Run() (err error) {
 	s.Info("consul session created", "sessionId", sid, "ttl", se.TTL)
 	s.m.setSession(sid)
 
+	defer func() {
+		if err != nil {
+			s.Warn("destroying session due to error", "sessionId", sid, "error", err)
+			_, _ = s.m.client.Session().Destroy(sid, nil)
+		}
+	}()
+
 	if err = s.registerNode(sid); err != nil {
-		_, _ = s.m.client.Session().Destroy(sid, nil)
 		return fmt.Errorf("register node: %w", err)
 	}
 
@@ -160,24 +184,23 @@ func (s *sessionTask) Run() (err error) {
 	// 即使在 session 还没就绪时就发生,也能在 session 就绪后被 rebind 兜底。
 	s.m.fireSessionRebuilt(sid)
 
-	// session 重命名后,确保 destroy 用的是当前 sid(不是之前关闭的旧 sid)。
-	defer func() {
-		if err != nil {
-			s.Warn("destroying session due to error", "sessionId", sid, "error", err)
-			_, _ = s.m.client.Session().Destroy(sid, nil)
-		}
-	}()
-
 	ticker := time.NewTicker(s.m.plugin.Consul.SessionRenewInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-s.Done():
 			_, _ = s.m.client.Session().Destroy(sid, nil)
-			return task.ErrTaskComplete
+			return nil
 		case <-ticker.C:
-			if _, _, err = s.m.client.Session().Renew(sid, nil); err != nil {
+			// 注: consul/api Session().Renew 在 session 已被外部 Destroy/超时时
+			// 返回 (nil, nil, nil)—— 不是 error。光 check err 会让 Renew 循环
+			// 永远跑不出来、新 session 永远不建。必须同时检查 entry == nil。
+			entry, _, err := s.m.client.Session().Renew(sid, nil)
+			if err != nil {
 				return fmt.Errorf("renew session: %w", err)
+			}
+			if entry == nil {
+				return fmt.Errorf("session %s no longer exists on consul", sid)
 			}
 		}
 	}
@@ -211,7 +234,10 @@ func (s *sessionTask) registerNode(sid string) error {
 // ---------------------------------------------------------------------
 // nodeWatcher: blocking query 循环监听 m7s/nodes/ 前缀。
 // 每次 List 都用 WaitIndex + WaitTime 长轮询,变更或超时返回。
-// 通过 task SetRetry(-1) 让网络错误自动重启。
+//
+// 实现为 Go(),原因同 sessionTask: Run() 会同步阻塞父 Job 事件循环,
+// 导致和 sessionTask 互斥不能并行。网络错误时内部自行退避 2s 再试,
+// 不依赖框架 SetRetry。
 // ---------------------------------------------------------------------
 
 type nodeWatcher struct {
@@ -220,12 +246,7 @@ type nodeWatcher struct {
 	lastIndex uint64
 }
 
-func (w *nodeWatcher) Start() error {
-	w.SetRetry(-1, time.Second*2)
-	return nil
-}
-
-func (w *nodeWatcher) Run() (err error) {
+func (w *nodeWatcher) Go() error {
 	for {
 		if w.Err() != nil {
 			return task.ErrTaskComplete
@@ -236,11 +257,16 @@ func (w *nodeWatcher) Run() (err error) {
 		}).WithContext(w)
 		pairs, meta, err := w.m.client.KV().List(prefixNodes, opts)
 		if err != nil {
-			// task 取消时上下文已 Done,List 返回 ctx err,正常退出。
 			if w.Err() != nil {
 				return task.ErrTaskComplete
 			}
-			return fmt.Errorf("watch %s: %w", prefixNodes, err)
+			w.Warn("watch error, will retry", "prefix", prefixNodes, "error", err)
+			select {
+			case <-w.Done():
+				return task.ErrTaskComplete
+			case <-time.After(2 * time.Second):
+			}
+			continue
 		}
 		if meta != nil {
 			w.lastIndex = meta.LastIndex
