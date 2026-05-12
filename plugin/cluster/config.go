@@ -23,3 +23,7 @@ type LoadShedConfig struct {
 	Enable          bool `desc:"是否启用负载卸载"`
 	StreamThreshold int  `default:"500" desc:"流数阈值,超过此值在 lb-suggest 中降权"`
 }
+
+type MetricsConfig struct {
+	ReportInterval time.Duration `default:"5s" desc:"LoadReporter 上报周期"`
+}

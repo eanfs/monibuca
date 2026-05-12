@@ -300,3 +300,41 @@ const (
 func keyNode(nodeID string) string {
 	return prefixNodes + nodeID
 }
+
+// UpdateMetrics 让 LoadReporter 周期更新 m7s/nodes/<self> 的 Metrics 字段,
+// 不丢其他不可变字段(StartedAt 等)。读旧 PeerInfo → merge Metrics → Acquire。
+func (m *Membership) UpdateMetrics(metrics map[string]any) error {
+	sid := m.SessionID()
+	if sid == "" {
+		return errors.New("no session yet")
+	}
+	pair, _, err := m.client.KV().Get(keyNode(m.plugin.NodeID), nil)
+	if err != nil {
+		return err
+	}
+	var pi PeerInfo
+	if pair != nil && len(pair.Value) > 0 {
+		if e := json.Unmarshal(pair.Value, &pi); e != nil {
+			// 损坏的话,用最小可恢复的值重建
+			pi = PeerInfo{NodeID: m.plugin.NodeID, Advertise: m.plugin.Advertise}
+			if m.plugin.Meta != nil {
+				pi.Version = m.plugin.Meta.Version
+			}
+		}
+	}
+	pi.Metrics = metrics
+	value, err := json.Marshal(pi)
+	if err != nil {
+		return err
+	}
+	ok, _, err := m.client.KV().Acquire(&consulapi.KVPair{
+		Key: keyNode(m.plugin.NodeID), Value: value, Session: sid,
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("kv acquire returned false")
+	}
+	return nil
+}

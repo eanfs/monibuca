@@ -22,6 +22,7 @@ type ClusterPlugin struct {
 	Advertise      AdvertiseConfig `desc:"对外宣告的协议端口表,跨节点拉流时对端会用"`
 	RelayProtocols []string        `default:"rtmp,rtsp,flv" desc:"跨节点拉流协议优先级(Phase 3 用)"`
 	LoadShed       LoadShedConfig  `desc:"负载卸载策略(Phase 6 用)"`
+	Metrics        MetricsConfig   `desc:"集群负载上报"`
 
 	membership     *Membership
 	streamRegistry *StreamRegistry
@@ -82,6 +83,10 @@ func (p *ClusterPlugin) Start() error {
 			return "", false
 		}
 		return peer.Advertise.FLV, true
+	}
+
+	if err := p.AddTask(&LoadReporter{plugin: p}).WaitStarted(); err != nil {
+		return err
 	}
 
 	// Phase 5 P4 决策: cluster 启用 + SQLite 仅 Warn,不拒启。
