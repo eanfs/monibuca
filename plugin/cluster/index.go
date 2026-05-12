@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	m7s "m7s.live/v5"
+	plugin_mp4 "m7s.live/v5/plugin/mp4"
 )
 
 // ClusterPlugin 是 cluster 插件主体。
@@ -35,9 +36,9 @@ type ClusterPlugin struct {
 	// activeRelays 跟踪本节点上 cluster-relay 派生的 streamPath。OnSubscribe
 	// 成功调 relayHook 后写入;StreamRegistry.AddOnStreamRemoved 看到删除时读
 	// 来决定是否 Stop。
-	activeRelaysMu   sync.Mutex
-	activeRelays     map[string]struct{}
-	relayHooksOnce   sync.Once
+	activeRelaysMu sync.Mutex
+	activeRelays   map[string]struct{}
+	relayHooksOnce sync.Once
 }
 
 var _ = m7s.InstallPlugin[ClusterPlugin](m7s.PluginMeta{})
@@ -61,6 +62,28 @@ func (p *ClusterPlugin) Start() error {
 	if err := p.AddTask(&peerSyncTask{plugin: p}).WaitStarted(); err != nil {
 		return err
 	}
+
+	// Phase 5A: 注入 NodeID 回调到 m7s 核心(Recorder 写库时填 node_id 列)。
+	m7s.SetNodeIDHook(func() string { return p.NodeID })
+
+	// Phase 5A: 注入 DownloadHook 到 mp4 插件。
+	// /download 收到请求时,若本节点的录像注册表中没有该流,
+	// 302 重定向到 origin 节点的 advertise.FLV 地址前缀。
+	plugin_mp4.DownloadHook = func(streamPath string) (string, bool) {
+		if p.streamRegistry == nil || p.membership == nil {
+			return "", false
+		}
+		owner, ok := p.streamRegistry.Lookup(streamPath)
+		if !ok || owner == p.NodeID {
+			return "", false
+		}
+		peer, peerOk := p.membership.Peer(owner)
+		if !peerOk || peer.Advertise.FLV == "" {
+			return "", false
+		}
+		return peer.Advertise.FLV, true
+	}
+
 	return nil
 }
 
