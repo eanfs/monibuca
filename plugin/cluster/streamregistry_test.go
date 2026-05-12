@@ -101,6 +101,51 @@ func TestStreamRegistry_WatcherReflectsRemoteWrite(t *testing.T) {
 	t.Fatalf("watcher never reflected %s=remote-node within 2s", streamPath)
 }
 
+// TestStreamRegistry_AddOnStreamRemoved_FiresWhenKeyDeleted 验证 §4.2 触发条件:
+// 当外部把 m7s/streams/<path> 键删了,streamWatcher 在下一轮 blocking query
+// 中能感知到删除,并把消失的 streamPath 投递给所有 AddOnStreamRemoved 注册的回调。
+func TestStreamRegistry_AddOnStreamRemoved_FiresWhenKeyDeleted(t *testing.T) {
+	client, addr := requireConsul(t)
+	nodeID := uniqNodeID(t)
+	streamPath := "live/" + nodeID + "-watched"
+	p := startMembershipForTest(t, nodeID, addr)
+	sr := startStreamRegistryForTest(t, p)
+
+	removedCh := make(chan string, 4)
+	sr.AddOnStreamRemoved(func(sp string) { removedCh <- sp })
+
+	// 写一个 key,等 watcher 看到。
+	if _, err := client.KV().Put(&consulapi.KVPair{
+		Key:   keyStream(streamPath),
+		Value: []byte("remote-node"),
+	}, nil); err != nil {
+		t.Fatalf("kv put: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := sr.Lookup(streamPath); ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, ok := sr.Lookup(streamPath); !ok {
+		t.Fatalf("watcher never saw initial put within 2s")
+	}
+
+	// 删 key,期望 onStreamRemoved 被调用,且参数 = streamPath。
+	if _, err := client.KV().Delete(keyStream(streamPath), nil); err != nil {
+		t.Fatalf("kv delete: %v", err)
+	}
+	select {
+	case got := <-removedCh:
+		if got != streamPath {
+			t.Errorf("onStreamRemoved got %q, want %q", got, streamPath)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("onStreamRemoved not fired within 3s after delete")
+	}
+}
+
 // TestStreamRegistry_RebindAllReAcquiresLocalStreams 验证 A1 闭环:
 // session 重建之后,所有本地 publishers 的流位置键必须被新 session 重新 Acquire。
 // 直接调用 rebindAll 模拟"membership 通知重建"那一刻的行为。

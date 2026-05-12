@@ -37,6 +37,9 @@ type StreamRegistry struct {
 
 	localMu      sync.Mutex
 	localStreams map[string]struct{}
+
+	onStreamRemovedMu sync.Mutex
+	onStreamRemoved   []func(streamPath string)
 }
 
 func newStreamRegistry(p *ClusterPlugin) *StreamRegistry {
@@ -102,6 +105,24 @@ func (sr *StreamRegistry) Lookup(streamPath string) (nodeID string, ok bool) {
 	defer sr.mu.RUnlock()
 	nodeID, ok = sr.streams[streamPath]
 	return
+}
+
+// AddOnStreamRemoved 注册一个回调,在 watcher 检测到 m7s/streams/<path> 键被删
+// (因任何原因:session 失效 / 主动 release / 显式 Delete)时同步调用。
+// Phase 3 Relay 用这个来在 origin 失联时立即 Stop 本节点的 cluster-relay pull-proxy。
+func (sr *StreamRegistry) AddOnStreamRemoved(f func(streamPath string)) {
+	sr.onStreamRemovedMu.Lock()
+	defer sr.onStreamRemovedMu.Unlock()
+	sr.onStreamRemoved = append(sr.onStreamRemoved, f)
+}
+
+func (sr *StreamRegistry) fireStreamRemoved(streamPath string) {
+	sr.onStreamRemovedMu.Lock()
+	cbs := append([]func(string){}, sr.onStreamRemoved...)
+	sr.onStreamRemovedMu.Unlock()
+	for _, cb := range cbs {
+		cb(streamPath)
+	}
 }
 
 // Streams 返回当前 streams map 的快照,主要给 /api/cluster/streams 用。
@@ -228,7 +249,22 @@ func (w *streamWatcher) refresh(pairs consulapi.KVPairs) {
 		}
 		np[path] = string(p.Value)
 	}
+
+	// diff: 找上一次有、这次没了的 path,触发回调。
+	w.sr.mu.RLock()
+	removed := make([]string, 0)
+	for old := range w.sr.streams {
+		if _, still := np[old]; !still {
+			removed = append(removed, old)
+		}
+	}
+	w.sr.mu.RUnlock()
+
 	w.sr.replace(np)
+
+	for _, path := range removed {
+		w.sr.fireStreamRemoved(path)
+	}
 }
 
 func keyStream(streamPath string) string {
