@@ -419,6 +419,81 @@ Membership.RebuildSession():
 | streamPath 含特殊字符 | URL 拼装错误 / Consul KV path 异常 | A4 `buildPullURL` 表驱动测试覆盖；Consul KV path 用 streamPath 字面值（Consul 接受 `/`），不做 escape |
 | 跨节点 RPC 转发 timeout | 录制 API 卡住 | `ForwardTimeout` 配置（默认 5s）；超时返回 5xx + 上游错误码；客户端可重试 |
 
+## 共享存储部署（Phase 5）
+
+集群模式下，**强烈推荐** 所有节点共享一份业务 DB + 对象存储。否则跨节点
+录制元数据和文件回看会不可见。
+
+### PostgreSQL（业务 + 录制元数据）
+
+所有节点的 DSN 指向同一 PostgreSQL 实例，m7s 启动时 GORM AutoMigrate
+会建好 `mp4_streams` 等表（其中 `node_id` 列由 Phase 5 引入）。
+
+docker-compose 示例：
+
+```yaml
+postgres:
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_PASSWORD: m7s
+    POSTGRES_DB: m7s
+  ports: ["5432:5432"]
+```
+
+m7s config 段：
+
+```yaml
+postgres:
+  dsn: "postgres://postgres:m7s@postgres:5432/m7s?sslmode=disable"
+```
+
+build 时必须带 `postgres` tag。
+
+### S3 / COS / OSS（录制文件）
+
+录制文件统一上传到对象存储。任何节点的 `/download/...` handler 拿到
+mp4_streams 行后，如果该行 node_id == 本节点，直接走对象存储；node_id
+≠ 本节点 → 由 cluster plugin 注入的 DownloadHook 302 到该节点的 advertise.FLV 端口。
+
+minio docker-compose 示例：
+
+```yaml
+minio:
+  image: minio/minio:latest
+  command: server /data --console-address ":9001"
+  environment:
+    MINIO_ROOT_USER: admin
+    MINIO_ROOT_PASSWORD: m7sm7sm7s
+  ports: ["9000:9000", "9001:9001"]
+```
+
+m7s config 段（s3 build tag）：
+
+```yaml
+storage:
+  type: s3
+  s3:
+    endpoint: http://minio:9000
+    accesskey: admin
+    secretkey: m7sm7sm7s
+    bucket: m7s-records
+    region: us-east-1
+```
+
+### 部署一致性 checklist
+
+- [ ] 所有节点 postgres.dsn 指向同一 PostgreSQL 实例
+- [ ] 所有节点 storage 配置指向同一 bucket
+- [ ] cluster.nodeid 全局唯一（不能重复）
+- [ ] cluster.advertise.{rtmp,rtsp,flv,grpc} 是其他节点能访问的地址（不要写 127.0.0.1 这种本机回环）
+- [ ] cluster.consul.addresses 指向同一 Consul 集群
+
+### SQLite 兼容性
+
+cluster + SQLite **不被推荐生产用** —— SQLite 是本地文件，跨节点不共享。
+启动时 m7s 会 log Warn 提醒。"试用"场景可继续用，但 e2e + 录制回看
+会受限。
+
 ## 十二、实施进度跟踪
 
 实施在 `feature/cluser2605` 分支上进行，每个阶段一次或多次提交：

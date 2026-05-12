@@ -84,6 +84,14 @@ func (p *ClusterPlugin) Start() error {
 		return peer.Advertise.FLV, true
 	}
 
+	// Phase 5 P4 决策: cluster 启用 + SQLite 仅 Warn,不拒启。
+	if p.DB != nil {
+		if dialect := p.DB.Dialector.Name(); dialect == "sqlite" {
+			p.Warn("cluster + SQLite 不建议生产用",
+				"reason", "跨节点录制元数据(mp4_streams)不会自动共享。建议切到 PostgreSQL(P4)")
+		}
+	}
+
 	return nil
 }
 
