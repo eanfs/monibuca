@@ -5,6 +5,7 @@ package plugin_cluster
 import (
 	"fmt"
 	"net/url"
+	"time"
 
 	m7s "m7s.live/v5"
 )
@@ -80,21 +81,29 @@ func (p *ClusterPlugin) OnSubscribe(streamPath string, _ url.Values) {
 	}
 }
 
-// ensureRelay 把 relay 参数组装成 PullProxyConfig 并调用注入点(默认走 Server.EnsurePullProxy)。
-// 本 Task 阶段先实现 skip / shape;Task 10 收窄类型并真接 Server.EnsurePullProxy。
+// ensureRelay 把 relay 参数组装成 *m7s.PullProxyConfig 并调用注入点(默认走 Server.EnsurePullProxy)。
+// Description 字段注入 cluster-relay 标记,防止 C→B→A→B 环回(§3.4)。
 func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string) error {
-	hook := p.relayHook
-	if hook == nil {
-		// 生产路径在 Task 10 补全
-		return fmt.Errorf("relayHook not configured")
+	conf := &m7s.PullProxyConfig{
+		StreamPath:  streamPath,
+		Type:        proto,
+		Description: ClusterRelayDescPrefix + originID,
+		PullOnStart: false,
+		StopOnIdle:  true,
 	}
-	conf := map[string]string{
-		"originId":   originID,
-		"streamPath": streamPath,
-		"type":       proto,
-		"url":        fullURL,
+	// config.Pull 字段是 promoted(anonymous embed),直接访问
+	conf.URL = fullURL
+	conf.MaxRetry = 3
+	conf.RetryInterval = time.Second
+
+	if hook := p.relayHook; hook != nil {
+		_, err := hook(conf)
+		return err
 	}
-	_, err := hook(conf)
+	if p.Server == nil {
+		return fmt.Errorf("server not attached")
+	}
+	_, _, err := p.Server.EnsurePullProxy(conf)
 	return err
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
+	m7s "m7s.live/v5"
 )
 
 // ---------------------------------------------------------------------
@@ -202,10 +203,10 @@ func TestRelay_OnSubscribe_CreatesPullProxyWithClusterRelayMarker(t *testing.T) 
 	}
 
 	// recorder hook。
-	var captured map[string]string
+	var captured *m7s.PullProxyConfig
 	p.relayHook = func(conf any) (bool, error) {
-		if m, ok := conf.(map[string]string); ok {
-			captured = m
+		if c, ok := conf.(*m7s.PullProxyConfig); ok {
+			captured = c
 		}
 		return true, nil
 	}
@@ -213,19 +214,21 @@ func TestRelay_OnSubscribe_CreatesPullProxyWithClusterRelayMarker(t *testing.T) 
 	p.OnSubscribe(streamPath, nil)
 
 	if captured == nil {
-		t.Fatalf("relayHook never called")
+		t.Fatalf("relayHook never called or wrong type")
 	}
-	if captured["streamPath"] != streamPath {
-		t.Errorf("captured streamPath = %q, want %q", captured["streamPath"], streamPath)
+	if captured.StreamPath != streamPath {
+		t.Errorf("StreamPath = %q, want %q", captured.StreamPath, streamPath)
 	}
-	if captured["type"] != "rtmp" {
-		t.Errorf("captured type = %q, want rtmp", captured["type"])
+	if captured.Type != "rtmp" {
+		t.Errorf("Type = %q, want rtmp", captured.Type)
 	}
 	wantURL := "rtmp://10.0.0.1:1935/" + streamPath
-	if captured["url"] != wantURL {
-		t.Errorf("captured url = %q, want %q", captured["url"], wantURL)
+	gotURL := captured.URL
+	if gotURL != wantURL {
+		t.Errorf("URL = %q, want %q", gotURL, wantURL)
 	}
-	if captured["originId"] != originID {
-		t.Errorf("captured originId = %q, want %q", captured["originId"], originID)
+	wantDesc := ClusterRelayDescPrefix + originID
+	if captured.Description != wantDesc {
+		t.Errorf("Description = %q, want %q", captured.Description, wantDesc)
 	}
 }
