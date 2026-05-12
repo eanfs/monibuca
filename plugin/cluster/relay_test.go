@@ -4,6 +4,7 @@ package plugin_cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -230,5 +231,77 @@ func TestRelay_OnSubscribe_CreatesPullProxyWithClusterRelayMarker(t *testing.T) 
 	wantDesc := ClusterRelayDescPrefix + originID
 	if captured.Description != wantDesc {
 		t.Errorf("Description = %q, want %q", captured.Description, wantDesc)
+	}
+}
+
+// TestRelay_StreamRegistryKeyDisappears_KillsLocalPullProxy 验证 §4.2:
+// 当 m7s/streams/<path> 键在 consul 上消失,Relay 应当主动 Stop 本节点上
+// 该 streamPath 对应的 cluster-relay pull-proxy。
+//
+// 这里仍用注入点(stopHook)解耦真实 m7s pull-proxy 对象。
+func TestRelay_StreamRegistryKeyDisappears_KillsLocalPullProxy(t *testing.T) {
+	client, addr := requireConsul(t)
+	nodeID := uniqNodeID(t)
+	streamPath := "live/" + nodeID + "-vanish"
+	originID := nodeID + "-origin"
+	p := startMembershipForTest(t, nodeID, addr)
+	_ = startStreamRegistryForTest(t, p)
+	p.RelayProtocols = []string{"rtmp", "rtsp", "flv"}
+
+	// 写 origin 节点 + streamPath。
+	peerJSON, _ := json.Marshal(PeerInfo{NodeID: originID, Advertise: AdvertiseConfig{RTMP: "10.0.0.1:1935"}})
+	_, _ = client.KV().Put(&consulapi.KVPair{Key: keyNode(originID), Value: peerJSON}, nil)
+	_, _ = client.KV().Put(&consulapi.KVPair{Key: keyStream(streamPath), Value: []byte(originID)}, nil)
+
+	// 等 watcher 同步。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := p.membership.Peer(originID); !ok {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		if _, ok := p.streamRegistry.Lookup(streamPath); !ok {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	// 让 relayHook"成功"建一个 pull-proxy(实际不建,只是登记)。
+	p.relayHook = func(conf any) (bool, error) { return true, nil }
+
+	// stopHook recorder。
+	stopCh := make(chan struct {
+		streamPath string
+		reason     error
+	}, 4)
+	p.stopRelayHook = func(streamPath string, reason error) {
+		stopCh <- struct {
+			streamPath string
+			reason     error
+		}{streamPath, reason}
+	}
+
+	// 触发 OnSubscribe,这条 streamPath 会被 Relay 登记为本节点正在 relay 的对象。
+	p.OnSubscribe(streamPath, nil)
+
+	// 等 OnSubscribe 处理完,需要让 ensureRelay 把 streamPath 写入 activeRelays。
+	// (同步调用,无需等)
+
+	// 删 stream key,等 onStreamRemoved 钩子触发。
+	if _, err := client.KV().Delete(keyStream(streamPath), nil); err != nil {
+		t.Fatalf("kv delete: %v", err)
+	}
+
+	select {
+	case got := <-stopCh:
+		if got.streamPath != streamPath {
+			t.Errorf("stopRelayHook streamPath = %q, want %q", got.streamPath, streamPath)
+		}
+		if !errors.Is(got.reason, ErrOriginLost) {
+			t.Errorf("stopRelayHook reason = %v, want ErrOriginLost", got.reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("stopRelayHook not fired within 3s after stream key delete")
 	}
 }

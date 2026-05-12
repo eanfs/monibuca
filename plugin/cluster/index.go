@@ -4,6 +4,7 @@ package plugin_cluster
 
 import (
 	"errors"
+	"sync"
 
 	m7s "m7s.live/v5"
 )
@@ -26,6 +27,17 @@ type ClusterPlugin struct {
 	// relayHook 是 Phase 3 Relay 创建 cluster-relay pull-proxy 的注入点。
 	// 默认 nil → ensureRelay 走 p.Server.EnsurePullProxy。测试可 swap。
 	relayHook RelayHook
+
+	// stopRelayHook 是 Phase 3 Relay 在 origin 失联(§4.2)时 Stop 本节点 cluster-relay
+	// pull-proxy 的注入点。默认 nil → 生产实现走 Server pull-proxy 查找 + Stop。
+	stopRelayHook func(streamPath string, reason error)
+
+	// activeRelays 跟踪本节点上 cluster-relay 派生的 streamPath。OnSubscribe
+	// 成功调 relayHook 后写入;StreamRegistry.AddOnStreamRemoved 看到删除时读
+	// 来决定是否 Stop。
+	activeRelaysMu   sync.Mutex
+	activeRelays     map[string]struct{}
+	relayHooksOnce   sync.Once
 }
 
 var _ = m7s.InstallPlugin[ClusterPlugin](m7s.PluginMeta{})
@@ -45,7 +57,37 @@ func (p *ClusterPlugin) Start() error {
 	if err := p.AddTask(p.streamRegistry).WaitStarted(); err != nil {
 		return err
 	}
+	p.setupRelayHooks()
 	return nil
+}
+
+// setupRelayHooks 把 StreamRegistry 的 onStreamRemoved 回调和 activeRelays 初始化
+// 绑定在一起。使用 sync.Once 保证只注册一次,可从 Start() 或 ensureRelay 调用。
+func (p *ClusterPlugin) setupRelayHooks() {
+	p.relayHooksOnce.Do(func() {
+		p.activeRelaysMu.Lock()
+		if p.activeRelays == nil {
+			p.activeRelays = make(map[string]struct{})
+		}
+		p.activeRelaysMu.Unlock()
+		if p.streamRegistry == nil {
+			return
+		}
+		p.streamRegistry.AddOnStreamRemoved(func(streamPath string) {
+			p.activeRelaysMu.Lock()
+			_, isActive := p.activeRelays[streamPath]
+			delete(p.activeRelays, streamPath)
+			p.activeRelaysMu.Unlock()
+			if !isActive {
+				return
+			}
+			if hook := p.stopRelayHook; hook != nil {
+				hook(streamPath, ErrOriginLost)
+				return
+			}
+			p.stopRelayPullProxy(streamPath, ErrOriginLost)
+		})
+	})
 }
 
 // OnPublish 实现 m7s.IPublishHookPlugin。本地有新 publisher 时,

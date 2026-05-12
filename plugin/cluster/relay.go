@@ -5,6 +5,7 @@ package plugin_cluster
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	m7s "m7s.live/v5"
@@ -83,6 +84,7 @@ func (p *ClusterPlugin) OnSubscribe(streamPath string, _ url.Values) {
 
 // ensureRelay 把 relay 参数组装成 *m7s.PullProxyConfig 并调用注入点(默认走 Server.EnsurePullProxy)。
 // Description 字段注入 cluster-relay 标记,防止 C→B→A→B 环回(§3.4)。
+// 成功后把 streamPath 写入 activeRelays,供 origin 失联时快速查找。
 func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string) error {
 	conf := &m7s.PullProxyConfig{
 		StreamPath:  streamPath,
@@ -91,20 +93,54 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 		PullOnStart: false,
 		StopOnIdle:  true,
 	}
-	// config.Pull 字段是 promoted(anonymous embed),直接访问
 	conf.URL = fullURL
 	conf.MaxRetry = 3
 	conf.RetryInterval = time.Second
 
+	// 确保 onStreamRemoved 钩子已注册(生产路径由 Start() 负责;测试路径
+	// 绕开 Start(),由此处懒初始化补齐)。
+	p.setupRelayHooks()
+
+	var err error
 	if hook := p.relayHook; hook != nil {
-		_, err := hook(conf)
-		return err
+		_, err = hook(conf)
+	} else if p.Server != nil {
+		_, _, err = p.Server.EnsurePullProxy(conf)
+	} else {
+		err = fmt.Errorf("server not attached")
 	}
-	if p.Server == nil {
-		return fmt.Errorf("server not attached")
+	if err == nil {
+		p.activeRelaysMu.Lock()
+		if p.activeRelays == nil {
+			p.activeRelays = make(map[string]struct{})
+		}
+		p.activeRelays[streamPath] = struct{}{}
+		p.activeRelaysMu.Unlock()
 	}
-	_, _, err := p.Server.EnsurePullProxy(conf)
 	return err
+}
+
+// stopRelayPullProxy 生产路径:遍历 Server 的 pull-proxies,找 Description 带
+// ClusterRelayDescPrefix 前缀且 StreamPath 匹配的那一个,Stop(reason)。
+//
+// 用 Description 前缀 + StreamPath 双重确认,避免误杀用户自配的同名 pull-proxy。
+func (p *ClusterPlugin) stopRelayPullProxy(streamPath string, reason error) {
+	if p.Server == nil {
+		return
+	}
+	proxy, ok := p.Server.PullProxies.Find(func(proxy m7s.IPullProxy) bool {
+		conf := proxy.GetConfig()
+		if conf == nil {
+			return false
+		}
+		return conf.StreamPath == streamPath &&
+			strings.HasPrefix(conf.Description, ClusterRelayDescPrefix)
+	})
+	if ok {
+		proxy.Stop(reason)
+	} else {
+		p.Warn("relay: no active cluster-relay pull proxy found to stop", "streamPath", streamPath)
+	}
 }
 
 var _ m7s.ISubscribeHookPlugin = (*ClusterPlugin)(nil)
