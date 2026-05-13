@@ -21,10 +21,10 @@
 
 ## 解决方案
 
-### 方案 1: 使用简化版测试脚本（推荐）⭐
+### 方案 1: 使用极简版测试脚本（推荐）⭐
 
 ```bash
-./test_simple.sh
+./test_minimal.sh
 ```
 
 **特点：**
@@ -71,7 +71,7 @@ ffplay http://localhost:8080/flv/live/camera1.flv
 
 ### 简化版测试 vs 完整测试
 
-| 特性 | 简化版 (test_simple.sh) | 完整版 (test_cameras.sh) |
+| 特性 | 极简版 (test_minimal.sh) | 完整版 (test_cameras.sh) |
 |------|------------------------|-------------------------|
 | ffprobe 检查 | ❌ 跳过 | ✅ 包含（但不阻塞） |
 | 网络 ping | ❌ 跳过 | ✅ 包含 |
@@ -90,7 +90,7 @@ ffplay http://localhost:8080/flv/live/camera1.flv
 ./start.sh
 
 # 2. 运行简化测试（新终端）
-./test_simple.sh
+./test_minimal.sh
 
 # 3. 查看结果
 ls -lh record/live/
@@ -178,7 +178,7 @@ grep "rtsp" logs/m7s.log | tail -20
 
 ## 总结
 
-**推荐使用简化版测试脚本 (`test_simple.sh`)**，因为：
+**推荐使用极简版测试脚本 (`test_minimal.sh`)**，因为：
 
 1. ✅ 更快速
 2. ✅ 更可靠
