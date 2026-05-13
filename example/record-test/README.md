@@ -1,182 +1,85 @@
 # Monibuca 录制测试环境
 
-单节点录制测试环境，用于测试 MP4 录制功能。
+单节点 RTSP 拉流 + MP4 录制测试。已配置 35 路摄像头（海康 / 大华混合），支持本地录制 + S3/MinIO 上传。
+
+## 目录结构
+
+```
+record-test/
+├── main.go              # 主程序入口
+├── config.yaml          # 服务配置（HTTP/RTSP/MP4/HLS/WebRTC + S3）
+├── start.sh             # 启动 monibuca 服务
+├── streams_meta.json    # 35 路摄像头探测基线（W/H/fps/codec/分档）
+│
+├── probe_streams.sh     # 探测所有摄像头分辨率 → streams_meta.json
+├── test_minimal.sh      # 录制冒烟（全 35 路，60s 默认，无诊断）
+├── test_cameras.sh      # 录制完整测（含网络 ping / RTSP 检查 / 并发）
+├── test_high_res.sh     # 按分辨率分组录制 + 性能采样 + 自动出报告
+│
+├── lib/                 # 纯函数模块（classify/probe/sampler/verify）
+├── tests/               # lib/ 单测
+├── scripts/             # 辅助脚本（check / debug / cleanup）
+├── docs/                # 历史 issue 与扩展说明
+├── reports/             # test_high_res.sh 产物：report-*.md + metrics-*.csv
+├── record/              # 本地录制输出（被 .gitignore）
+└── logs/                # m7s 日志（被 .gitignore）
+```
 
 ## 快速开始
 
 ### 1. 启动服务
 
 ```bash
-cd /Users/lirichen/Work/XiDingCloud/monibuca-v5/example/record-test
 ./start.sh
 ```
 
-服务启动后：
-- HTTP API: `http://localhost:8080`
-- RTSP: `rtsp://localhost:554`
-- 录制目录: `record/live/`
+- HTTP API：<http://localhost:8080>
+- RTSP：rtsp://localhost:554
+- 录制目录：`record/live/`（实际可能落在 `./live/` 见 [关于录制文件路径](#关于录制文件路径)）
+- 日志：`logs/m7s.log`
 
-### 2. 运行摄像头测试
+### 2. 选一个测试脚本跑
 
-**🥇 推荐：极简版测试（最快、最可靠）**
+| 脚本 | 场景 | 默认时长 |
+|---|---|---|
+| **`test_minimal.sh`** | 日常冒烟：全 35 路开录，停录，校验文件 | 100s |
+| **`test_cameras.sh`** | 故障诊断：含 ping、RTSP 检查、并发可调 | 60s |
+| **`test_high_res.sh`** | 性能聚焦：按分辨率分组（2K/4K/all），出报告 | 300s |
 
 ```bash
-# 快速测试（默认 60 秒录制）
-./test_minimal.sh
-
-# 快速测试（30 秒录制）
+# 冒烟
 RECORD_DURATION=30 ./test_minimal.sh
-```
 
-**极简版特点：**
-- ✅ 零检查，直接开始录制
-- ✅ 无并发，无变量作用域问题
-- ✅ 代码简单，最可靠
-- ✅ 执行最快（~90 秒）
-- ✅ 输出清晰
-
----
-
-**🥈 备选：简化版测试（包含流状态检查）**
-
-```bash
-# 包含 API 流检查
-./test_simple.sh
-
-# 快速测试（30 秒录制）
-RECORD_DURATION=30 ./test_simple.sh
-```
-
-**简化版特点：**
-- ✅ 跳过 ffprobe 的 RTSP 检查
-- ✅ 通过 HTTP API 检查流状态
-- ✅ 无并发，可靠性高
-- ✅ 较快（~100 秒）
-
----
-
-**🥉 高级：完整版测试（详细诊断）**
-
-仅用于故障排查和详细诊断：
-
-#### 步骤 1: 检查摄像头连接（可选）
-
-```bash
-# 快速检查所有摄像头是否在线
-./check_cameras.sh
-```
-
-#### 步骤 2: 运行完整测试
-
-```bash
-# 运行摄像头测试（默认录制 60 秒）
-./test_cameras.sh
-
-# 自定义录制时长
-RECORD_DURATION=120 ./test_cameras.sh
-
-# 高并发测试（加快检查速度）
+# 诊断
 CHECK_CONCURRENCY=10 RECORD_CONCURRENCY=18 ./test_cameras.sh
+
+# 分组测试（先跑过 probe_streams.sh）
+./test_high_res.sh --group=2k --duration=60
 ```
 
-**完整版特点：**
-- ✅ 包含网络 ping 测试
-- ✅ 包含 RTSP 流检查（但不阻塞）
-- ✅ 更详细的诊断信息
-- ⚠️  执行时间较长
-
-**已配置 18 个摄像头：**
-
-海康威视 (9 个):
-- camera1-3: 192.168.12.71-73
-- camera4-6: 192.168.10.111-113
-- camera7-9: 192.168.12.31-33
-
-大华 (9 个):
-- camera10-12: 192.168.12.11-13
-- camera13-15: 192.168.12.61-63
-- camera16-18: 192.168.12.91-93
-
-详细列表请查看: `cat CAMERAS.md`
-
-### 3. 其他测试方式
-
-**方式 A: 使用 FFmpeg 推流**
+### 3. 看结果
 
 ```bash
-# 从文件推流
-ffmpeg -re -i your-video.mp4 -c copy -f rtsp rtsp://localhost:554/live/test1
+# 录制文件
+find . -name "*.mp4" -not -path './.git/*'
 
-# 从摄像头推流
-ffmpeg -f avfoundation -i "0:0" -c:v libx264 -c:a aac -f rtsp rtsp://localhost:554/live/test1
-```
-
-**方式 B: 配置拉流**
-
-编辑 `config.yaml`，取消注释并配置 RTSP 源：
-
-```yaml
-rtsp:
-  pull:
-    live/test1: rtsp://your-rtsp-source-url
-```
-
-### 3. 测试录制
-
-**方式 A: 自动录制（推荐）**
-
-配置文件中已启用 `onpub.record`，流发布时自动开始录制。
-
-**方式 B: 手动录制**
-
-```bash
-# 开始录制
-curl -X POST 'http://localhost:8080/mp4/api/StartRecord?streamPath=live/test1'
-
-# 停止录制
-curl -X POST 'http://localhost:8080/mp4/api/StopRecord?streamPath=live/test1'
-```
-
-**方式 C: 使用自动化测试脚本**
-
-```bash
-# 配置 RTSP 源（可选）
-export RTSP_SOURCE_1='rtsp://your-source-1'
-export RTSP_SOURCE_2='rtsp://your-source-2'
-
-# 运行测试（默认录制 60 秒）
-./test_record.sh
-
-# 自定义录制时长
-RECORD_DURATION=120 ./test_record.sh
-```
-
-### 4. 查看录制文件
-
-```bash
-# 查看文件列表
-ls -lh record/live/
-
-# 播放录制文件
-ffplay record/live/your-recording.mp4
-
-# 检查文件信息
-ffprobe record/live/your-recording.mp4
+# 测试报告（仅 test_high_res.sh 产出）
+ls -lh reports/
+cat reports/report-*.md | tail -40
 ```
 
 ## 2K/4K 高分辨率测试
 
-定向跑某个分辨率分组的并发录制，自动出报告。基于 `lib/` 下的几个纯函数模块拼装（`classify`/`probe`/`sampler`/`verify`），每个模块都有 bash 单测。
+定向跑某个分辨率分组的并发录制，自动出报告。基于 `lib/` 下的纯函数模块（`classify`/`probe`/`sampler`/`verify`），每个模块都有 bash 单测。
 
 ### 1. 探测所有摄像头分辨率
 
 ```bash
 ./probe_streams.sh
-# 自定义超时
-./probe_streams.sh --timeout=30
+./probe_streams.sh --timeout=30  # 自定义超时
 ```
 
-产出 `streams_meta.json`（已提交，含每路 W/H/fps/codec/分档），URL 中密码已脱敏。新增摄像头后重跑，git diff 看变化。分档规则按短边像素：
+产出 `streams_meta.json`（已提交，含每路 W/H/fps/codec/分档），URL 中密码已脱敏。分档规则按短边像素：
 
 | 档位 | 短边像素 |
 |---|---|
@@ -186,206 +89,134 @@ ffprobe record/live/your-recording.mp4
 | 2K | 1440 - 1999 |
 | 4K | ≥ 2000 |
 
-查看当前分布：
-
 ```bash
+# 看当前分布
 jq '.streams | group_by(.resolution_class) | map({class: .[0].resolution_class, count: length})' streams_meta.json
 ```
 
 ### 2. 跑分组测试
 
 ```bash
-# 只测 4K 摄像头（默认录 5 分钟）
-./test_high_res.sh --group=4k
-
-# 自定义时长
+./test_high_res.sh --group=4k                    # 默认 5 分钟
 ./test_high_res.sh --group=4k --duration=600
-
-# 多档同跑
 ./test_high_res.sh --group=2k,4k
-
-# 全部探测成功的流
 ./test_high_res.sh --group=all --duration=120
-```
-
-### 3. 查看报告
-
-```bash
-ls -lh reports/
-cat reports/report-*.md | tail -40
 ```
 
 每次跑出两个文件：
 
-- `reports/report-YYYYMMDD-HHMMSS.md` — 逐流 PASS/WARN/FAIL + 性能峰值表格
-- `reports/metrics-YYYYMMDD-HHMMSS.csv` — 1Hz 采样 ts,cpu_pct,rss_mb,fd_count
+- `reports/report-YYYYMMDD-HHMMSS.md` — 逐流 PASS/WARN/FAIL + 性能峰值
+- `reports/metrics-YYYYMMDD-HHMMSS.csv` — 1Hz 采样 `ts,cpu_pct,rss_mb,fd_count`
 
-### 4. 跑 lib/ 单测
+### 3. 跑 lib/ 单测
 
 ```bash
 for t in tests/test_*.sh; do echo "=== $t ==="; bash "$t"; done
 ```
 
-预期总计 19 个 ✓ 全绿（classify 9 + probe 3 + sampler 2 + verify 5）。
+预期 19 个 ✓ 全绿（classify 9 + probe 3 + sampler 2 + verify 5）。
 
 ### 关于录制文件路径
 
-当前 `config.yaml` 只配置 S3 storage 但未带 `-tags s3` 编译。运行时 S3 init 会失败并 fallback 到 local，path 默认是 `.`（cwd）。所以录制文件实际落在：
+当前 `config.yaml` 只配置 S3 storage 但未带 `-tags s3` 编译。运行时 S3 init 失败并 fallback 到 local，path 默认是 `.`（cwd）。所以录制文件实际落在：
 
 ```
 ./live/<camera>/<camera>.mp4    (即 example/record-test/live/...)
 ```
 
-而非 `record/live/...`。`test_high_res.sh` 有环境变量 `STORAGE_ROOT` 可调（默认 `.`）。如改 config.yaml 加 `local: { path: record }` 则用 `STORAGE_ROOT=record` 跑。
+而非 `record/live/...`。`test_high_res.sh` 有环境变量 `STORAGE_ROOT` 可调（默认 `.`）。如改 config 加 `local: { path: record }` 则用 `STORAGE_ROOT=record` 跑。
 
-## 目录结构
+## 辅助工具
 
+### scripts/ 下
+
+```bash
+scripts/check_cameras.sh     # ping 所有摄像头 IP，看在线状态
+scripts/check_streams.sh     # 通过 API 看活跃流列表
+scripts/check_videos.sh      # ffprobe 检查录制 mp4 时长/大小
+scripts/debug_single.sh      # 调试单路流：起 → 录 → 停 → 校验
+scripts/cleanup_temp.sh      # 清掉超 24h 的 S3 临时文件 (record/**/s3writer_*.tmp)
 ```
-record-test/
-├── main.go              # 主程序
-├── config.yaml          # 配置文件
-├── start.sh             # 快速启动脚本
-├── test_record.sh       # 自动化测试脚本
-├── record/              # 录制文件目录
-│   └── live/
-├── logs/                # 日志目录
-└── record-test.db       # SQLite 数据库
+
+### 手动 API 调用
+
+```bash
+# 开始录制
+curl -X POST 'http://localhost:8080/mp4/api/start/live/camera1' \
+  -H 'Content-Type: application/json' \
+  -d '{"fragment":"0","filePath":"live/camera1","fileName":"camera1.mp4"}'
+
+# 停止录制
+curl -X POST 'http://localhost:8080/mp4/api/stop/live/camera1'
+
+# 查询录制列表
+curl 'http://localhost:8080/mp4/api/list'
 ```
+
+注：早期文档里有 `StartRecord` / `StopRecord` 大驼峰接口，已废弃。
 
 ## 配置说明
 
-### 本地存储配置
+`config.yaml` 关键字段：
 
-```yaml
-global:
-  storage:
-    local:
-      path: "record"
-```
+- `global.http.listenaddr`：HTTP API 端口（默认 `:8080`）
+- `global.db.dsn`：sqlite 文件路径
+- `global.storage.s3`：S3/MinIO 配置（不带 `-tags s3` 编译会 fallback 到 local，path=cwd）
+- `rtsp.tcp.listenaddr`：RTSP 监听（默认 `:554`）
+- `rtsp.pull`：摄像头列表（`<streamPath>: <rtsp-url>`），共 35 路
+- `mp4.publish.delayclosetimeout`：录制停止后等待时间
 
-### MP4 录制配置
+详见 `config.yaml` 内联注释。
 
-```yaml
-mp4:
-  enable: true
-  onpub:
-    record:
-      ^live/.+:
-          fragment: 0  # 0 = 不分片，录制完整文件
-          filepath: record/$0
-          storage:
-            local:
-              path: ""
-```
+## 录制完成校验点
 
-### RTSP 拉流配置
+1. ✓ 文件生成：录制目录下有 `.mp4` 文件
+2. ✓ 文件大小 > 0 且符合录制时长
+3. ✓ `ffprobe` 可解析、可播放
+4. ✓ MOOV box 在文件开头（fast start）— `mp4` 插件已默认保证
+5. ✓ `logs/m7s.log` 无 error 级别
 
-```yaml
-rtsp:
-  pull:
-    live/test1: rtsp://your-rtsp-source-url
-    live/test2: rtsp://your-rtsp-source-url-2
-```
-
-## API 接口
-
-### 开始录制
-
-```bash
-POST http://localhost:8080/mp4/api/StartRecord?streamPath=live/test1
-```
-
-### 停止录制
-
-```bash
-POST http://localhost:8080/mp4/api/StopRecord?streamPath=live/test1
-```
-
-### 查询录制列表
-
-```bash
-GET http://localhost:8080/mp4/api/List
-```
-
-### 删除录制
-
-```bash
-DELETE http://localhost:8080/mp4/api/Delete?id=<record_id>
-```
-
-## 测试检查点
-
-录制完成后，验证以下内容：
-
-1. ✓ **文件生成** - `record/live/` 目录下有 `.mp4` 文件
-2. ✓ **文件大小** - 文件大小 > 0，且符合录制时长
-3. ✓ **文件可播放** - 使用 VLC 或 ffplay 能正常播放
-4. ✓ **MOOV box 位置** - 使用 `ffprobe` 检查文件结构
-5. ✓ **日志无错误** - 检查 `logs/m7s.log` 无 error
-
-### 检查 MOOV box 位置
-
-```bash
-# 检查文件结构
-ffprobe -v trace record/live/your-file.mp4 2>&1 | grep -i moov
-
-# 或使用 mp4info（如果安装了 mp4v2）
-mp4info record/live/your-file.mp4
-```
-
-MOOV box 应该在文件开头（fast start），这样才能在浏览器中流式播放。
+`test_high_res.sh` 的校验逻辑（`lib/verify.sh`）已覆盖前 3 点 + 分辨率匹配 + 时长偏差。
 
 ## 故障排查
 
-### 服务无法启动
+### 服务起不来
 
 ```bash
-# 检查端口占用
-lsof -i :8080
-lsof -i :554
-
-# 查看日志
-tail -f logs/m7s.log
+lsof -i :8080 -i :554   # 端口被占
+tail -100 logs/m7s.log  # 看启动日志
 ```
 
-### 录制文件为空或损坏
-
-1. 检查磁盘空间: `df -h`
-2. 检查日志错误: `grep -i error logs/m7s.log`
-3. 检查流是否正常: `ffprobe rtsp://localhost:554/live/test1`
-
-### 无法播放录制文件
-
-1. 检查文件大小: `ls -lh record/live/`
-2. 检查文件完整性: `ffprobe record/live/your-file.mp4`
-3. 查看 trailer 写入日志: `grep "write trailer" logs/m7s.log`
-
-## 下一步
-
-本地录制测试通过后，可以进行：
-
-1. **S3 上传测试** - 修改配置使用 S3 存储
-2. **性能测试** - 多路并发录制
-3. **稳定性测试** - 长时间录制
-
-## 停止服务
+### 录制文件缺失或为空
 
 ```bash
-# 方式 1: Ctrl+C 停止前台进程
-
-# 方式 2: 杀死进程
-pkill -f 'go run.*main.go'
+df -h                                   # 磁盘空间
+grep -i error logs/m7s.log              # m7s 错误
+scripts/check_streams.sh                # 看活跃流
+ffprobe rtsp://localhost:554/live/camera1   # 探测单路
 ```
 
-## 清理环境
+### RTSP 拉流 timeout
+
+`docs/rtsp-issue.md` 有详细分析。常见原因：摄像头响应慢 / 海康大华参数差异 / 海康主码流可能用 hevc。
+
+## 停止 / 清理
 
 ```bash
-# 清理录制文件
-rm -rf record/live/*.mp4
+pkill -f 'go run.*main.go'    # 停服务
 
-# 清理日志
+# 清录制
+rm -rf record/* live/*
+
+# 清日志
 rm -rf logs/*
 
-# 清理数据库
+# 清 sqlite
 rm -f record-test.db
 ```
+
+## 更多文档
+
+- `docs/api-fix.md`：MP4 录制 API 历史变更（StartRecord → start/{path}）
+- `docs/rtsp-issue.md`：RTSP 探测 vs FLV 行为差异分析
+- `docs/minio-test.md`：MinIO/S3 上传测试细节
