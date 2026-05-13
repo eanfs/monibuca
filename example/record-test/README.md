@@ -164,6 +164,80 @@ ffplay record/live/your-recording.mp4
 ffprobe record/live/your-recording.mp4
 ```
 
+## 2K/4K 高分辨率测试
+
+定向跑某个分辨率分组的并发录制，自动出报告。基于 `lib/` 下的几个纯函数模块拼装（`classify`/`probe`/`sampler`/`verify`），每个模块都有 bash 单测。
+
+### 1. 探测所有摄像头分辨率
+
+```bash
+./probe_streams.sh
+# 自定义超时
+./probe_streams.sh --timeout=30
+```
+
+产出 `streams_meta.json`（已提交，含每路 W/H/fps/codec/分档），URL 中密码已脱敏。新增摄像头后重跑，git diff 看变化。分档规则按短边像素：
+
+| 档位 | 短边像素 |
+|---|---|
+| SD | < 720 |
+| HD | 720 - 1079 |
+| FHD | 1080 - 1439 |
+| 2K | 1440 - 1999 |
+| 4K | ≥ 2000 |
+
+查看当前分布：
+
+```bash
+jq '.streams | group_by(.resolution_class) | map({class: .[0].resolution_class, count: length})' streams_meta.json
+```
+
+### 2. 跑分组测试
+
+```bash
+# 只测 4K 摄像头（默认录 5 分钟）
+./test_high_res.sh --group=4k
+
+# 自定义时长
+./test_high_res.sh --group=4k --duration=600
+
+# 多档同跑
+./test_high_res.sh --group=2k,4k
+
+# 全部探测成功的流
+./test_high_res.sh --group=all --duration=120
+```
+
+### 3. 查看报告
+
+```bash
+ls -lh reports/
+cat reports/report-*.md | tail -40
+```
+
+每次跑出两个文件：
+
+- `reports/report-YYYYMMDD-HHMMSS.md` — 逐流 PASS/WARN/FAIL + 性能峰值表格
+- `reports/metrics-YYYYMMDD-HHMMSS.csv` — 1Hz 采样 ts,cpu_pct,rss_mb,fd_count
+
+### 4. 跑 lib/ 单测
+
+```bash
+for t in tests/test_*.sh; do echo "=== $t ==="; bash "$t"; done
+```
+
+预期总计 19 个 ✓ 全绿（classify 9 + probe 3 + sampler 2 + verify 5）。
+
+### 关于录制文件路径
+
+当前 `config.yaml` 只配置 S3 storage 但未带 `-tags s3` 编译。运行时 S3 init 会失败并 fallback 到 local，path 默认是 `.`（cwd）。所以录制文件实际落在：
+
+```
+./live/<camera>/<camera>.mp4    (即 example/record-test/live/...)
+```
+
+而非 `record/live/...`。`test_high_res.sh` 有环境变量 `STORAGE_ROOT` 可调（默认 `.`）。如改 config.yaml 加 `local: { path: record }` 则用 `STORAGE_ROOT=record` 跑。
+
 ## 目录结构
 
 ```

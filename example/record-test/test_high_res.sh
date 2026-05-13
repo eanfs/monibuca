@@ -13,6 +13,10 @@ GROUP="4k"
 DURATION="${RECORD_DURATION:-300}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 NODE_IP="${NODE_IP:-localhost}"
+# 录制文件实际位置 = $STORAGE_ROOT/$filePath/$fileName
+# 当前 config.yaml 用 S3 配置 + 编译时未带 -tags s3 → fallback 到 local path=. （cwd）
+# 如换 config，把 STORAGE_ROOT 改成对应 path（如 record）即可
+STORAGE_ROOT="${STORAGE_ROOT:-.}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -80,12 +84,16 @@ sampler_bgpid=$!
 trap 'kill $sampler_bgpid 2>/dev/null' EXIT
 
 # 4. 清旧录制
-echo "[1/5] 清理 record/live"
+echo "[1/5] 清理录制目录"
 for e in "${entries[@]}"; do
     sp=$(echo "$e" | jq -r '.stream_path')
     curl -s -X POST "http://$NODE_IP:$HTTP_PORT/mp4/api/stop/$sp" >/dev/null 2>&1
 done
-rm -rf record/live 2>/dev/null || true
+# 清掉本组流目录（filePath 头一段，例如 "live"）
+for e in "${entries[@]}"; do
+    sp=$(echo "$e" | jq -r '.stream_path')
+    rm -rf "$STORAGE_ROOT/$sp" 2>/dev/null || true
+done
 sleep 3
 
 # 5. 启动录制
@@ -147,7 +155,7 @@ for e in "${entries[@]}"; do
     h=$(echo "$e"  | jq -r '.height')
     codec=$(echo "$e" | jq -r '.codec')
     fps=$(echo "$e"   | jq -r '.fps')
-    file="record/live/${sp##*/}.mp4"
+    file="$STORAGE_ROOT/$sp/${sp##*/}.mp4"
     v=$(verify_stream "$file" "$w" "$h" "$DURATION")
     status=$(echo "$v" | cut -f1)
     size=$(echo "$v"   | cut -f2)
