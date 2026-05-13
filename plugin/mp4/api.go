@@ -474,18 +474,22 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				p.Error("failed to save downloaded file", "err", httpErr)
 				return
 			}
-			file, err = os.Open(tmpPath)
-			if err != nil {
+			osFile, openErr := os.Open(tmpPath)
+			if openErr != nil {
+				err = openErr
 				p.Error("failed to open downloaded temp file", "err", err)
 				return
 			}
+			file = &storage.LocalFile{File: osFile}
 		} else if filepath.IsAbs(stream.FilePath) {
 			// 绝对路径：直接打开文件
-			file, err = os.Open(stream.FilePath)
-			if err != nil {
+			osFile, openErr := os.Open(stream.FilePath)
+			if openErr != nil {
+				err = openErr
 				p.Error("failed to open file", "err", err, "path", stream.FilePath)
 				return
 			}
+			file = &storage.LocalFile{File: osFile}
 		} else {
 			// 相对路径：使用 storage 处理
 			st := p.Server.Storage
@@ -507,7 +511,12 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				if isLocalStorage {
-					file, err = os.Open(stream.FilePath)
+					osFile, openErr := os.Open(stream.FilePath)
+					if openErr != nil {
+						err = openErr
+					} else {
+						file = &storage.LocalFile{File: osFile}
+					}
 				} else {
 					p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
 					return

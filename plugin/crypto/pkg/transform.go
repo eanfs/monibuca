@@ -1,14 +1,15 @@
 package crypto
 
 import (
-	"github.com/deepch/vdk/codec/h265parser"
-	"m7s.live/v5/pkg"
-	"m7s.live/v5/pkg/codec"
-	"m7s.live/v5/pkg/task"
-
 	"fmt"
 
+	"github.com/deepch/vdk/codec/h265parser"
+	"github.com/langhuihui/gomem"
 	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/format"
+	"m7s.live/v5/pkg/task"
 	"m7s.live/v5/plugin/crypto/pkg/method"
 )
 
@@ -113,39 +114,40 @@ func (t *Transform) Go() error {
 		return err
 	}
 
+	pub := t.TransformJob.Publisher
+	allocator := gomem.NewScalableMemoryAllocator(1 << gomem.MinPowerOf2)
+	defer allocator.Recycle()
+	writer := m7s.NewPublisherWriter[*format.RawAudio, *format.H26xFrame](pub, allocator)
+
 	// 处理音视频流
 	return m7s.PlayBlock(t.TransformJob.Subscriber,
-		func(audio *pkg.RawAudio) (err error) {
-			copyAudio := &pkg.RawAudio{
-				FourCC:    audio.FourCC,
-				Timestamp: audio.Timestamp,
-			}
-			audio.Memory.Range(func(b []byte) {
-				copy(copyAudio.NextN(len(b)), b)
-			})
-			return t.TransformJob.Publisher.WriteAudio(copyAudio)
+		func(audio *format.RawAudio) (err error) {
+			writer.AudioFrame.ICodecCtx = audio.ICodecCtx
+			*writer.AudioFrame.BaseSample = *audio.BaseSample
+			audio.CopyTo(writer.AudioFrame.NextN(audio.Size))
+			return writer.NextAudio()
 		},
-		func(video *pkg.H26xFrame) error {
+		func(video *format.H26xFrame) (err error) {
 			// 处理视频帧
 			if video.GetSize() == 0 {
 				return nil
 			}
-			copyVideo := &pkg.H26xFrame{
-				FourCC:    video.FourCC,
-				CTS:       video.CTS,
-				Timestamp: video.Timestamp,
-			}
-
-			for _, nalu := range video.Nalus {
-				mem := copyVideo.NextN(nalu.Size)
-				copy(mem, nalu.ToBytes())
+			writer.VideoFrame.ICodecCtx = video.ICodecCtx
+			*writer.VideoFrame.BaseSample = *video.BaseSample
+			nalus := writer.VideoFrame.GetNalus()
+			writer.VideoFrame.InitRecycleIndexes(video.Raw.Count())
+			fourCC := video.FourCC()
+			for nalu := range video.Raw.(*pkg.Nalus).RangePoint {
+				p := nalus.GetNextPointer()
+				mem := writer.VideoFrame.NextN(nalu.Size)
+				nalu.CopyTo(mem)
 				needEncrypt := false
-				if video.FourCC == codec.FourCC_H264 {
+				if fourCC == codec.FourCC_H264 {
 					switch codec.ParseH264NALUType(mem[0]) {
 					case codec.NALU_Non_IDR_Picture, codec.NALU_IDR_Picture:
 						needEncrypt = true
 					}
-				} else if video.FourCC == codec.FourCC_H265 {
+				} else if fourCC == codec.FourCC_H265 {
 					switch codec.ParseH265NALUType(mem[0]) {
 					case h265parser.NAL_UNIT_CODED_SLICE_BLA_W_LP,
 						h265parser.NAL_UNIT_CODED_SLICE_BLA_W_RADL,
@@ -156,18 +158,16 @@ func (t *Transform) Go() error {
 						needEncrypt = true
 					}
 				}
-				if needEncrypt {
-					encBytes, err := t.cryptor.Encrypt(mem[2:])
-					if err == nil {
-						copyVideo.Nalus.Append(append([]byte{mem[0], mem[1]}, encBytes...))
-					} else {
-						copyVideo.Nalus.Append(mem)
+				// 加密时长度不变（AES CTR / XOR 流加密），原地覆写 mem[2:]，保留 NALU 头 2 字节
+				if needEncrypt && len(mem) > 2 {
+					encBytes, encErr := t.cryptor.Encrypt(mem[2:])
+					if encErr == nil && len(encBytes) == len(mem)-2 {
+						copy(mem[2:], encBytes)
 					}
-				} else {
-					copyVideo.Nalus.Append(mem)
 				}
+				p.PushOne(mem)
 			}
-			return t.TransformJob.Publisher.WriteVideo(copyVideo)
+			return writer.NextVideo()
 		})
 }
 
