@@ -57,10 +57,11 @@ func (d *DeviceKeepaliveTickTask) Tick(any) {
 		// 设置所有通道状态为off
 		d.device.channels.Range(func(channel *Channel) bool {
 			d.device.Debug("keeplive time out", "timediff", timeDiff, "offline channeid", channel.ChannelId)
-			channel.Status = "OFF"
+			channel.Status = gb28181.ChannelOffStatus
 			return true
 		})
 		d.seconds = time.Minute * 1440
+		d.Ticker.Reset(d.seconds)
 		//d.Stop(fmt.Errorf("device keeplive time out,deviceid is " + d.device.DeviceId))
 	}
 }
@@ -449,6 +450,10 @@ func (c *catalogHandlerTask) Run() (err error) {
 		catalogReq.Resolve()
 		d.catalogReqs.RemoveByKey(msg.SN)
 		d.Cataloging = false
+		d.channels.Range(func(channel *Channel) bool {
+			d.plugin.DB.Save(channel.DeviceChannel)
+			return true
+		})
 	}
 	return
 }
@@ -593,6 +598,7 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 		if msg.Longitude != "" {
 			d.Longitude = msg.Longitude
 		}
+		d.plugin.DB.Save(d)
 	case "Alarm":
 		// 创建报警记录
 		alarm := &gb28181.DeviceAlarm{

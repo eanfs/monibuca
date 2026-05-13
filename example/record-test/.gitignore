@@ -1,0 +1,7 @@
+record/
+logs/
+*.db
+*.db-shm
+*.db-wal
+fatal/
+admin.zip

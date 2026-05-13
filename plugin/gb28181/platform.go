@@ -1269,7 +1269,9 @@ func (p *Platform) buildChannelItem(channel gb28181.DeviceChannel) string {
 <ParentID>%s</ParentID>
 <Parental>%d</Parental>
 <SafetyWay>%d</SafetyWay>
-<Status>ON</Status>
+<Status>%s</Status>
+<IPAddress>%s</IPAddress>
+<CivilCode>%s</CivilCode>
 <Info>
 </Info>
 </Item>`, deviceID, name, manufacturer, model,
@@ -1277,8 +1279,11 @@ func (p *Platform) buildChannelItem(channel gb28181.DeviceChannel) string {
 		channel.RegisterWay, // 直接使用整数值
 		channel.Secrecy,     // 直接使用整数值
 		parentID,
-		channel.Parental,  // 直接使用整数值
-		channel.SafetyWay) // 直接使用整数值
+		channel.Parental, // 直接使用整数值
+		channel.SafetyWay,
+		channel.Status,
+		channel.IPAddress,
+		util.Conditional(channel.CivilCode == "", channel.ChannelId[:10], channel.CivilCode)) // 直接使用整数值
 }
 
 // handleDeviceControl 处理设备控制请求
@@ -1861,21 +1866,16 @@ func (p *Platform) Dispose() {
 			// 先删除该平台已有的映射，再批量插入当前内存中的通道列表
 			platformID := p.PlatformModel.ServerGBID
 			// 删除已有的记录（若有）
-			if del := p.plugin.DB.Debug().Where("platform_server_gb_id = ?", platformID).Delete(&gb28181.PlatformChannel{}); del.Error != nil {
-				p.Error("删除平台通道记录失败", "error", del.Error, "platform", platformID)
-			}
+			// if del := p.plugin.DB.Debug().Where("platform_server_gb_id = ?", platformID).Delete(&gb28181.PlatformChannel{}); del.Error != nil {
+			// 	p.Error("删除平台通道记录失败", "error", del.Error, "platform", platformID)
+			// }
 
-			// 收集当前内存中的平台通道并插入
-			var records []gb28181.PlatformChannel
 			for ch := range p.channels.Range {
-				records = append(records, gb28181.PlatformChannel{
+				if err := p.plugin.DB.Save(&gb28181.PlatformChannel{
 					PlatformServerGBID: platformID,
 					ChannelDBID:        ch.ID,
-				})
-			}
-			if len(records) > 0 {
-				if err := p.plugin.DB.Create(&records).Error; err != nil {
-					p.Error("保存平台通道记录失败", "error", err, "platform", platformID)
+				}).Error; err != nil {
+					p.Error("保存平台通道记录失败", "error", err, "platform", platformID, "channel", ch.ID)
 				}
 			}
 		}

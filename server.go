@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	runtimepprof "runtime/pprof"
 	"strings"
 	"sync"
 	"time"
@@ -224,6 +225,7 @@ func (s *Server) Start() (err error) {
 	s.LogHandler.SetLevel(slog.LevelDebug)
 	s.LogHandler.Add(defaultLogHandler)
 	s.Logger = slog.New(&s.LogHandler).With("server", s.ID)
+	storage.SetLogger(s.Logger) // 设置 storage 包的 logger
 	s.Waiting.Logger = s.Logger
 
 	var httpMux http.Handler = httpConf.CreateHttpMux()
@@ -296,6 +298,11 @@ func (s *Server) Start() (err error) {
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
+	// 初始化上传并发控制器
+	storage.InitUploadManager(storage.UploadConfig{
+		MaxConcurrentUploads: 4,
+		PendingDir:           "pending_uploads",
+	})
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})
 	if err != nil {
 		s.Error("SetCrashOutput", "error", err)
@@ -324,7 +331,7 @@ func (s *Server) Start() (err error) {
 			sqlDB.SetMaxOpenConns(100)
 			sqlDB.SetConnMaxLifetime(5 * time.Minute)
 			// Auto-migrate models
-			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}); err != nil {
+			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}, &UploadTask{}); err != nil {
 				s.Error("failed to auto-migrate models", "error", err)
 				return
 			}
@@ -356,19 +363,39 @@ func (s *Server) Start() (err error) {
 						s.Info("updated user from config", "username", userConfig.Username)
 					}
 				}
-			}
-			// Create default admin user if no users exist
-			var count int64
-			s.DB.Model(&db.User{}).Count(&count)
-			if count == 0 {
-				adminUser := &db.User{
-					Username: "admin",
-					Password: "admin",
-					Role:     "admin",
+				if len(s.ServerConfig.Admin.Users) > 0 {
+					configuredUsers := make(map[string]struct{}, len(s.ServerConfig.Admin.Users))
+					for _, userConfig := range s.ServerConfig.Admin.Users {
+						configuredUsers[strings.ToLower(strings.TrimSpace(userConfig.Username))] = struct{}{}
+					}
+
+					var defaultAdmin db.User
+					if err = s.DB.Where("username = ?", "admin").First(&defaultAdmin).Error; err == nil {
+						_, hasAdminInConfig := configuredUsers["admin"]
+						if !hasAdminInConfig && defaultAdmin.Role == "admin" && defaultAdmin.CheckPassword("admin") {
+							if err = s.DB.Delete(&defaultAdmin).Error; err != nil {
+								s.Error("failed to delete default admin user", "error", err)
+							} else {
+								s.Info("deleted default admin user because admin.users is configured")
+							}
+						}
+					}
 				}
-				if err = s.DB.Create(adminUser).Error; err != nil {
-					s.Error("failed to create default admin user", "error", err)
-					return
+			}
+			// Create default admin user only when login is enabled, no users are configured, and no users exist in DB
+			if s.ServerConfig.Admin.EnableLogin && len(s.ServerConfig.Admin.Users) == 0 {
+				var count int64
+				s.DB.Model(&db.User{}).Count(&count)
+				if count == 0 {
+					adminUser := &db.User{
+						Username: "admin",
+						Password: "admin",
+						Role:     "admin",
+					}
+					if err = s.DB.Create(adminUser).Error; err != nil {
+						s.Error("failed to create default admin user", "error", err)
+						return
+					}
 				}
 			}
 		}
@@ -418,6 +445,12 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
+	// 启动上传补传调度器（定时检查失败的上传任务并重试）
+	if s.DB != nil {
+		s.Records.OnStart(func() {
+			s.Records.AddTask(&UploadRetryScheduler{s: s})
+		})
+	}
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
@@ -448,6 +481,7 @@ func (s *Server) Start() (err error) {
 	s.loadAdminZip()
 	// s.Transforms.AddTask(&TransformsPublishEvent{Transforms: &s.Transforms})
 	s.Info("server started")
+	s.startCPUWatchdog()
 	s.OnStart(func() {
 		for streamPath, conf := range s.config.Pull {
 			s.Pull(streamPath, conf, nil)
@@ -597,13 +631,161 @@ func (c *CheckSubWaitTimeout) GetTickInterval() time.Duration {
 }
 
 func (c *CheckSubWaitTimeout) Tick(any) {
-	percents, err := cpu.Percent(time.Second, false)
-	if err == nil {
-		for _, cpu := range percents {
-			c.Info("tick", "cpu", fmt.Sprintf("%.2f%%", cpu), "streams", c.s.Streams.Length, "subscribers", c.s.Subscribers.Length, "waits", c.s.Waiting.Length)
+	// Recover from panics to prevent crashing the Streams event loop.
+	// TickTask.Tick() runs INSIDE the parent Job's event loop goroutine
+	// with no per-task recover. A panic here (e.g., from cpu.Percent on
+	// some Linux configurations) would kill the entire Streams event loop,
+	// leaving all future subscribers without timeout enforcement.
+	defer func() {
+		if r := recover(); r != nil {
+			c.Error("tick panic recovered", "err", r, "stack", string(debug.Stack()))
+		}
+	}()
+	var cpuPct float64
+	if percents, err := cpu.Percent(time.Second, false); err == nil {
+		for _, p := range percents {
+			cpuPct = p
+			c.Info("tick", "cpu", fmt.Sprintf("%.2f%%", p), "streams", c.s.Streams.Length, "subscribers", c.s.Subscribers.Length, "waits", c.s.Waiting.Length)
 		}
 	}
 	c.s.Waiting.checkTimeout()
+
+	// Scan all running subscribers for ones that are stuck (publisher gone /
+	// disposed but Run() goroutine has not exited). This is a safety net for
+	// any race or missed signal that our per-subscriber self-timeout doesn't
+	// catch.
+	c.s.Subscribers.Range(func(sub *Subscriber) bool {
+		if sub.IsStopped() {
+			return true
+		}
+		// Case 1: subscriber is still waiting for a publisher past WaitTimeout.
+		if sub.waitingPublish() {
+			waitTimeout := sub.Subscribe.WaitTimeout
+			if waitTimeout <= 0 {
+				waitTimeout = 10 * time.Second
+			}
+			if time.Since(sub.waitStartTime) > waitTimeout {
+				sub.Warn("force-stop stuck waiting subscriber", "waited", time.Since(sub.waitStartTime))
+				sub.Stop(ErrSubscribeTimeout)
+			}
+			return true
+		}
+		// Case 2: subscriber has a publisher but it has been disposed and
+		// the Run() loop hasn't exited yet. Give it a generous grace period
+		// (3×PulseInterval) before force-stopping.
+		if sub.Publisher != nil && sub.Publisher.State == PublisherStateDisposed {
+			grace := 3 * c.s.PulseInterval
+			if grace <= 0 {
+				grace = 15 * time.Second
+			}
+			if !sub.StartTime.IsZero() && time.Since(sub.StartTime) > grace {
+				sub.Warn("force-stop subscriber with disposed publisher", "runFor", time.Since(sub.StartTime))
+				sub.Stop(ErrLost)
+			}
+		}
+		return true
+	})
+
+	// When CPU is abnormally high (≥80%), dump a goroutine pprof snapshot
+	// to help diagnose busy-spinning goroutines after the fact.
+	const cpuDumpThreshold = 80.0
+	if cpuPct >= cpuDumpThreshold {
+		c.dumpGoroutineProfile(cpuPct)
+	}
+}
+
+// dumpGoroutineProfile writes a goroutine pprof snapshot to a timestamped
+// file so busy-spinning goroutines can be identified post-hoc. At most one
+// dump is written per 60-second window to avoid filling up disk space during
+// a sustained CPU spike.
+var lastGoroutineDump time.Time
+
+func dumpGoroutineProfile(logger *slog.Logger, reason string, cpuPct float64) {
+	if time.Since(lastGoroutineDump) < 60*time.Second {
+		return
+	}
+	dir := os.TempDir()
+	fname := filepath.Join(dir, fmt.Sprintf("m7s_goroutine_%s.pprof", time.Now().Format("20060102_150405")))
+	f, err := os.Create(fname)
+	if err != nil {
+		logger.Error("goroutine dump create failed", "err", err)
+		return
+	}
+	defer f.Close()
+	if err = runtimepprof.Lookup("goroutine").WriteTo(f, 2); err != nil {
+		logger.Error("goroutine dump write failed", "err", err)
+		return
+	}
+	lastGoroutineDump = time.Now()
+	logger.Warn(reason,
+		"cpu", fmt.Sprintf("%.2f%%", cpuPct),
+		"file", fname,
+		"goroutines", sysruntime.NumGoroutine(),
+	)
+}
+
+func (c *CheckSubWaitTimeout) dumpGoroutineProfile(cpuPct float64) {
+	dumpGoroutineProfile(c.Logger, "high CPU detected, goroutine dump written", cpuPct)
+}
+
+// startCPUWatchdog starts a completely independent goroutine that monitors
+// CPU usage and dumps goroutine profiles when anomalies are detected.
+// Unlike CheckSubWaitTimeout.Tick() which runs inside the Streams event loop
+// (and dies if the event loop crashes), this goroutine is standalone and
+// survives any task framework failures.
+func (s *Server) startCPUWatchdog() {
+	logger := s.Logger.With("component", "cpu-watchdog")
+	go func() {
+		// Also listen for platform signal (SIGUSR1 on Unix) for on-demand goroutine dump.
+		sigCh, stopSignal := setupDumpSignal()
+		defer stopSignal()
+
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		var consecutiveHigh int
+		const cpuThreshold = 80.0
+
+		for {
+			select {
+			case <-s.Done():
+				return
+			case <-sigCh:
+				// Manual trigger via: kill -USR1 <pid>
+				logger.Warn("SIGUSR1 received, dumping goroutine profile")
+				dumpGoroutineProfile(logger, "SIGUSR1 goroutine dump written", 0)
+			case <-ticker.C:
+				percents, err := cpu.Percent(0, false)
+				if err != nil || len(percents) == 0 {
+					continue
+				}
+				cpuPct := percents[0]
+				if cpuPct >= cpuThreshold {
+					consecutiveHigh++
+					// Dump on first detection and then every 60s
+					if consecutiveHigh == 1 || consecutiveHigh%12 == 0 {
+						logger.Warn("watchdog: high CPU",
+							"cpu", fmt.Sprintf("%.2f%%", cpuPct),
+							"goroutines", sysruntime.NumGoroutine(),
+							"consecutiveHigh", consecutiveHigh,
+							"subscribers", s.Subscribers.Length,
+							"streams", s.Streams.Length,
+						)
+						dumpGoroutineProfile(logger, "watchdog: goroutine dump written", cpuPct)
+					}
+				} else {
+					if consecutiveHigh > 0 {
+						logger.Info("watchdog: CPU recovered",
+							"cpu", fmt.Sprintf("%.2f%%", cpuPct),
+							"wasHighFor", fmt.Sprintf("%ds", consecutiveHigh*5),
+						)
+					}
+					consecutiveHigh = 0
+				}
+			}
+		}
+	}()
+	logger.Info("CPU watchdog started", "threshold", "80%", "signal", "SIGUSR1")
 }
 
 func (s *Server) CallOnStreamTask(callback func()) {

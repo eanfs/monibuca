@@ -1059,13 +1059,17 @@ func (gb *GB28181Plugin) UpdatePlatform(ctx context.Context, req *pb.Platform) (
 				oldPlatform.Unregister()
 				oldPlatform.register.Ticker.Reset(time.Second * time.Duration(oldPlatform.PlatformModel.Expires))
 				oldPlatform.register.Tick(nil)
-				oldPlatform.register.platformKeepAliveTask.Ticker.Reset(time.Second * time.Duration(oldPlatform.PlatformModel.KeepTimeout))
+				if oldPlatform.register.platformKeepAliveTask != nil {
+					oldPlatform.register.platformKeepAliveTask.Ticker.Reset(time.Second * time.Duration(oldPlatform.PlatformModel.KeepTimeout))
+				}
 			}
 		} else if enableChanged {
 			// 如果平台被禁用，停止并移除旧的platform实例
 			oldPlatform.Unregister()
 			oldPlatform.register.Ticker.Reset(time.Hour * 999999)
-			oldPlatform.register.platformKeepAliveTask.Ticker.Reset(time.Hour * 999999)
+			if oldPlatform.register.platformKeepAliveTask != nil {
+				oldPlatform.register.platformKeepAliveTask.Ticker.Reset(time.Hour * 999999)
+			}
 		}
 	}
 
@@ -1732,10 +1736,19 @@ func (gb *GB28181Plugin) GetPlatformChannels(ctx context.Context, req *pb.GetPla
 			platformChannelIDs[ch.ID] = struct{}{}
 			// 判断查询匹配
 			if q != "" {
-				if !strings.Contains(strings.ToLower(ch.ChannelId), q) &&
+				if !strings.Contains(strings.ToLower(ch.ID), q) &&
 					!strings.Contains(strings.ToLower(ch.CustomChannelId), q) &&
 					!strings.Contains(strings.ToLower(ch.Name), q) &&
 					!strings.Contains(strings.ToLower(ch.CustomName), q) {
+					continue
+				}
+			}
+			// 根据 status 过滤：-1 全部, 0 离线, 1 在线
+			if req.Status != -1 {
+				// 自定义通道：检查通道状态
+				isOnline := ch.Status == gb28181.ChannelOnStatus
+				// 如果需要在线但实际离线，或者需要离线但实际在线，则跳过
+				if (req.Status == 1 && !isOnline) || (req.Status == 0 && isOnline) {
 					continue
 				}
 			}
@@ -1755,6 +1768,7 @@ func (gb *GB28181Plugin) GetPlatformChannels(ctx context.Context, req *pb.GetPla
 				DeviceName:        deviceName,
 				StreamPath:        ch.StreamPath,
 				InPlatform:        true,
+				Status:            string(ch.Status),
 				ChannelType: func() string {
 					if ch.Device != nil {
 						return "设备通道"
@@ -1773,8 +1787,16 @@ func (gb *GB28181Plugin) GetPlatformChannels(ctx context.Context, req *pb.GetPla
 			continue
 		}
 		// 只显示状态为正常的通道（ChannelOnStatus）
-		if ch.Status != gb28181.ChannelOnStatus {
-			continue
+		//if ch.Status != gb28181.ChannelOnStatus {
+		//	continue
+		//}
+		// 根据 status 过滤：-1 全部, 0 离线, 1 在线
+		if req.Status != -1 {
+			isOnline := ch.Status == gb28181.ChannelOnStatus
+			// 如果需要在线但实际离线，或者需要离线但实际在线，则跳过
+			if (req.Status == 1 && !isOnline) || (req.Status == 0 && isOnline) {
+				continue
+			}
 		}
 		// 根据 query 过滤
 		if q != "" {
@@ -1800,6 +1822,7 @@ func (gb *GB28181Plugin) GetPlatformChannels(ctx context.Context, req *pb.GetPla
 			DeviceName:        deviceName,
 			StreamPath:        ch.StreamPath,
 			InPlatform:        false,
+			Status:            string(ch.Status),
 			ChannelType: func() string {
 				if ch.Device != nil {
 					return "设备通道"
@@ -1869,7 +1892,8 @@ func (gb *GB28181Plugin) ChannelManageList(ctx context.Context, req *pb.GetChann
 			if !strings.Contains(strings.ToLower(ch.ChannelId), q) &&
 				!strings.Contains(strings.ToLower(ch.CustomChannelId), q) &&
 				!strings.Contains(strings.ToLower(ch.Name), q) &&
-				!strings.Contains(strings.ToLower(ch.CustomName), q) {
+				!strings.Contains(strings.ToLower(ch.CustomName), q) &&
+				!strings.Contains(strings.ToLower(ch.DeviceId), q) {
 				continue
 			}
 		}
@@ -2052,7 +2076,7 @@ func (gb *GB28181Plugin) AddChannel(ctx context.Context, req *pb.AddChannelReque
 		Device:        nil,
 		Logger:        gb.Logger.With("channel", channelID),
 	}
-	gb.channels.Add(channel)
+	gb.channels.Set(channel)
 
 	resp.Code = 0
 	resp.Message = "通道添加成功"
@@ -2116,6 +2140,8 @@ func (gb *GB28181Plugin) RemovePlatformChannel(ctx context.Context, req *pb.Remo
 	if platform, ok := gb.platforms.Get(req.PlatformId); ok {
 		platform.channels.RemoveByKey(req.Id)
 		platform.PlatformModel.ChannelCount = platform.channels.Length
+		platformChannel := &gb28181.PlatformChannel{PlatformServerGBID: platform.PlatformModel.ServerGBID, ChannelDBID: req.Id}
+		gb.DB.Delete(platformChannel)
 		resp.Code = 0
 		resp.Message = "success"
 		return resp, nil
@@ -2143,6 +2169,8 @@ func (gb *GB28181Plugin) AddPlatformChannelShared(ctx context.Context, req *pb.A
 		if ch, ok := gb.channels.Get(req.Id); ok {
 			platform.channels.Set(ch)
 			platform.PlatformModel.ChannelCount = platform.channels.Length
+			platformChannel := &gb28181.PlatformChannel{PlatformServerGBID: platform.PlatformModel.ServerGBID, ChannelDBID: req.Id}
+			gb.DB.Create(platformChannel)
 			resp.Code = 0
 			resp.Message = "success"
 			return resp, nil
@@ -3801,7 +3829,7 @@ func (gb *GB28181Plugin) AddChannelWithProxy(ctx context.Context, req *pb.AddCha
 		Device:        nil, // 这是虚拟设备通道，不关联真实GB设备
 		Logger:        gb.Logger.With("channel", channelID),
 	}
-	gb.channels.Add(channel)
+	gb.channels.Set(channel)
 
 	// 10. 记录日志
 	gb.Info("添加通道成功",
@@ -4286,7 +4314,7 @@ func (gb *GB28181Plugin) StartBroadcast(ctx context.Context, req *pb.BroadcastRe
 	}
 
 	// 4. 检查会话是否已存在
-	if _, exists := BroadcastSessions.Get(req.ChannelId); exists {
+	if _, exists := BroadcastSessions.Get(req.DeviceId + "_" + req.ChannelId); exists {
 		resp.Code = 409
 		resp.Message = "广播会话已存在"
 		return resp, nil
@@ -4334,7 +4362,7 @@ func (gb *GB28181Plugin) StopBroadcast(ctx context.Context, req *pb.BroadcastReq
 	}
 
 	// 2. 查找广播会话
-	broadcastSession, exists := BroadcastSessions.Get(req.ChannelId)
+	broadcastSession, exists := BroadcastSessions.Get(req.DeviceId + "_" + req.ChannelId)
 	if !exists {
 		resp.Code = 404
 		resp.Message = "广播会话不存在"
@@ -4355,16 +4383,35 @@ func (gb *GB28181Plugin) StopBroadcast(ctx context.Context, req *pb.BroadcastReq
 
 // API_talk_start WebSocket 接口，用于实时音频传输
 // 路径: /gb28181/api/talk/start
+// 参数: ?deviceId=X&channelId=Y
 func (gb *GB28181Plugin) API_talk_start(w http.ResponseWriter, r *http.Request) {
-	// Upgrade HTTP connection to WebSocket
+	// 解析query参数（必须在WS升级之前，升级后无法读取HTTP请求）
+	deviceId := r.URL.Query().Get("deviceId")
+	channelId := r.URL.Query().Get("channelId")
+	if deviceId == "" || channelId == "" {
+		http.Error(w, "deviceId and channelId are required", http.StatusBadRequest)
+		return
+	}
+
+	// 校验设备存在且在线
+	device, ok := gb.devices.Get(deviceId)
+	if !ok {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	if !device.Online {
+		http.Error(w, "device offline", http.StatusServiceUnavailable)
+		return
+	}
+
+	// 升级为 WebSocket
 	conn, _, _, err := ws.UpgradeHTTP(r, w)
 	if err != nil {
 		gb.Error("WebSocket upgrade failed", "error", err)
 		return
 	}
 
-	// Create a new TalkWebsocketTask for this connection
-	talkTask := NewTalkWebsocketTask(gb, conn)
+	talkTask := NewTalkWebsocketTask(gb, conn, deviceId, channelId)
 
 	if err := gb.AddTask(talkTask).WaitStarted(); err != nil {
 		gb.Error("Failed to start talk websocket task", "error", err)
@@ -4372,7 +4419,7 @@ func (gb *GB28181Plugin) API_talk_start(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	gb.Info("WebSocket talk session started", "taskId", talkTask.ID)
+	gb.Info("WebSocket talk session started", "taskId", talkTask.ID, "deviceId", deviceId, "channelId", channelId)
 }
 
 // GetChannelByIp 根据IP地址查询通道，返回设备ID和通道ID（仅从数据库查询）

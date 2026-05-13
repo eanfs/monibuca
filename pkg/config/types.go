@@ -143,6 +143,7 @@ type (
 		FilePath          string         `desc:"录制文件路径"` // 录制文件路径
 		FileName          string         `json:"fileName" desc:"录制文件名" gorm:"-"`
 		Fragment          time.Duration  `desc:"分片时长"`                         // 分片时长
+		Duration          time.Duration  `desc:"录制时长,到达时长后自动停止录像"`        // 录制时长,到达时长后自动停止录像
 		RealTime          bool           `desc:"是否实时录制"`                       // 是否实时录制
 		Append            bool           `desc:"是否追加录制"`                       // 是否追加录制
 		Event             *RecordEvent   `json:"event" desc:"事件录像配置" gorm:"-"` // 事件录像配置

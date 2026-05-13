@@ -1,6 +1,7 @@
 package m7s
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -11,6 +12,16 @@ import (
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
 )
+
+// nodeIDHookFn 由 cluster 插件 Start 时注入,返回本节点 ID。
+// 单机部署时为 nil,Recorder 写库时 NodeID 字段留空。
+// 使用包级变量避免 plugin/mp4 或 core 包对 plugin/cluster 的直接依赖。
+var nodeIDHookFn func() string
+
+// SetNodeIDHook 供 cluster 插件注入节点 ID 回调。
+func SetNodeIDHook(fn func() string) {
+	nodeIDHookFn = fn
+}
 
 type (
 	IRecorder interface {
@@ -51,6 +62,7 @@ type (
 		StreamPath   string
 		AudioCodec   string
 		VideoCodec   string
+		NodeID       string `json:"nodeId" desc:"录制产生的节点 ID(cluster 模式)。单机部署留空。" gorm:"index;type:varchar(128);comment:cluster 节点 ID"`
 		CreatedAt    time.Time
 		DeletedAt    gorm.DeletedAt    `gorm:"index" yaml:"-"`
 		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
@@ -64,7 +76,8 @@ func (r *DefaultRecorder) GetRecordJob() *RecordJob {
 }
 
 func (r *DefaultRecorder) Start() (err error) {
-	return r.RecordJob.Subscribe()
+	err = r.RecordJob.Subscribe()
+	return
 }
 
 func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*RecordJob) string) (err error) {
@@ -94,6 +107,10 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		StorageLevel: 1, // 默认为主存储
 		StorageType:  storageType,
 	}
+	// 若 cluster 插件已通过 SetNodeIDHook 注入回调,填充本节点 ID。
+	if fn := nodeIDHookFn; fn != nil {
+		r.Event.RecordStream.NodeID = fn()
+	}
 
 	if sub.Publisher.HasAudioTrack() {
 		r.Event.AudioCodec = sub.Publisher.AudioTrack.ICodecCtx.String()
@@ -103,15 +120,38 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	}
 
 	if recordJob.Plugin.DB != nil && recordJob.RecConf.Mode != config.RecordModeTest {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dbCancel()
 		if recordJob.Event != nil {
 			r.Event.RecordEvent = recordJob.Event
 			r.Event.RecordLevel = recordJob.Event.EventLevel
-			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
-			recordJob.Plugin.DB.Save(&r.Event)
+			r.Info("db save RecordStream begin", "filePath", r.Event.FilePath)
+			if result := recordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event.RecordStream); result.Error != nil {
+				r.Warn("db save RecordStream failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordStream ok", "filePath", r.Event.FilePath)
+			}
+			r.Info("db save RecordEvent begin", "filePath", r.Event.FilePath)
+			if result := recordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event); result.Error != nil {
+				r.Warn("db save RecordEvent failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordEvent ok", "filePath", r.Event.FilePath)
+			}
 		} else {
-			recordJob.Plugin.DB.Save(&r.Event.RecordStream)
+			r.Info("db save RecordStream begin", "filePath", r.Event.FilePath)
+			if result := recordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event.RecordStream); result.Error != nil {
+				r.Warn("db save RecordStream failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordStream ok", "filePath", r.Event.FilePath)
+			}
 		}
 	}
+	recordJob.SetDescription("streamPath", recordJob.StreamPath)
+	recordJob.SetDescription("fileName", filePath)
+	recordJob.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
+	recordJob.SetDescription("streamPath", recordJob.StreamPath)
+	recordJob.SetDescription("fileName", filePath)
+	recordJob.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
 	return
 }
 
@@ -139,17 +179,85 @@ func (r *DefaultRecorder) createStorage(storageConfig map[string]any) (storage.S
 func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
 	r.Event.EndTime = end
 	if r.RecordJob.Plugin.DB != nil && r.RecordJob.RecConf.Mode != config.RecordModeTest {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dbCancel()
 		// 将事件和录像记录关联
 		if r.RecordJob.Event != nil {
-			r.RecordJob.Plugin.DB.Save(&r.Event)
-			r.RecordJob.Plugin.DB.Save(&r.Event.RecordStream)
+			r.Info("db save RecordEvent (WriteTail) begin", "filePath", r.Event.FilePath)
+			if result := r.RecordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event); result.Error != nil {
+				r.Warn("db save RecordEvent (WriteTail) failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordEvent (WriteTail) ok", "filePath", r.Event.FilePath)
+			}
+			r.Info("db save RecordStream (WriteTail) begin", "filePath", r.Event.FilePath)
+			if result := r.RecordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event.RecordStream); result.Error != nil {
+				r.Warn("db save RecordStream (WriteTail) failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordStream (WriteTail) ok", "filePath", r.Event.FilePath)
+			}
 		} else {
-			r.RecordJob.Plugin.DB.Save(&r.Event.RecordStream)
+			r.Info("db save RecordStream (WriteTail) begin", "filePath", r.Event.FilePath)
+			if result := r.RecordJob.Plugin.DB.WithContext(dbCtx).Save(&r.Event.RecordStream); result.Error != nil {
+				r.Warn("db save RecordStream (WriteTail) failed", "filePath", r.Event.FilePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordStream (WriteTail) ok", "filePath", r.Event.FilePath)
+			}
 		}
 		if tailJob == nil {
 			return
 		}
 		tailJob.AddTask(NewEventRecordCheck(r.Event.Type, r.Event.StreamPath, r.RecordJob.Plugin.DB))
+	}
+}
+
+// WriteTailDeferred 设置结束时间，并返回一个延迟执行的 DB 写入函数。
+// 与 WriteTail 不同，它不立即写库，而是将写库操作包装成闭包返回。
+// 调用方应在 MP4 文件完整写入（moov 移到头部）后再调用该闭包，
+// 以保证数据库记录在文件可播放之后才更新 EndTime。
+func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJob) {
+	r.Event.EndTime = end
+	if r.RecordJob.Plugin.DB == nil || r.RecordJob.RecConf.Mode == config.RecordModeTest {
+		return nil
+	}
+	db := r.RecordJob.Plugin.DB
+	streamType := r.Event.Type
+	streamPath := r.Event.StreamPath
+	filePath := r.Event.FilePath
+	if r.RecordJob.Event != nil {
+		eventSnap := r.Event // 值拷贝：捕获正确的 EndTime 和 RecordStream.ID，RecordEvent 指针稳定
+		return func(tailJob task.IJob) {
+			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			r.Info("db save RecordEvent (deferred) begin", "filePath", filePath)
+			if result := db.WithContext(dbCtx).Save(&eventSnap); result.Error != nil {
+				r.Warn("db save RecordEvent (deferred) failed", "filePath", filePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordEvent (deferred) ok", "filePath", filePath)
+			}
+			r.Info("db save RecordStream (deferred) begin", "filePath", filePath)
+			if result := db.WithContext(dbCtx).Save(&eventSnap.RecordStream); result.Error != nil {
+				r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
+			} else {
+				r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
+			}
+			if tailJob != nil {
+				tailJob.AddTask(NewEventRecordCheck(streamType, streamPath, db))
+			}
+		}
+	}
+	streamSnap := r.Event.RecordStream // 值拷贝
+	return func(tailJob task.IJob) {
+		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r.Info("db save RecordStream (deferred) begin", "filePath", filePath)
+		if result := db.WithContext(dbCtx).Save(&streamSnap); result.Error != nil {
+			r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
+		} else {
+			r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
+		}
+		if tailJob != nil {
+			tailJob.AddTask(NewEventRecordCheck(streamType, streamPath, db))
+		}
 	}
 }
 
@@ -188,6 +296,7 @@ func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, 
 		"fragment":   conf.Fragment,
 	})
 	recorder.SetRetry(-1, time.Second)
+	recorder.GetTask().SetMaxRetryInterval(2 * time.Second)
 	if sender, webhook := plugin.getHookSender(config.HookOnRecordStart); sender != nil {
 		recorder.OnStart(func() {
 			alarmInfo := AlarmInfo{

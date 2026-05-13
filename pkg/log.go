@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/langhuihui/gotask"
+	task "github.com/langhuihui/gotask"
 )
 
 var _ slog.Handler = (*MultiLogHandler)(nil)
@@ -31,6 +31,28 @@ type MultiLogHandler struct {
 	attrChildren, groupChildren sync.Map
 	parentLevel                 *slog.Level
 	level                       *slog.Level
+	parent                      *MultiLogHandler
+}
+
+// Detach removes this handler from the parent's children maps, allowing it to
+// be garbage collected. Call this when the slog.Logger derived via With() is
+// no longer needed (e.g. when a Publisher or Subscriber is disposed).
+func (m *MultiLogHandler) Detach() {
+	if m.parent != nil {
+		m.parent.attrChildren.Delete(m)
+		m.parent.groupChildren.Delete(m)
+		m.parent = nil
+	}
+}
+
+// DetachLogger removes the logger's underlying handler from its parent
+// MultiLogHandler's children maps so it can be garbage collected.
+func DetachLogger(logger *slog.Logger) {
+	if logger != nil {
+		if h, ok := logger.Handler().(*MultiLogHandler); ok {
+			h.Detach()
+		}
+	}
 }
 
 func (m *MultiLogHandler) Add(h slog.Handler) {
@@ -86,13 +108,16 @@ func (m *MultiLogHandler) Enabled(_ context.Context, l slog.Level) bool {
 }
 
 // Handle implements slog.Handler.
+// All registered handlers are called regardless of individual errors,
+// so a failing handler (e.g. stdout in Windows GUI mode) never blocks others.
 func (m *MultiLogHandler) Handle(ctx context.Context, rec slog.Record) error {
+	var lastErr error
 	for _, h := range m.handlers {
 		if err := h.Handle(ctx, rec); err != nil {
-			return err
+			lastErr = err
 		}
 	}
-	return nil
+	return lastErr
 }
 
 // WithAttrs implements slog.Handler.
@@ -100,6 +125,7 @@ func (m *MultiLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	result := &MultiLogHandler{
 		handlers:    make([]HandlerInfo, len(m.handlers)),
 		parentLevel: m.parentLevel,
+		parent:      m,
 	}
 	m.attrChildren.Store(result, attrs)
 	if m.level != nil {
@@ -116,6 +142,7 @@ func (m *MultiLogHandler) WithGroup(name string) slog.Handler {
 	result := &MultiLogHandler{
 		handlers:    make([]HandlerInfo, len(m.handlers)),
 		parentLevel: m.parentLevel,
+		parent:      m,
 	}
 	m.groupChildren.Store(result, name)
 	if m.level != nil {

@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 )
+
+var logger *slog.Logger
+
+// SetLogger 设置 storage 包使用的 logger
+func SetLogger(l *slog.Logger) {
+	logger = l
+}
 
 // StorageType 存储类型
 type StorageType string
@@ -76,6 +84,9 @@ type File interface {
 	Reader
 	Stat() (os.FileInfo, error)
 	Name() string
+	// SetMetadata 在上传到对象存储时携带自定义用户元数据（key/value）。
+	// 须在 Close 触发上传前调用才生效。本地存储可提供空实现。
+	SetMetadata(key, value string)
 }
 
 // FileInfo 文件信息

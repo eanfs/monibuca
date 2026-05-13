@@ -5,23 +5,29 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tencentyun/cos-go-sdk-v5"
+	"m7s.live/v5/pkg/config"
 )
 
 // COSStorageConfig COS存储配置
 type COSStorageConfig struct {
-	SecretID   string `yaml:"secret_id" desc:"COS Secret ID"`
-	SecretKey  string `yaml:"secret_key" desc:"COS Secret Key"`
-	Region     string `yaml:"region" desc:"COS区域"`
-	Bucket     string `yaml:"bucket" desc:"COS存储桶名称"`
-	PathPrefix string `yaml:"path_prefix" desc:"文件路径前缀"`
-	UseHTTPS   bool   `yaml:"use_https" desc:"是否使用HTTPS" default:"true"`
-	Timeout    int    `yaml:"timeout" desc:"上传超时时间（秒）" default:"30"`
+	SecretID      string        `yaml:"secret_id" desc:"COS Secret ID"`
+	SecretKey     string        `yaml:"secret_key" desc:"COS Secret Key"`
+	Region        string        `yaml:"region" desc:"COS区域"`
+	Bucket        string        `yaml:"bucket" desc:"COS存储桶名称"`
+	PathPrefix    string        `yaml:"path_prefix" desc:"文件路径前缀"`
+	UseHTTPS      bool          `yaml:"use_https" desc:"是否使用HTTPS" default:"true"`
+	Timeout       int           `yaml:"timeout" desc:"上传超时时间（秒）" default:"900"`
+	MaxRetries    int           `yaml:"max_retries" desc:"上传失败最大重试次数" default:"3"`
+	RetryInterval time.Duration `yaml:"retry_interval" desc:"重试基础间隔（指数退避）" default:"5s"`
 }
 
 func (c *COSStorageConfig) GetType() StorageType {
@@ -44,6 +50,14 @@ func (c *COSStorageConfig) Validate() error {
 	return nil
 }
 
+// retryConfig 获取重试配置
+func (c *COSStorageConfig) retryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    c.MaxRetries,
+		RetryInterval: c.RetryInterval,
+	}
+}
+
 // COSStorage COS存储实现
 type COSStorage struct {
 	config *COSStorageConfig
@@ -58,7 +72,7 @@ func NewCOSStorage(config *COSStorageConfig) (*COSStorage, error) {
 
 	// 设置默认值
 	if config.Timeout == 0 {
-		config.Timeout = 30
+		config.Timeout = 900
 	}
 
 	// 构建存储桶URL
@@ -66,7 +80,11 @@ func NewCOSStorage(config *COSStorageConfig) (*COSStorage, error) {
 	if config.UseHTTPS {
 		scheme = "https"
 	}
-	bucketURL := fmt.Sprintf("%s://%s.cos.%s.myqcloud.com", scheme, config.Bucket, config.Region)
+	rawURL := fmt.Sprintf("%s://%s.cos.%s.myqcloud.com", scheme, config.Bucket, config.Region)
+	bucketURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse COS bucket URL %q: %w", rawURL, err)
+	}
 
 	// 创建COS客户端
 	client := cos.NewClient(&cos.BaseURL{BucketURL: bucketURL}, &http.Client{
@@ -105,6 +123,15 @@ func (s *COSStorage) Delete(ctx context.Context, path string) error {
 	return err
 }
 
+func (s *COSStorage) OpenFile(ctx context.Context, path string) (File, error) {
+	objectKey := s.getObjectKey(path)
+	return &COSFile{
+		storage:   s,
+		objectKey: objectKey,
+		ctx:       ctx,
+	}, nil
+}
+
 func (s *COSStorage) Exists(ctx context.Context, path string) (bool, error) {
 	objectKey := s.getObjectKey(path)
 
@@ -123,7 +150,7 @@ func (s *COSStorage) Exists(ctx context.Context, path string) (bool, error) {
 func (s *COSStorage) GetSize(ctx context.Context, path string) (int64, error) {
 	objectKey := s.getObjectKey(path)
 
-	result, _, err := s.client.Object.Head(ctx, objectKey, nil)
+	resp, err := s.client.Object.Head(ctx, objectKey, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
 			return 0, ErrFileNotFound
@@ -131,7 +158,7 @@ func (s *COSStorage) GetSize(ctx context.Context, path string) (int64, error) {
 		return 0, err
 	}
 
-	return result.ContentLength, nil
+	return resp.ContentLength, nil
 }
 
 func (s *COSStorage) GetURL(ctx context.Context, path string) (string, error) {
@@ -169,10 +196,11 @@ func (s *COSStorage) List(ctx context.Context, prefix string) ([]FileInfo, error
 			fileName = strings.TrimPrefix(fileName, strings.TrimSuffix(s.config.PathPrefix, "/")+"/")
 		}
 
+		lastModified, _ := time.Parse(time.RFC3339, obj.LastModified)
 		files = append(files, FileInfo{
 			Name:         fileName,
 			Size:         obj.Size,
-			LastModified: obj.LastModified,
+			LastModified: lastModified,
 			ETag:         obj.ETag,
 		})
 	}
@@ -196,12 +224,13 @@ func (s *COSStorage) getObjectKey(path string) string {
 // testCOSConnection 测试COS连接
 func testCOSConnection(client *cos.Client, bucket string) error {
 	// 尝试获取存储桶信息来测试连接
-	_, _, err := client.Bucket.Head(context.Background())
+	_, err := client.Bucket.Head(context.Background())
 	return err
 }
 
 // COSFile COS文件读写器
 type COSFile struct {
+	mu        sync.Mutex
 	storage   *COSStorage
 	objectKey string
 	ctx       context.Context
@@ -209,95 +238,111 @@ type COSFile struct {
 	filePath  string   // 临时文件路径
 }
 
+// SetMetadata COS 元数据支持的空实现，满足 File 接口。
+func (f *COSFile) SetMetadata(key, value string) {}
+
 func (f *COSFile) Name() string {
 	return f.objectKey
 }
 
 func (f *COSFile) Write(p []byte) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件
 	return f.tempFile.Write(p)
 }
 
 func (f *COSFile) Read(p []byte) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件读取
 	return f.tempFile.Read(p)
 }
 
 func (f *COSFile) WriteAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建临时文件，先创建
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.createTempFile(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 写入到临时文件的指定位置
 	return f.tempFile.WriteAt(p, off)
 }
 
 func (f *COSFile) ReadAt(p []byte, off int64) (n int, err error) {
-	// 如果还没有创建缓存文件，先下载到本地
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err = f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 从本地缓存文件的指定位置读取
 	return f.tempFile.ReadAt(p, off)
 }
 
 func (f *COSFile) Sync() error {
-	// 如果使用临时文件，先同步到磁盘
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile != nil {
 		if err := f.tempFile.Sync(); err != nil {
 			return err
 		}
 	}
-	if err := f.uploadTempFile(); err != nil {
-		return err
-	}
-	return nil
+	return f.uploadTempFile()
 }
 
 func (f *COSFile) Seek(offset int64, whence int) (int64, error) {
-	// 如果还没有创建临时文件，先创建或下载
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.tempFile == nil {
 		if err := f.downloadToTemp(); err != nil {
 			return 0, err
 		}
 	}
-
-	// 使用临时文件进行随机访问
 	return f.tempFile.Seek(offset, whence)
 }
 
 func (f *COSFile) Close() error {
-	if err := f.Sync(); err != nil {
-		return err
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tempFile != nil {
+		if err := f.tempFile.Sync(); err != nil {
+			f.cleanup(true)
+			return err
+		}
 	}
+	err := f.uploadTempFile()
+	f.cleanup(err == nil)
+	if err != nil && OnUploadFailed != nil && f.filePath != "" {
+		var fileSize int64
+		if f.tempFile != nil {
+			if stat, statErr := f.tempFile.Stat(); statErr == nil {
+				fileSize = stat.Size()
+			}
+		}
+		OnUploadFailed(f.filePath, f.objectKey, "cos", fileSize, nil, err)
+	}
+	return err
+}
+
+func (f *COSFile) cleanup(deleteFile bool) {
 	if f.tempFile != nil {
 		f.tempFile.Close()
+		f.tempFile = nil
 	}
-	// 清理临时文件
-	if f.filePath != "" {
+	if deleteFile && f.filePath != "" {
 		os.Remove(f.filePath)
+		f.filePath = ""
 	}
-	return nil
 }
 
 // createTempFile 创建临时文件
@@ -313,18 +358,38 @@ func (f *COSFile) createTempFile() error {
 }
 
 func (f *COSFile) Stat() (os.FileInfo, error) {
+	if f.tempFile == nil {
+		return nil, fmt.Errorf("cos file not initialized")
+	}
 	return f.tempFile.Stat()
 }
 
-// uploadTempFile 上传临时文件到COS
-func (f *COSFile) uploadTempFile() (err error) {
-	// 上传到COS
-	_, err = f.storage.client.Object.PutFromFile(f.ctx, f.objectKey, f.filePath, nil)
-	if err != nil {
-		return fmt.Errorf("failed to upload to COS: %w", err)
+// uploadTempFile 上传临时文件到COS，带并发控制和指数退避重试
+func (f *COSFile) uploadTempFile() error {
+	if err := AcquireUploadSlot(f.ctx); err != nil {
+		return fmt.Errorf("acquire upload slot: %w", err)
 	}
+	defer ReleaseUploadSlot()
 
-	return nil
+	var fileSize int64
+	if stat, err := f.tempFile.Stat(); err == nil {
+		fileSize = stat.Size()
+	}
+	log.Printf("[COS] uploading: key=%s size=%d active=%d/%d",
+		f.objectKey, fileSize, GetActiveUploads(), GetMaxConcurrentUploads())
+
+	rc := f.storage.config.retryConfig()
+
+	return UploadWithRetry(f.ctx, rc, "COS", f.objectKey,
+		nil, // COS PutFromFile 不需要 resetFn（按文件路径上传）
+		func() error {
+			if _, err := f.storage.client.Object.PutFromFile(f.ctx, f.objectKey, f.filePath, nil); err != nil {
+				return fmt.Errorf("failed to upload to COS: %w", err)
+			}
+			log.Printf("[COS] upload successful: %s", f.objectKey)
+			return nil
+		},
+	)
 }
 
 // downloadToTemp 下载COS对象到本地临时文件
@@ -361,9 +426,9 @@ func (f *COSFile) downloadToTemp() error {
 }
 
 func init() {
-	Factory["cos"] = func(config any) (Storage, error) {
+	Factory["cos"] = func(conf any) (Storage, error) {
 		var cosConfig COSStorageConfig
-		config.Parse(&cosConfig, config.(map[string]any))
+		config.Parse(&cosConfig, conf.(map[string]any))
 		return NewCOSStorage(&cosConfig)
 	}
 

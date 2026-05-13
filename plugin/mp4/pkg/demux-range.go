@@ -2,13 +2,17 @@ package mp4
 
 import (
 	"context"
+	"io"
 	"log/slog"
-	"m7s.live/v5/pkg/storage"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
+
+	"m7s.live/v5/pkg/storage"
 
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
@@ -41,10 +45,54 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 		if stream.EndTime.Before(d.StartTime) || stream.StartTime.After(d.EndTime) {
 			continue
 		}
-		if filepath.IsAbs(stream.FilePath) {
-			file, err = os.Open(stream.FilePath)
+		// 如果是 HTTP/HTTPS URL，下载到临时文件
+		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
+			resp, err := http.Get(stream.FilePath)
 			if err != nil {
+				d.Error("failed to download file from URL", "err", err, "url", stream.FilePath)
 				continue
+			}
+			defer resp.Body.Close()
+
+			// 创建临时文件
+			tmpFile, err := os.CreateTemp("", "mp4-*.tmp")
+			if err != nil {
+				d.Error("failed to create temp file", "err", err)
+				continue
+			}
+			tmpPath := tmpFile.Name()
+
+			// 复制内容到临时文件
+			_, err = io.Copy(tmpFile, resp.Body)
+			tmpFile.Close()
+			if err != nil {
+				os.Remove(tmpPath)
+				d.Error("failed to save downloaded file", "err", err)
+				continue
+			}
+
+			// 打开临时文件
+			tmpFile, err = os.Open(tmpPath)
+			if err != nil {
+				os.Remove(tmpPath)
+				d.Error("failed to open downloaded file", "err", err)
+				continue
+			}
+			file = &storage.LocalFile{File: tmpFile}
+			// 延迟关闭和删除临时文件
+			defer func() {
+				if file != nil {
+					file.Close()
+				}
+				os.Remove(tmpPath)
+			}()
+			d.Info("reading downloaded file from URL", "url", stream.FilePath)
+		} else if filepath.IsAbs(stream.FilePath) {
+			if f, openErr := os.Open(stream.FilePath); openErr != nil {
+				err = openErr
+				continue
+			} else {
+				file = &storage.LocalFile{File: f}
 			}
 		} else {
 			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
@@ -53,9 +101,11 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 				if isLocalStorage {
 					if localStorage, ok := st.(*storage.LocalStorage); ok {
 						fullPath := localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
-						file, err = os.Open(fullPath)
-						if err != nil {
+						if f, openErr := os.Open(fullPath); openErr != nil {
+							err = openErr
 							continue
+						} else {
+							file = &storage.LocalFile{File: f}
 						}
 					} else {
 						// 类型不匹配，使用 OpenFile 作为兜底
@@ -75,9 +125,11 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 					}
 				}
 			} else {
-				file, err = os.Open(stream.FilePath)
-				if err != nil {
+				if f, openErr := os.Open(stream.FilePath); openErr != nil {
+					err = openErr
 					continue
+				} else {
+					file = &storage.LocalFile{File: f}
 				}
 			}
 		}

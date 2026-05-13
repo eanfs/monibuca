@@ -617,10 +617,10 @@ func (gb *GB28181Plugin) checkPlatform() {
 			// 查询通道列表
 			var channels []gb28181.DeviceChannel
 			if gb.DB != nil {
-				if err := gb.DB.Table("gb28181_channel gc").
+				if err := gb.DB.Table("gb28181_channel gc").Debug().
 					Select(`gc.*`).
 					Joins("left join gb28181_platform_channel gpc on gc.id=gpc.channel_db_id").
-					Where("gpc.platform_server_gb_id = ? and gc.status='ON'", platformModel.ServerGBID).
+					Where("gpc.platform_server_gb_id = ?", platformModel.ServerGBID).
 					Find(&channels).Error; err != nil {
 					gb.Error("<UNK>", "error", err.Error())
 				}
@@ -628,6 +628,20 @@ func (gb *GB28181Plugin) checkPlatform() {
 					for i := range channels {
 						if channel, ok := gb.channels.Get(channels[i].ID); ok {
 							platform.channels.Set(channel)
+						} else {
+							getChannel := channels[i]
+							var channelTmp = &Channel{
+								DeviceChannel: &getChannel,
+								Device:        nil,
+								Logger:        gb.Logger.With("channel", getChannel.ID),
+							}
+							if device, ok := gb.devices.Get(getChannel.DeviceId); ok {
+								channelTmp.Device = device
+								channelTmp.Logger = device.Logger.With("channel", getChannel.ID)
+							}
+							channelTmp.Status = gb28181.ChannelOffStatus
+							platform.channels.Set(channelTmp)
+							gb.channels.Set(channelTmp)
 						}
 					}
 				}
@@ -986,6 +1000,11 @@ func (gb *GB28181Plugin) OnInvite(req *sip.Request, tx sip.ServerTransaction) {
 			}
 			return true
 		})
+	}
+	if channel == nil || channel.Status == gb28181.ChannelOffStatus {
+		gb.Debug("OnInvite", "error", "channel offline", "channel", inviteInfo.TargetChannelId, "find channel from req.to", req.To().Address.User)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "channel offline", nil))
+		return
 	}
 
 	gb.Info("OnInvite", "action", "channel found", "channel.ChannelId", channel.ChannelId, "channelName", channel.Name)

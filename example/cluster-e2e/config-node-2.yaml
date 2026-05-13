@@ -1,0 +1,44 @@
+global:
+  loglevel: info
+  http:
+    listenaddr: :8080
+  tcp:
+    listenaddr: :50051
+  db:
+    dsn: "postgres://postgres:m7s@postgres:5432/m7s?sslmode=disable"
+    dbtype: postgres
+  storage:
+    type: s3
+    endpoint: http://minio:9000
+    accesskeyid: admin
+    secretaccesskey: m7sm7sm7s
+    bucket: m7s-records
+    region: us-east-1
+    forcepathstyle: true
+    usessl: false
+
+rtmp:
+  tcp:
+    listenaddr: :1935
+
+rtsp:
+  tcp:
+    listenaddr: :554
+
+cluster:
+  nodeid: node-2
+  consul:
+    addresses:
+      - http://consul:8500
+    sessionttl: 10s
+  advertise:
+    rtmp: node-2:1935
+    rtsp: node-2:554
+    flv: http://node-2:8080
+    grpc: node-2:50051
+  relayprotocols:
+    - rtmp
+    - rtsp
+    - flv
+  metrics:
+    reportinterval: 5s

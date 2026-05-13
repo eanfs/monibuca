@@ -517,6 +517,12 @@ func (r *Receiver) Receive() (err error) {
 			audioClockRate = ctx.RTPCodecParameters.ClockRate
 			writer.AudioFrame.ICodecCtx = &ctx
 		}
+		// Recycle stale state left by a previous dropped connection.
+		// On the first call the frame is already clean (no-op).
+		// On reconnect this releases accumulated Packets entries and
+		// RecyclableMemory refs that were never published, preventing
+		// ReuseArray unbounded growth and allowing buf GC.
+		writer.AudioFrame.Recycle()
 		audioPacket = writer.AudioFrame.Packets.GetNextPointer()
 	}
 	if r.VideoCodecParameters != nil && r.PubVideo {
@@ -579,6 +585,9 @@ func (r *Receiver) Receive() (err error) {
 			}
 			writer.VideoFrame.ICodecCtx = ctx
 		}
+		// Same as audio: recycle before reuse to clear any stale packets
+		// and memory refs from a previous dropped connection.
+		writer.VideoFrame.Recycle()
 		videoPacket = writer.VideoFrame.Packets.GetNextPointer()
 	}
 	return r.NetConnection.Receive(false, func(channelID byte, buf []byte) error {
@@ -623,13 +632,10 @@ func (r *Receiver) Receive() (err error) {
 			rr.Reports[0].SSRC = audioPacket.SSRC
 			rr.Reports[0].LastSequenceNumber = uint32(audioPacket.SequenceNumber)
 
-			// 首包或空包情况：直接作为新帧处理
+			// Same guard as video: Packets may be empty after a reset; re-init audioPacket.
 			if len(writer.AudioFrame.Packets) == 0 {
-				writer.AudioFrame.AddRecycleBytes(buf)
 				audioPacket = writer.AudioFrame.Packets.GetNextPointer()
-				return pkg.ErrDiscard
 			}
-
 			if audioPacket.Timestamp == writer.AudioFrame.Packets[0].Timestamp {
 				writer.AudioFrame.AddRecycleBytes(buf)
 				audioPacket = writer.AudioFrame.Packets.GetNextPointer()
@@ -643,6 +649,9 @@ func (r *Receiver) Receive() (err error) {
 				writer.AudioFrame.Packets.Reduce()
 				if err = writer.NextAudio(); err != nil {
 					return err
+				}
+				if writer.AudioFrame == nil {
+					return pkg.ErrMuted
 				}
 				writer.AudioFrame.AddRecycleBytes(buf)
 				*writer.AudioFrame.Packets.GetNextPointer() = newFrameFirstPacket
@@ -661,13 +670,12 @@ func (r *Receiver) Receive() (err error) {
 			sdes.Chunks[0].Source = videoPacket.SSRC
 			rr.Reports[0].LastSequenceNumber = uint32(videoPacket.SequenceNumber)
 
-			// 首包或空包情况：直接作为新帧处理
+			// Packets may be empty if the frame was reset/recycled (e.g. ErrSkip drop path
+			// in nextVideo calls t.Value.Reset which wipes Packets); re-initialize so that
+			// the Packets[0] access below is always safe.
 			if len(writer.VideoFrame.Packets) == 0 {
-				writer.VideoFrame.AddRecycleBytes(buf)
 				videoPacket = writer.VideoFrame.Packets.GetNextPointer()
-				return pkg.ErrDiscard
 			}
-
 			if videoPacket.Timestamp == writer.VideoFrame.Packets[0].Timestamp {
 				writer.VideoFrame.AddRecycleBytes(buf)
 				videoPacket = writer.VideoFrame.Packets.GetNextPointer()
@@ -680,6 +688,9 @@ func (r *Receiver) Receive() (err error) {
 				writer.VideoFrame.Packets.Reduce()
 				if err = writer.NextVideo(); err != nil {
 					return err
+				}
+				if writer.VideoFrame == nil {
+					return pkg.ErrMuted
 				}
 				writer.VideoFrame.AddRecycleBytes(buf)
 				*writer.VideoFrame.Packets.GetNextPointer() = newFrameFirstPacket

@@ -1,7 +1,7 @@
 package mp4
 
 import (
-	"context"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -30,52 +30,81 @@ var writeTrailerQueueTask WriteTrailerQueueTask
 
 type writeTrailerTask struct {
 	task.Task
-	muxer         *Muxer
-	file          storage.File
-	filePath      string
-	recordID      uint           // 录像记录ID
-	targetStorage map[string]any // 目标存储配置
-	deleteLocal   bool           // 上传成功后是否删除本地文件
-	db            *gorm.DB       // 数据库连接
+	muxer      *Muxer
+	file       storage.File
+	filePath   string
+	durationMs uint32   // 录像时长（毫秒），用于上传 S3 元数据
+	streamPath string   // 关联流路径（用于失败追踪）
+	storageKey string   // 存储类型 key（s3/oss/cos/local）
+	db         *gorm.DB // 数据库连接（用于保存失败记录）
+	// dbWrite 在文件完整写入后执行数据库更新，为 nil 时跳过（无 DB 或测试模式）。
+	dbWrite func(tailJob task.IJob)
 }
 
 func (task *writeTrailerTask) Start() (err error) {
 	task.Info("write trailer start")
-	err = task.muxer.WriteTrailer(task.file)
-	if err != nil {
+	if err = task.muxer.WriteTrailer(task.file); err != nil {
 		task.Error("write trailer", "err", err)
+		// 关闭文件，忽略关闭错误以保留原始错误
 		if task.file != nil {
-			if errClose := task.file.Close(); errClose != nil {
-				return errClose
-			}
+			task.file.Close()
+			task.file = nil
 		}
 	}
 	return
 }
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
+
 // 将 moov 从末尾移动到前方
-// 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后替换原文件
+// 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后将完整数据回写到原文件。
+// 采用"先写临时文件后覆盖"策略：确保 t.file.Close() 触发的对象存储上传读取到完整的
+// MOOV-first MP4，并在上传失败时保留 MOOV 重写后的临时文件供 DB 重试。
+// 使用 bufio 缓冲减少写入 syscall（moov 由大量小块组成）。
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
+
+	// 确保任何错误路径下 t.file 都被关闭
+	defer func() {
+		if err != nil && t.file != nil {
+			t.file.Close()
+			t.file = nil
+		}
+	}()
+
 	var temp *os.File
 	temp, err = os.CreateTemp("", "*.mp4")
 	if err != nil {
 		t.Error("create temp file", "err", err)
 		return
 	}
-
-	defer os.Remove(temp.Name())
+	tempPath := temp.Name()
+	// 错误时保留临时文件用于手动恢复或入库重试，成功时删除
+	tempCleanup := true
+	defer func() {
+		temp.Close()
+		if tempCleanup {
+			os.Remove(tempPath)
+		} else {
+			t.Error("preserving temp file for recovery", "tempPath", tempPath)
+		}
+	}()
 
 	_, err = t.file.Seek(0, io.SeekStart)
 	if err != nil {
 		t.Error("seek file", "err", err)
+		tempCleanup = false
 		return
 	}
-	// 复制 mdat box之前的内容
-	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData)
+
+	// 使用带缓冲的 writer 减少写入 syscall（moov 由大量小块组成）
+	bw := bufio.NewWriterSize(temp, 1<<20) // 1 MB write buffer
+
+	// 复制 mdat box 之前的内容
+	_, err = io.CopyN(bw, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData)
 	if err != nil {
-		t.Error("copy file", "err", err)
+		t.Error("copy pre-mdat data", "err", err)
+		tempCleanup = false
 		return
 	}
 	for _, track := range t.muxer.Tracks {
@@ -83,41 +112,104 @@ func (t *writeTrailerTask) Run() (err error) {
 			track.Samplelist[i].Offset += int64(t.muxer.moov.Size())
 		}
 	}
-	err = t.muxer.WriteMoov(temp)
+	err = t.muxer.WriteMoov(bw)
 	if err != nil {
-		t.Error("rewrite with moov", "err", err)
+		t.Error("write moov to temp", "err", err)
+		tempCleanup = false
 		return
 	}
 	// 复制 mdat box
-	_, err = io.CopyN(temp, t.file, int64(t.muxer.mdatSize)+BeforeMdatData)
-
+	_, err = io.CopyN(bw, t.file, int64(t.muxer.mdatSize)+BeforeMdatData)
 	if err != nil {
 		if err == pkg.ErrSkip {
 			return task.ErrTaskComplete
 		}
-		t.Error("rewrite with moov", "err", err)
+		t.Error("rewrite with mdat", "err", err)
+		tempCleanup = false
 		return
 	}
+	if err = bw.Flush(); err != nil {
+		t.Error("flush temp file", "err", err)
+		tempCleanup = false
+		return
+	}
+
+	// 验证临时文件完整性
+	tempStat, statErr := temp.Stat()
+	if statErr != nil {
+		err = statErr
+		t.Error("stat temp file", "err", err)
+		tempCleanup = false
+		return
+	}
+	expectedSize := tempStat.Size()
+	if expectedSize == 0 {
+		err = fmt.Errorf("temp file is empty after MOOV rewrite")
+		t.Error("temp file empty", "err", err)
+		tempCleanup = false
+		return
+	}
+
+	// 临时文件已包含完整数据，现在安全覆盖原文件
 	if _, err = t.file.Seek(0, io.SeekStart); err != nil {
-		t.Error("seek file", "err", err)
+		t.Error("seek file for overwrite", "err", err)
+		tempCleanup = false
 		return
 	}
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {
 		t.Error("seek temp file", "err", err)
+		tempCleanup = false
 		return
 	}
-	if _, err = io.Copy(t.file, temp); err != nil {
-		t.Error("copy file", "err", err)
+	written, copyErr := io.Copy(t.file, temp)
+	if copyErr != nil {
+		err = copyErr
+		t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
+		tempCleanup = false // 保留临时文件用于恢复
 		return
 	}
-	if err = t.file.Close(); err != nil {
-		t.Error("close file", "err", err)
+	if written != expectedSize {
+		err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
+		t.Error("incomplete overwrite", "err", err)
+		tempCleanup = false
 		return
-	}
-	if err = temp.Close(); err != nil {
-		t.Error("close temp file", "err", err)
 	}
 
+	// 在关闭前设置元数据（文件大小 + 时长）
+	metadata := map[string]string{
+		"video-size-bytes": fmt.Sprintf("%d", expectedSize),
+	}
+	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", expectedSize))
+	if t.durationMs > 0 {
+		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+	}
+	if err = t.file.Close(); err != nil {
+		t.Error("upload failed after retries", "err", err,
+			"filePath", t.filePath, "streamPath", t.streamPath,
+			"storageType", t.storageKey, "durationMs", t.durationMs)
+		t.file = nil
+		// 将 MOOV 重写后的临时文件移到暂存目录，保存失败记录到 DB 供定时补传
+		if tempCleanup && t.db != nil {
+			// tempCleanup=true 意味着 MOOV 临时文件还在，可以用来补传
+			pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
+			if moveErr == nil {
+				tempCleanup = false // 已移走，不需 defer 删除
+				m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+					t.streamPath, expectedSize, t.durationMs, metadata, err)
+				t.Info("saved failed upload for retry",
+					"pendingPath", pendingPath, "objectKey", t.filePath)
+			} else {
+				t.Error("move to pending dir failed", "err", moveErr)
+			}
+		}
+		return
+	}
+	t.file = nil
+	// 文件已完整写入并上传成功，此时才将记录写入数据库（延迟入库，确保 DB 与可播放文件一致）。
+	if t.dbWrite != nil {
+		t.dbWrite(&writeTrailerQueueTask)
+	}
 	return
 }
 
@@ -129,20 +221,46 @@ func NewRecorder(conf config.Record) m7s.IRecorder {
 	return &Recorder{}
 }
 
+type bufferedSample struct {
+	isAudio  bool
+	codecCtx codec.ICodecCtx
+	sample   box.Sample
+}
+
 type Recorder struct {
 	m7s.DefaultRecorder
 	muxer           *Muxer
 	file            storage.File
 	firstVideoFrame bool // 标记是否是第一个视频帧
+	creating        bool
+	createDone      chan error
+	sampleBuffer    []bufferedSample
 }
 
 func (r *Recorder) writeTailer(end time.Time) {
-	r.WriteTail(end, &writeTrailerQueueTask)
+	// WriteTailDeferred 仅设置 EndTime 并返回延迟 DB 写入闭包，不立即写库。
+	// DB 写入将在 writeTrailerTask.Run() 成功（包含对象存储上传）后执行，
+	// 确保文件可播放后才入库；本地失败时也不会留下不一致的 DB 记录。
+	dbWrite := r.WriteTailDeferred(end)
+	var db *gorm.DB
+	if r.RecordJob.Plugin != nil {
+		db = r.RecordJob.Plugin.DB
+	}
+	st := r.RecordJob.GetStorage()
+	var storageKey string
+	if st != nil {
+		storageKey = st.GetKey()
+	}
 	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:    r.muxer,
-		file:     r.file,
-		filePath: r.Event.FilePath,
-	}, r.Logger)
+		muxer:      r.muxer,
+		file:       r.file,
+		filePath:   r.Event.FilePath,
+		durationMs: r.Event.Duration,
+		streamPath: r.Event.StreamPath,
+		storageKey: storageKey,
+		db:         db,
+		dbWrite:    dbWrite,
+	}, r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
@@ -171,7 +289,9 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if r.RecordJob.RecConf.Type == "" {
 		r.RecordJob.RecConf.Type = "mp4"
 	}
+	t0 := time.Now()
 	err = r.CreateStream(start, CustomFileName)
+	r.Info("createStream step1 CreateStream", "elapsed", time.Since(t0))
 	if err != nil {
 		return
 	}
@@ -186,8 +306,10 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if st == nil {
 		return fmt.Errorf("global storage is nil")
 	}
+	t1 := time.Now()
 	// 使用存储抽象层
-	r.file, err = st.CreateFile(context.Background(), r.Event.FilePath)
+	r.file, err = st.CreateFile(r.Context, r.Event.FilePath)
+	r.Info("createStream step2 CreateFile", "elapsed", time.Since(t1), "path", r.Event.FilePath)
 	if err != nil {
 		return
 	}
@@ -197,29 +319,55 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	} else {
 		r.muxer = NewMuxerWithStreamPath(0, r.Event.StreamPath)
 	}
-
-	r.firstVideoFrame = true // 重置第一个视频帧标志
-	return r.muxer.WriteInitSegment(r.file)
+	t2 := time.Now()
+	err = r.muxer.WriteInitSegment(r.file)
+	r.Info("createStream step3 WriteInitSegment", "elapsed", time.Since(t2))
+	r.Info("createStream total", "elapsed", time.Since(t0))
+	r.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
+	return
 }
 
 func (r *Recorder) Dispose() {
+	if r.creating {
+		// 异步分片 createStream 正在进行:OLD 文件已在 checkFragment 的 writeTailer 中移交给 writeTrailerTask。
+		// 等待 goroutine 结束,避免它在 retry Run() 启动后仍然修改 r.muxer/r.file 造成竞争。
+		if r.createDone != nil {
+			<-r.createDone
+		}
+		r.creating = false
+		// goroutine 若成功,r.muxer/r.file 已指向新文件(仅含 init segment)。关闭并丢弃它。
+		if r.muxer != nil && r.file != nil {
+			r.file.Close()
+		}
+		r.muxer = nil
+		r.file = nil
+		return
+	}
 	if r.muxer != nil {
 		r.writeTailer(time.Now())
-		// 注意: 文件的关闭由 writeTrailerTask.Run() 负责
-		// 不在这里关闭,避免在异步任务执行前文件被关闭
+		// 关键修复:将 muxer 和 file 置 nil,切断重试 Run() 对旧 muxer/file 的访问。
+		// 文件的关闭由 writeTrailerTask.Run() 负责。若不置 nil,重试 Run() 会向
+		// writeTrailerTask 正在处理的同一 muxer 写入新数据,导致 mdatSize 不匹配→EOF。
+		r.muxer = nil
+		r.file = nil
 	} else {
-		// 如果没有 muxer,需要在这里关闭文件
 		if r.file != nil {
 			r.file.Close()
+			r.file = nil
 		}
 	}
 }
 
 func (r *Recorder) Run() (err error) {
+	// 重试时清理上一次运行的缓存状态。
+	r.sampleBuffer = r.sampleBuffer[:0]
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
 	var audioTrack, videoTrack *Track
 	var at, vt *pkg.AVTrack
+	// totalElapsedMs 累计整个录制任务的时长（毫秒），不受分片 ResetAbsTime 的影响
+	var totalElapsedMs uint32
+	var lastAbsTimeMs uint32 // 上次分片时的 absTime 基线
 	checkEventRecordStop := func(absTime uint32) (err error) {
 		if absTime >= recordJob.Event.AfterDuration+recordJob.Event.BeforeDuration {
 			r.RecordJob.Stop(task.ErrStopByUser)
@@ -227,13 +375,37 @@ func (r *Recorder) Run() (err error) {
 		return
 	}
 
-	checkFragment := func(reader *pkg.AVRingReader) (err error) {
-		if duration := int64(reader.AbsTime); time.Duration(duration)*time.Millisecond >= recordJob.RecConf.Fragment {
-			r.writeTailer(reader.Value.WriteTime)
-			err = r.createStream(reader.Value.WriteTime)
-			if err != nil {
-				return
+	checkDurationStop := func(absTime uint32) error {
+		if recordJob.RecConf.Duration > 0 {
+			elapsed := totalElapsedMs + (absTime - lastAbsTimeMs)
+			if time.Duration(elapsed)*time.Millisecond >= recordJob.RecConf.Duration {
+				r.Info("duration reached, stopping recording",
+					"duration", recordJob.RecConf.Duration,
+					"elapsed", time.Duration(elapsed)*time.Millisecond)
+				return task.ErrTaskComplete
 			}
+		}
+		return nil
+	}
+
+	checkFragment := func(reader *pkg.AVRingReader) (err error) {
+		if r.creating {
+			return
+		}
+		if duration := int64(reader.AbsTime); time.Duration(duration)*time.Millisecond >= recordJob.RecConf.Fragment {
+			// 分片前累计已过去的时长
+			totalElapsedMs += reader.AbsTime - lastAbsTimeMs
+			r.writeTailer(reader.Value.WriteTime)
+			r.Info("check fragment start async", "absTime", reader.AbsTime, "seq", reader.Value.Sequence)
+			startTime := reader.Value.WriteTime
+			r.creating = true
+			r.createDone = make(chan error, 1)
+			r.sampleBuffer = r.sampleBuffer[:0]
+			go func() {
+				createErr := r.createStream(startTime)
+				r.Info("check fragment end async", "err", createErr)
+				r.createDone <- createErr
+			}()
 			at, vt = nil, nil
 			if vr := sub.VideoReader; vr != nil {
 				vr.ResetAbsTime()
@@ -241,16 +413,68 @@ func (r *Recorder) Run() (err error) {
 			if ar := sub.AudioReader; ar != nil {
 				ar.ResetAbsTime()
 			}
+			lastAbsTimeMs = 0
 		}
 		return
 	}
 
+	// flushBuffer 将 createStream 异步执行期间缓存的帧写入新文件
+	flushBuffer := func() error {
+		for _, bs := range r.sampleBuffer {
+			if bs.isAudio {
+				if at == nil {
+					at = sub.AudioReader.Track
+					switch bs.codecCtx.GetBase().(type) {
+					case *codec.AACCtx:
+						track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
+						audioTrack = track
+						track.ICodecCtx = bs.codecCtx
+					case *codec.PCMACtx:
+						track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
+						audioTrack = track
+						track.ICodecCtx = bs.codecCtx
+					case *codec.PCMUCtx:
+						track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
+						audioTrack = track
+						track.ICodecCtx = bs.codecCtx
+					}
+				}
+				if err := r.muxer.WriteSample(r.file, audioTrack, bs.sample); err != nil {
+					return err
+				}
+			} else {
+				if vt == nil {
+					vt = sub.VideoReader.Track
+					switch bs.codecCtx.GetBase().(type) {
+					case *codec.H264Ctx:
+						track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+						videoTrack = track
+						track.ICodecCtx = bs.codecCtx
+					case *codec.H265Ctx:
+						track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+						videoTrack = track
+						track.ICodecCtx = bs.codecCtx
+					}
+				}
+				if err := r.muxer.WriteSample(r.file, videoTrack, bs.sample); err != nil {
+					return err
+				}
+			}
+		}
+		r.sampleBuffer = r.sampleBuffer[:0]
+		return nil
+	}
+
 	return m7s.PlayBlock(sub, func(audio *AudioFrame) error {
-		if r.Event.StartTime.IsZero() {
+		// 用 r.muxer == nil 替代 r.Event.StartTime.IsZero():
+		// Dispose() 已将 r.muxer 置 nil,重试时可正确触发新建流,
+		// 而 StartTime 在重试时不为零因此无法触发。
+		if r.muxer == nil {
 			err = r.createStream(sub.AudioReader.Value.WriteTime)
 			if err != nil {
 				return err
 			}
+			r.firstVideoFrame = true
 		}
 		r.Event.Duration = sub.AudioReader.AbsTime
 		if sub.VideoReader == nil {
@@ -260,11 +484,46 @@ func (r *Recorder) Run() (err error) {
 					return err
 				}
 			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.AudioReader.AbsTime); err != nil {
+					return err
+				}
+			}
 			if recordJob.RecConf.Fragment != 0 {
 				err = checkFragment(sub.AudioReader)
 				if err != nil {
 					return err
 				}
+			}
+		}
+		sample := box.Sample{
+			Timestamp: sub.AudioReader.AbsTime,
+			Memory:    audio.Memory,
+		}
+		// 分片 createStream 异步执行期间将帧写入缓冲区
+		if r.creating {
+			select {
+			case createErr := <-r.createDone:
+				r.creating = false
+				r.firstVideoFrame = true
+				if createErr != nil {
+					return createErr
+				}
+				if err = flushBuffer(); err != nil {
+					return err
+				}
+			default:
+				// ring buffer 的内存会被复用,必须深拷贝后再缓存,否则 createStream 完成后
+				// flush 时读到的是已被覆盖的数据,导致文件损坏。
+				var copiedMem gomem.Memory
+				copiedMem.CopyFrom(&sample.Memory)
+				sample.Memory = copiedMem
+				r.sampleBuffer = append(r.sampleBuffer, bufferedSample{
+					isAudio:  true,
+					codecCtx: sub.AudioReader.Track.ICodecCtx,
+					sample:   sample,
+				})
+				return nil
 			}
 		}
 		if at == nil {
@@ -287,23 +546,25 @@ func (r *Recorder) Run() (err error) {
 				return fmt.Errorf("unsupported audio codec for mp4 record: %T", at.ICodecCtx.GetBase())
 			}
 		}
-		sample := box.Sample{
-			Timestamp: sub.AudioReader.AbsTime,
-			Memory:    audio.Memory,
-		}
 		return r.muxer.WriteSample(r.file, audioTrack, sample)
 	}, func(video *VideoFrame) error {
-		if r.Event.StartTime.IsZero() {
+		if r.muxer == nil {
 			err = r.createStream(sub.VideoReader.Value.WriteTime)
 			if err != nil {
 				return err
 			}
+			r.firstVideoFrame = true
 		}
 		r.Event.Duration = sub.VideoReader.AbsTime
 		if sub.VideoReader.Value.IDR {
 			if recordJob.Event != nil {
 				err = checkEventRecordStop(sub.VideoReader.AbsTime)
 				if err != nil {
+					return err
+				}
+			}
+			if recordJob.RecConf.Duration > 0 {
+				if err = checkDurationStop(sub.VideoReader.AbsTime); err != nil {
 					return err
 				}
 			}
@@ -315,60 +576,13 @@ func (r *Recorder) Run() (err error) {
 			}
 		}
 
-		if vt == nil {
-			vt = sub.VideoReader.Track
-			switch video.ICodecCtx.GetBase().(type) {
-			case *codec.H264Ctx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
-				videoTrack = track
-				track.ICodecCtx = video.ICodecCtx
-			case *codec.H265Ctx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
-				videoTrack = track
-				track.ICodecCtx = video.ICodecCtx
-			}
-			if videoTrack == nil {
-				return fmt.Errorf("unsupported video codec for mp4 record: %T", video.ICodecCtx.GetBase())
-			}
-		}
-		//ctx := video.ICodecCtx.(pkg.IVideoCodecCtx)
-		//if videoTrackCtx, ok := videoTrack.ICodecCtx.(pkg.IVideoCodecCtx); ok && videoTrackCtx != ctx {
-		//	width, height := uint32(ctx.Width()), uint32(ctx.Height())
-		//	oldWidth, oldHeight := uint32(videoTrackCtx.Width()), uint32(videoTrackCtx.Height())
-		//	r.Info("ctx  changed, restarting recording",
-		//		"old", fmt.Sprintf("%dx%d", oldWidth, oldHeight),
-		//		"new", fmt.Sprintf("%dx%d", width, height))
-		//	r.writeTailer(sub.VideoReader.Value.WriteTime)
-		//	err = r.createStream(sub.VideoReader.Value.WriteTime)
-		//	if err != nil {
-		//		return nil
-		//	}
-		//	at, vt = nil, nil
-		//	if vr := sub.VideoReader; vr != nil {
-		//		vr.ResetAbsTime()
-		//		vt = vr.Track
-		//		switch video.ICodecCtx.GetBase().(type) {
-		//		case *codec.H264Ctx:
-		//			track := r.muxer.AddTrack(box.MP4_CODEC_H264)
-		//			videoTrack = track
-		//			track.ICodecCtx = video.ICodecCtx
-		//		case *codec.H265Ctx:
-		//			track := r.muxer.AddTrack(box.MP4_CODEC_H265)
-		//			videoTrack = track
-		//			track.ICodecCtx = video.ICodecCtx
-		//		}
-		//	}
-		//	if ar := sub.AudioReader; ar != nil {
-		//		ar.ResetAbsTime()
-		//	}
-		//}
 		sample := box.Sample{
 			Timestamp: sub.VideoReader.AbsTime,
 			KeyFrame:  video.IDR,
 			CTS:       video.GetCTS32(),
 			Memory:    video.Memory,
 		}
-		// 如果是第一个视频 I 帧，将参数集放在 I 帧前面一起写入
+		// 如果是视频 I 帧，将参数集放在 I 帧前面一起写入
 		//if r.firstVideoFrame && video.IDR {
 		if video.IDR {
 			// 创建包含参数集的 Memory
@@ -423,6 +637,76 @@ func (r *Recorder) Run() (err error) {
 		} else if r.firstVideoFrame {
 			r.firstVideoFrame = false
 		}
+		// 分片 createStream 异步执行期间将帧写入缓冲区
+		if r.creating {
+			select {
+			case createErr := <-r.createDone:
+				r.creating = false
+				r.firstVideoFrame = true
+				if createErr != nil {
+					return createErr
+				}
+				if err = flushBuffer(); err != nil {
+					return err
+				}
+			default:
+				// ring buffer 的内存会被复用,必须深拷贝后再缓存,否则 createStream 完成后
+				// flush 时读到的是已被覆盖的数据,导致文件损坏。
+				var copiedMem gomem.Memory
+				copiedMem.CopyFrom(&sample.Memory)
+				sample.Memory = copiedMem
+				r.sampleBuffer = append(r.sampleBuffer, bufferedSample{
+					isAudio:  false,
+					codecCtx: sub.VideoReader.Track.ICodecCtx,
+					sample:   sample,
+				})
+				return nil
+			}
+		}
+		if vt == nil {
+			vt = sub.VideoReader.Track
+			switch video.ICodecCtx.GetBase().(type) {
+			case *codec.H264Ctx:
+				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+				videoTrack = track
+				track.ICodecCtx = video.ICodecCtx
+			case *codec.H265Ctx:
+				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+				videoTrack = track
+				track.ICodecCtx = video.ICodecCtx
+			}
+		}
+		//ctx := video.ICodecCtx.(pkg.IVideoCodecCtx)
+		//if videoTrackCtx, ok := videoTrack.ICodecCtx.(pkg.IVideoCodecCtx); ok && videoTrackCtx != ctx {
+		//	width, height := uint32(ctx.Width()), uint32(ctx.Height())
+		//	oldWidth, oldHeight := uint32(videoTrackCtx.Width()), uint32(videoTrackCtx.Height())
+		//	r.Info("ctx  changed, restarting recording",
+		//		"old", fmt.Sprintf("%dx%d", oldWidth, oldHeight),
+		//		"new", fmt.Sprintf("%dx%d", width, height))
+		//	r.writeTailer(sub.VideoReader.Value.WriteTime)
+		//	err = r.createStream(sub.VideoReader.Value.WriteTime)
+		//	if err != nil {
+		//		return nil
+		//	}
+		//	at, vt = nil, nil
+		//	if vr := sub.VideoReader; vr != nil {
+		//		vr.ResetAbsTime()
+		//		vt = vr.Track
+		//		switch video.ICodecCtx.GetBase().(type) {
+		//		case *codec.H264Ctx:
+		//			track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+		//			videoTrack = track
+		//			track.ICodecCtx = video.ICodecCtx
+		//		case *codec.H265Ctx:
+		//			track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+		//			videoTrack = track
+		//			track.ICodecCtx = video.ICodecCtx
+		//		}
+		//	}
+		//	if ar := sub.AudioReader; ar != nil {
+		//		ar.ResetAbsTime()
+		//	}
+		//}
 		return r.muxer.WriteSample(r.file, videoTrack, sample)
 	})
 }

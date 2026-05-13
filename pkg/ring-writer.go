@@ -160,6 +160,13 @@ func (rb *RingWriter) Dispose() {
 	if rb.status.Add(-1) == -1 { // normal dispose
 		rb.Value.Unlock()
 	}
+	// Recycle all ring nodes to release gomem SMA allocations back to the free pool.
+	// Without this, disconnecting publishers leave AVFrame.Wraps[].RecyclableMemory
+	// permanently locked in the SMA, forcing it to allocate new mmap children.
+	// Discard() is safe to call with active readers (same pattern as reduce()).
+	rb.Ring.Do(func(frame *AVFrame) {
+		frame.Discard()
+	})
 }
 
 func (rb *RingWriter) GetIDR() *util.Ring[AVFrame] {
@@ -205,6 +212,19 @@ func (rb *RingWriter) Step() (normal bool) {
 		rb.PushIDR()
 	}
 	if rb.IDRingList.Len() > 0 {
+		// Proactively remove old IDR entries that the ring has grown past.
+		// Without this, after a glow() call the ring expands beyond the oldest
+		// IDR position, so the "next == oldIDR.Value" condition below is never
+		// true again and old IDR nodes (plus all frames they reference) leak.
+		for oldIDR := rb.IDRingList.Front(); oldIDR != nil && rb.IDRingList.Len() > 1; oldIDR = rb.IDRingList.Front() {
+			nextOld := oldIDR.Next()
+			if nextOld != nil && rb.durationFrom(nextOld.Value) > rb.BufferRange[0] {
+				rb.SLogger.Log(nil, task.TraceLevel, "remove stale idr")
+				rb.IDRingList.Remove(oldIDR)
+			} else {
+				break
+			}
+		}
 		oldIDR := rb.IDRingList.Front()
 		rb.BufferRange[1] = rb.durationFrom(oldIDR.Value)
 		// do not remove only idr
@@ -306,7 +326,16 @@ func (rb *RingWriter) Step() (normal bool) {
 		if rb.status.Add(-1) == 0 {
 			rb.LastValue.Ready()
 		} else {
-			rb.Value.Unlock()
+			// Dispose() ran concurrently during Step(): it couldn't unlock LastValue
+			// (status was 1→0), so it skipped Unlock. We must release it here to
+			// unblock readers blocked on RLock(LastValue) — sync.RWMutex.RLock does
+			// not respect context cancellation.
+			rb.LastValue.Unlock()
+			// rb.Value.Unlock() is NOT here: it is already handled by Dispose()
+			// (which unlocks Value when status reaches -1). Keeping it would cause
+			// a double-unlock panic when Dispose() is called multiple times:
+			//   Step(): status 1→0 → else Unlock(Value) (1st)
+			//   Dispose(): status 0→-1 → Dispose Unlock(Value) (2nd) → panic
 		}
 	}
 	return

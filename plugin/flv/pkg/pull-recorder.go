@@ -87,10 +87,12 @@ func (p *RecordReader) Run() (err error) {
 					if st.GetKey() == targetType {
 						if localStorage, ok := st.(*storage.LocalStorage); ok {
 							filePath = localStorage.GetFullPath(filePath, stream.StorageLevel)
-							p.File, err = os.Open(filePath)
+							var osFile *os.File
+							osFile, err = os.Open(filePath)
 							if err != nil {
 								continue
 							}
+							p.File = &storage.LocalFile{File: osFile}
 						} else {
 							filePath, err = st.GetURL(p, stream.StreamPath)
 							if err != nil {
@@ -103,10 +105,12 @@ func (p *RecordReader) Run() (err error) {
 			}
 			// 如果 storage 已经通过 OpenFile 打开了文件（storage.File），则直接使用；否则尝试本地打开路径
 			if p.File == nil {
-				p.File, err = os.Open(filePath)
+				var osFile *os.File
+				osFile, err = os.Open(filePath)
 				if err != nil {
 					continue
 				}
+				p.File = &storage.LocalFile{File: osFile}
 			}
 			if p.reader != nil {
 				p.reader.Recycle()

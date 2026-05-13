@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -26,6 +27,16 @@ import (
 	mp4 "m7s.live/v5/plugin/mp4/pkg"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
+
+// parseDurationWithDefault 解析时长字符串，支持纯数字（默认单位秒）或带单位格式（如 "60s"、"1m"）
+func parseDurationWithDefault(s string) (time.Duration, error) {
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		// 纯数字，默认单位为秒
+		seconds, _ := strconv.ParseFloat(s, 64)
+		return time.Duration(seconds * float64(time.Second)), nil
+	}
+	return time.ParseDuration(s)
+}
 
 type ContentPart struct {
 	file   storage.File
@@ -51,19 +62,72 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 	var file storage.File
 	var err error
 
-	// 最高优先级：如果 FilePath 是绝对路径，直接使用，跳过所有 storage 处理
-	if filepath.IsAbs(stream.FilePath) {
+	// 最高优先级：如果 FilePath 是 HTTP/HTTPS URL，直接读取
+	if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
+		if flag == 0 {
+			// 普通 MP4：重定向到 URL，让客户端直接从源获取
+			p.Info("redirecting to http URL", "url", stream.FilePath)
+			http.Redirect(w, r, stream.FilePath, http.StatusFound)
+			return
+		}
+		// fMP4：下载文件到临时文件后处理
+		resp, err := http.Get(stream.FilePath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to download file: %v", err), http.StatusInternalServerError)
+			p.Error("failed to download file from URL", "err", err, "url", stream.FilePath)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 创建临时文件
+		tmpFile, err := os.CreateTemp("", "mp4-*.tmp")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to create temp file: %v", err), http.StatusInternalServerError)
+			p.Error("failed to create temp file", "err", err)
+			return
+		}
+		tmpPath := tmpFile.Name()
+
+		// 复制内容到临时文件
+		_, err = io.Copy(tmpFile, resp.Body)
+		tmpFile.Close()
+		if err != nil {
+			os.Remove(tmpPath)
+			http.Error(w, fmt.Sprintf("failed to save downloaded file: %v", err), http.StatusInternalServerError)
+			p.Error("failed to save downloaded file", "err", err)
+			return
+		}
+
+		// 打开临时文件进行 fMP4 转换
+		tmpFile, err = os.Open(tmpPath)
+		if err == nil {
+			file = &storage.LocalFile{File: tmpFile}
+		}
+		if err != nil {
+			os.Remove(tmpPath)
+			http.Error(w, fmt.Sprintf("failed to open downloaded file: %v", err), http.StatusInternalServerError)
+			p.Error("failed to open downloaded file", "err", err)
+			return
+		}
+		defer func() {
+			file.Close()
+			os.Remove(tmpPath)
+		}()
+		p.Info("reading downloaded file for fmp4 conversion from URL", "url", stream.FilePath)
+		// 继续执行 fMP4 转换处理
+	} else if filepath.IsAbs(stream.FilePath) {
 		if flag == 0 {
 			// 普通 MP4：直接 ServeFile
 			http.ServeFile(w, r, stream.FilePath)
 			return
 		}
 		// fMP4：直接打开文件
-		file, err = os.Open(stream.FilePath)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to open file: %v", err), http.StatusInternalServerError)
-			p.Error("failed to open file", "err", err, "path", stream.FilePath)
+		if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
+			http.Error(w, fmt.Sprintf("failed to open file: %v", osErr), http.StatusInternalServerError)
+			p.Error("failed to open file", "err", osErr, "path", stream.FilePath)
 			return
+		} else {
+			file = &storage.LocalFile{File: osFile}
 		}
 		defer file.Close()
 		p.Info("reading file for fmp4 conversion from absolute path", "path", stream.FilePath)
@@ -158,11 +222,12 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		} else {
 			// 兜底逻辑：直接使用 stream.FilePath 作为本地文件
 			if isLocalStorage {
-				file, err = os.Open(stream.FilePath)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("failed to open local file: %v", err), http.StatusInternalServerError)
-					p.Error("failed to open local file", "err", err)
+				if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
+					http.Error(w, fmt.Sprintf("failed to open local file: %v", osErr), http.StatusInternalServerError)
+					p.Error("failed to open local file", "err", osErr)
 					return
+				} else {
+					file = &storage.LocalFile{File: osFile}
 				}
 				defer file.Close()
 				p.Info("reading file for fmp4 conversion from local path", "path", stream.FilePath)
@@ -256,6 +321,18 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		streamPath = strings.TrimSuffix(streamPath, ".mp4")
 	}
 
+	// cluster 302 兜底:若本节点不持有该流的录像,重定向到 origin 节点。
+	if hook := DownloadHook; hook != nil {
+		if target, ok := hook(streamPath); ok && target != "" {
+			redirectURL := target + r.URL.Path
+			if r.URL.RawQuery != "" {
+				redirectURL += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, redirectURL, http.StatusFound)
+			return
+		}
+	}
+
 	query := r.URL.Query()
 	var streams []m7s.RecordStream
 
@@ -308,9 +385,15 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	sampleOffset := muxer.CurrentOffset + mp4.BeforeMdatData // 样本数据偏移量
 	mdatOffset := sampleOffset                               // 媒体数据偏移量
 	var audioTrack, videoTrack *mp4.Track                    // 音频和视频轨道
-	var file *os.File                                        // 当前处理的文件
+	var file storage.File                                    // 当前处理的文件
 	var moov box.IBox                                        // MOOV box，包含元数据
-	streamCount := len(streams)                              // 流的总数
+	var tmpFiles []string                                    // 临时文件列表，用于清理
+	defer func() {
+		for _, tmpPath := range tmpFiles {
+			os.Remove(tmpPath)
+		}
+	}()
+	streamCount := len(streams) // 流的总数
 
 	// Track ExtraData history for each track
 	// 轨道额外数据历史记录，用于处理编码参数变化的情况
@@ -380,10 +463,81 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	for i, stream := range streams {
 		tsOffset = lastTs // 设置时间戳偏移
 
-		// 打开录制文件
-		file, err = os.Open(stream.FilePath)
-		if err != nil {
-			return
+		// 打开录制文件（与 downloadSingleFile 保持一致的存储路径解析逻辑）
+		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
+			// HTTP/HTTPS URL：下载到临时文件后处理
+			resp, httpErr := http.Get(stream.FilePath)
+			if httpErr != nil {
+				p.Error("failed to download file from URL", "err", httpErr, "url", stream.FilePath)
+				return
+			}
+			tmpFile, httpErr := os.CreateTemp("", "mp4-*.tmp")
+			if httpErr != nil {
+				resp.Body.Close()
+				p.Error("failed to create temp file", "err", httpErr)
+				return
+			}
+			tmpPath := tmpFile.Name()
+			tmpFiles = append(tmpFiles, tmpPath)
+			_, httpErr = io.Copy(tmpFile, resp.Body)
+			resp.Body.Close()
+			tmpFile.Close()
+			if httpErr != nil {
+				p.Error("failed to save downloaded file", "err", httpErr)
+				return
+			}
+			osFile, openErr := os.Open(tmpPath)
+			if openErr != nil {
+				err = openErr
+				p.Error("failed to open downloaded temp file", "err", err)
+				return
+			}
+			file = &storage.LocalFile{File: osFile}
+		} else if filepath.IsAbs(stream.FilePath) {
+			// 绝对路径：直接打开文件
+			osFile, openErr := os.Open(stream.FilePath)
+			if openErr != nil {
+				err = openErr
+				p.Error("failed to open file", "err", err, "path", stream.FilePath)
+				return
+			}
+			file = &storage.LocalFile{File: osFile}
+		} else {
+			// 相对路径：使用 storage 处理
+			st := p.Server.Storage
+			var globalStorageType string
+			if st != nil {
+				globalStorageType = st.GetKey()
+			}
+			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
+			isLocalStorage := stream.StorageType == string(storage.StorageTypeLocal) || stream.StorageType == ""
+			if useGlobalStorage {
+				if isLocalStorage {
+					if localStorage, ok := st.(*storage.LocalStorage); ok {
+						file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
+					} else {
+						file, err = st.OpenFile(context.Background(), stream.FilePath)
+					}
+				} else {
+					file, err = st.OpenFile(context.Background(), stream.FilePath)
+				}
+			} else {
+				if isLocalStorage {
+					osFile, openErr := os.Open(stream.FilePath)
+					if openErr != nil {
+						err = openErr
+					} else {
+						file = &storage.LocalFile{File: osFile}
+					}
+				} else {
+					p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
+					return
+				}
+			}
+			if err != nil {
+				p.Error("failed to open file from storage", "err", err, "path", stream.FilePath)
+				return
+			}
 		}
 
 		// 创建解复用器并解析文件
@@ -558,8 +712,18 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	var filePath = "."
 	var fileName = ""
 	var fragment = time.Minute
-	if req.Fragment != nil {
-		fragment = req.Fragment.AsDuration()
+	var duration time.Duration // 录制时长
+	if req.Fragment != "" {
+		fragment, err = parseDurationWithDefault(req.Fragment)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fragment: %w", err)
+		}
+	}
+	if req.Duration != "" {
+		duration, err = parseDurationWithDefault(req.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration: %w", err)
+		}
 	}
 	if req.FilePath != "" {
 		filePath = req.FilePath
@@ -568,7 +732,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		fileName = req.FileName
 	}
 
-	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment)
+	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment, "duration", duration)
 	res = &mp4pb.ResponseStartRecord{}
 	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		if job.StreamPath != req.StreamPath {
@@ -589,6 +753,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	recordConf := config.Record{
 		Append:   false,
 		Fragment: fragment,
+		Duration: duration,
 		FilePath: filePath,
 		FileName: fileName,
 	}
