@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -845,11 +847,12 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 	}
 	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{"range": []string{req.Range}, "start": []string{req.Start}, "end": []string{req.End}})
 	if err == nil {
+		// 区间重叠条件：文件区间与搜索区间有交集，即 end_time > searchStart AND start_time < searchEnd
 		if !startTime.IsZero() {
-			query = query.Where("start_time >= ?", startTime)
+			query = query.Where("end_time > ?", startTime)
 		}
 		if !endTime.IsZero() {
-			query = query.Where("end_time <= ?", endTime)
+			query = query.Where("start_time < ?", endTime)
 		}
 	}
 
@@ -879,6 +882,70 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 			AudioCodec: recordFile.AudioCodec,
 			VideoCodec: recordFile.VideoCodec,
 			CreatedAt:  timestamppb.New(recordFile.CreatedAt),
+		})
+	}
+	return
+}
+
+func (s *Server) GetEventRecordList(ctx context.Context, req *pb.ReqRecordList) (resp *pb.EventRecordResponseList, err error) {
+	if s.DB == nil {
+		err = pkg.ErrNoDB
+		return
+	}
+	if req.PageSize == 0 {
+		req.PageSize = 10
+	}
+	if req.PageNum == 0 {
+		req.PageNum = 1
+	}
+	offset := (req.PageNum - 1) * req.PageSize // 计算偏移量
+	var totalCount int64                       //总条数
+
+	var result []*EventRecordStream
+	query := s.DB.Model(&EventRecordStream{})
+	if strings.Contains(req.StreamPath, "*") {
+		query = query.Where("stream_path like ?", strings.ReplaceAll(req.StreamPath, "*", "%"))
+	} else if req.StreamPath != "" {
+		query = query.Where("stream_path = ?", req.StreamPath)
+	}
+	if req.Type != "" {
+		query = query.Where("type = ?", req.Type)
+	}
+	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{"range": []string{req.Range}, "start": []string{req.Start}, "end": []string{req.End}})
+	if err == nil {
+		// 区间重叠条件：文件区间与搜索区间有交集，即 start_time < searchEnd AND end_time > searchStart
+		if !startTime.IsZero() {
+			query = query.Where("end_time > ?", startTime)
+		}
+		if !endTime.IsZero() {
+			query = query.Where("start_time < ?", endTime)
+		}
+	}
+	if req.EventLevel != "" {
+		query = query.Where("event_level = ?", req.EventLevel)
+	}
+
+	query.Count(&totalCount)
+	err = query.Offset(int(offset)).Limit(int(req.PageSize)).Order("start_time desc").Find(&result).Error
+	if err != nil {
+		return
+	}
+	resp = &pb.EventRecordResponseList{
+		Total:    uint32(totalCount),
+		PageNum:  req.PageNum,
+		PageSize: req.PageSize,
+	}
+	for _, recordFile := range result {
+		resp.Data = append(resp.Data, &pb.EventRecordFile{
+			Id:         uint32(recordFile.ID),
+			StartTime:  timestamppb.New(recordFile.StartTime),
+			EndTime:    timestamppb.New(recordFile.EndTime),
+			FilePath:   recordFile.FilePath,
+			StreamPath: recordFile.StreamPath,
+			EventLevel: recordFile.EventLevel,
+			EventId:    recordFile.EventId,
+			EventName:  recordFile.EventName,
+			EventDesc:  recordFile.EventDesc,
 		})
 	}
 	return
@@ -929,14 +996,61 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 		if err != nil {
 			return nil, err
 		}
-		s.DB.Find(&result, "stream_path=? AND type=? AND start_time>=? AND end_time<=?", req.StreamPath, req.Type, startTime, endTime)
+		// 区间重叠条件：文件区间与搜索区间有交集，即 end_time > searchStart AND start_time < searchEnd
+		s.DB.Find(&result, "stream_path=? AND type=? AND end_time>? AND start_time<?", req.StreamPath, req.Type, startTime, endTime)
 	}
-	err = s.DB.Delete(result).Error
+	// deletePhysicalFile 删除单条记录对应的实体文件
+	deletePhysicalFile := func(recordFile *RecordStream) error {
+		filePath := recordFile.FilePath
+		if strings.HasPrefix(filePath, "http://") || strings.HasPrefix(filePath, "https://") {
+			s.Error("cannot delete remote HTTP file", "url", filePath)
+			return fmt.Errorf("文件 %s 为网络资源，无法删除", filePath)
+		} else if filepath.IsAbs(filePath) {
+			return os.Remove(filePath)
+		} else {
+			st := s.Storage
+			var globalStorageType string
+			if st != nil {
+				globalStorageType = st.GetKey()
+			}
+			isLocalStorage := recordFile.StorageType == string(storage.StorageTypeLocal) || recordFile.StorageType == ""
+			useGlobalStorage := st != nil && globalStorageType == recordFile.StorageType
+			if useGlobalStorage {
+				if isLocalStorage {
+					if localStorage, ok := st.(*storage.LocalStorage); ok {
+						fullPath := localStorage.GetFullPath(filePath, recordFile.StorageLevel)
+						return os.Remove(fullPath)
+					}
+					return st.Delete(ctx, filePath)
+				}
+				return st.Delete(ctx, filePath)
+			}
+			if isLocalStorage {
+				return os.Remove(filePath)
+			}
+			s.Error("storage type mismatch, cannot delete file", "streamType", recordFile.StorageType, "globalType", globalStorageType)
+			return fmt.Errorf("storage type mismatch: stream=%s, global=%s", recordFile.StorageType, globalStorageType)
+		}
+	}
+
+	// 先校验所有实体文件均可删除，再开启事务，保证原子性
+	tx := s.DB.Begin()
+	if tx.Error != nil {
+		err = tx.Error
+		return
+	}
+	err = tx.Delete(result).Error
 	if err != nil {
+		tx.Rollback()
 		return
 	}
 	var apiResult []*pb.RecordFile
 	for _, recordFile := range result {
+		if fileErr := deletePhysicalFile(recordFile); fileErr != nil {
+			tx.Rollback()
+			err = fileErr
+			return
+		}
 		apiResult = append(apiResult, &pb.RecordFile{
 			Id:         uint32(recordFile.ID),
 			StartTime:  timestamppb.New(recordFile.StartTime),
@@ -944,10 +1058,9 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 			FilePath:   recordFile.FilePath,
 			StreamPath: recordFile.StreamPath,
 		})
-		err = os.Remove(recordFile.FilePath)
-		if err != nil {
-			return
-		}
+	}
+	if err = tx.Commit().Error; err != nil {
+		return
 	}
 	resp = &pb.ResponseDelete{
 		Data: apiResult,

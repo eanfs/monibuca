@@ -375,7 +375,13 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	var audioTrack, videoTrack *mp4.Track                    // 音频和视频轨道
 	var file storage.File                                    // 当前处理的文件
 	var moov box.IBox                                        // MOOV box，包含元数据
-	streamCount := len(streams)                              // 流的总数
+	var tmpFiles []string                                    // 临时文件列表，用于清理
+	defer func() {
+		for _, tmpPath := range tmpFiles {
+			os.Remove(tmpPath)
+		}
+	}()
+	streamCount := len(streams) // 流的总数
 
 	// Track ExtraData history for each track
 	// 轨道额外数据历史记录，用于处理编码参数变化的情况
@@ -445,11 +451,72 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	for i, stream := range streams {
 		tsOffset = lastTs // 设置时间戳偏移
 
-		// 打开录制文件
-		if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
-			return
+		// 打开录制文件（与 downloadSingleFile 保持一致的存储路径解析逻辑）
+		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
+			// HTTP/HTTPS URL：下载到临时文件后处理
+			resp, httpErr := http.Get(stream.FilePath)
+			if httpErr != nil {
+				p.Error("failed to download file from URL", "err", httpErr, "url", stream.FilePath)
+				return
+			}
+			tmpFile, httpErr := os.CreateTemp("", "mp4-*.tmp")
+			if httpErr != nil {
+				resp.Body.Close()
+				p.Error("failed to create temp file", "err", httpErr)
+				return
+			}
+			tmpPath := tmpFile.Name()
+			tmpFiles = append(tmpFiles, tmpPath)
+			_, httpErr = io.Copy(tmpFile, resp.Body)
+			resp.Body.Close()
+			tmpFile.Close()
+			if httpErr != nil {
+				p.Error("failed to save downloaded file", "err", httpErr)
+				return
+			}
+			file, err = os.Open(tmpPath)
+			if err != nil {
+				p.Error("failed to open downloaded temp file", "err", err)
+				return
+			}
+		} else if filepath.IsAbs(stream.FilePath) {
+			// 绝对路径：直接打开文件
+			file, err = os.Open(stream.FilePath)
+			if err != nil {
+				p.Error("failed to open file", "err", err, "path", stream.FilePath)
+				return
+			}
 		} else {
-			file = &storage.LocalFile{File: osFile}
+			// 相对路径：使用 storage 处理
+			st := p.Server.Storage
+			var globalStorageType string
+			if st != nil {
+				globalStorageType = st.GetKey()
+			}
+			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
+			isLocalStorage := stream.StorageType == string(storage.StorageTypeLocal) || stream.StorageType == ""
+			if useGlobalStorage {
+				if isLocalStorage {
+					if localStorage, ok := st.(*storage.LocalStorage); ok {
+						file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
+					} else {
+						file, err = st.OpenFile(context.Background(), stream.FilePath)
+					}
+				} else {
+					file, err = st.OpenFile(context.Background(), stream.FilePath)
+				}
+			} else {
+				if isLocalStorage {
+					file, err = os.Open(stream.FilePath)
+				} else {
+					p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
+					return
+				}
+			}
+			if err != nil {
+				p.Error("failed to open file from storage", "err", err, "path", stream.FilePath)
+				return
+			}
 		}
 
 		// 创建解复用器并解析文件
