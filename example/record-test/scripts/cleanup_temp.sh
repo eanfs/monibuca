@@ -6,7 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMP_DIR="${SCRIPT_DIR}/record"
+# 移到 bin/ 后, 项目根在上一级
+TEMP_DIR="${SCRIPT_DIR}/../record"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始清理 S3 临时文件..."
 
