@@ -31,6 +31,12 @@ type MP4Plugin struct {
 const defaultConfig m7s.DefaultYaml = `publish:
   speed: 1`
 
+// DownloadHook 由 cluster 插件 Start 时注入。
+// 返回非空 target(scheme+host 前缀,如 "http://10.0.0.5:8080")时,
+// /download handler 302 到 target;返回 ("", false) 则走本地下载逻辑。
+// 单机部署为 nil。
+var DownloadHook func(streamPath string) (target string, ok bool)
+
 // var exceptionChannel = make(chan *Exception)
 var _ = m7s.InstallPlugin[MP4Plugin](m7s.PluginMeta{
 	DefaultYaml:         defaultConfig,

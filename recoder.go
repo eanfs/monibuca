@@ -13,6 +13,16 @@ import (
 	"m7s.live/v5/pkg/storage"
 )
 
+// nodeIDHookFn 由 cluster 插件 Start 时注入,返回本节点 ID。
+// 单机部署时为 nil,Recorder 写库时 NodeID 字段留空。
+// 使用包级变量避免 plugin/mp4 或 core 包对 plugin/cluster 的直接依赖。
+var nodeIDHookFn func() string
+
+// SetNodeIDHook 供 cluster 插件注入节点 ID 回调。
+func SetNodeIDHook(fn func() string) {
+	nodeIDHookFn = fn
+}
+
 type (
 	IRecorder interface {
 		task.ITask
@@ -52,6 +62,7 @@ type (
 		StreamPath   string
 		AudioCodec   string
 		VideoCodec   string
+		NodeID       string `json:"nodeId" desc:"录制产生的节点 ID(cluster 模式)。单机部署留空。" gorm:"index;type:varchar(128);comment:cluster 节点 ID"`
 		CreatedAt    time.Time
 		DeletedAt    gorm.DeletedAt    `gorm:"index" yaml:"-"`
 		RecordLevel  config.EventLevel `json:"eventLevel" desc:"事件级别" gorm:"type:varchar(255);comment:事件级别,high表示重要事件，无法删除且表示无需自动删除,low表示非重要事件,达到自动删除时间后，自动删除;default:'low'"`
@@ -95,6 +106,10 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 		Type:         recordJob.RecConf.Type,
 		StorageLevel: 1, // 默认为主存储
 		StorageType:  storageType,
+	}
+	// 若 cluster 插件已通过 SetNodeIDHook 注入回调,填充本节点 ID。
+	if fn := nodeIDHookFn; fn != nil {
+		r.Event.RecordStream.NodeID = fn()
 	}
 
 	if sub.Publisher.HasAudioTrack() {

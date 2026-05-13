@@ -321,6 +321,18 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		streamPath = strings.TrimSuffix(streamPath, ".mp4")
 	}
 
+	// cluster 302 兜底:若本节点不持有该流的录像,重定向到 origin 节点。
+	if hook := DownloadHook; hook != nil {
+		if target, ok := hook(streamPath); ok && target != "" {
+			redirectURL := target + r.URL.Path
+			if r.URL.RawQuery != "" {
+				redirectURL += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, redirectURL, http.StatusFound)
+			return
+		}
+	}
+
 	query := r.URL.Query()
 	var streams []m7s.RecordStream
 

@@ -5,7 +5,6 @@ import (
 	"flag"
 
 	"m7s.live/v5"
-	_ "m7s.live/v5/plugin/apiroute"
 	_ "m7s.live/v5/plugin/cluster"
 
 	_ "m7s.live/v5/plugin/debug"

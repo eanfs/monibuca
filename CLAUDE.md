@@ -446,3 +446,35 @@ Automatic migration is handled for core models including users, proxies, and str
 - Using uppercase field names in YAML config files
 - Using bare goroutines instead of the task system
 - Bypassing task lifecycle conventions in async plugin code
+
+## Known Issues (待其它环境修复)
+
+记录 cluster v1 工作中发现、但本环境无法或不应当处修的事项。
+
+### gotask 库 `-race` 下 EventLoop 数据竞争
+
+- **症状**: `go test -race -tags cluster ./plugin/cluster/...` 跑全套时 fail。报 `WARNING: DATA RACE`,两次 write 都在 `github.com/langhuihui/gotask@v1.0.4/event_loop.go:111` vs `:116` 的同一 `EventLoop` struct 字段(offset `0x7b8`)。
+- **触发**: 父 `Job`(如 `Membership` 或 `StreamRegistry`)的 child task dispose 时,`waitChildrenDispose` 在新 goroutine 里 spawn 又一次 `EventLoop.run`,与已经 finished 的 goroutine 通过 defer 写同一字段。
+- **本仓影响**: 仅 `-race` 标志下抓得到。**正常 `go test -tags cluster` 全 29 case PASS,生产无功能问题**。
+- **修复需要**: upstream `github.com/langhuihui/gotask` 加锁/原子保护 EventLoop 内部状态。
+- **追踪**: 在 cluster spec §6.5 验收硬指标中"-race -count=3 全绿"暂未达成,等 upstream fix 后再跑。
+
+### example/cluster-e2e/smoke.sh 半自动场景
+
+- **位置**: `example/cluster-e2e/smoke.sh`。
+- **自动覆盖**: 场景 1 (membership) / 2 (推流) / 3 (跨节点订阅) / 8 (origin 失联) / 10 (lb-suggest)。
+- **手动验证留待**: 场景 4 (pull-proxy 复用计数) / 5 (录制 API 路由到 origin) / 6 (跨节点录制列表) / 7 (跨节点 /download 302) / 9 (first-write-wins)。
+- **原因**: mp4 record API 路径 / record id schema 在多种部署下表现不同,需真实 docker-compose stack 上手动逐场景 curl + 看日志,无法纯 bash 一次断完。
+- **修复需要**: 在已起的真 docker stack 上跑 smoke.sh,看哪些手动场景能自动化、补 assertion。
+
+### `plugin/crypto/pkg/transform.go` 预存在编译错
+
+- **症状**: `go build ./...`(全仓)报 `undefined: pkg.RawAudio`, `pkg.H26xFrame`, `WriteAudio`, `WriteVideo` 等;cluster 工作之前就存在,与 cluster 无关。
+- **影响**: 全仓 `go build ./...` 失败。变通:用具体子路径 `go build -tags cluster ./plugin/cluster/... ./plugin/mp4/... ./example/cluster/...`。
+- **修复需要**: 修 `plugin/crypto/pkg/transform.go`(应该是 m7s 核心某些类型/方法重命名/移除后没同步更新),与 cluster 解耦。
+
+### example/cluster-e2e 未实跑验证
+
+- **位置**: `example/cluster-e2e/`(Dockerfile + docker-compose + 3 configs + smoke.sh + README)。
+- **状态**: yaml + bash 语法都过(yq / `bash -n` / `docker buildx --check`),**但完整 docker stack + ffmpeg sample.mp4 在本环境未真跑**。
+- **修复需要**: 在能跑 docker desktop 的环境上 `./smoke.sh`,看哪些场景需调端口/超时/yaml 字段名等。
