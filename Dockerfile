@@ -4,7 +4,9 @@ FROM --platform=$BUILDPLATFORM swr.cn-east-3.myhuaweicloud.com/intetech/ffmpeg:l
 WORKDIR /monibuca
 
 # 配置清华大学镜像源（DEB822 格式）
-RUN echo 'Types: deb\n\
+# 先清掉 base 镜像里的所有默认源, 避免 apt 同时尝试 archive.ubuntu.com (本地某些网络环境下不可达)
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources && \
+    echo 'Types: deb\n\
 URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu\n\
 Suites: noble noble-updates noble-backports\n\
 Components: main restricted universe multiverse\n\
