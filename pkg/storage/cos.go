@@ -366,7 +366,10 @@ func (f *COSFile) Stat() (os.FileInfo, error) {
 
 // uploadTempFile 上传临时文件到COS，带并发控制和指数退避重试
 func (f *COSFile) uploadTempFile() error {
-	if err := AcquireUploadSlot(f.ctx); err != nil {
+	// 解耦上传 ctx 与文件 ctx (= Recorder.Context). 详见 s3.go uploadTempFile 注释.
+	uploadCtx := context.WithoutCancel(f.ctx)
+
+	if err := AcquireUploadSlot(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
@@ -380,10 +383,10 @@ func (f *COSFile) uploadTempFile() error {
 
 	rc := f.storage.config.retryConfig()
 
-	return UploadWithRetry(f.ctx, rc, "COS", f.objectKey,
+	return UploadWithRetry(uploadCtx, rc, "COS", f.objectKey,
 		nil, // COS PutFromFile 不需要 resetFn（按文件路径上传）
 		func() error {
-			if _, err := f.storage.client.Object.PutFromFile(f.ctx, f.objectKey, f.filePath, nil); err != nil {
+			if _, err := f.storage.client.Object.PutFromFile(uploadCtx, f.objectKey, f.filePath, nil); err != nil {
 				return fmt.Errorf("failed to upload to COS: %w", err)
 			}
 			log.Printf("[COS] upload successful: %s", f.objectKey)
