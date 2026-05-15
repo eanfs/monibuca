@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -39,19 +40,43 @@ type writeTrailerTask struct {
 	db         *gorm.DB // 数据库连接（用于保存失败记录）
 	// dbWrite 在文件完整写入后执行数据库更新，为 nil 时跳过（无 DB 或测试模式）。
 	dbWrite func(tailJob task.IJob)
+
+	// slotAcquired 标志当前任务是否持有 trailer slot, 用于 Dispose 时安全释放
+	slotAcquired bool
 }
 
-func (task *writeTrailerTask) Start() (err error) {
-	task.Info("write trailer start")
-	if err = task.muxer.WriteTrailer(task.file); err != nil {
-		task.Error("write trailer", "err", err)
+func (t *writeTrailerTask) Start() (err error) {
+	// 阻塞获取 trailer slot, 限多路并发 stop 时磁盘 IO burst.
+	// 用 context.Background() 而非 t.Context: slot acquisition 应跟随
+	// "我们是否要写 trailer" 而不是"task 自己是否还活着". slots 总会在
+	// 秒级释放 (每个 trailer 写完即 release), 不存在 hang 风险.
+	if err = storage.AcquireTrailerSlot(context.Background()); err != nil {
+		t.Warn("acquire trailer slot failed", "err", err)
+		return
+	}
+	t.slotAcquired = true
+	t.Info("write trailer start",
+		"active", storage.GetActiveTrailerWrites(),
+		"max", storage.GetMaxConcurrentTrailerWrites())
+
+	if err = t.muxer.WriteTrailer(t.file); err != nil {
+		t.Error("write trailer", "err", err)
 		// 关闭文件，忽略关闭错误以保留原始错误
-		if task.file != nil {
-			task.file.Close()
-			task.file = nil
+		if t.file != nil {
+			t.file.Close()
+			t.file = nil
 		}
 	}
 	return
+}
+
+// Dispose 在任务结束 (成功/失败/取消) 时被 framework 调用. 统一释放 trailer 槽位.
+// slotAcquired guard 防止重复释放.
+func (t *writeTrailerTask) Dispose() {
+	if t.slotAcquired {
+		storage.ReleaseTrailerSlot()
+		t.slotAcquired = false
+	}
 }
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
