@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 mp4 plugin 的 trailer flush 流程加并发槽位限制，避免 record stop 时多路（如 31 路）trailer task 同时写盘把磁盘吃满（实测峰值 1.1 GB/s ≈ SSD 顺序写上限）。
+**Goal:** 在 mp4 plugin 的 trailer flush 流程加并发槽位限制，**把 record stop 时磁盘写带宽峰值控制在 300 MB/s 以内**（实测无限流时峰值 1.1 GB/s ≈ SSD 顺序写上限）。
 
-**Architecture:** 复用 `pkg/storage` 现有的 `uploadSem` 信号量模式 — 加一个 `trailerSem`（默认 maxConcurrent=4，可配置）。`writeTrailerTask.Start()` 入口 acquire 槽位，`Dispose()` 出口 release。不动 task framework，只加同步原语。
+**目标值推导：** 31 路并发产生 1126 MB/s → 期望 300 MB/s → 槽位数 = 31 × 300/1126 ≈ **8**。默认 `MaxConcurrentTrailerWrites=8`，可按部署环境磁盘能力调整（NVMe Gen4 可放宽，HDD 应进一步收紧）。
+
+**Architecture:** 复用 `pkg/storage` 现有的 `uploadSem` 信号量模式 — 加一个 `trailerSem`（默认 maxConcurrent=8，可配置）。`writeTrailerTask.Start()` 入口 acquire 槽位，`Dispose()` 出口 release。不动 task framework，只加同步原语。
 
 **Tech Stack:** Go channel-based semaphore，沿用 `pkg/storage/upload_manager.go` 既有模式。
 
@@ -146,7 +148,7 @@ go test -run 'TestTrailerSlot' ./pkg/storage/...
 ```go
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	MaxConcurrentTrailerWrites int    `desc:"最大并发 trailer 写入数（限制录制 stop 时的磁盘 burst）" default:"4"`
+	MaxConcurrentTrailerWrites int    `desc:"最大并发 trailer 写入数（限制录制 stop 时的磁盘 burst, 目标控制在 ~300 MB/s SSD 写）" default:"8"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
 }
 ```
@@ -155,7 +157,7 @@ type UploadConfig struct {
 
 ```go
 	if cfg.MaxConcurrentTrailerWrites <= 0 {
-		cfg.MaxConcurrentTrailerWrites = 4
+		cfg.MaxConcurrentTrailerWrites = 8
 	}
 	maxConcurrentTrailers = cfg.MaxConcurrentTrailerWrites
 	trailerSem = make(chan struct{}, cfg.MaxConcurrentTrailerWrites)
@@ -438,7 +440,7 @@ grep -l 'storage:' example/cluster/*.yaml | head -3
 ```yaml
     # 全局上传/落盘并发限制（限定写盘 + 上传的 burst）
     # maxconcurrentuploads: 4          # 并发上传 S3 槽位数（默认 4）
-    # maxconcurrenttrailerwrites: 4    # 并发 trailer 写盘槽位数（默认 4, 避免多路 record stop 时磁盘 IO burst）
+    # maxconcurrenttrailerwrites: 8    # 并发 trailer 写盘槽位数（默认 8, 目标控制磁盘 burst ~300 MB/s. NVMe Gen4 可放宽 16-32, HDD 设 2-4）
 ```
 
 如果 yaml 字段必须小写且无下划线（按 monibuca CLAUDE.md 约定），字段名实际为 `maxconcurrenttrailerwrites`。
@@ -454,7 +456,7 @@ grep -n "MaxConcurrentUploads\|maxconcurrentuploads\|storage" CLAUDE.md | head -
 如果 CLAUDE.md 里有 storage 配置说明节，在 `MaxConcurrentUploads` 后面加：
 
 ```markdown
-- `MaxConcurrentTrailerWrites`：限制并发 trailer 写盘数（默认 4）。多路 record stop 时 trailer moov-rewrite + flush 会同时打盘，设小一点防磁盘 IO burst。
+- `MaxConcurrentTrailerWrites`：限制并发 trailer 写盘数（默认 **8**，目标控制 record stop 时磁盘 burst ~300 MB/s）。多路 record stop 时 trailer moov-rewrite + flush 会同时打盘，设小一点防磁盘 IO burst。换硬件时按 `(目标带宽) × 实测并发数 / 实测峰值带宽` 重新算。
 ```
 
 如果 CLAUDE.md 没有这一节，跳过这步。
@@ -502,9 +504,11 @@ ssh root@172.16.12.130 \
 
 预期：录制 stop 时磁盘写带宽峰值 **大幅下降**：
 - 当前（无限流）：~1126 MB/s（一次 31 路同时 flush）
-- 修复后（slot=4）：理论 ~150 MB/s 持续约 8 秒，而不是 1.1 GB/s 持续 1 秒
+- 修复后（slot=8）：~290 MB/s 持续约 4 秒，而不是 1.1 GB/s 持续 1 秒
 
-总写入量不变（约 2-3 GB），但带宽峰值平滑。
+总写入量不变（2-3 GB），但带宽峰值平滑到 ~300 MB/s 目标。
+
+**验证标准**: 监控 csv 的 `disk_w_kbps` 峰值 < 320 MB/s（误差容忍 20 MB/s）, 持续高峰时间在 3-5 秒。
 
 - [ ] **Step 5: 验录制完整性（同 ffprobe 流程）**
 
@@ -536,7 +540,7 @@ grep -rn "AcquireTrailerSlot\|ReleaseTrailerSlot" --include='*.go'
 grep -A1 'MaxConcurrentTrailerWrites' pkg/storage/upload_manager.go | head -5
 ```
 
-期望 default tag 是 `"4"`。
+期望 default tag 是 `"8"`（目标控制 SSD 磁盘 burst ~300 MB/s）。
 
 - [ ] **Step 4: 升级后磁盘 burst 实测对比**
 
