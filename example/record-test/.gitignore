@@ -3,5 +3,8 @@ logs/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 fatal/
 admin.zip
+reports/*
+!reports/.gitkeep

@@ -3,7 +3,8 @@
 # 检查录制文件夹下的视频长度与大小
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# 移到 bin/ 后, 项目根在上一级
+cd "$SCRIPT_DIR/.."
 
 RECORD_DIR="${1:-record/live}"
 

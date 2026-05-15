@@ -39,5 +39,7 @@ echo "录制目录:  record/live/"
 echo "日志目录:  logs/"
 
 
-# 启动服务
-go run -tags sqlite main.go
+# 启动服务（-tags sqlite,s3 启用 S3/MinIO 上传, 不带 s3 会 fallback 到本地）
+TAGS="${BUILD_TAGS:-sqlite,s3}"
+echo "构建标签: $TAGS"
+go run -tags "$TAGS" main.go
