@@ -15,10 +15,18 @@ var (
 	pendingDir    string
 	maxConcurrent int
 
-	// trailerSem 限制并发 trailer 写盘槽位数, 避免多路 record stop 时同时
-	// moov-rewrite + bufio flush 把磁盘吃满. 与 uploadSem 解耦:
-	//   - trailerSem 控磁盘 IO (mp4/flv 等录制 plugin 共用)
-	//   - uploadSem 控网络上传 (s3/cos/oss 后端)
+	// trailerSem 预留: 限制并发 trailer 写盘槽位数 (mp4/flv 等录制 plugin 共用).
+	//
+	// 当前 **未在生产路径调用** — 原因:
+	// monibuca v5 的 writeTrailerQueueTask (task.Work) event loop 是 single-threaded,
+	// 即每个 child task 的 Run() 同步执行, trailer queue 本身就是顺序的, 不存在并发 burst.
+	// (实测 baseline 1126 MB/s peak 是单个 trailer rewrite 时 SSD 顺序写满速, 非并发.)
+	//
+	// 这套 sem API + UploadConfig.MaxConcurrentTrailerWrites 字段保留, 给将来的两种用法预留:
+	//   1) writeTrailerQueueTask 改为 worker pool (并发跑多个 trailer task), 这时 sem 才有意义
+	//   2) 跨多种录制 plugin (mp4 + flv + 自定义) 的全局磁盘 IO 限流
+	//
+	// 当前 API 完全可用 (Acquire/Release/InitUploadManager 等), 只是没人调.
 	trailerSem            chan struct{}
 	activeTrailerWrites   int32
 	maxConcurrentTrailers int
@@ -32,7 +40,7 @@ var (
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	MaxConcurrentTrailerWrites int    `desc:"最大并发 trailer 写盘槽位数, 控制 record stop 时磁盘 IO burst (目标 ~300 MB/s SSD)" default:"8"`
+	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
 }
 
