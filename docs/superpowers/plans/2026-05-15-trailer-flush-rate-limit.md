@@ -6,7 +6,7 @@
 
 **目标值推导：** 31 路并发产生 1126 MB/s → 期望 300 MB/s → 槽位数 = 31 × 300/1126 ≈ **8**。默认 `MaxConcurrentTrailerWrites=8`，可按部署环境磁盘能力调整（NVMe Gen4 可放宽，HDD 应进一步收紧）。
 
-**Architecture:** 复用 `pkg/storage` 现有的 `uploadSem` 信号量模式 — 加一个 `trailerSem`（默认 maxConcurrent=8，可配置）。`writeTrailerTask.Start()` 入口 acquire 槽位，`Dispose()` 出口 release。不动 task framework，只加同步原语。
+**Architecture:** 复用 `pkg/storage` 现有的 `uploadSem` 信号量模式 — 在 `pkg/storage` 加一个独立的 `trailerSem` + `SetTrailerSlotLimit(n)` 公开 setter（不读 `UploadConfig`，与 upload sem 解耦）。**配置归属 `mp4` plugin**（trailer 是录制流程的关切，不是 storage 后端的关切；local / s3 / cos / oss 都共用同一个磁盘 IO 限流）。`MP4Plugin.Start()` 读 `p.MaxConcurrentTrailerWrites` 调 setter 初始化。`writeTrailerTask.Start()` 入口 acquire 槽位，`Dispose()` 出口 release。不动 task framework。
 
 **Tech Stack:** Go channel-based semaphore，沿用 `pkg/storage/upload_manager.go` 既有模式。
 
@@ -25,8 +25,13 @@
 
 ```
 pkg/storage/
-├── upload_manager.go          [改] 加 trailerSem + Acquire/ReleaseTrailerSlot + 配置字段
+├── upload_manager.go          [改] 加 trailerSem + Acquire/Release + SetTrailerSlotLimit(n) setter
+│                                  (不动 UploadConfig, 与 upload sem 完全解耦)
 └── upload_manager_test.go     [新] 信号量行为单测
+
+plugin/mp4/
+└── index.go                   [改] MP4Plugin struct 加 MaxConcurrentTrailerWrites 字段
+                                   Start() 调 storage.SetTrailerSlotLimit(p.MaxConcurrentTrailerWrites)
 
 plugin/mp4/pkg/
 └── record.go                  [改] writeTrailerTask 加 Start acquire / Dispose release
@@ -37,7 +42,7 @@ docs/
 
 ---
 
-## Task 1: pkg/storage 加 trailerSem 与 API
+## Task 1: pkg/storage 加 trailerSem + SetTrailerSlotLimit setter
 
 **Files:**
 - Modify: `pkg/storage/upload_manager.go`
@@ -59,12 +64,7 @@ import (
 )
 
 func TestTrailerSlotConcurrencyLimit(t *testing.T) {
-	// 重置 + 初始化 maxConcurrent=2
-	InitUploadManager(UploadConfig{
-		MaxConcurrentUploads:       4,
-		MaxConcurrentTrailerWrites: 2,
-		PendingDir:                 t.TempDir(),
-	})
+	SetTrailerSlotLimit(2)
 
 	var active int32
 	var maxObserved int32
@@ -105,11 +105,7 @@ func TestTrailerSlotConcurrencyLimit(t *testing.T) {
 }
 
 func TestTrailerSlotContextCancel(t *testing.T) {
-	InitUploadManager(UploadConfig{
-		MaxConcurrentUploads:       4,
-		MaxConcurrentTrailerWrites: 1,
-		PendingDir:                 t.TempDir(),
-	})
+	SetTrailerSlotLimit(1)
 	if err := AcquireTrailerSlot(context.Background()); err != nil {
 		t.Fatalf("first acquire should succeed: %v", err)
 	}
@@ -120,6 +116,18 @@ func TestTrailerSlotContextCancel(t *testing.T) {
 	if err := AcquireTrailerSlot(ctx); err == nil {
 		t.Fatal("second acquire should fail when ctx cancels")
 		ReleaseTrailerSlot()
+	}
+}
+
+func TestTrailerSlotNoLimit(t *testing.T) {
+	// 0 / 负值 = 不限流, Acquire 立即返回 nil, 不计数
+	SetTrailerSlotLimit(0)
+	if err := AcquireTrailerSlot(context.Background()); err != nil {
+		t.Fatalf("acquire with no limit should be no-op: %v", err)
+	}
+	ReleaseTrailerSlot() // 应是 no-op
+	if got := GetMaxConcurrentTrailerWrites(); got != 0 {
+		t.Fatalf("max should be 0 when disabled, got %d", got)
 	}
 }
 ```
@@ -134,53 +142,66 @@ go test -run 'TestTrailerSlot' ./pkg/storage/...
 
 - [ ] **Step 3: 在 `pkg/storage/upload_manager.go` 加 trailerSem 实现**
 
-在文件顶部 `var (...)` 块里加：
+**不动 `UploadConfig` 和 `InitUploadManager`**。trailer sem 是独立子系统，由 mp4 plugin 在 Start() 主动初始化（Task 3）。
+
+文件 import 区加 `"sync"`（若没有）：
 
 ```go
-	// trailerSem 限制并发 trailer flush 槽位数，避免多路 record stop 时同时 moov-rewrite 把盘吃满
-	trailerSem          chan struct{}
-	activeTrailerWrites int32
+import (
+	"context"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+)
+```
+
+在文件顶部 `var (...)` 块里加（与 `uploadSem` 并列、独立）：
+
+```go
+	// --- trailer flush 限流（与 uploadSem 解耦）---
+	// trailer 是磁盘 IO 关切（moov-rewrite + bufio flush），local/s3/oss/cos 都需要;
+	// uploadSem 是网络/对象存储关切. 二者并发上限不同, 单独控制.
+	trailerSem            chan struct{}
+	activeTrailerWrites   int32
 	maxConcurrentTrailers int
-```
-
-`UploadConfig` 加字段：
-
-```go
-type UploadConfig struct {
-	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	MaxConcurrentTrailerWrites int    `desc:"最大并发 trailer 写入数（限制录制 stop 时的磁盘 burst, 目标控制在 ~300 MB/s SSD 写）" default:"8"`
-	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
-}
-```
-
-`InitUploadManager` 函数末尾（紧跟 upload sem 初始化之后）加：
-
-```go
-	if cfg.MaxConcurrentTrailerWrites <= 0 {
-		cfg.MaxConcurrentTrailerWrites = 8
-	}
-	maxConcurrentTrailers = cfg.MaxConcurrentTrailerWrites
-	trailerSem = make(chan struct{}, cfg.MaxConcurrentTrailerWrites)
-```
-
-并把 `log.Printf` 行末尾改成：
-
-```go
-	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, pendingDir)
+	trailerSemMu          sync.Mutex
 ```
 
 文件末尾（`GetPendingDir` 之后）加：
 
 ```go
-// AcquireTrailerSlot 获取一个 trailer 写入槽位，阻塞直到有可用槽位或 ctx 取消。
-// 调用方应在 record stop 流程中 trailer flush 入口调用，在 Dispose/Run 末尾 defer Release.
+// SetTrailerSlotLimit 设置 trailer 写盘槽位上限.
+// 由调用方（如 mp4 plugin Start）按其 config 初始化.
+// n <= 0 表示不限流, AcquireTrailerSlot 立即返回 nil.
+// 重复调用以最后一次为准.
+func SetTrailerSlotLimit(n int) {
+	trailerSemMu.Lock()
+	defer trailerSemMu.Unlock()
+	if n <= 0 {
+		trailerSem = nil
+		maxConcurrentTrailers = 0
+		log.Printf("[storage] trailer slot limit disabled")
+		return
+	}
+	trailerSem = make(chan struct{}, n)
+	maxConcurrentTrailers = n
+	log.Printf("[storage] trailer slot limit set: %d", n)
+}
+
+// AcquireTrailerSlot 获取一个 trailer 写盘槽位, 阻塞直到有可用槽位或 ctx 取消.
+// 未 SetTrailerSlotLimit 或 limit<=0 时为 no-op, 立即返回 nil.
 func AcquireTrailerSlot(ctx context.Context) error {
-	if trailerSem == nil {
+	trailerSemMu.Lock()
+	sem := trailerSem
+	trailerSemMu.Unlock()
+	if sem == nil {
 		return nil
 	}
 	select {
-	case trailerSem <- struct{}{}:
+	case sem <- struct{}{}:
 		atomic.AddInt32(&activeTrailerWrites, 1)
 		return nil
 	case <-ctx.Done():
@@ -188,22 +209,32 @@ func AcquireTrailerSlot(ctx context.Context) error {
 	}
 }
 
-// ReleaseTrailerSlot 释放一个 trailer 写入槽位
+// ReleaseTrailerSlot 释放一个 trailer 写盘槽位. 配对 AcquireTrailerSlot.
+// 未初始化时 no-op, 保证 defer Release 永远安全.
 func ReleaseTrailerSlot() {
-	if trailerSem == nil {
+	trailerSemMu.Lock()
+	sem := trailerSem
+	trailerSemMu.Unlock()
+	if sem == nil {
 		return
 	}
-	<-trailerSem
-	atomic.AddInt32(&activeTrailerWrites, -1)
+	select {
+	case <-sem:
+		atomic.AddInt32(&activeTrailerWrites, -1)
+	default:
+		// sem 已空 / 在 acquire 后被 reset; 静默忽略
+	}
 }
 
-// GetActiveTrailerWrites 获取当前活跃 trailer 写入数
+// GetActiveTrailerWrites 当前活跃 trailer 写盘数
 func GetActiveTrailerWrites() int32 {
 	return atomic.LoadInt32(&activeTrailerWrites)
 }
 
-// GetMaxConcurrentTrailerWrites 获取最大并发 trailer 写入数
+// GetMaxConcurrentTrailerWrites 当前 trailer slot 上限（SetTrailerSlotLimit 设的值）
 func GetMaxConcurrentTrailerWrites() int {
+	trailerSemMu.Lock()
+	defer trailerSemMu.Unlock()
 	return maxConcurrentTrailers
 }
 ```
@@ -420,52 +451,133 @@ git commit -m "feat(mp4): writeTrailerTask 加 trailer 槽位限制 (Start acqui
 
 ---
 
-## Task 3: 配置文件示例 + CLAUDE.md 提示
+## Task 3: MP4Plugin 加配置字段 + Start() 调 setter + 示例文档
 
 **Files:**
-- Modify: `example/cluster/config1.yaml`（或挑一个有 storage 配置的示例）
-- Modify: `CLAUDE.md`（项目级 — 加新配置项说明）
+- Modify: `plugin/mp4/index.go` (MP4Plugin struct 加字段 + Start() 调 setter)
+- Modify: `example/cluster/config1.yaml`（或挑一个有 `mp4:` 段的示例）
+- Modify: `CLAUDE.md`（加新配置项说明）
 
-- [ ] **Step 1: 找带 `storage:` + `s3:` 配置的示例文件**
+- [ ] **Step 1: MP4Plugin struct 加字段**
 
-```bash
-grep -l "MaxConcurrentUploads\|maxconcurrentuploads" example/ --include='*.yaml' -r
-grep -l 'storage:' example/cluster/*.yaml | head -3
+在 `plugin/mp4/index.go` 的 `type MP4Plugin struct { ... }` 块末尾追加：
+
+```go
+	MaxConcurrentTrailerWrites int `default:"8" desc:"录制 stop 时 trailer flush 并发槽位数, 控制磁盘 IO burst. 默认 8 (≈ 300 MB/s 写盘, 按 SSD 1.1 GB/s 反推). 0 或负值 = 不限流. NVMe Gen4 可调 16-32, HDD 设 2-4"`
 ```
 
-- [ ] **Step 2: 在一个示例 config 里加注释展示新选项**
+- [ ] **Step 2: MP4Plugin.Start() 入口调 setter**
 
-在 `example/cluster/config1.yaml`（或类似有 storage 段的文件）的 `global.storage:` 之后加：
+在 `plugin/mp4/index.go` 找到 `func (p *MP4Plugin) Start() (err error) {`, 把方法体最开头改成：
+
+```go
+func (p *MP4Plugin) Start() (err error) {
+	// 初始化 trailer 写盘槽位 (与 upload sem 解耦)
+	storage.SetTrailerSlotLimit(p.MaxConcurrentTrailerWrites)
+
+	if p.DB != nil {
+		// ... 原有代码不变
+```
+
+import 区加 `"m7s.live/v5/pkg/storage"`（若没有）：
+
+```go
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"m7s.live/v5"
+	"m7s.live/v5/pb"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/pkg/storage"
+	"m7s.live/v5/pkg/util"
+	mp4pb "m7s.live/v5/plugin/mp4/pb"
+	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
+	"m7s.live/v5/plugin/mp4/pkg/box"
+)
+```
+
+- [ ] **Step 3: 编译验证**
+
+```bash
+go build ./plugin/mp4/...
+```
+
+预期：通过。
+
+- [ ] **Step 4: 端到端单测 — plugin Start 后 storage 限制生效**
+
+文件 `plugin/mp4/index_test.go`（追加或新建）：
+
+```go
+package plugin_mp4
+
+import (
+	"testing"
+
+	"m7s.live/v5/pkg/storage"
+)
+
+func TestMP4PluginConfiguresTrailerSlot(t *testing.T) {
+	// 模拟 plugin Start 行为：写 config 后调 setter
+	storage.SetTrailerSlotLimit(8)
+	if got := storage.GetMaxConcurrentTrailerWrites(); got != 8 {
+		t.Fatalf("default 8 should be set, got %d", got)
+	}
+	storage.SetTrailerSlotLimit(0) // disable
+	if got := storage.GetMaxConcurrentTrailerWrites(); got != 0 {
+		t.Fatalf("disable should set 0, got %d", got)
+	}
+}
+```
+
+跑：
+
+```bash
+go test -run 'TestMP4PluginConfiguresTrailerSlot' ./plugin/mp4/...
+```
+
+- [ ] **Step 5: 找 mp4 已有配置示例文件**
+
+```bash
+grep -l 'mp4:' example/cluster/*.yaml example/default/*.yaml example/record-test/*.yaml 2>/dev/null | head -5
+```
+
+- [ ] **Step 6: 在一个示例 config 的 `mp4:` 段加注释展示新选项**
+
+例如在 `example/cluster/config1.yaml` 的 `mp4:` 段补：
 
 ```yaml
-    # 全局上传/落盘并发限制（限定写盘 + 上传的 burst）
-    # maxconcurrentuploads: 4          # 并发上传 S3 槽位数（默认 4）
-    # maxconcurrenttrailerwrites: 8    # 并发 trailer 写盘槽位数（默认 8, 目标控制磁盘 burst ~300 MB/s. NVMe Gen4 可放宽 16-32, HDD 设 2-4）
+mp4:
+  enable: true
+  publish:
+    delayclosetimeout: 900s
+  # 录制 stop 时 trailer 写盘并发数, 控制磁盘 IO burst (默认 8, 目标 ~300 MB/s SSD 写)
+  # NVMe Gen4 可放宽 16-32, HDD 设 2-4. 0/负 = 不限流
+  # maxconcurrenttrailerwrites: 8
 ```
 
-如果 yaml 字段必须小写且无下划线（按 monibuca CLAUDE.md 约定），字段名实际为 `maxconcurrenttrailerwrites`。
+注意 yaml 字段名按 monibuca 约定全小写无下划线：`maxconcurrenttrailerwrites`。
 
-- [ ] **Step 3: 看 CLAUDE.md 哪里写 storage 配置说明**
+- [ ] **Step 7: 看 CLAUDE.md 是否提到 mp4 plugin config**
 
 ```bash
-grep -n "MaxConcurrentUploads\|maxconcurrentuploads\|storage" CLAUDE.md | head -5
+grep -n "MP4 Plugin\|mp4 配置\|maxconcurrent" CLAUDE.md | head -5
 ```
 
-- [ ] **Step 4: 在 CLAUDE.md 已有 storage 段加新字段说明**
-
-如果 CLAUDE.md 里有 storage 配置说明节，在 `MaxConcurrentUploads` 后面加：
+如有 mp4 plugin 配置说明节，加：
 
 ```markdown
-- `MaxConcurrentTrailerWrites`：限制并发 trailer 写盘数（默认 **8**，目标控制 record stop 时磁盘 burst ~300 MB/s）。多路 record stop 时 trailer moov-rewrite + flush 会同时打盘，设小一点防磁盘 IO burst。换硬件时按 `(目标带宽) × 实测并发数 / 实测峰值带宽` 重新算。
+- `mp4.maxconcurrenttrailerwrites`：录制 stop 时 trailer flush 并发槽位数（默认 8）。多路 record stop 时 trailer moov-rewrite 会同时打盘，限流避免磁盘 IO burst。按 `(目标带宽 MB/s) × 实测并发数 / 实测峰值带宽 (MB/s)` 反推；本仓 SSD 实测 31 并发 → 1126 MB/s，故 8 ≈ 290 MB/s。
 ```
 
-如果 CLAUDE.md 没有这一节，跳过这步。
-
-- [ ] **Step 5: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
-git add example/cluster/config1.yaml CLAUDE.md
-git commit -m "docs: 加 MaxConcurrentTrailerWrites 配置说明"
+git add plugin/mp4/index.go plugin/mp4/index_test.go example/cluster/config1.yaml CLAUDE.md
+git commit -m "feat(mp4): 加 MaxConcurrentTrailerWrites 配置, Start 时初始化 trailer slot"
 ```
 
 ---
