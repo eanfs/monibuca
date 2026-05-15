@@ -46,19 +46,7 @@ type writeTrailerTask struct {
 }
 
 func (t *writeTrailerTask) Start() (err error) {
-	// 阻塞获取 trailer slot, 限多路并发 stop 时磁盘 IO burst.
-	// 用 context.Background() 而非 t.Context: slot acquisition 应跟随
-	// "我们是否要写 trailer" 而不是"task 自己是否还活着". slots 总会在
-	// 秒级释放 (每个 trailer 写完即 release), 不存在 hang 风险.
-	if err = storage.AcquireTrailerSlot(context.Background()); err != nil {
-		t.Warn("acquire trailer slot failed", "err", err)
-		return
-	}
-	t.slotAcquired = true
-	t.Info("write trailer start",
-		"active", storage.GetActiveTrailerWrites(),
-		"max", storage.GetMaxConcurrentTrailerWrites())
-
+	t.Info("write trailer start")
 	if err = t.muxer.WriteTrailer(t.file); err != nil {
 		t.Error("write trailer", "err", err)
 		// 关闭文件，忽略关闭错误以保留原始错误
@@ -70,13 +58,20 @@ func (t *writeTrailerTask) Start() (err error) {
 	return
 }
 
-// Dispose 在任务结束 (成功/失败/取消) 时被 framework 调用. 统一释放 trailer 槽位.
-// slotAcquired guard 防止重复释放.
-func (t *writeTrailerTask) Dispose() {
+// releaseTrailerSlot 若 slot 还持有, 释放. 多次调用安全.
+// 设计要点: slot 只覆盖磁盘 IO 阶段 (moov rewrite + overwrite + temp flush),
+// 不覆盖 t.file.Close() 触发的对象存储上传 — 否则 upload 重试 (可能 20+ min)
+// 会让 slot 长时间占用, 后续 trailer 串行执行, 性能崩坏.
+func (t *writeTrailerTask) releaseTrailerSlot() {
 	if t.slotAcquired {
 		storage.ReleaseTrailerSlot()
 		t.slotAcquired = false
 	}
+}
+
+// Dispose 兜底释放 slot (Run panic / 异常退出场景).
+func (t *writeTrailerTask) Dispose() {
+	t.releaseTrailerSlot()
 }
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
@@ -87,10 +82,22 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // MOOV-first MP4，并在上传失败时保留 MOOV 重写后的临时文件供 DB 重试。
 // 使用 bufio 缓冲减少写入 syscall（moov 由大量小块组成）。
 func (t *writeTrailerTask) Run() (err error) {
-	t.Info("write trailer")
+	// 获取 trailer slot, 限多路并发 stop 时磁盘 IO burst.
+	// 用 context.Background(): slot 持有期短 (秒级写盘), 不会 hang.
+	// slot 只覆盖磁盘 IO 阶段, 在 t.file.Close() (upload trigger) 前释放.
+	if acqErr := storage.AcquireTrailerSlot(context.Background()); acqErr != nil {
+		t.Warn("acquire trailer slot failed", "err", acqErr)
+		// 不阻断录制, 继续走 (无限流路径)
+	} else {
+		t.slotAcquired = true
+	}
+	t.Info("write trailer",
+		"active", storage.GetActiveTrailerWrites(),
+		"max", storage.GetMaxConcurrentTrailerWrites())
 
-	// 确保任何错误路径下 t.file 都被关闭
+	// 确保任何错误路径下 t.file 都被关闭 + slot 释放
 	defer func() {
+		t.releaseTrailerSlot()
 		if err != nil && t.file != nil {
 			t.file.Close()
 			t.file = nil
@@ -209,6 +216,8 @@ func (t *writeTrailerTask) Run() (err error) {
 		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
+	// 磁盘 IO 已完成, 提前释放 trailer slot, 让后续 trailer 不被 upload 重试阻塞
+	t.releaseTrailerSlot()
 	if err = t.file.Close(); err != nil {
 		t.Error("upload failed after retries", "err", err,
 			"filePath", t.filePath, "streamPath", t.streamPath,
