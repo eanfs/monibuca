@@ -9,6 +9,11 @@ global:
     type: "sqlite"
   # S3存储配置示例（需要时取消注释并填写实际值）
   storage:
+    # === 并发限流（默认值即可，按硬件可调） ===
+    # maxconcurrentuploads: 4         # 并发上传 S3/COS/OSS 槽位数（默认 4）
+    # maxconcurrenttrailerwrites: 8   # 并发 trailer 写盘槽位数（默认 8, 目标 ~300 MB/s SSD 写）
+    #                                 # 多路 record stop 时所有录制插件 (mp4/flv) 共用该槽位
+    #                                 # NVMe Gen4 可调 16-32, HDD 设 2-4, 0/负 = 不限流
     s3:
       region: "us-east-1"                   # AWS区域
       endpoint: "storage-dev.xiding.tech"          # S3服务端点
