@@ -477,8 +477,14 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 
 // uploadTempFile 上传临时文件到S3，带并发控制和指数退避重试
 func (w *S3File) uploadTempFile() error {
+	// 解耦上传 ctx 与文件 ctx (= Recorder.Context).
+	// Recorder dispose 时其 ctx 被 cancel, 但写好的临时文件应当继续上传完成.
+	// WithoutCancel 保留 ctx 的 Values (trace / auth), 但 Done() 永不 close.
+	// 上传链路的真实超时由每次 attempt 的 WithTimeout 控制.
+	uploadCtx := context.WithoutCancel(w.ctx)
+
 	// 获取上传槽位（并发控制）
-	if err := AcquireUploadSlot(w.ctx); err != nil {
+	if err := AcquireUploadSlot(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
@@ -497,7 +503,7 @@ func (w *S3File) uploadTempFile() error {
 
 	rc := w.storage.config.retryConfig()
 
-	return UploadWithRetry(w.ctx, rc, "S3", w.objectKey,
+	return UploadWithRetry(uploadCtx, rc, "S3", w.objectKey,
 		// resetFn: 每次重试前重置文件指针
 		func() error {
 			_, err := w.tempFile.Seek(0, 0)
@@ -506,7 +512,7 @@ func (w *S3File) uploadTempFile() error {
 		// uploadFn: 执行单次上传
 		func() error {
 			timeout := w.storage.config.getTimeout()
-			ctx, cancel := context.WithTimeout(w.ctx, timeout)
+			ctx, cancel := context.WithTimeout(uploadCtx, timeout)
 			defer cancel()
 
 			uploadInput := &s3manager.UploadInput{

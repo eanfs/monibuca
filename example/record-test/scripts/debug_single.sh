@@ -2,6 +2,10 @@
 
 # 调试单个流的录制
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 移到 bin/ 后, 项目根在上一级
+cd "$SCRIPT_DIR/.."
+
 NODE_IP="${NODE_IP:-localhost}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 STREAM_PATH="${1:-live/camera1}"

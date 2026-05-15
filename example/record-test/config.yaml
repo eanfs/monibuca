@@ -9,6 +9,11 @@ global:
     type: "sqlite"
   # S3存储配置示例（需要时取消注释并填写实际值）
   storage:
+    # === 并发限流 ===
+    # maxconcurrentuploads: 4         # 并发上传 S3/COS/OSS 槽位数（默认 4）
+    # maxconcurrenttrailerwrites: 8   # [预留] trailer 写盘并发槽位 (默认 8)
+    #                                 # 当前 trailer queue 是 single-threaded, 此项不影响实际行为,
+    #                                 # 仅作为未来 worker-pool 实现的接口预留
     s3:
       region: "us-east-1"                   # AWS区域
       endpoint: "storage-dev.xiding.tech"          # S3服务端点

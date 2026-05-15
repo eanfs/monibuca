@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh *)"
+    ],
+    "additionalDirectories": [
+      "/Users/lirichen/Work/GithubRepo/gotask"
+    ]
+  }
+}
