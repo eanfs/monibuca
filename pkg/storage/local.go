@@ -634,6 +634,49 @@ type LocalFile struct {
 // SetMetadata 本地存储无需元数据，提供空实现以满足 File 接口。
 func (f *LocalFile) SetMetadata(key, value string) {}
 
+// FinalizeFromTemp 用 srcPath 指向的完整文件替换本地目标文件。
+// 优先用 os.Rename（同盘移动，零数据写入）；跨设备时回退到复制+删除。
+// 实现 storage.TempFileFinalizer，供 mp4 trailer 重写消除全量回拷。
+func (f *LocalFile) FinalizeFromTemp(srcPath string) error {
+	destPath := f.File.Name()
+	// 关闭目标文件当前句柄：录制阶段写入的旧内容会被 src 整体取代。
+	if err := f.File.Close(); err != nil {
+		return fmt.Errorf("close dest before finalize: %w", err)
+	}
+	if err := os.Rename(srcPath, destPath); err != nil {
+		// 跨设备（如 /tmp 与录像目录不同挂载点）：复制后删除源。
+		if copyErr := copyFileContents(srcPath, destPath); copyErr != nil {
+			return fmt.Errorf("cross-device finalize: %w", copyErr)
+		}
+		os.Remove(srcPath)
+	}
+	// 重新打开目标文件，使后续 Close() 仍然有效。
+	reopened, err := os.OpenFile(destPath, os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("reopen dest after finalize: %w", err)
+	}
+	f.File = reopened
+	return nil
+}
+
+// copyFileContents 把 src 内容完整复制到 dst（含 fsync），用于跨设备 finalize。
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
 func init() {
 	Factory["local"] = func(config any) (Storage, error) {
 		return NewLocalStorage(config)
