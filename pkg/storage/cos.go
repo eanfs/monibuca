@@ -364,6 +364,21 @@ func (f *COSFile) Stat() (os.FileInfo, error) {
 	return f.tempFile.Stat()
 }
 
+// FinalizeFromTemp 让 COSFile 直接以 srcPath 指向的完整文件作为上传源。
+// 实现 storage.TempFileFinalizer。详见 s3.go 同名方法。
+func (f *COSFile) FinalizeFromTemp(srcPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	adopted, err := adoptUploadTempFile(f.tempFile, f.filePath, srcPath)
+	if err != nil {
+		f.tempFile = nil
+		return fmt.Errorf("finalize from temp: %w", err)
+	}
+	f.tempFile = adopted
+	f.filePath = srcPath
+	return nil
+}
+
 // uploadTempFile 上传临时文件到COS，带并发控制和指数退避重试
 func (f *COSFile) uploadTempFile() error {
 	// 解耦上传 ctx 与文件 ctx (= Recorder.Context). 详见 s3.go uploadTempFile 注释.
@@ -427,6 +442,8 @@ func (f *COSFile) downloadToTemp() error {
 
 	return nil
 }
+
+var _ TempFileFinalizer = (*COSFile)(nil)
 
 func init() {
 	Factory["cos"] = func(conf any) (Storage, error) {
