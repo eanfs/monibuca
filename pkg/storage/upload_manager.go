@@ -41,6 +41,7 @@ var (
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
+	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
 }
 
@@ -58,6 +59,12 @@ func InitUploadManager(cfg UploadConfig) {
 	maxConcurrentTrailers = cfg.MaxConcurrentTrailerWrites
 	trailerSem = make(chan struct{}, cfg.MaxConcurrentTrailerWrites)
 
+	if cfg.TrailerWriteRateMBps > 0 {
+		trailerWriteBytesPerSec = int64(cfg.TrailerWriteRateMBps) * 1024 * 1024
+	} else {
+		trailerWriteBytesPerSec = 0
+	}
+
 	if cfg.PendingDir == "" {
 		cfg.PendingDir = "pending_uploads"
 	}
@@ -65,8 +72,8 @@ func InitUploadManager(cfg UploadConfig) {
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
-	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, pendingDir)
+	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
+		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec/1024/1024, pendingDir)
 }
 
 // AcquireUploadSlot 获取一个上传槽位，阻塞直到有可用槽位或 ctx 取消
