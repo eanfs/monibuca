@@ -1056,3 +1056,29 @@ grep -n 'NewTrailerThrottledWriter' plugin/mp4/pkg/record.go
 - 不优化「本地存储 + 跨设备 /tmp」场景的写入量（仅同盘 rename 受益）——对象存储路径（130 MinIO，实际生产路径）完全受益。
 - 不动 trailer 队列单线程模型、不动旧 plan 的 [预留] 信号量字段——超出本 plan 范围。
 - 未做方案 2（录制时预留 moov 空间，可消除重写本身）——那是更彻底但需改 muxer 的后续修复，本 plan 不含。
+
+---
+
+## 代码评审修复记录 (2026-05-16)
+
+执行后经代码评审，发现并修复 1 个 Critical + 1 个关联缺陷（均由「快路径下 trailer
+临时文件与 storage.File 内部临时文件成为同一文件」引入）：
+
+1. **Critical：对象存储 `Close()` 的 Sync 失败分支删文件 → 丢数据。**
+   `s3/oss/cos` 的 `Close()` 在 `tempFile.Sync()` 失败时原为 `cleanup(true)`，
+   会 `os.Remove(filePath)`。快路径下 `filePath == tempPath`，于是 Sync 失败
+   （如 stop burst 期间磁盘满）会删掉重写好的 trailer 文件，导致 record.go 的
+   `MoveToPendingDir` 扑空、`SaveFailedUpload` 不执行、录像永久丢失。
+   **修复**：Sync 失败分支改 `cleanup(false)`，与上传失败分支一致——失败一律保留文件。
+   原 plan Task A4 Step 3 说明「失败时 cleanup(false) 保留它」仅对上传失败分支成立，
+   遗漏了 Sync 失败分支，此处一并更正。
+
+2. **关联：`FinalizeFromTemp` 失败后 record.go 仍 Close → 空句柄 nil panic + 未补传。**
+   `FinalizeFromTemp` 失败后 `S3File.tempFile` 为 nil，err-defer 再调 `Close()` 会
+   走到 `uploadTempFile()` 对 nil 句柄 `Seek` → panic；且该路径未把完整临时文件入
+   pending。**修复**：record.go 阶段 2 失败时置 `t.file = nil`（跳过 err-defer 的
+   Close），并经新增的 `recoverToPending` 闭包把 tempPath 移入 pending 目录补传。
+   `recoverToPending` 同时被阶段 3 复用，统一「重写完成后任何失败 → 保留临时文件补传」。
+
+3. 次要：回退路径 `io.Copy` 不经限速器（已在代码注释标明，当前为死路径）；
+   `throttledWriter` 注明「限均值非瞬时峰值」「非并发安全」。

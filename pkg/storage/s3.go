@@ -425,7 +425,10 @@ func (w *S3File) Close() error {
 	}
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
-			defer w.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// w.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			defer w.cleanup(false)
 			return err
 		}
 	}

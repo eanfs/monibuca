@@ -152,16 +152,43 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 
+	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
+	// 用于 trailer 重写完成后的任何失败路径（FinalizeFromTemp 失败 / Close 失败）：
+	// 此刻 tempPath 已是完整的 moov-first MP4，绝不能随 defer 一起删掉。
+	recoverToPending := func(cause error) {
+		if t.db == nil {
+			return
+		}
+		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
+		if moveErr != nil {
+			t.Error("move to pending dir failed", "err", moveErr)
+			return
+		}
+		tempOwned = false // 已移走，不需 defer 删除
+		m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+			t.streamPath, expectedSize, t.durationMs, metadata, cause)
+		t.Info("saved failed upload for retry",
+			"pendingPath", pendingPath, "objectKey", t.filePath)
+	}
+
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
 	if finalizer, ok := t.file.(storage.TempFileFinalizer); ok {
 		// 快路径：直接移交 tempPath，省去全量回拷。
 		if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
 			t.Error("finalize from temp", "err", err)
+			// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
+			// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
+			// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
+			t.file = nil
+			recoverToPending(err)
 			return
 		}
 		tempOwned = false // 所有权已移交 t.file
 	} else {
 		// 回退路径：旧的全量回拷（供未实现 TempFileFinalizer 的 File）。
+		// 注意：此处的 io.Copy 写入不经限速器（限速只覆盖阶段 1 的临时文件写入）。
+		// 当前 local/s3/oss/cos 全部实现了 TempFileFinalizer，此分支为死路径，
+		// 仅作未来自定义 File 实现的兜底；若将来有后端走此路径需另行限速。
 		if _, err = t.file.Seek(0, io.SeekStart); err != nil {
 			t.Error("seek file for overwrite", "err", err)
 			return
@@ -188,19 +215,9 @@ func (t *writeTrailerTask) Run() (err error) {
 			"filePath", t.filePath, "streamPath", t.streamPath,
 			"storageType", t.storageKey, "durationMs", t.durationMs)
 		t.file = nil
-		// 上传失败：MOOV 重写后的文件仍保留在 tempPath（storage.File 上传失败时
-		// 不删除它）。移入 pending 目录并入库，供定时补传。
-		if t.db != nil {
-			if pendingPath, moveErr := storage.MoveToPendingDir(tempPath); moveErr == nil {
-				tempOwned = false // 已移走，不需 defer 删除
-				m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
-					t.streamPath, expectedSize, t.durationMs, metadata, err)
-				t.Info("saved failed upload for retry",
-					"pendingPath", pendingPath, "objectKey", t.filePath)
-			} else {
-				t.Error("move to pending dir failed", "err", moveErr)
-			}
-		}
+		// 上传失败：MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close
+		// 失败路径——含 Sync 失败、上传失败——均不删除它），移入 pending 补传。
+		recoverToPending(err)
 		return
 	}
 	t.file = nil

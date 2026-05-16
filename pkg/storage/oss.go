@@ -311,7 +311,10 @@ func (f *OSSFile) Close() error {
 	defer f.mu.Unlock()
 	if f.tempFile != nil {
 		if err := f.tempFile.Sync(); err != nil {
-			f.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// f.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			f.cleanup(false)
 			return err
 		}
 	}
