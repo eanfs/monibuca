@@ -1099,3 +1099,187 @@ grep -n 'NewTrailerThrottledWriter' plugin/mp4/pkg/record.go
   `ErrSkip`，该分支不可达，是 A4 之前就有的防御性死代码。
 - `S3File.Close` 中 `OnUploadFailed` 回调的 `fileSize` 恒为 0：`OnUploadFailed` 全仓
   从未注册，整段为死代码。
+
+---
+
+# E2E 测试计划（后续跟进，2026-05-16 补充）
+
+## 背景与范围
+
+Task A5 / B4 的「端到端冒烟」只验证了 happy path（录制完整 + 峰值达标）。本节补充
+**需要真实环境、无法用单测覆盖**的 e2e 场景，作为合入后的独立跟进项。
+
+执行环境：`example/record-test/`（31~36 路 RTSP 摄像头并发录制框架）+ 130 测试机
+（MinIO 对象存储）。复用既有脚本：`test_high_res.sh`（并发录制入口）、
+`lib/verify.sh`（单流 ffprobe 校验）、`lib/sampler.sh`（进程级磁盘/CPU 采样）。
+
+**验收主指标：** ① 录像完整可播放且 moov-first ② trailer 磁盘写入量 1×（非 2×）
+③ `pending_uploads` 最终为空 ④ 注入失败后无录像永久丢失。
+
+每个 Task 出一份报告归档到 `example/record-test/reports/`，文件名带日期与场景。
+
+---
+
+## Task E1: 本地后端快路径 e2e（rename 零回拷）
+
+验证 `LocalFile.FinalizeFromTemp` 同盘 rename 快路径：trailer 重写后磁盘写入量
+从 2× 文件大小降到 1×。
+
+- [ ] **Step 1: 准备本地后端配置**
+
+`config.yaml` 用 local 存储（`storage.type: local`，`path` 与 `/tmp` 同一挂载点
+确保走 rename 而非跨设备复制），不带 `-tags s3`。`trailerwriteratembps` 留默认 0。
+
+- [ ] **Step 2: 并发录制 + 采样**
+
+```bash
+cd example/record-test
+./test_high_res.sh --group=4k --duration=300
+```
+
+录制期间 `lib/sampler.sh` 持续采样进程磁盘写入；stop 时重点采 trailer 重写窗口。
+
+- [ ] **Step 3: 验收**
+
+- ffprobe 全路 PASS，时长 300±5s，`moov` box 在 `mdat` 之前（`ffprobe -v trace`
+  或 `mp4dump` 确认 box 顺序）。
+- trailer 阶段每文件磁盘写入 ≈ 1× 文件大小（对照 baseline 的 2×）。
+- 录制目录无残留 `.tmp` / 临时文件。
+
+- [ ] **Step 4: 报告归档** → `reports/e2e-E1-local-fastpath-<date>.md`
+
+---
+
+## Task E2: 对象存储后端 e2e（S3/MinIO 上传源切换）
+
+验证 `S3File.FinalizeFromTemp` 后 `Close()` 直接以 trailer 临时文件为上传源，
+上传产物完整、moov-first，`pending_uploads` 为空。
+
+- [ ] **Step 1: 部署带 `-tags s3` 镜像，配 MinIO**
+
+`start.sh` 已默认带 `-tags sqlite,s3`。确认 `config.yaml` 的 `storage.s3`
+endpoint 指向 130 MinIO。
+
+- [ ] **Step 2: 并发录制 → stop → 等上传**
+
+```bash
+./test_high_res.sh --group=2k,4k --duration=300
+```
+
+- [ ] **Step 3: 验收**
+
+- MinIO 上每个对象可下载，下载后 ffprobe PASS 且 moov-first。
+- `pending_uploads` 目录为空；DB `mp4_streams`（或对应表）记录数 = 录制路数。
+- 本地无残留临时文件（上传成功后临时文件已删）。
+- OSS / COS 后端各重跑一遍（`-tags oss` / `-tags cos`，对应 endpoint），
+  确认三后端 `FinalizeFromTemp` 行为一致。
+
+- [ ] **Step 4: 报告归档** → `reports/e2e-E2-objstore-upload-<date>.md`
+
+---
+
+## Task E3: 限速 e2e（disk burst 削平）
+
+验证 `trailerwriteratembps` 把 record stop 时的磁盘写入 burst 压到目标值。
+
+- [ ] **Step 1: 三组对照配置**
+
+| 组 | `trailerwriteratembps` | 预期 |
+|---|---|---|
+| 对照组 | 0（不限速） | 记录 `disk_w_kbps` 峰值 baseline |
+| 限速组 | 300 | 峰值 < 320 MB/s |
+| 低速组 | 100 | 峰值 < 120 MB/s，stop 耗时明显变长 |
+
+- [ ] **Step 2: 每组并发录制 31 路 → 同时 stop → 采样**
+
+`lib/sampler.sh` 高频采 `disk_w_kbps`，记录 stop 窗口峰值与 stop 总耗时。
+
+- [ ] **Step 3: 验收**
+
+- 限速组 / 低速组峰值落在目标区间。
+- 三组 ffprobe 均 PASS（限速不影响录像完整性）。
+- 记录「峰值 ↓ ↔ stop 耗时 ↑」的权衡曲线，供生产按硬件选值。
+
+- [ ] **Step 4: 报告归档** → `reports/e2e-E3-throttle-<date>.md`
+
+---
+
+## Task E4: 失败补传 e2e（数据零丢失，回归重点）
+
+验证评审修复的 Critical：trailer 重写完成后任何失败路径，临时文件都进
+`pending_uploads` 并经定时任务补传，录像不丢。
+
+- [ ] **Step 1: 场景 A —— 上传失败（MinIO 不可达）**
+
+录制中途或 stop 前停掉 MinIO（或 iptables 阻断 endpoint）→ 触发 stop。
+验收：临时文件移入 `pending_uploads`，DB 有失败上传记录；恢复 MinIO 后
+定时补传把文件传上去，`pending_uploads` 清空。
+
+- [ ] **Step 2: 场景 B —— Sync 失败（磁盘满）**
+
+用小容量 tmpfs 作录像/临时目录，录制使其在 stop trailer 阶段写满 →
+`tempFile.Sync()` 失败。验收：**文件未被删除**（回归点，对应
+`TestS3File_CloseSyncFailurePreservesFile`），仍可被 `MoveToPendingDir` 捞回。
+
+- [ ] **Step 3: 场景 C —— 跨设备 finalize 失败 / 成功**
+
+本地后端，录像目录与临时目录置于不同挂载点 → `os.Rename` 失败回退
+`copyFileContents`。验收：回退复制成功、目标文件完整、源被删；
+若回退也失败（目标盘满）→ 文件保留可补传。
+
+- [ ] **Step 4: 验收总纲**
+
+- 三场景下「录制成功的流」最终都有完整可播放文件（即时或补传后）。
+- 无 nil panic（对应修复 2：`FinalizeFromTemp` 失败置 `t.file=nil`）。
+- 日志含 `saved failed upload for retry`，无 `move to pending dir failed`。
+
+- [ ] **Step 5: 报告归档** → `reports/e2e-E4-failure-recovery-<date>.md`
+
+---
+
+## Task E5: 长稳 / 回归对照 e2e
+
+验证改动在长时间、多轮 start/stop 下无资源泄漏，并固化 baseline 对照表。
+
+- [ ] **Step 1: 多轮录制循环**
+
+连续 ≥10 轮「录制 5min → stop → 等上传」，全程监控：进程 RSS、fd 数、
+goroutine 数（`/debug/pprof`）、`pending_uploads` 文件数。
+
+- [ ] **Step 2: 验收**
+
+- 内存 / fd / goroutine 无单调增长（无泄漏）。
+- 每轮 `pending_uploads` 录完即归零。
+- 无残留 `.tmp`。
+
+- [ ] **Step 3: 固化对照表**
+
+汇总 E1~E3 数据，更新「Task B4 Step 4 对照表」的实测列：
+
+| 指标 | baseline | 阶段 A | 阶段 A+B(300) |
+|---|---|---|---|
+| 每文件 trailer 磁盘写 | 2× | 1× | 1× |
+| `disk_w_kbps` 峰值 | ~1126 MB/s | 实测 | < 320 MB/s |
+| stop 总耗时 | 实测 | 实测 | 实测 |
+| ffprobe PASS | — | 31/31 | 31/31 |
+
+- [ ] **Step 4: 报告归档** → `reports/e2e-E5-soak-regression-<date>.md`
+
+---
+
+## E2E 跟进任务清单（合入后执行）
+
+| 任务 | 依赖 | 环境 | 状态 |
+|---|---|---|---|
+| E1 本地快路径 | 阶段 A 合入 | 本地后端 | ⬜ 待跟进 |
+| E2 对象存储上传 | 阶段 A 合入 | 130 + MinIO/OSS/COS | ⬜ 待跟进 |
+| E3 限速 burst | 阶段 B 合入 | 130 + MinIO | ⬜ 待跟进 |
+| E4 失败补传 | 阶段 A 合入 | 130（可注入故障） | ⬜ 待跟进 **（回归重点）** |
+| E5 长稳回归对照 | 阶段 A+B 合入 | 130 + MinIO | ⬜ 待跟进 |
+
+**优先级：** E4 > E2 > E3 > E1 > E5。E4 直接验证评审修复的数据丢失 Critical，
+应在上线前必跑；E1 多数已被 Task A5 冒烟覆盖，可最后补。
+
+**自动化跟进项：** 当前 E1~E5 需人工注入故障 + 看日志，尚无法纯 bash 一键断言。
+后续可把 E1/E2/E3 的 ffprobe 校验与 `disk_w_kbps` 断言并入 `test_high_res.sh`
+出报告流程；E4 的故障注入（停 MinIO / 写满 tmpfs）需独立脚本。
