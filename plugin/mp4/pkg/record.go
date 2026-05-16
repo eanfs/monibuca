@@ -56,11 +56,12 @@ func (task *writeTrailerTask) Start() (err error) {
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 
-// 将 moov 从末尾移动到前方
-// 将 ftyp + free(optional) + moov + mdat 写入临时文件, 然后将完整数据回写到原文件。
-// 采用"先写临时文件后覆盖"策略：确保 t.file.Close() 触发的对象存储上传读取到完整的
-// MOOV-first MP4，并在上传失败时保留 MOOV 重写后的临时文件供 DB 重试。
-// 使用 bufio 缓冲减少写入 syscall（moov 由大量小块组成）。
+// 将 moov 从文件末尾移动到文件头：先把 [ftyp][moov][mdat] 写入临时文件，
+// 然后让 storage.File 承载这份临时文件。
+//
+// 阶段 2 优先走 TempFileFinalizer 快路径：临时文件本身已是完整 moov-first MP4，
+// 直接移交给 storage.File（对象存储=上传源；本地=rename 到目标路径），省去一次
+// 全量回拷。未实现 TempFileFinalizer 的 File 回退到旧的 io.Copy 路径。
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
 
@@ -79,32 +80,30 @@ func (t *writeTrailerTask) Run() (err error) {
 		return
 	}
 	tempPath := temp.Name()
-	// 错误时保留临时文件用于手动恢复或入库重试，成功时删除
-	tempCleanup := true
+	// tempOwned 表示 tempPath 文件当前是否仍由本函数负责删除。
+	// 移交给 storage.File（FinalizeFromTemp 成功）或移入 pending 目录后置 false。
+	tempOwned := true
 	defer func() {
 		temp.Close()
-		if tempCleanup {
+		if tempOwned {
 			os.Remove(tempPath)
-		} else {
-			t.Error("preserving temp file for recovery", "tempPath", tempPath)
 		}
 	}()
 
-	_, err = t.file.Seek(0, io.SeekStart)
-	if err != nil {
+	// ---- 阶段 1：把 [ftyp][moov][mdat] 写入临时文件 ----
+	if _, err = t.file.Seek(0, io.SeekStart); err != nil {
 		t.Error("seek file", "err", err)
-		tempCleanup = false
 		return
 	}
-
-	// 使用带缓冲的 writer 减少写入 syscall（moov 由大量小块组成）
-	bw := bufio.NewWriterSize(temp, 1<<20) // 1 MB write buffer
+	// trailer 重写后唯一的大块磁盘写入是这笔「写临时文件」。
+	// 用限速 writer 包住 temp（速率由 storage.TrailerWriteRateMBps 配置；
+	// 未配置时 NewTrailerThrottledWriter 直接返回 temp，零开销）。
+	// 外层 bufio 减少写入 syscall（moov 由大量小块组成）。
+	bw := bufio.NewWriterSize(storage.NewTrailerThrottledWriter(temp), 1<<20)
 
 	// 复制 mdat box 之前的内容
-	_, err = io.CopyN(bw, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData)
-	if err != nil {
+	if _, err = io.CopyN(bw, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData); err != nil {
 		t.Error("copy pre-mdat data", "err", err)
-		tempCleanup = false
 		return
 	}
 	for _, track := range t.muxer.Tracks {
@@ -112,25 +111,20 @@ func (t *writeTrailerTask) Run() (err error) {
 			track.Samplelist[i].Offset += int64(t.muxer.moov.Size())
 		}
 	}
-	err = t.muxer.WriteMoov(bw)
-	if err != nil {
+	if err = t.muxer.WriteMoov(bw); err != nil {
 		t.Error("write moov to temp", "err", err)
-		tempCleanup = false
 		return
 	}
 	// 复制 mdat box
-	_, err = io.CopyN(bw, t.file, int64(t.muxer.mdatSize)+BeforeMdatData)
-	if err != nil {
+	if _, err = io.CopyN(bw, t.file, int64(t.muxer.mdatSize)+BeforeMdatData); err != nil {
 		if err == pkg.ErrSkip {
 			return task.ErrTaskComplete
 		}
 		t.Error("rewrite with mdat", "err", err)
-		tempCleanup = false
 		return
 	}
 	if err = bw.Flush(); err != nil {
 		t.Error("flush temp file", "err", err)
-		tempCleanup = false
 		return
 	}
 
@@ -139,43 +133,16 @@ func (t *writeTrailerTask) Run() (err error) {
 	if statErr != nil {
 		err = statErr
 		t.Error("stat temp file", "err", err)
-		tempCleanup = false
 		return
 	}
 	expectedSize := tempStat.Size()
 	if expectedSize == 0 {
 		err = fmt.Errorf("temp file is empty after MOOV rewrite")
 		t.Error("temp file empty", "err", err)
-		tempCleanup = false
 		return
 	}
 
-	// 临时文件已包含完整数据，现在安全覆盖原文件
-	if _, err = t.file.Seek(0, io.SeekStart); err != nil {
-		t.Error("seek file for overwrite", "err", err)
-		tempCleanup = false
-		return
-	}
-	if _, err = temp.Seek(0, io.SeekStart); err != nil {
-		t.Error("seek temp file", "err", err)
-		tempCleanup = false
-		return
-	}
-	written, copyErr := io.Copy(t.file, temp)
-	if copyErr != nil {
-		err = copyErr
-		t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
-		tempCleanup = false // 保留临时文件用于恢复
-		return
-	}
-	if written != expectedSize {
-		err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
-		t.Error("incomplete overwrite", "err", err)
-		tempCleanup = false
-		return
-	}
-
-	// 在关闭前设置元数据（文件大小 + 时长）
+	// 在最终持久化前设置元数据（文件大小 + 时长）
 	metadata := map[string]string{
 		"video-size-bytes": fmt.Sprintf("%d", expectedSize),
 	}
@@ -184,29 +151,79 @@ func (t *writeTrailerTask) Run() (err error) {
 		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
+
+	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
+	// 用于 trailer 重写完成后的任何失败路径（FinalizeFromTemp 失败 / Close 失败）：
+	// 此刻 tempPath 已是完整的 moov-first MP4，绝不能随 defer 一起删掉。
+	recoverToPending := func(cause error) {
+		if t.db == nil {
+			// 无 DB（测试模式 / 无库部署）：没有补传队列可登记，
+			// 让 defer 按 tempOwned 删除临时文件即可。
+			return
+		}
+		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
+		if moveErr != nil {
+			t.Error("move to pending dir failed", "err", moveErr)
+			return
+		}
+		tempOwned = false // 已移走，不需 defer 删除
+		m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+			t.streamPath, expectedSize, t.durationMs, metadata, cause)
+		t.Info("saved failed upload for retry",
+			"pendingPath", pendingPath, "objectKey", t.filePath)
+	}
+
+	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
+	if finalizer, ok := t.file.(storage.TempFileFinalizer); ok {
+		// 快路径：直接移交 tempPath，省去全量回拷。
+		if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
+			t.Error("finalize from temp", "err", err)
+			// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
+			// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
+			// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
+			t.file = nil
+			recoverToPending(err)
+			return
+		}
+		tempOwned = false // 所有权已移交 t.file
+	} else {
+		// 回退路径：旧的全量回拷（供未实现 TempFileFinalizer 的 File）。
+		// 注意：此处的 io.Copy 写入不经限速器（限速只覆盖阶段 1 的临时文件写入）。
+		// 当前 local/s3/oss/cos 全部实现了 TempFileFinalizer，此分支为死路径，
+		// 仅作未来自定义 File 实现的兜底；若将来有后端走此路径需另行限速。
+		if _, err = t.file.Seek(0, io.SeekStart); err != nil {
+			t.Error("seek file for overwrite", "err", err)
+			return
+		}
+		if _, err = temp.Seek(0, io.SeekStart); err != nil {
+			t.Error("seek temp file", "err", err)
+			return
+		}
+		var written int64
+		if written, err = io.Copy(t.file, temp); err != nil {
+			t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
+			return
+		}
+		if written != expectedSize {
+			err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
+			t.Error("incomplete overwrite", "err", err)
+			return
+		}
+	}
+
+	// ---- 阶段 3：Close 触发最终持久化（对象存储=上传；本地=已就位）----
 	if err = t.file.Close(); err != nil {
 		t.Error("upload failed after retries", "err", err,
 			"filePath", t.filePath, "streamPath", t.streamPath,
 			"storageType", t.storageKey, "durationMs", t.durationMs)
 		t.file = nil
-		// 将 MOOV 重写后的临时文件移到暂存目录，保存失败记录到 DB 供定时补传
-		if tempCleanup && t.db != nil {
-			// tempCleanup=true 意味着 MOOV 临时文件还在，可以用来补传
-			pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
-			if moveErr == nil {
-				tempCleanup = false // 已移走，不需 defer 删除
-				m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
-					t.streamPath, expectedSize, t.durationMs, metadata, err)
-				t.Info("saved failed upload for retry",
-					"pendingPath", pendingPath, "objectKey", t.filePath)
-			} else {
-				t.Error("move to pending dir failed", "err", moveErr)
-			}
-		}
+		// 上传失败：MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close
+		// 失败路径——含 Sync 失败、上传失败——均不删除它），移入 pending 补传。
+		recoverToPending(err)
 		return
 	}
 	t.file = nil
-	// 文件已完整写入并上传成功，此时才将记录写入数据库（延迟入库，确保 DB 与可播放文件一致）。
+	// 文件已完整持久化，此时才将记录写入数据库（延迟入库，确保 DB 与可播放文件一致）。
 	if t.dbWrite != nil {
 		t.dbWrite(&writeTrailerQueueTask)
 	}

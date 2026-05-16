@@ -425,7 +425,10 @@ func (w *S3File) Close() error {
 	}
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
-			defer w.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// w.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			defer w.cleanup(false)
 			return err
 		}
 	}
@@ -473,6 +476,23 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 		return nil, fmt.Errorf("s3 file not initialized")
 	}
 	return w.tempFile.Stat()
+}
+
+// FinalizeFromTemp 让 S3File 直接以 srcPath 指向的完整文件作为上传源，
+// 省去调用方「temp → S3File 内部 temp」的全量回拷。
+// 后续 Close() 会上传该文件；上传成功删除它，失败保留它供补传。
+// 实现 storage.TempFileFinalizer。
+func (w *S3File) FinalizeFromTemp(srcPath string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f, err := adoptUploadTempFile(w.tempFile, w.filePath, srcPath)
+	if err != nil {
+		w.tempFile = nil
+		return fmt.Errorf("finalize from temp: %w", err)
+	}
+	w.tempFile = f
+	w.filePath = srcPath
+	return nil
 }
 
 // uploadTempFile 上传临时文件到S3，带并发控制和指数退避重试
@@ -568,6 +588,8 @@ func (w *S3File) downloadToTemp() error {
 
 	return nil
 }
+
+var _ TempFileFinalizer = (*S3File)(nil)
 
 func init() {
 	Factory["s3"] = func(conf any) (Storage, error) {
