@@ -1082,3 +1082,20 @@ grep -n 'NewTrailerThrottledWriter' plugin/mp4/pkg/record.go
 
 3. 次要：回退路径 `io.Copy` 不经限速器（已在代码注释标明，当前为死路径）；
    `throttledWriter` 注明「限均值非瞬时峰值」「非并发安全」。
+
+第二轮评审（无 Critical）补充修复：
+
+4. `trailerWriteBytesPerSec` 改为 `atomic.Int64`：消除 `InitUploadManager` 写入与
+   `NewTrailerThrottledWriter` 读取之间的形式化数据竞争（实际不并发，但 atomic 让其确定无误）。
+5. 补充注释：`LocalFile.FinalizeFromTemp` 失败后 `f.File` 为已关闭句柄（调用方须丢弃）；
+   `recoverToPending` 在 `t.db == nil` 时的提前返回意图。
+
+**行为偏差说明**：旧 `Run()` 在阶段 1 出错时（如 `bw.Flush` 失败）会保留**不完整的**
+临时文件「供手动恢复」；新 `Run()` 统一让 defer 删除它。这是有意的改进——半截 MP4
+无恢复价值，且此时原始录像数据仍在 `t.file` 内、会经 err-defer 的 `Close()` 正常上传。
+
+第二轮评审中标记为「预存、不在本 PR 范围」未处理项（均非本次改动引入）：
+- `pkg.ErrSkip` 分支：`io.CopyN` 的读端是 storage.File、写端是 bufio，二者都不产生
+  `ErrSkip`，该分支不可达，是 A4 之前就有的防御性死代码。
+- `S3File.Close` 中 `OnUploadFailed` 回调的 `fileSize` 恒为 0：`OnUploadFailed` 全仓
+  从未注册，整段为死代码。

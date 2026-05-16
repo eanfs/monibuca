@@ -637,6 +637,10 @@ func (f *LocalFile) SetMetadata(key, value string) {}
 // FinalizeFromTemp 用 srcPath 指向的完整文件替换本地目标文件。
 // 优先用 os.Rename（同盘移动，零数据写入）；跨设备时回退到复制+删除。
 // 实现 storage.TempFileFinalizer，供 mp4 trailer 重写消除全量回拷。
+//
+// 注意：本方法一开始即关闭 f.File。若 rename 与跨设备复制均失败而返回 error，
+// f.File 会停留在已关闭的句柄上——调用方应在 FinalizeFromTemp 失败后丢弃本 File、
+// 不再使用（mp4 record.go 即如此：失败后置 t.file=nil）。
 func (f *LocalFile) FinalizeFromTemp(srcPath string) error {
 	destPath := f.File.Name()
 	// 关闭目标文件当前句柄：录制阶段写入的旧内容会被 src 整体取代。

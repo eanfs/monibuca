@@ -157,6 +157,8 @@ func (t *writeTrailerTask) Run() (err error) {
 	// 此刻 tempPath 已是完整的 moov-first MP4，绝不能随 defer 一起删掉。
 	recoverToPending := func(cause error) {
 		if t.db == nil {
+			// 无 DB（测试模式 / 无库部署）：没有补传队列可登记，
+			// 让 defer 按 tempOwned 删除临时文件即可。
 			return
 		}
 		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)

@@ -2,12 +2,15 @@ package storage
 
 import (
 	"io"
+	"sync/atomic"
 	"time"
 )
 
 // trailerWriteBytesPerSec 是 trailer 写盘限速速率（字节/秒），0 = 不限速。
-// 由 InitUploadManager 从 UploadConfig.TrailerWriteRateMBps 读入，运行时只读。
-var trailerWriteBytesPerSec int64
+// 由 InitUploadManager 从 UploadConfig.TrailerWriteRateMBps 写入，
+// 由 NewTrailerThrottledWriter 读取。用 atomic 保证两者间无数据竞争
+// （InitUploadManager 在启动期、读取在录制期，实际不并发，但 atomic 让其确定无误）。
+var trailerWriteBytesPerSec atomic.Int64
 
 // throttledWriter 把底层 writer 的累计写入速率限制在 bytesPerSec 以内，
 // 用于把 record stop 时 trailer 重写的磁盘写入从尖峰压成平台。
@@ -55,5 +58,5 @@ func (t *throttledWriter) Write(p []byte) (int, error) {
 // NewTrailerThrottledWriter 用全局 trailer 限速速率包装 w。
 // 速率为 0（默认/未配置）时返回 w 本身，无任何开销。
 func NewTrailerThrottledWriter(w io.Writer) io.Writer {
-	return newThrottledWriter(w, trailerWriteBytesPerSec)
+	return newThrottledWriter(w, trailerWriteBytesPerSec.Load())
 }

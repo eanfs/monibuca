@@ -60,9 +60,9 @@ func InitUploadManager(cfg UploadConfig) {
 	trailerSem = make(chan struct{}, cfg.MaxConcurrentTrailerWrites)
 
 	if cfg.TrailerWriteRateMBps > 0 {
-		trailerWriteBytesPerSec = int64(cfg.TrailerWriteRateMBps) * 1024 * 1024
+		trailerWriteBytesPerSec.Store(int64(cfg.TrailerWriteRateMBps) * 1024 * 1024)
 	} else {
-		trailerWriteBytesPerSec = 0
+		trailerWriteBytesPerSec.Store(0)
 	}
 
 	if cfg.PendingDir == "" {
@@ -73,7 +73,7 @@ func InitUploadManager(cfg UploadConfig) {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
 	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec/1024/1024, pendingDir)
+		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, pendingDir)
 }
 
 // AcquireUploadSlot 获取一个上传槽位，阻塞直到有可用槽位或 ctx 取消
