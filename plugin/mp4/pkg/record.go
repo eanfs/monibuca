@@ -95,8 +95,11 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("seek file", "err", err)
 		return
 	}
-	// 使用带缓冲的 writer 减少写入 syscall（moov 由大量小块组成）
-	bw := bufio.NewWriterSize(temp, 1<<20) // 1 MB write buffer
+	// trailer 重写后唯一的大块磁盘写入是这笔「写临时文件」。
+	// 用限速 writer 包住 temp（速率由 storage.TrailerWriteRateMBps 配置；
+	// 未配置时 NewTrailerThrottledWriter 直接返回 temp，零开销）。
+	// 外层 bufio 减少写入 syscall（moov 由大量小块组成）。
+	bw := bufio.NewWriterSize(storage.NewTrailerThrottledWriter(temp), 1<<20)
 
 	// 复制 mdat box 之前的内容
 	if _, err = io.CopyN(bw, t.file, int64(t.muxer.mdatOffset)-BeforeMdatData); err != nil {
