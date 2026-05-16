@@ -14,6 +14,10 @@ global:
     # maxconcurrenttrailerwrites: 8   # [预留] trailer 写盘并发槽位 (默认 8)
     #                                 # 当前 trailer queue 是 single-threaded, 此项不影响实际行为,
     #                                 # 仅作为未来 worker-pool 实现的接口预留
+    # trailerwriteratembps: 0         # trailer 重写写盘限速 (MB/s)。record stop 多路并发时,
+    #                                 # trailer 重写会产生磁盘写入 burst。0=不限速 (默认)。
+    #                                 # 需要把峰值压到目标值时设具体数值, 例如 SSD 上设 300
+    #                                 # 表示限到 ~300 MB/s。本机 SSD 顺序写上限实测约 1.1 GB/s。
     s3:
       region: "us-east-1"                   # AWS区域
       endpoint: "storage-dev.xiding.tech"          # S3服务端点
