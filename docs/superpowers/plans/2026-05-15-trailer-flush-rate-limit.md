@@ -1,8 +1,11 @@
 # MP4 Trailer Flush 限流 实施计划
 
-> **状态：已完成（部分回滚）** — 2026-05-15 合并到 develop（`be9915a1`）
+> **状态：已完成（部分回滚）· 磁盘 burst 已被后续 plan 取代** — 2026-05-15 合并到 develop（`be9915a1`）
 >
 > Task 1（storage API）已合并并保留。Task 2（mp4 plugin 调用）经三次迭代后回滚，原因见下方「执行结果」节。
+>
+> ⚠️ **本 plan 遗留的「磁盘 burst 未解决」（Task 6 / 遗留 Issue 1）已由 `2026-05-16-trailer-rewrite-io-reduction.md` 解决并合并 develop（`eb828a11`）**：
+> 后续 plan 用「消除 trailer 回拷（每文件写盘 2×→1×）+ `TrailerWriteRateMBps` 写盘限速器」两个正确杠杆，替代了本 plan 失败的并发信号量方案。本文件 Task 6 与「遗留 Issue 1」仅作历史记录，不再跟进。
 
 **Goal:** 在录制插件的 trailer flush 流程加并发槽位限制，把 record stop 时磁盘写带宽峰值控制在 300 MB/s 以内（实测无限流时峰值 1.1 GB/s ≈ SSD 顺序写上限）。
 
