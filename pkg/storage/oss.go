@@ -311,7 +311,10 @@ func (f *OSSFile) Close() error {
 	defer f.mu.Unlock()
 	if f.tempFile != nil {
 		if err := f.tempFile.Sync(); err != nil {
-			f.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// f.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			f.cleanup(false)
 			return err
 		}
 	}
@@ -357,6 +360,21 @@ func (f *OSSFile) Stat() (os.FileInfo, error) {
 		return nil, fmt.Errorf("oss file not initialized")
 	}
 	return f.tempFile.Stat()
+}
+
+// FinalizeFromTemp 让 OSSFile 直接以 srcPath 指向的完整文件作为上传源。
+// 实现 storage.TempFileFinalizer。详见 s3.go 同名方法。
+func (f *OSSFile) FinalizeFromTemp(srcPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	adopted, err := adoptUploadTempFile(f.tempFile, f.filePath, srcPath)
+	if err != nil {
+		f.tempFile = nil
+		return fmt.Errorf("finalize from temp: %w", err)
+	}
+	f.tempFile = adopted
+	f.filePath = srcPath
+	return nil
 }
 
 // uploadTempFile 上传临时文件到OSS，带并发控制和指数退避重试
@@ -422,6 +440,8 @@ func (f *OSSFile) downloadToTemp() error {
 
 	return nil
 }
+
+var _ TempFileFinalizer = (*OSSFile)(nil)
 
 func init() {
 	Factory["oss"] = func(conf any) (Storage, error) {
