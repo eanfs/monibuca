@@ -33,7 +33,7 @@ COMPOSE_DIR="${COMPOSE_DIR:-/home/project/xde-uat/media-docker-compose}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose-xde-monibuca.yml}"
 CONTAINER="${CONTAINER:-xde-monibuca}"
 IMAGE_REPO="${IMAGE_REPO:-swr.cn-east-3.myhuaweicloud.com/intetech/monibuca}"
-API_BASE="${API_BASE:-http://localhost:8080}"   # 在 130 上以 localhost 访问
+API_BASE="${API_BASE:-http://localhost:7080}"   # 130 上 monibuca http listenaddr (network_mode host)
 PENDING_DIR="${PENDING_DIR:-/monibuca/pending_uploads}"
 STREAM_COUNT="${STREAM_COUNT:-31}"
 STREAM_PREFIX="${STREAM_PREFIX:-verify130/cam}"
@@ -131,7 +131,8 @@ cmd_deploy() {
 wait_api_ready() {
 	local i
 	for i in $(seq 1 30); do
-		if api_get "/api/proxy/pull/list" 2>/dev/null | grep -q '.'; then
+		# 用 /api/sysinfo 判就绪: 返回 {"code":0,...}; 404 页无 "code" 字段, 不会误判
+		if api_get "/api/sysinfo" 2>/dev/null | grep -q '"code"'; then
 			ok "API 就绪"
 			return 0
 		fi
@@ -173,10 +174,12 @@ cmd_add_proxies() {
 
 cmd_start_record() {
 	load_cameras
-	log "对 ${#STREAMS[@]} 路启动录制 (fragment=0, 整段不分片)"
+	log "对 ${#STREAMS[@]} 路启动录制 (fragment=0 整段不分片, filePath 按 streamPath 区分)"
 	local sp resp
 	for sp in "${STREAMS[@]}"; do
-		resp=$(api_post "/mp4/api/start/$sp" "$(printf '{"streamPath":"%s","fragment":"0"}' "$sp")")
+		# filePath 必须每路唯一 —— StartRecord 默认 filePath="." (api.go:712),
+		# 多路共用同一 filePath 会触发 ErrRecordExists. 用 streamPath 当 filePath.
+		resp=$(api_post "/mp4/api/start/$sp" "$(printf '{"streamPath":"%s","filePath":"%s","fragment":"0"}' "$sp" "$sp")")
 		case "$resp" in
 			*'"code":0'*|'') ;;
 			*) warn "start $sp 响应: $resp" ;;
