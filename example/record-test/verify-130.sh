@@ -101,7 +101,7 @@ load_cameras() {
 	local u
 	while IFS= read -r u; do
 		[ -n "$u" ] && CAM_URLS+=("$u")
-	done < <(grep -oE 'rtsp://[^[:space:]]+' "$src" | head -n "$STREAM_COUNT")
+	done < <(grep -vE '^[[:space:]]*#' "$src" | grep -oE 'rtsp://[^[:space:]]+' | head -n "$STREAM_COUNT")
 	[ "${#CAM_URLS[@]}" -gt 0 ] || die "$src 里没抓到 rtsp:// 地址"
 	[ "${#CAM_URLS[@]}" -ge "$STREAM_COUNT" ] || \
 		warn "只找到 ${#CAM_URLS[@]} 路摄像头, 少于请求的 $STREAM_COUNT"

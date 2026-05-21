@@ -55,10 +55,10 @@ rtsp:
     live/camera1: rtsp://admin:a1234567@192.168.12.71/ch1/main/av_stream
     live/camera2: rtsp://admin:a1234567@192.168.12.72/ch1/main/av_stream
     live/camera3: rtsp://admin:a1234567@192.168.12.73/ch1/main/av_stream
-    # 海康威视 - 192.168.10.x 系列
-    live/camera4: rtsp://admin:a1234567@192.168.10.81/ch1/main/av_stream
-    live/camera5: rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream
-    live/camera6: rtsp://admin:a1234567@192.168.10.83/ch1/main/av_stream
+    # 海康威视 - 192.168.10.x 系列 (2026-05-20 检测全部 DOWN, 已注释)
+    # live/camera4: rtsp://admin:a1234567@192.168.10.81/ch1/main/av_stream
+    # live/camera5: rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream
+    # live/camera6: rtsp://admin:a1234567@192.168.10.83/ch1/main/av_stream
     # 海康威视 - 192.168.12.3x 系列（俯视/侧视/正视）
     live/camera7: rtsp://admin:a1234567@192.168.12.31/ch1/main/av_stream
     live/camera8: rtsp://admin:a1234567@192.168.12.32/ch1/main/av_stream
@@ -94,7 +94,7 @@ rtsp:
     live/camera31: rtsp://admin:a1234567@192.168.12.223:554/cam/realmonitor?channel=1&subtype=0
     live/camera32: rtsp://admin:a1234567@192.168.12.224:554/cam/realmonitor?channel=1&subtype=0
     # 海康威视 - 192.168.12.2x 系列（俯视/侧视/正视）
-    live/camera33: rtsp://admin:a1234567@192.168.12.21/ch1/main/av_stream
+    # live/camera33: rtsp://admin:a1234567@192.168.12.21/ch1/main/av_stream  (DOWN 2026-05-20)
     live/camera34: rtsp://admin:a1234567@192.168.12.22/ch1/main/av_stream
     live/camera35: rtsp://admin:a1234567@192.168.12.23/ch1/main/av_stream
 
