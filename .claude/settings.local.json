@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ssh *)"
+      "Bash(ssh *)",
+      "Bash(mkdir -p ~/.claude/skills/learned/gotask-task-work-is-single-threaded)",
+      "Bash(mkdir -p ~/.claude/skills/learned/context-withoutcancel-for-async-cleanup)"
     ],
     "additionalDirectories": [
       "/Users/lirichen/Work/GithubRepo/gotask"
