@@ -634,6 +634,12 @@ type LocalFile struct {
 // SetMetadata 本地存储无需元数据，提供空实现以满足 File 接口。
 func (f *LocalFile) SetMetadata(key, value string) {}
 
+// LocalFd 返回 LocalFile 的底层文件句柄。
+// 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
+func (f *LocalFile) LocalFd() *os.File { return f.File }
+
+var _ RangeInserter = (*LocalFile)(nil)
+
 // FinalizeFromTemp 用 srcPath 指向的完整文件替换本地目标文件。
 // 优先用 os.Rename（同盘移动，零数据写入）；跨设备时回退到复制+删除。
 // 实现 storage.TempFileFinalizer，供 mp4 trailer 重写消除全量回拷。

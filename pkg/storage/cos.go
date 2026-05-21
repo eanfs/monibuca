@@ -448,6 +448,12 @@ func (f *COSFile) downloadToTemp() error {
 
 var _ TempFileFinalizer = (*COSFile)(nil)
 
+// LocalFd 返回 COSFile 上传前承载录像数据的本地暂存文件句柄。
+// 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
+func (f *COSFile) LocalFd() *os.File { return f.tempFile }
+
+var _ RangeInserter = (*COSFile)(nil)
+
 func init() {
 	Factory["cos"] = func(conf any) (Storage, error) {
 		var cosConfig COSStorageConfig

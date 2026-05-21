@@ -591,6 +591,12 @@ func (w *S3File) downloadToTemp() error {
 
 var _ TempFileFinalizer = (*S3File)(nil)
 
+// LocalFd 返回 S3File 上传前承载录像数据的本地暂存文件句柄。
+// 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
+func (w *S3File) LocalFd() *os.File { return w.tempFile }
+
+var _ RangeInserter = (*S3File)(nil)
+
 func init() {
 	Factory["s3"] = func(conf any) (Storage, error) {
 		var s3Config S3StorageConfig
