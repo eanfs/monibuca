@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,6 +73,12 @@ func (t *writeTrailerTask) Run() (err error) {
 			t.file = nil
 		}
 	}()
+
+	// 阶段 A：progressive MP4 优先用 fallocate INSERT_RANGE 原地插 moov，
+	// 把 trailer 磁盘写从 O(mdat 全量) 降到 O(moov)。不支持时回退下方全量重写。
+	if handled, e := t.runInsertRangeFastPath(); handled {
+		return e
+	}
 
 	var temp *os.File
 	temp, err = os.CreateTemp("", "*.mp4")
@@ -228,6 +235,163 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.dbWrite(&writeTrailerQueueTask)
 	}
 	return
+}
+
+// shiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta，
+// 用于 INSERT_RANGE 把 mdat 逻辑后移后校正 moov 内的 chunk offset。
+func (t *writeTrailerTask) shiftSampleOffsets(delta int64) {
+	for _, track := range t.muxer.Tracks {
+		for i := range track.Samplelist {
+			track.Samplelist[i].Offset += delta
+		}
+	}
+}
+
+// writeMoovHead 在 INSERT_RANGE 撑开的 [0,insertLen) 空间写入 [ftyp][moov][free padding]，
+// 并把插入后暴露在 [insertLen, ...) 的旧 [ftyp][free] 覆盖为一个 free box。
+func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, insertLen, ftypSize, moovSize int64) error {
+	padPayload := insertLen - ftypSize - moovSize - box.BasicBoxLen
+	if padPayload < 0 {
+		return fmt.Errorf("moov head overflow: insertLen=%d ftyp=%d moov=%d", insertLen, ftypSize, moovSize)
+	}
+	if _, err := fd.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := box.WriteTo(fd, ftypBox, moov, box.CreateFreeBox(make([]byte, padPayload))); err != nil {
+		return err
+	}
+	// 旧头部 [ftyp][free]（mdatOffset-8 字节，不含 mdat box header）插入后位于
+	// [insertLen, ...)，覆盖为一个 free box 使 MP4 解析器忽略它。
+	oldHeadLen := int64(t.muxer.mdatOffset) - box.BasicBoxLen
+	if _, err := fd.Seek(insertLen, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := box.WriteTo(fd, box.CreateBaseBox(box.TypeFREE, uint64(oldHeadLen))); err != nil {
+		return err
+	}
+	return nil
+}
+
+// recoverFastPathFailure 在 INSERT fast path 改写文件后、最终持久化失败时，
+// 把本地文件登记到 pending 目录供定时补传。
+func (t *writeTrailerTask) recoverFastPathFailure(localPath string, fileSize int64, cause error) {
+	if t.db == nil {
+		return
+	}
+	pendingPath, moveErr := storage.MoveToPendingDir(localPath)
+	if moveErr != nil {
+		t.Error("move to pending dir failed", "err", moveErr)
+		return
+	}
+	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
+	if t.durationMs > 0 {
+		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+	}
+	m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+		t.streamPath, fileSize, t.durationMs, metadata, cause)
+	t.Info("saved failed upload for retry", "pendingPath", pendingPath, "objectKey", t.filePath)
+}
+
+// runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，
+// 不重写 mdat。handled=false 表示未接管（调用方走全量重写 fallback，状态已复原）；
+// handled=true 表示已接管，err 为最终结果。
+func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
+	// 仅标准 progressive MP4 布局 [ftyp32][free8][mdat hdr8] 适用。
+	if t.muxer.isFragment() || t.muxer.mdatOffset != 48 || t.muxer.moov == nil {
+		return false, nil
+	}
+	// mdat 触发 64-bit large box 时头部布局非标准，回退。
+	if t.muxer.mdatSize+box.BasicBoxLen > 0xFFFFFFFF {
+		return false, nil
+	}
+	inserter, ok := t.file.(storage.RangeInserter)
+	if !ok {
+		return false, nil
+	}
+	fd := inserter.LocalFd()
+	if fd == nil {
+		return false, nil
+	}
+	stat, statErr := fd.Stat()
+	if statErr != nil {
+		return false, nil
+	}
+	preLen := stat.Size() // Start() 后文件长 = mdatOffset + mdatSize + 尾部 moovSize
+
+	ftypBox := t.muxer.CreateFTYPBox()
+	ftypSize := int64(ftypBox.Size())
+	moovSize := int64(t.muxer.moov.Size())
+	const blk = 4096
+	insertLen := ((ftypSize + moovSize + box.BasicBoxLen + blk - 1) / blk) * blk
+
+	// mdat 逻辑后移 insertLen，重算 moov 内 chunk offset。
+	t.shiftSampleOffsets(insertLen)
+	moov := t.muxer.MakeMoov()
+	if int64(moov.Size()) != moovSize {
+		// 偏移跨 4GB 致 stco→co64、moov 变大，insertLen 失准——撤销并回退全量重写。
+		t.shiftSampleOffsets(-insertLen)
+		t.muxer.MakeMoov()
+		t.Info("insert-range skipped: moov size changed", "filePath", t.filePath)
+		return false, nil
+	}
+
+	// —— 此后 INSERT_RANGE 改写底层文件 ——
+	if e := storage.InsertRange(fd, 0, insertLen); e != nil {
+		t.shiftSampleOffsets(-insertLen)
+		t.muxer.MakeMoov()
+		if !errors.Is(e, storage.ErrRangeInsertUnsupported) {
+			t.Warn("insert-range failed, falling back to full rewrite", "err", e)
+		}
+		return false, nil
+	}
+
+	localPath := fd.Name()
+	uploadSize := preLen + insertLen - moovSize // 截掉尾部 moov 后的最终大小
+
+	if writeErr := t.writeMoovHead(fd, ftypBox, moov, insertLen, ftypSize, moovSize); writeErr != nil {
+		// 写头失败：撤销插入，退回 moov-在-尾的可播文件再上传。
+		t.Error("insert-range write head failed, rolling back", "err", writeErr)
+		if ce := storage.CollapseRange(fd, 0, insertLen); ce != nil {
+			t.Error("insert-range rollback failed, file may be corrupted", "err", ce)
+			t.file.Close()
+			t.file = nil
+			err = fmt.Errorf("insert-range write+rollback failed: %w", writeErr)
+			t.recoverFastPathFailure(localPath, preLen, err)
+			return true, err
+		}
+		t.shiftSampleOffsets(-insertLen)
+		t.muxer.MakeMoov()
+		t.Warn("insert-range rolled back, uploading moov-at-tail file", "filePath", t.filePath)
+		uploadSize = preLen
+	} else {
+		// 写头成功：截掉 Start() 留在文件尾的 moov 兜底副本。
+		if e := fd.Truncate(uploadSize); e != nil {
+			t.Error("insert-range truncate tail moov failed (non-fatal)", "err", e)
+		}
+		if e := fd.Sync(); e != nil {
+			t.Error("insert-range sync failed (non-fatal)", "err", e)
+		}
+	}
+
+	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", uploadSize))
+	if t.durationMs > 0 {
+		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+	}
+
+	// 持久化：对象存储=上传，本地=已就位。
+	if e := t.file.Close(); e != nil {
+		t.Error("insert-range close/upload failed", "err", e, "filePath", t.filePath)
+		t.file = nil
+		t.recoverFastPathFailure(localPath, uploadSize, e)
+		return true, e
+	}
+	t.file = nil
+	if t.dbWrite != nil {
+		t.dbWrite(&writeTrailerQueueTask)
+	}
+	t.Info("insert-range fast path done",
+		"filePath", t.filePath, "moovBytes", moovSize, "insertedBytes", insertLen)
+	return true, nil
 }
 
 func init() {
