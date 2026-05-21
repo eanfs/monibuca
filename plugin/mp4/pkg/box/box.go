@@ -93,11 +93,27 @@ func CreateMemoryBox(typ BoxType, mem gomem.Memory) *MemoryBox {
 	}
 }
 
+// isNil 安全判断 IBox 是否为 nil。直接对接口值调 reflect.Value.IsNil() 在
+// 「纯 nil 接口」(zero Value)和「值类型」上会 panic;本函数规避之:
+// 纯 nil 接口返回 true,可空 Kind(指针/接口/slice 等)的 nil 值返回 true,
+// 其余(如值类型 struct)返回 false。
+func isNil(i IBox) bool {
+	if i == nil {
+		return true
+	}
+	v := reflect.ValueOf(i)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+		return v.IsNil()
+	}
+	return false
+}
+
 func CreateContainerBox(typ BoxType, children ...IBox) *ContainerBox {
 	size := uint32(BasicBoxLen)
 	realChildren := make([]IBox, 0, len(children))
 	for _, child := range children {
-		if reflect.ValueOf(child).IsNil() {
+		if isNil(child) {
 			continue
 		}
 		size += uint32(child.Size())
@@ -185,7 +201,7 @@ func (b *FullBox) HeaderSize() uint32 { return FullBoxLen }
 func WriteTo(w io.Writer, box ...IBox) (n int64, err error) {
 	var n1, n2 int64
 	for _, b := range box {
-		if reflect.ValueOf(b).IsNil() {
+		if isNil(b) {
 			continue
 		}
 		n1, err = b.HeaderWriteTo(w)
