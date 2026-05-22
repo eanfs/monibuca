@@ -172,6 +172,11 @@ func (t *writeTrailerTask) Run() (err error) {
 		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
 		if moveErr != nil {
 			t.Error("move to pending dir failed", "err", moveErr)
+			if errors.Is(moveErr, storage.ErrPendingDirFull) {
+				m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
+					"pending dir full", t.streamPath, t.filePath,
+					"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
+			}
 			return
 		}
 		tempOwned = false // 已移走，不需 defer 删除
@@ -295,6 +300,11 @@ func (t *writeTrailerTask) recoverFastPathFailure(localPath string, fileSize int
 	pendingPath, moveErr := storage.MoveToPendingDir(localPath)
 	if moveErr != nil {
 		t.Error("move to pending dir failed", "err", moveErr)
+		if errors.Is(moveErr, storage.ErrPendingDirFull) {
+			m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
+				"pending dir full", t.streamPath, t.filePath,
+				"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
+		}
 		return
 	}
 	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}

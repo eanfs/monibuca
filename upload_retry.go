@@ -7,6 +7,7 @@ import (
 	"time"
 
 	task "github.com/langhuihui/gotask"
+	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
 )
 
@@ -36,6 +37,13 @@ func (u *UploadRetryScheduler) Tick(any) {
 		u.Error("reclaim stale uploading", "err", err)
 	} else if n > 0 {
 		u.Info("reclaimed stale uploading tasks", "count", n)
+	}
+
+	// pending 目录水位巡检:接近上限即告警(RaiseUploadAlarm 自带去重,不会刷屏)
+	if warn, detail := storage.PendingWatermarkExceeded(); warn {
+		RaiseUploadAlarm(u.s.DB, config.AlarmDiskSpaceFull,
+			"pending dir near full", "", storage.GetPendingDir(),
+			"pending 暂存目录接近容量上限: "+detail)
 	}
 
 	// 查询待重试的任务（每次最多处理 20 个，避免单次过多）
