@@ -154,10 +154,11 @@ docs/superpowers/plans/2026-05-22-upload-reliability-p1p2.md   本文件
 
 ## Task 3.4: 孤儿 RecordStream 持久化补偿
 
-- [ ] 新建表 `record_stream_recovery`(字段:`RecordStream` JSON 快照、retry_count、next_retry_at、created_at),加进 `server.go:334` AutoMigrate。
-- [ ] Task 1.6 内联重试仍失败的孤儿 → 序列化 JSON 存该表。
-- [ ] `UploadRetryScheduler.Tick` 增加:扫 `record_stream_recovery`,对每条重试 `db.Save(&RecordStream)`,成功删记录、失败退避。
-- 依赖:Task 1.6、Phase 2。风险:Medium —— 新表入 AutoMigrate;`RecordStream` JSON round-trip 须保留 `ID`(`Save` upsert 不重复行)。
+> **执行修订(2026-05-22):本 Task 未实现,留作后续。** 理由:① 孤儿场景(上传成功但 `record_streams` 入库失败)发生概率低 —— DB 写仅一次带 10s 超时的 `Save`;② Phase 1 Task 1.6 已实现「感知 + 告警」(`WriteTailDeferred` 返回 error → `reportOrphan` 错误日志 + `alarm_info` 告警),运维可见、可手动补;③ 完整自动补偿需改 `WriteTailDeferred` 设计以向 `writeTrailerTask` 暴露 `RecordStream` 快照(现仅暴露 `dbWrite` 闭包),成本超出 plan 设想。P1-b 当前为「可感知、不自动修复」,自动补偿留后续专项。
+
+- [ ] ~~新建表 `record_stream_recovery`(字段:`RecordStream` JSON 快照、retry_count、next_retry_at、created_at),加进 `server.go:334` AutoMigrate。~~
+- [ ] ~~Task 1.6 内联重试仍失败的孤儿 → 序列化 JSON 存该表。~~
+- [ ] ~~`UploadRetryScheduler.Tick` 增加:扫 `record_stream_recovery`,对每条重试 `db.Save(&RecordStream)`,成功删记录、失败退避。~~
 
 ## Task 3.5: Phase 3 验收
 

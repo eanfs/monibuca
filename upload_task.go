@@ -109,6 +109,28 @@ func QueryPendingUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
 	return tasks, err
 }
 
+// QueryExhaustedUploads 查询补传次数已耗尽(retry_count >= max_retries)的失败任务,
+// 供运维查看与人工介入。这类任务已不会被 QueryPendingUploads 命中。
+func QueryExhaustedUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
+	var tasks []UploadTask
+	err := db.Where("status = ? AND retry_count >= max_retries", UploadStatusFailed).
+		Order("updated_at DESC").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+// ResetUploadForRetry 重置一个任务的重试状态,使其重新进入补传循环。
+// 用于运维修复存储故障后手动重新拉起已耗尽的任务。
+func ResetUploadForRetry(db *gorm.DB, taskID uint) error {
+	return db.Model(&UploadTask{}).Where("id = ?", taskID).Updates(map[string]any{
+		"status":        UploadStatusFailed,
+		"retry_count":   0,
+		"next_retry_at": time.Now(),
+		"error_message": "",
+	}).Error
+}
+
 // MarkUploading 原子抢占任务:仅当任务仍为 Failed 时置 Uploading 并记录开始时间。
 // 返回 true 表示本次抢占成功(可继续上传);false 表示已被其他 goroutine 抢占。
 func MarkUploading(db *gorm.DB, taskID uint) (claimed bool) {

@@ -132,3 +132,62 @@ func TestReclaimThenQueryable(t *testing.T) {
 		t.Fatalf("回收后任务应可被补传命中，实际 %d 条", len(got))
 	}
 }
+
+// TestQueryExhaustedUploads：retry_count >= max_retries 的任务被查出，未耗尽的不被查出。
+func TestQueryExhaustedUploads(t *testing.T) {
+	db := newUploadTestDB(t)
+	exhausted := UploadTask{
+		LocalPath: "/tmp/e.mp4", ObjectKey: "e.mp4",
+		Status: UploadStatusFailed, RetryCount: 10, MaxRetries: 10,
+	}
+	if err := db.Create(&exhausted).Error; err != nil {
+		t.Fatalf("seed exhausted: %v", err)
+	}
+	pending := UploadTask{
+		LocalPath: "/tmp/p.mp4", ObjectKey: "p.mp4",
+		Status: UploadStatusFailed, RetryCount: 3, MaxRetries: 10,
+	}
+	if err := db.Create(&pending).Error; err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	got, err := QueryExhaustedUploads(db, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != exhausted.ID {
+		t.Fatalf("应只查出 1 个耗尽任务，实际 %d 条", len(got))
+	}
+}
+
+// TestResetUploadForRetry：耗尽任务重置后 retry_count 归零、可被补传查询命中。
+func TestResetUploadForRetry(t *testing.T) {
+	db := newUploadTestDB(t)
+	ut := UploadTask{
+		LocalPath: "/tmp/r.mp4", ObjectKey: "r.mp4",
+		Status: UploadStatusFailed, RetryCount: 10, MaxRetries: 10,
+		NextRetryAt: time.Now().Add(time.Hour),
+	}
+	if err := db.Create(&ut).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if got, _ := QueryPendingUploads(db, 10); len(got) != 0 {
+		t.Fatalf("重置前耗尽任务不应被补传命中，实际 %d", len(got))
+	}
+	if err := ResetUploadForRetry(db, ut.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var got UploadTask
+	db.First(&got, ut.ID)
+	if got.RetryCount != 0 {
+		t.Errorf("重置后 retry_count 应为 0，实际 %d", got.RetryCount)
+	}
+	if got.Status != UploadStatusFailed {
+		t.Errorf("重置后 status 应为 Failed，实际 %d", got.Status)
+	}
+	if pend, _ := QueryPendingUploads(db, 10); len(pend) != 1 {
+		t.Fatalf("重置后任务应可被补传命中，实际 %d", len(pend))
+	}
+}

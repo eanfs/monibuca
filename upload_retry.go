@@ -110,6 +110,12 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 			"retryCount", ut.RetryCount+1,
 			"err", err)
 		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.RetryCount, err)
+		// 补传次数耗尽:不再被 QueryPendingUploads 命中,告警通知运维介入
+		if ut.RetryCount+1 >= ut.MaxRetries {
+			RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+				"upload retry exhausted", ut.StreamPath, ut.LocalPath,
+				"补传次数已耗尽,文件待人工处理: "+ut.ObjectKey)
+		}
 		return
 	}
 
