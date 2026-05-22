@@ -39,7 +39,8 @@ type writeTrailerTask struct {
 	storageKey string   // 存储类型 key（s3/oss/cos/local）
 	db         *gorm.DB // 数据库连接（用于保存失败记录）
 	// dbWrite 在文件完整写入后执行数据库更新，为 nil 时跳过（无 DB 或测试模式）。
-	dbWrite func(tailJob task.IJob)
+	// 返回 error 表示文件已持久化成功但 record_streams 入库失败（孤儿文件）。
+	dbWrite func(tailJob task.IJob) error
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -171,6 +172,11 @@ func (t *writeTrailerTask) Run() (err error) {
 		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
 		if moveErr != nil {
 			t.Error("move to pending dir failed", "err", moveErr)
+			if errors.Is(moveErr, storage.ErrPendingDirFull) {
+				m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
+					"pending dir full", t.streamPath, t.filePath,
+					"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
+			}
 			return
 		}
 		tempOwned = false // 已移走，不需 defer 删除
@@ -232,9 +238,22 @@ func (t *writeTrailerTask) Run() (err error) {
 	t.file = nil
 	// 文件已完整持久化，此时才将记录写入数据库（延迟入库，确保 DB 与可播放文件一致）。
 	if t.dbWrite != nil {
-		t.dbWrite(&writeTrailerQueueTask)
+		if dbErr := t.dbWrite(&writeTrailerQueueTask); dbErr != nil {
+			t.reportOrphan(dbErr)
+		}
 	}
 	return
+}
+
+// reportOrphan 处理「文件已持久化成功但 record_streams 入库失败」——
+// 对象存储上有文件、DB 无索引记录,即孤儿文件。Phase 1 仅做可感知:
+// 错误日志 + 告警入 alarm_info;自动补偿(重试入库)由 Phase 3 补偿队列负责。
+func (t *writeTrailerTask) reportOrphan(dbErr error) {
+	t.Error("upload ok but db record save failed — orphan file",
+		"err", dbErr, "filePath", t.filePath, "streamPath", t.streamPath)
+	m7s.RaiseUploadAlarm(t.db, config.AlarmStorageException,
+		"record db save failed", t.streamPath, t.filePath,
+		"录像已上传成功但 record_streams 入库失败(孤儿文件): "+dbErr.Error())
 }
 
 // shiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta，
@@ -281,6 +300,11 @@ func (t *writeTrailerTask) recoverFastPathFailure(localPath string, fileSize int
 	pendingPath, moveErr := storage.MoveToPendingDir(localPath)
 	if moveErr != nil {
 		t.Error("move to pending dir failed", "err", moveErr)
+		if errors.Is(moveErr, storage.ErrPendingDirFull) {
+			m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
+				"pending dir full", t.streamPath, t.filePath,
+				"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
+		}
 		return
 	}
 	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
@@ -387,7 +411,9 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 	t.file = nil
 	if t.dbWrite != nil {
-		t.dbWrite(&writeTrailerQueueTask)
+		if dbErr := t.dbWrite(&writeTrailerQueueTask); dbErr != nil {
+			t.reportOrphan(dbErr)
+		}
 	}
 	t.Info("insert-range fast path done",
 		"filePath", t.filePath, "moovBytes", moovSize, "insertedBytes", insertLen)

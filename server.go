@@ -80,6 +80,7 @@ type (
 			} `desc:"用户列表,仅在启用登录机制时生效"`
 		} `desc:"管理员界面配置"`
 		Storage map[string]any
+		Upload  storage.UploadConfig `desc:"录像上传管理配置"`
 	}
 	WaitStream struct {
 		StreamPath string
@@ -298,11 +299,8 @@ func (s *Server) Start() (err error) {
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
-	// 初始化上传并发控制器
-	storage.InitUploadManager(storage.UploadConfig{
-		MaxConcurrentUploads: 4,
-		PendingDir:           "pending_uploads",
-	})
+	// 初始化上传并发控制器（配置来自 ServerConfig.Upload，0 值由 InitUploadManager 兜底）
+	storage.InitUploadManager(s.ServerConfig.Upload)
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})
 	if err != nil {
 		s.Error("SetCrashOutput", "error", err)

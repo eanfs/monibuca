@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -14,6 +16,11 @@ var (
 	activeUploads int32
 	pendingDir    string
 	maxConcurrent int
+
+	// pending 目录水位限制(0=不限),由 InitUploadManager 从 UploadConfig 注入。
+	pendingMaxSizeBytes int64
+	pendingMaxFiles     int
+	pendingDiskMinFree  int64
 
 	// trailerSem 预留: 限制并发 trailer 写盘槽位数 (mp4/flv 等录制 plugin 共用).
 	//
@@ -37,12 +44,18 @@ var (
 	OnUploadFailed func(localPath, objectKey, storageType string, fileSize int64, metadata map[string]string, err error)
 )
 
+// ErrPendingDirFull 表示 pending 暂存目录已达水位上限,拒绝再接收文件。
+var ErrPendingDirFull = errors.New("pending dir full")
+
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
+	PendingMaxSizeMB           int    `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
+	PendingMaxFiles            int    `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
+	PendingDiskMinFreeMB       int    `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
 }
 
 // InitUploadManager 初始化上传管理器（并发控制 + 暂存目录）
@@ -69,6 +82,9 @@ func InitUploadManager(cfg UploadConfig) {
 		cfg.PendingDir = "pending_uploads"
 	}
 	pendingDir = cfg.PendingDir
+	pendingMaxSizeBytes = int64(cfg.PendingMaxSizeMB) * 1024 * 1024
+	pendingMaxFiles = cfg.PendingMaxFiles
+	pendingDiskMinFree = int64(cfg.PendingDiskMinFreeMB) * 1024 * 1024
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
@@ -115,6 +131,9 @@ func MoveToPendingDir(srcPath string) (string, error) {
 	if pendingDir == "" {
 		return srcPath, nil // 未配置暂存目录，保留原路径
 	}
+	if err := checkPendingCapacity(); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		return "", err
 	}
@@ -155,6 +174,77 @@ func MoveToPendingDir(srcPath string) (string, error) {
 // GetPendingDir 获取暂存目录路径
 func GetPendingDir() string {
 	return pendingDir
+}
+
+// GetPendingDirUsage 统计 pending 目录的总字节数与文件数。
+func GetPendingDirUsage() (totalBytes int64, fileCount int, err error) {
+	if pendingDir == "" {
+		return 0, 0, nil
+	}
+	err = filepath.WalkDir(pendingDir, func(_ string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, e := d.Info()
+		if e != nil {
+			return e
+		}
+		totalBytes += info.Size()
+		fileCount++
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return 0, 0, nil // 目录尚未创建,视为空
+	}
+	return totalBytes, fileCount, err
+}
+
+// checkPendingCapacity 检查 pending 目录是否还能容纳新文件。
+// 任一已配置阈值(>0)被突破即返回包装 ErrPendingDirFull 的错误;全部为 0 时不限制。
+func checkPendingCapacity() error {
+	if pendingMaxSizeBytes <= 0 && pendingMaxFiles <= 0 && pendingDiskMinFree <= 0 {
+		return nil
+	}
+	if pendingMaxSizeBytes > 0 || pendingMaxFiles > 0 {
+		total, count, err := GetPendingDirUsage()
+		if err != nil {
+			return err
+		}
+		if pendingMaxSizeBytes > 0 && total >= pendingMaxSizeBytes {
+			return fmt.Errorf("%w: 已用 %d 字节 >= 上限 %d 字节", ErrPendingDirFull, total, pendingMaxSizeBytes)
+		}
+		if pendingMaxFiles > 0 && count >= pendingMaxFiles {
+			return fmt.Errorf("%w: 已有 %d 文件 >= 上限 %d", ErrPendingDirFull, count, pendingMaxFiles)
+		}
+	}
+	if pendingDiskMinFree > 0 {
+		if free, err := GetDiskFreeBytes(pendingDir); err == nil && free < uint64(pendingDiskMinFree) {
+			return fmt.Errorf("%w: 磁盘剩余 %d 字节 < 下限 %d 字节", ErrPendingDirFull, free, pendingDiskMinFree)
+		}
+	}
+	return nil
+}
+
+// PendingWatermarkExceeded 检查 pending 目录用量是否达到告警水位（已配置阈值的 80%）。
+// 返回是否超水位及描述;未配置 size/files 阈值时恒返回 false。
+func PendingWatermarkExceeded() (exceeded bool, detail string) {
+	if pendingMaxSizeBytes <= 0 && pendingMaxFiles <= 0 {
+		return false, ""
+	}
+	total, count, err := GetPendingDirUsage()
+	if err != nil {
+		return false, ""
+	}
+	if pendingMaxSizeBytes > 0 && total >= pendingMaxSizeBytes*8/10 {
+		return true, fmt.Sprintf("已用 %d 字节,达上限 %d 的 80%%", total, pendingMaxSizeBytes)
+	}
+	if pendingMaxFiles > 0 && count >= pendingMaxFiles*8/10 {
+		return true, fmt.Sprintf("已有 %d 文件,达上限 %d 的 80%%", count, pendingMaxFiles)
+	}
+	return false, ""
 }
 
 // AcquireTrailerSlot 获取一个 trailer 写盘槽位, 阻塞直到有可用槽位或 ctx 取消.

@@ -214,7 +214,9 @@ func (r *DefaultRecorder) WriteTail(end time.Time, tailJob task.IJob) {
 // 与 WriteTail 不同，它不立即写库，而是将写库操作包装成闭包返回。
 // 调用方应在 MP4 文件完整写入（moov 移到头部）后再调用该闭包，
 // 以保证数据库记录在文件可播放之后才更新 EndTime。
-func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJob) {
+// 闭包返回 error：record_streams 写库失败时返回非 nil（此时文件已上传成功但
+// DB 无索引记录 = 孤儿文件），调用方据此补偿；RecordEvent 写库失败仅告警不计入。
+func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJob) error {
 	r.Event.EndTime = end
 	if r.RecordJob.Plugin.DB == nil || r.RecordJob.RecConf.Mode == config.RecordModeTest {
 		return nil
@@ -225,7 +227,7 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 	filePath := r.Event.FilePath
 	if r.RecordJob.Event != nil {
 		eventSnap := r.Event // 值拷贝：捕获正确的 EndTime 和 RecordStream.ID，RecordEvent 指针稳定
-		return func(tailJob task.IJob) {
+		return func(tailJob task.IJob) error {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			r.Info("db save RecordEvent (deferred) begin", "filePath", filePath)
@@ -235,7 +237,9 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 				r.Info("db save RecordEvent (deferred) ok", "filePath", filePath)
 			}
 			r.Info("db save RecordStream (deferred) begin", "filePath", filePath)
+			var streamErr error
 			if result := db.WithContext(dbCtx).Save(&eventSnap.RecordStream); result.Error != nil {
+				streamErr = result.Error
 				r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
 			} else {
 				r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
@@ -243,14 +247,17 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 			if tailJob != nil {
 				tailJob.AddTask(NewEventRecordCheck(streamType, streamPath, db))
 			}
+			return streamErr
 		}
 	}
 	streamSnap := r.Event.RecordStream // 值拷贝
-	return func(tailJob task.IJob) {
+	return func(tailJob task.IJob) error {
 		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		r.Info("db save RecordStream (deferred) begin", "filePath", filePath)
+		var streamErr error
 		if result := db.WithContext(dbCtx).Save(&streamSnap); result.Error != nil {
+			streamErr = result.Error
 			r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
 		} else {
 			r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
@@ -258,6 +265,7 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 		if tailJob != nil {
 			tailJob.AddTask(NewEventRecordCheck(streamType, streamPath, db))
 		}
+		return streamErr
 	}
 }
 
