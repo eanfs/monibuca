@@ -325,6 +325,12 @@ go test ./plugin/mp4/... -count=1
 
 # 阶段 B —— fMP4 旁路(trailer 完全跳过)
 
+> **执行修订(2026-05-21)**:执行阶段 B 时核实发现 —— monibuca 当前 fMP4 muxer **不写 init `moov` box**(`WriteInitSegment` 的 fragment 分支只写 `ftyp`;`WriteMoov`/`MakeMoov` 在 fMP4 路径零调用),fMP4 产物为 `[ftyp][moof][mdat]...[mfra]`,**缺 `moov`,非合法 fMP4**。下方「fMP4 moov 已在头部」的前提不成立。
+>
+> 阶段 B 真实工作量比本节设想大:需先新增 **B0 —— 补全 fMP4 muxer 写 init moov**(`muxer.go` fragment 路径的实质功能开发),再做 B1 bypass。
+>
+> **本次执行范围(2026-05-21)**:仅完成 **B2(`box.go` typed-nil panic 修复)** —— 该 panic 是独立 bug,已修复(commit `3bd2a09e`,分支 `feature/trailer-fmp4-bypass`)。**B0 / B1 / B3 / B4(fMP4 完整实现 + 验收)暂停** —— 阶段 A 已把 trailer 磁盘 IO 降 99%+,fMP4 边际收益(`O(moov)`→0)较小,补全 muxer + fMP4 兼容性验证成本不低,留作后续专项。
+
 ## 原理
 
 fMP4(`muxer` 的 `FLAG_FRAGMENT`)文件结构为 `[ftyp][moov(init)][moof][mdat][moof][mdat]...[mfra]`,`moov` 录制一开始即写在头部。`record stop` 时:
