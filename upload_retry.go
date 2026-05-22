@@ -31,6 +31,13 @@ func (u *UploadRetryScheduler) Tick(any) {
 		return
 	}
 
+	// 回收卡在 Uploading 状态的任务(进程崩溃 / goroutine 超时残留),扫回 Failed
+	if n, err := ReclaimStaleUploading(u.s.DB, staleUploadingThreshold); err != nil {
+		u.Error("reclaim stale uploading", "err", err)
+	} else if n > 0 {
+		u.Info("reclaimed stale uploading tasks", "count", n)
+	}
+
 	// 查询待重试的任务（每次最多处理 20 个，避免单次过多）
 	tasks, err := QueryPendingUploads(u.s.DB, 20)
 	if err != nil {
@@ -59,17 +66,20 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		return
 	}
 
+	// 原子抢占:仅当任务仍为 Failed 时占用;抢不到说明已被其他 goroutine 处理
+	if !MarkUploading(u.s.DB, ut.ID) {
+		return
+	}
+
 	// 获取上传槽位（并发控制）
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	if err := storage.AcquireUploadSlot(ctx); err != nil {
+		// 已抢占 Uploading 但拿不到槽位,留待 ReclaimStaleUploading 回收
 		u.Warn("acquire upload slot timeout", "id", ut.ID, "err", err)
 		return
 	}
 	defer storage.ReleaseUploadSlot()
-
-	// 标记为上传中
-	MarkUploading(u.s.DB, ut.ID)
 
 	// 解析元数据
 	var metadata map[string]string
