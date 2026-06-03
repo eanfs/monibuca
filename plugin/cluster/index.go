@@ -126,16 +126,9 @@ func (p *ClusterPlugin) setupRelayHooks() {
 			}
 			p.stopRelayPullProxy(streamPath, ErrOriginLost)
 		})
-		p.streamRegistry.SetOnStopPublisher(func(streamPath string, reason error) {
-			if p.Server == nil {
-				return
-			}
-			pub, ok := p.Server.Streams.SafeGet(streamPath)
-			if !ok {
-				return
-			}
-			pub.Stop(reason)
-		})
+		// 注:first-write-wins 冲突停流已改为 StreamRegistry.OnPublish 直接绑定
+		// pub.Stop(见 streamregistry.go),不再需要 SetOnStopPublisher + SafeGet 反查
+		// (SafeGet 会重入 Server.Streams 事件循环导致死锁,RC1)。
 	})
 }
 
@@ -145,6 +138,16 @@ func (p *ClusterPlugin) OnPublish(pub *m7s.Publisher) {
 	if p.streamRegistry != nil {
 		p.streamRegistry.OnPublish(pub)
 	}
+}
+
+// isActiveRelay 报告 streamPath 是否是本节点上一条 cluster-relay 派生的流。
+// ensureRelay 成功后会把 streamPath 写进 activeRelays;StreamRegistry.OnPublish
+// 用它作为 relay publisher 的权威判据(避免依赖易丢的 PullProxyConfig.Description)。
+func (p *ClusterPlugin) isActiveRelay(streamPath string) bool {
+	p.activeRelaysMu.Lock()
+	defer p.activeRelaysMu.Unlock()
+	_, ok := p.activeRelays[streamPath]
+	return ok
 }
 
 // Membership 暴露给同包内其它模块(Phase 3/4)读取 peers 与 sessionID。

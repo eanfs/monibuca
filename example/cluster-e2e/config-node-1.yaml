@@ -8,14 +8,14 @@ global:
     dsn: "postgres://postgres:m7s@postgres:5432/m7s?sslmode=disable"
     dbtype: postgres
   storage:
-    type: s3
-    endpoint: http://minio:9000
-    accesskeyid: admin
-    secretaccesskey: m7sm7sm7s
-    bucket: m7s-records
-    region: us-east-1
-    forcepathstyle: true
-    usessl: false
+    s3:
+      endpoint: http://minio:9000
+      accesskeyid: admin
+      secretaccesskey: m7sm7sm7s
+      bucket: m7s-records
+      region: us-east-1
+      forcepathstyle: true
+      usessl: false
 
 rtmp:
   tcp:

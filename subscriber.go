@@ -14,7 +14,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/util"

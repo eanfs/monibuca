@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 )

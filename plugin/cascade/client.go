@@ -11,7 +11,7 @@ import (
 	"m7s.live/v5/pkg/util"
 	cascade "m7s.live/v5/plugin/cascade/pkg"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/quic-go/quic-go"
 )
 

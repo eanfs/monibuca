@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // LoadReporter 周期把本节点指标写到 m7s/nodes/<self> 的 Metrics 字段。

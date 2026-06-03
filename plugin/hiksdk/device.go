@@ -6,7 +6,7 @@ import (
 
 	"m7s.live/v5/plugin/hiksdk/pkg"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

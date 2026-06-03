@@ -14,7 +14,7 @@ import (
 
 	sipgo "github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"

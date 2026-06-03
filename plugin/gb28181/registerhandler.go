@@ -11,7 +11,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	myip "github.com/husanpao/ip"
 	"github.com/icholy/digest"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"

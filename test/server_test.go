@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 )

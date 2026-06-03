@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/shirou/gopsutil/v4/disk"
 	"gorm.io/gorm"
 	"m7s.live/v5"

@@ -11,7 +11,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // TalkWebsocketTask 负责管理一次 WebSocket 对讲/广播会话

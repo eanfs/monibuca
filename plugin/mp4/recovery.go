@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5"
 	mp4 "m7s.live/v5/plugin/mp4/pkg"

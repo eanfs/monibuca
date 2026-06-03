@@ -18,7 +18,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 

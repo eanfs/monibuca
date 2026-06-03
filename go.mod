@@ -12,6 +12,7 @@ require (
 	github.com/cloudwego/goref v0.0.0-20240724113447-685d2a9523c8
 	github.com/deepch/vdk v0.0.27
 	github.com/disintegration/imaging v1.6.2
+	github.com/eanfs/gotask v1.0.5
 	github.com/emiago/sipgo v1.0.0-alpha
 	github.com/getlantern/systray v1.2.2
 	github.com/go-delve/delve v1.23.0
@@ -25,7 +26,6 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/kerberos-io/onvif v1.0.0
-	github.com/langhuihui/gotask v1.0.4
 	github.com/mark3labs/mcp-go v0.27.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/mcuadros/go-defaults v1.2.0

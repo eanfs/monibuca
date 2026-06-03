@@ -21,7 +21,7 @@ import (
 	myproc "github.com/cloudwego/goref/pkg/proc"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/service/debugger"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"

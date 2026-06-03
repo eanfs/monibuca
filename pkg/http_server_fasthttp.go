@@ -6,7 +6,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 	"m7s.live/v5/pkg/config"
