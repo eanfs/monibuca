@@ -48,6 +48,12 @@ Windows:
 goreleaser build
 ```
 
+**Cross-compile (multi-arch, no CGO):**
+- `CGO_ENABLED=0 GOOS=linux GOARCH={amd64,arm64} go build -tags "cluster sqlite s3" -o monibuca_${ARCH} ./example/cluster`
+- `sqlite` tag = pure-Go `ncruces/go-sqlite3` (WASM) → cross-compiles incl. arm64 with no CGO (`sqliteCGO` = mattn/CGO variant; avoid for cross-builds)
+- Multi-arch image: `./Dockerfile` copies pre-built `monibuca_${TARGETARCH}`; build with `docker buildx build --platform linux/amd64,linux/arm64`
+- Push to Huawei SWR needs `--provenance=false --sbom=false` (SWR rejects buildkit attestation manifests → "Invalid image, fail to parse manifest.json"); `example/default/admin.zip` is fetched at build time, not in the repo
+
 **Testing:**
 ```bash
 go test ./...                                          # all tests
@@ -124,6 +130,8 @@ Work (Queue Manager, keepalive=true)
 - **CANNOT** call any `task.Task` method directly except `Stop()`
 - **CANNOT** call any `task.Job` method directly except `AddTask()`
 - Return `task.ErrTaskComplete` for successful completion in `Run()`
+- `Run()` runs **inline on the parent Job's event loop and blocks it**; `Go()` runs on its own goroutine — never block in `Run()`/`Start()`, use `Go()` for blocking/long work
+- `util.Manager` Safe* (`Server.Streams.SafeGet`/`SafeRange`) route through the event loop when `L==nil` — calling them **re-entrantly from a publish/subscribe hook** (already on that loop) deadlocks; offload via `Post`/a child task or use the passed object reference
 
 #### Task State Machine
 ```
@@ -355,6 +363,7 @@ Automatic migration is handled for core models including users, proxies, and str
 ### Code Style
 - Follow existing patterns and naming conventions
 - Use the task system for async operations; **never use bare goroutines** — prefer `AddTask`
+- Low-level task primitives live in the fork `github.com/eanfs/gotask` (≥ v1.0.5) — import that, **not** `github.com/langhuihui/gotask`
 - Implement proper error handling and logging
 - Use the configuration system for all settings
 - Dot imports are discouraged; exception: `staticcheck.conf` whitelists `. "m7s.live/v5/pkg"`
@@ -446,6 +455,10 @@ Automatic migration is handled for core models including users, proxies, and str
 - Using uppercase field names in YAML config files
 - Using bare goroutines instead of the task system
 - Bypassing task lifecycle conventions in async plugin code
+- Importing `github.com/langhuihui/gotask` instead of the fork `github.com/eanfs/gotask`
+- Pushing multi-arch images to SWR without `--provenance=false --sbom=false`
+- mp4 record API: `POST /mp4/api/start|stop/<streamPath>` (gRPC-gateway, streamPath in URL), records **local** streams only; cluster HTTP is under `/cluster/api/cluster/*`
+- Cross-node record on a non-owner node: trigger auto-relay first via an RTSP/RTMP **subscribe** (FLV 302-redirects, won't relay), then record the now-local stream
 
 ## Known Issues (待其它环境修复)
 
