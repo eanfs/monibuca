@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/quangngotan95/go-m3u8/m3u8"
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"

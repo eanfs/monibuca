@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 func init() {

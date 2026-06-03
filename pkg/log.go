@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 var _ slog.Handler = (*MultiLogHandler)(nil)

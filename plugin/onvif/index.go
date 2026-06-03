@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/util"
 
 	m7s "m7s.live/v5"

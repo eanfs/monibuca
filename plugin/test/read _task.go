@@ -3,7 +3,7 @@ package plugin_test
 import (
 	"fmt"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
 	flv "m7s.live/v5/plugin/flv/pkg"

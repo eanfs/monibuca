@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"

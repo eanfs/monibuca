@@ -9,7 +9,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5/pkg/codec"
 	. "m7s.live/v5/plugin/webrtc/pkg"

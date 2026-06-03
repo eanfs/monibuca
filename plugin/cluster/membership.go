@@ -11,7 +11,7 @@ import (
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // PeerInfo 是 Consul KV `m7s/nodes/<nodeID>` 的 JSON 序列化结构。

@@ -2,7 +2,7 @@ package plugin_crontab
 
 import (
 	"fmt"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 
 	"m7s.live/v5/pkg/util"
 

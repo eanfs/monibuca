@@ -4,7 +4,7 @@ import (
 	"net/url"
 
 	srt "github.com/datarhei/gosrt"
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"

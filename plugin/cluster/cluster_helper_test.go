@@ -11,7 +11,7 @@ import (
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	m7s "m7s.live/v5"
 )
 

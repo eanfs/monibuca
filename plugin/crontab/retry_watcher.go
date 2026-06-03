@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // RecordRetryTickTask periodically checks recording status; only one startRecording attempt per slot

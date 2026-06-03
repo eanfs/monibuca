@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/mcuadros/go-defaults"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"

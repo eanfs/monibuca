@@ -12,7 +12,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	myip "github.com/husanpao/ip"
 	"github.com/icholy/digest"
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/filerotate"
 

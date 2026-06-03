@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/format"
