@@ -473,18 +473,30 @@ func (r *Receiver) Receive() (err error) {
 			writer.AudioFrame.ICodecCtx = &ctx
 		case webrtc.MimeTypePCMA:
 			var ctx mrtp.PCMACtx
-			ctx.PCMACtx = &codec.PCMACtx{}
+			// NewPCMACtx 给出 G.711 默认值(SampleRate=8000, Channels=1, SampleSize=16)。
+			// 空 struct 会让 Channels/SampleSize=0:G.711 的 SDP "PCMA/8000" 不带声道数,
+			// RTPCodecParameters.Channels=0 时若直接赋值会写出 channels=0,导致录制 mp4
+			// 音频轨元数据非法、ffprobe 无法解析整文件。
+			ctx.PCMACtx = codec.NewPCMACtx()
 			ctx.ParseFmtpLine(r.AudioCodecParameters)
-			ctx.AudioCtx.SampleRate = int(r.AudioCodecParameters.ClockRate)
-			ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
+			if r.AudioCodecParameters.ClockRate > 0 {
+				ctx.AudioCtx.SampleRate = int(r.AudioCodecParameters.ClockRate)
+			}
+			if ctx.RTPCodecParameters.Channels > 0 {
+				ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
+			}
 			audioClockRate = ctx.RTPCodecParameters.ClockRate
 			writer.AudioFrame.ICodecCtx = &ctx
 		case webrtc.MimeTypePCMU:
 			var ctx mrtp.PCMUCtx
-			ctx.PCMUCtx = &codec.PCMUCtx{}
+			ctx.PCMUCtx = codec.NewPCMUCtx()
 			ctx.ParseFmtpLine(r.AudioCodecParameters)
-			ctx.AudioCtx.SampleRate = int(r.AudioCodecParameters.ClockRate)
-			ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
+			if r.AudioCodecParameters.ClockRate > 0 {
+				ctx.AudioCtx.SampleRate = int(r.AudioCodecParameters.ClockRate)
+			}
+			if ctx.RTPCodecParameters.Channels > 0 {
+				ctx.AudioCtx.Channels = int(ctx.RTPCodecParameters.Channels)
+			}
 			audioClockRate = ctx.RTPCodecParameters.ClockRate
 			writer.AudioFrame.ICodecCtx = &ctx
 		case "audio/MP4A-LATM":
