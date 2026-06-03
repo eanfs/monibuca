@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
@@ -18,7 +19,9 @@ import (
 // pull-proxy 是 cluster relay 派生的(而非用户配置的常规拉流代理)。
 //
 // Phase 3 创建 cluster-relay PullProxy 时会把 Description 设置成
-//   "cluster-relay:<originNodeID>"
+//
+//	"cluster-relay:<originNodeID>"
+//
 // StreamRegistry.OnPublish 看到带这个前缀的 publisher 直接跳过——
 // 避免环回(B 从 A 拉到流后又把流写进 Consul,导致 C 上的订阅者去 B 拉)。
 const ClusterRelayDescPrefix = "cluster-relay:"
@@ -41,16 +44,30 @@ type StreamRegistry struct {
 	onStreamRemovedMu sync.Mutex
 	onStreamRemoved   []func(streamPath string)
 
-	onStopPublisherMu sync.Mutex
-	onStopPublisher   func(streamPath string, reason error)
+	// acquireFn/releaseFn 默认指向 sr.acquire/sr.release;抽成字段是为了单测能注入
+	// fake,不依赖真实 Consul。
+	acquireFn func(streamPath string) error
+	releaseFn func(streamPath string) error
+
+	// dispatch 把一段工作异步投递到 StreamRegistry 自己的事件循环(默认 = 一次性
+	// callbackGoTask)。OnPublish 用它把阻塞式 KV acquire 与 first-write-wins 冲突
+	// 停流挪出 Server.Streams 事件循环 —— 避免重入 Streams.Call 死锁(RC1)与阻塞
+	// Streams 事件循环(RC2)。单测可注入同步/捕获版。
+	dispatch func(func())
 }
 
 func newStreamRegistry(p *ClusterPlugin) *StreamRegistry {
-	return &StreamRegistry{
+	sr := &StreamRegistry{
 		plugin:       p,
 		streams:      make(map[string]string),
 		localStreams: make(map[string]struct{}),
 	}
+	sr.acquireFn = sr.acquire
+	sr.releaseFn = sr.release
+	sr.dispatch = func(fn func()) {
+		sr.AddTask(&callbackGoTask{fn: fn})
+	}
+	return sr
 }
 
 func (sr *StreamRegistry) Start() error {
@@ -67,15 +84,31 @@ func (sr *StreamRegistry) Start() error {
 // OnPublish 在 ClusterPlugin.OnPublish 转发过来时被调用。
 // 把 *m7s.Publisher 解耦成简单参数后交给 handleLocalPublish。
 func (sr *StreamRegistry) OnPublish(pub *m7s.Publisher) {
-	isClusterRelay := pub.PullProxyConfig != nil &&
-		strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix)
-	sr.handleLocalPublish(pub.StreamPath, isClusterRelay, pub.OnDispose)
+	// RC3 修复:relay publisher 的判据不能只看 pub.PullProxyConfig.Description ——
+	// 该 Description 不可靠(EnsurePullProxy 命中已存在的同 streamPath pull-proxy 会
+	// 直接返回、丢弃新 conf 的 cluster-relay 标记,见 pull_proxy.go EnsurePullProxy)。
+	// 改以 cluster 插件权威自持的 activeRelays(ensureRelay 同步写入)为准,
+	// Description 仅作兜底信号。
+	isClusterRelay := (pub.PullProxyConfig != nil &&
+		strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix)) ||
+		(sr.plugin != nil && sr.plugin.isActiveRelay(pub.StreamPath))
+	// stop 直接绑定到该 publisher 的 Stop —— 不再经 Server.Streams.SafeGet 反查。
+	// SafeGet 会重入 Server.Streams 事件循环(m.Call),而 OnPublish 本身就跑在该
+	// 事件循环上,重入会永久死锁(RC1)。
+	sr.handleLocalPublish(pub.StreamPath, isClusterRelay, func(reason error) {
+		pub.Stop(reason)
+	}, pub.OnDispose)
 }
 
 // handleLocalPublish 是 OnPublish 的可测试核心。
 //   - isClusterRelay: 来自 cluster-relay 派生的 publisher(Q2)直接跳过,避免环回
+//   - stop: 停掉该 publisher(生产 = pub.Stop),first-write-wins 冲突时调用
 //   - registerOnDispose: 通常是 Publisher.OnDispose,测试可传 nil 自行管理生命周期
-func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay bool, registerOnDispose func(func())) {
+//
+// ⚠️ 调用方是 Server.Streams 事件循环 goroutine。KV acquire 是阻塞式 Consul I/O,
+// 冲突停流又可能重入 Streams —— 两者都必须经 sr.dispatch 异步挪走,绝不能在本函数
+// 的同步调用栈里执行(否则死锁 Streams 事件循环,RC1/RC2)。
+func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay bool, stop func(error), registerOnDispose func(func())) {
 	if isClusterRelay || streamPath == "" {
 		return
 	}
@@ -84,28 +117,39 @@ func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay b
 	sr.localStreams[streamPath] = struct{}{}
 	sr.localMu.Unlock()
 
-	if err := sr.acquire(streamPath); err != nil {
-		sr.Warn("acquire stream key failed", "streamPath", streamPath, "error", err)
-		// §4.3 first-write-wins: 失败意味着另一个 peer 已经拥有该 streamPath。
-		// 主动 Stop 本地 publisher,reason = ErrStreamPathTaken。
-		// 注:网络抖动也可能导致 acquire 失败,本 spec v1 把所有失败都当 "key 已被占",
-		// 实际生产里这是保守做法 —— 真的撞键 vs 网络抖动,效果都是 publisher 重连。
-		sr.fireStopPublisher(streamPath, ErrStreamPathTaken)
-		// localStreams 已记录,session 重建时仍会试 rebind;但我们已经请求 Stop,
-		// publisher 不久后会消失,localStreams 在 dispose hook 里也会被清。
-		// 不主动从 localStreams 删,避免与 dispose 钩子竞争。
-	}
+	// acquired 标记我们是否真正抢到了这个 streamPath 的 KV 键。只有抢到了,dispose
+	// 时才能 release —— 否则 release 的 KV.Delete 会把属主 peer 的键删掉。
+	var acquired atomic.Bool
 
 	if registerOnDispose != nil {
 		registerOnDispose(func() {
 			sr.localMu.Lock()
 			delete(sr.localStreams, streamPath)
 			sr.localMu.Unlock()
-			if err := sr.release(streamPath); err != nil {
-				sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
+			if acquired.Load() {
+				if err := sr.releaseFn(streamPath); err != nil {
+					sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
+				}
 			}
 		})
 	}
+
+	// RC1+RC2 修复:KV acquire 阻塞式 Consul I/O + first-write-wins 失败停流,异步
+	// dispatch 到 StreamRegistry 自己的事件循环,彻底离开 Server.Streams 调用栈。
+	sr.dispatch(func() {
+		if err := sr.acquireFn(streamPath); err != nil {
+			sr.Warn("acquire stream key failed", "streamPath", streamPath, "error", err)
+			// §4.3 first-write-wins: 失败意味着另一个 peer 已经拥有该 streamPath。
+			// 主动 Stop 本地 publisher,reason = ErrStreamPathTaken。
+			// 注:网络抖动也可能导致 acquire 失败,本 spec v1 把所有失败都当 "key 已被占",
+			// 实际生产里这是保守做法 —— 真的撞键 vs 网络抖动,效果都是 publisher 重连。
+			if stop != nil {
+				stop(ErrStreamPathTaken)
+			}
+			return
+		}
+		acquired.Store(true)
+	})
 }
 
 // Lookup 给 Phase 3 (relay) / Phase 4 (StreamRouter) 用,
@@ -135,25 +179,17 @@ func (sr *StreamRegistry) fireStreamRemoved(streamPath string) {
 	}
 }
 
-// SetOnStopPublisher 给 cluster 主插件设置一个回调:当 handleLocalPublish 发现
-// streamPath 已被别的 peer 占据(§4.3 first-write-wins 失败),用这个回调主动
-// Stop 本节点的 publisher 并报 ErrStreamPathTaken。
-//
-// 单一回调而非多 listener: 一个 streamPath 在一个进程里只对应一个 publisher,
-// 也只有 cluster 主插件知道怎么 Stop 它(通过 m7s API)。
-func (sr *StreamRegistry) SetOnStopPublisher(f func(streamPath string, reason error)) {
-	sr.onStopPublisherMu.Lock()
-	defer sr.onStopPublisherMu.Unlock()
-	sr.onStopPublisher = f
+// callbackGoTask 是一次性任务:在 StreamRegistry 自己的事件循环里(经 Go() 的独立
+// goroutine)跑一段回调然后完成退出。用于把 OnPublish 的阻塞式 KV acquire 与冲突
+// 停流挪出 Server.Streams 事件循环(RC1/RC2)。
+type callbackGoTask struct {
+	task.Task
+	fn func()
 }
 
-func (sr *StreamRegistry) fireStopPublisher(streamPath string, reason error) {
-	sr.onStopPublisherMu.Lock()
-	cb := sr.onStopPublisher
-	sr.onStopPublisherMu.Unlock()
-	if cb != nil {
-		cb(streamPath, reason)
-	}
+func (t *callbackGoTask) Go() error {
+	t.fn()
+	return task.ErrTaskComplete
 }
 
 // Streams 返回当前 streams map 的快照,主要给 /api/cluster/streams 用。
