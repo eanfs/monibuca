@@ -1,7 +1,7 @@
 package rtsp
 
 import (
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 
 	"m7s.live/v5"
@@ -44,12 +44,12 @@ func (c *Client) Start() (err error) {
 			c.pullCtx.Fail(err.Error())
 			return
 		}
-		if err = c.NetConnection.Connect(c.pullCtx.RemoteURL); err != nil {
+		if err = c.NetConnection.Connect(c.pullCtx.Context, c.pullCtx.RemoteURL); err != nil {
 			c.pullCtx.Fail(err.Error())
 			return
 		}
 	} else {
-		err = c.NetConnection.Connect(c.pushCtx.RemoteURL)
+		err = c.NetConnection.Connect(c.pushCtx.Context, c.pushCtx.RemoteURL)
 	}
 	return
 }

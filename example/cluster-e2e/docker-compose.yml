@@ -1,0 +1,112 @@
+version: "3.9"
+services:
+  consul:
+    image: hashicorp/consul:latest
+    command: agent -dev -client=0.0.0.0
+    ports: ["8500:8500"]
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: m7s
+      POSTGRES_DB: m7s
+      POSTGRES_USER: postgres
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: m7sm7sm7s
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Auto-create bucket once minio is healthy.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set m http://minio:9000 admin m7sm7sm7s &&
+        mc mb --ignore-existing m/m7s-records &&
+        echo 'bucket ready'
+      "
+
+  node-1:
+    build:
+      context: ../..
+      dockerfile: example/cluster-e2e/Dockerfile
+    command: ["-c", "/app/config-node-1.yaml"]
+    volumes:
+      - ./config-node-1.yaml:/app/config-node-1.yaml:ro
+    ports:
+      - "1935:1935"
+      - "5541:554"
+      - "8081:8080"
+      - "50051:50051"
+    depends_on:
+      consul:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  node-2:
+    build:
+      context: ../..
+      dockerfile: example/cluster-e2e/Dockerfile
+    command: ["-c", "/app/config-node-2.yaml"]
+    volumes:
+      - ./config-node-2.yaml:/app/config-node-2.yaml:ro
+    ports:
+      - "1936:1935"
+      - "5542:554"
+      - "8082:8080"
+      - "50052:50051"
+    depends_on:
+      consul:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  node-3:
+    build:
+      context: ../..
+      dockerfile: example/cluster-e2e/Dockerfile
+    command: ["-c", "/app/config-node-3.yaml"]
+    volumes:
+      - ./config-node-3.yaml:/app/config-node-3.yaml:ro
+    ports:
+      - "1937:1935"
+      - "5543:554"
+      - "8083:8080"
+      - "50053:50051"
+    depends_on:
+      consul:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully

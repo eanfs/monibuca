@@ -5,7 +5,7 @@ import (
 
 	srt "github.com/datarhei/gosrt"
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	mpegts "m7s.live/v5/pkg/format/ts"
 )
 

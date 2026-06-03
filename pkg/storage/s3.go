@@ -425,7 +425,10 @@ func (w *S3File) Close() error {
 	}
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
-			defer w.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// w.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			defer w.cleanup(false)
 			return err
 		}
 	}
@@ -475,10 +478,33 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 	return w.tempFile.Stat()
 }
 
+// FinalizeFromTemp 让 S3File 直接以 srcPath 指向的完整文件作为上传源，
+// 省去调用方「temp → S3File 内部 temp」的全量回拷。
+// 后续 Close() 会上传该文件；上传成功删除它，失败保留它供补传。
+// 实现 storage.TempFileFinalizer。
+func (w *S3File) FinalizeFromTemp(srcPath string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f, err := adoptUploadTempFile(w.tempFile, w.filePath, srcPath)
+	if err != nil {
+		w.tempFile = nil
+		return fmt.Errorf("finalize from temp: %w", err)
+	}
+	w.tempFile = f
+	w.filePath = srcPath
+	return nil
+}
+
 // uploadTempFile 上传临时文件到S3，带并发控制和指数退避重试
 func (w *S3File) uploadTempFile() error {
+	// 解耦上传 ctx 与文件 ctx (= Recorder.Context).
+	// Recorder dispose 时其 ctx 被 cancel, 但写好的临时文件应当继续上传完成.
+	// WithoutCancel 保留 ctx 的 Values (trace / auth), 但 Done() 永不 close.
+	// 上传链路的真实超时由每次 attempt 的 WithTimeout 控制.
+	uploadCtx := context.WithoutCancel(w.ctx)
+
 	// 获取上传槽位（并发控制）
-	if err := AcquireUploadSlot(w.ctx); err != nil {
+	if err := AcquireUploadSlot(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
@@ -497,7 +523,7 @@ func (w *S3File) uploadTempFile() error {
 
 	rc := w.storage.config.retryConfig()
 
-	return UploadWithRetry(w.ctx, rc, "S3", w.objectKey,
+	return UploadWithRetry(uploadCtx, rc, "S3", w.objectKey,
 		// resetFn: 每次重试前重置文件指针
 		func() error {
 			_, err := w.tempFile.Seek(0, 0)
@@ -506,7 +532,7 @@ func (w *S3File) uploadTempFile() error {
 		// uploadFn: 执行单次上传
 		func() error {
 			timeout := w.storage.config.getTimeout()
-			ctx, cancel := context.WithTimeout(w.ctx, timeout)
+			ctx, cancel := context.WithTimeout(uploadCtx, timeout)
 			defer cancel()
 
 			uploadInput := &s3manager.UploadInput{
@@ -562,6 +588,14 @@ func (w *S3File) downloadToTemp() error {
 
 	return nil
 }
+
+var _ TempFileFinalizer = (*S3File)(nil)
+
+// LocalFd 返回 S3File 上传前承载录像数据的本地暂存文件句柄。
+// 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
+func (w *S3File) LocalFd() *os.File { return w.tempFile }
+
+var _ RangeInserter = (*S3File)(nil)
 
 func init() {
 	Factory["s3"] = func(conf any) (Storage, error) {

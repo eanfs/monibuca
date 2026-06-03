@@ -3,7 +3,7 @@ package plugin_gb28181pro
 import (
 	"time"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 )
 
 // AlarmSubscribeTask 报警订阅任务

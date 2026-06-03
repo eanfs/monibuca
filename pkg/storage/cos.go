@@ -316,7 +316,10 @@ func (f *COSFile) Close() error {
 	defer f.mu.Unlock()
 	if f.tempFile != nil {
 		if err := f.tempFile.Sync(); err != nil {
-			f.cleanup(true)
+			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
+			// f.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
+			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
+			f.cleanup(false)
 			return err
 		}
 	}
@@ -364,9 +367,27 @@ func (f *COSFile) Stat() (os.FileInfo, error) {
 	return f.tempFile.Stat()
 }
 
+// FinalizeFromTemp 让 COSFile 直接以 srcPath 指向的完整文件作为上传源。
+// 实现 storage.TempFileFinalizer。详见 s3.go 同名方法。
+func (f *COSFile) FinalizeFromTemp(srcPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	adopted, err := adoptUploadTempFile(f.tempFile, f.filePath, srcPath)
+	if err != nil {
+		f.tempFile = nil
+		return fmt.Errorf("finalize from temp: %w", err)
+	}
+	f.tempFile = adopted
+	f.filePath = srcPath
+	return nil
+}
+
 // uploadTempFile 上传临时文件到COS，带并发控制和指数退避重试
 func (f *COSFile) uploadTempFile() error {
-	if err := AcquireUploadSlot(f.ctx); err != nil {
+	// 解耦上传 ctx 与文件 ctx (= Recorder.Context). 详见 s3.go uploadTempFile 注释.
+	uploadCtx := context.WithoutCancel(f.ctx)
+
+	if err := AcquireUploadSlot(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
@@ -380,10 +401,10 @@ func (f *COSFile) uploadTempFile() error {
 
 	rc := f.storage.config.retryConfig()
 
-	return UploadWithRetry(f.ctx, rc, "COS", f.objectKey,
+	return UploadWithRetry(uploadCtx, rc, "COS", f.objectKey,
 		nil, // COS PutFromFile 不需要 resetFn（按文件路径上传）
 		func() error {
-			if _, err := f.storage.client.Object.PutFromFile(f.ctx, f.objectKey, f.filePath, nil); err != nil {
+			if _, err := f.storage.client.Object.PutFromFile(uploadCtx, f.objectKey, f.filePath, nil); err != nil {
 				return fmt.Errorf("failed to upload to COS: %w", err)
 			}
 			log.Printf("[COS] upload successful: %s", f.objectKey)
@@ -424,6 +445,14 @@ func (f *COSFile) downloadToTemp() error {
 
 	return nil
 }
+
+var _ TempFileFinalizer = (*COSFile)(nil)
+
+// LocalFd 返回 COSFile 上传前承载录像数据的本地暂存文件句柄。
+// 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
+func (f *COSFile) LocalFd() *os.File { return f.tempFile }
+
+var _ RangeInserter = (*COSFile)(nil)
 
 func init() {
 	Factory["cos"] = func(conf any) (Storage, error) {

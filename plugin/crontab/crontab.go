@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/plugin/crontab/pkg"
 )
 
@@ -38,7 +37,7 @@ type Crontab struct {
 }
 
 func (cron *Crontab) GetKey() string {
-	return strconv.Itoa(int(cron.PlanID)) + "_" + cron.StreamPath + "_" + cron.RecordType
+	return cron.StreamPath + "_" + cron.RecordType
 }
 
 // 初始化

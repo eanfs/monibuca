@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 type UDP struct {

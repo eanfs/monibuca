@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/pion/rtp"
 	mpegps "m7s.live/v5/pkg/format/ps"
 	"m7s.live/v5/pkg/util"

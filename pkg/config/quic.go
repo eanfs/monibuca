@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/quic-go/quic-go"
 )
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/mcuadros/go-defaults"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -228,7 +228,11 @@ func (p *Publisher) processPullProxyOnStart() {
 		return pullProxy.GetStreamPath() == p.StreamPath
 	}); ok {
 		p.PullProxyConfig = pullProxy.GetConfig()
-		if p.PullProxyConfig.Status == PullProxyStatusOnline {
+		prevStatus := p.PullProxyConfig.Status
+		// 只在设备已确认可达时（Online 或 Pulling 重连竞态）才更新状态并启动录制。
+		// Offline 时 PullJob(MaxRetry=-1) 的盲重试不应触发 ChangeStatus 或 RecordJob，
+		// 否则会导致 Offline→Pulling→Online 死循环，以及无效录制不断启停。
+		if prevStatus == PullProxyStatusOnline || prevStatus == PullProxyStatusPulling {
 			pullProxy.ChangeStatus(PullProxyStatusPulling)
 			if mp4Plugin, ok := s.Plugins.Get("MP4"); ok && p.PullProxyConfig.FilePath != "" {
 				mp4Plugin.Record(p, p.PullProxyConfig.Record, nil)
@@ -292,6 +296,16 @@ func (s *Server) EnsurePullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, c
 	if existing, ok := s.PullProxies.Find(func(pullProxy IPullProxy) bool {
 		return pullProxy.GetStreamPath() == streamPath
 	}); ok {
+		// 复用已存在的 pull-proxy,丢弃本次 conf。这对常规调用是正确语义(不覆盖
+		// 已有配置),但会丢掉新 conf 的 Description 等字段 —— 历史上曾导致 cluster
+		// relay 标记丢失(现已由 ClusterPlugin.activeRelays 权威判定 relay,不再依赖
+		// 此处的 Description)。保留一条非静默日志,便于以后排查配置不一致。
+		if conf.Description != "" && existing.GetConfig().Description != conf.Description {
+			s.Debug("EnsurePullProxy reuse existing, dropping incoming conf",
+				"streamPath", streamPath,
+				"existingDesc", existing.GetConfig().Description,
+				"droppedDesc", conf.Description)
+		}
 		return existing, false, nil
 	}
 

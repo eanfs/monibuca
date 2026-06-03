@@ -9,6 +9,15 @@ global:
     type: "sqlite"
   # S3存储配置示例（需要时取消注释并填写实际值）
   storage:
+    # === 并发限流 ===
+    # maxconcurrentuploads: 4         # 并发上传 S3/COS/OSS 槽位数（默认 4）
+    # maxconcurrenttrailerwrites: 8   # [预留] trailer 写盘并发槽位 (默认 8)
+    #                                 # 当前 trailer queue 是 single-threaded, 此项不影响实际行为,
+    #                                 # 仅作为未来 worker-pool 实现的接口预留
+    # trailerwriteratembps: 0         # trailer 重写写盘限速 (MB/s)。record stop 多路并发时,
+    #                                 # trailer 重写会产生磁盘写入 burst。0=不限速 (默认)。
+    #                                 # 需要把峰值压到目标值时设具体数值, 例如 SSD 上设 300
+    #                                 # 表示限到 ~300 MB/s。本机 SSD 顺序写上限实测约 1.1 GB/s。
     s3:
       region: "us-east-1"                   # AWS区域
       endpoint: "storage-dev.xiding.tech"          # S3服务端点
@@ -46,10 +55,10 @@ rtsp:
     live/camera1: rtsp://admin:a1234567@192.168.12.71/ch1/main/av_stream
     live/camera2: rtsp://admin:a1234567@192.168.12.72/ch1/main/av_stream
     live/camera3: rtsp://admin:a1234567@192.168.12.73/ch1/main/av_stream
-    # 海康威视 - 192.168.10.x 系列
-    live/camera4: rtsp://admin:a1234567@192.168.10.81/ch1/main/av_stream
-    live/camera5: rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream
-    live/camera6: rtsp://admin:a1234567@192.168.10.83/ch1/main/av_stream
+    # 海康威视 - 192.168.10.x 系列 (2026-05-20 检测全部 DOWN, 已注释)
+    # live/camera4: rtsp://admin:a1234567@192.168.10.81/ch1/main/av_stream
+    # live/camera5: rtsp://admin:a1234567@192.168.10.91/ch1/main/av_stream
+    # live/camera6: rtsp://admin:a1234567@192.168.10.83/ch1/main/av_stream
     # 海康威视 - 192.168.12.3x 系列（俯视/侧视/正视）
     live/camera7: rtsp://admin:a1234567@192.168.12.31/ch1/main/av_stream
     live/camera8: rtsp://admin:a1234567@192.168.12.32/ch1/main/av_stream
@@ -85,7 +94,7 @@ rtsp:
     live/camera31: rtsp://admin:a1234567@192.168.12.223:554/cam/realmonitor?channel=1&subtype=0
     live/camera32: rtsp://admin:a1234567@192.168.12.224:554/cam/realmonitor?channel=1&subtype=0
     # 海康威视 - 192.168.12.2x 系列（俯视/侧视/正视）
-    live/camera33: rtsp://admin:a1234567@192.168.12.21/ch1/main/av_stream
+    # live/camera33: rtsp://admin:a1234567@192.168.12.21/ch1/main/av_stream  (DOWN 2026-05-20)
     live/camera34: rtsp://admin:a1234567@192.168.12.22/ch1/main/av_stream
     live/camera35: rtsp://admin:a1234567@192.168.12.23/ch1/main/av_stream
 

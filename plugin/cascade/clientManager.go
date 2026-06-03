@@ -14,7 +14,7 @@ import (
 	m7s "m7s.live/v5"
 	cascadepkg "m7s.live/v5/plugin/cascade/pkg"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // {{ AURA-X: PullProxy 拉流代理数据结构 }}

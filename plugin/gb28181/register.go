@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 type Register struct {

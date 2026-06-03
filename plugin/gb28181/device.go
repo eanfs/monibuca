@@ -17,7 +17,7 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/util"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
@@ -57,10 +57,11 @@ func (d *DeviceKeepaliveTickTask) Tick(any) {
 		// 设置所有通道状态为off
 		d.device.channels.Range(func(channel *Channel) bool {
 			d.device.Debug("keeplive time out", "timediff", timeDiff, "offline channeid", channel.ChannelId)
-			channel.Status = "OFF"
+			channel.Status = gb28181.ChannelOffStatus
 			return true
 		})
 		d.seconds = time.Minute * 1440
+		d.Ticker.Reset(d.seconds)
 		//d.Stop(fmt.Errorf("device keeplive time out,deviceid is " + d.device.DeviceId))
 	}
 }

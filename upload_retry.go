@@ -6,7 +6,8 @@ import (
 	"os"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
+	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/storage"
 )
 
@@ -29,6 +30,20 @@ func (u *UploadRetryScheduler) GetTickInterval() time.Duration {
 func (u *UploadRetryScheduler) Tick(any) {
 	if u.s == nil || u.s.DB == nil || u.s.Storage == nil {
 		return
+	}
+
+	// 回收卡在 Uploading 状态的任务(进程崩溃 / goroutine 超时残留),扫回 Failed
+	if n, err := ReclaimStaleUploading(u.s.DB, staleUploadingThreshold); err != nil {
+		u.Error("reclaim stale uploading", "err", err)
+	} else if n > 0 {
+		u.Info("reclaimed stale uploading tasks", "count", n)
+	}
+
+	// pending 目录水位巡检:接近上限即告警(RaiseUploadAlarm 自带去重,不会刷屏)
+	if warn, detail := storage.PendingWatermarkExceeded(); warn {
+		RaiseUploadAlarm(u.s.DB, config.AlarmDiskSpaceFull,
+			"pending dir near full", "", storage.GetPendingDir(),
+			"pending 暂存目录接近容量上限: "+detail)
 	}
 
 	// 查询待重试的任务（每次最多处理 20 个，避免单次过多）
@@ -59,17 +74,20 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		return
 	}
 
+	// 原子抢占:仅当任务仍为 Failed 时占用;抢不到说明已被其他 goroutine 处理
+	if !MarkUploading(u.s.DB, ut.ID) {
+		return
+	}
+
 	// 获取上传槽位（并发控制）
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	if err := storage.AcquireUploadSlot(ctx); err != nil {
+		// 已抢占 Uploading 但拿不到槽位,留待 ReclaimStaleUploading 回收
 		u.Warn("acquire upload slot timeout", "id", ut.ID, "err", err)
 		return
 	}
 	defer storage.ReleaseUploadSlot()
-
-	// 标记为上传中
-	MarkUploading(u.s.DB, ut.ID)
 
 	// 解析元数据
 	var metadata map[string]string
@@ -92,6 +110,12 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 			"retryCount", ut.RetryCount+1,
 			"err", err)
 		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.RetryCount, err)
+		// 补传次数耗尽:不再被 QueryPendingUploads 命中,告警通知运维介入
+		if ut.RetryCount+1 >= ut.MaxRetries {
+			RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+				"upload retry exhausted", ut.StreamPath, ut.LocalPath,
+				"补传次数已耗尽,文件待人工处理: "+ut.ObjectKey)
+		}
 		return
 	}
 

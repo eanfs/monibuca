@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	"github.com/mcuadros/go-defaults"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
