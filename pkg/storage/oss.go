@@ -382,7 +382,7 @@ func (f *OSSFile) uploadTempFile() error {
 	// 解耦上传 ctx 与文件 ctx (= Recorder.Context). 详见 s3.go uploadTempFile 注释.
 	uploadCtx := context.WithoutCancel(f.ctx)
 
-	if err := AcquireUploadSlot(uploadCtx); err != nil {
+	if err := AcquireUploadSlotWithTimeout(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()

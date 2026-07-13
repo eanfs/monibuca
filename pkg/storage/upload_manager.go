@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -90,6 +91,18 @@ func InitUploadManager(cfg UploadConfig) {
 	}
 	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
 		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, pendingDir)
+}
+
+// UploadSlotWaitTimeout 等待上传槽位的最长时间。上传 ctx 已与录制 ctx 解耦
+// (WithoutCancel 永不取消),若不设上限,存储后端长时间卡死时等槽 goroutine 会无限
+// 累积。超时后调用方按上传失败处理 → 文件进 pending 由定时补传拉起,不丢数据。
+const UploadSlotWaitTimeout = 30 * time.Minute
+
+// AcquireUploadSlotWithTimeout 带超时上限地等待上传槽位,配对 ReleaseUploadSlot。
+func AcquireUploadSlotWithTimeout(ctx context.Context) error {
+	tctx, cancel := context.WithTimeout(ctx, UploadSlotWaitTimeout)
+	defer cancel()
+	return AcquireUploadSlot(tctx)
 }
 
 // AcquireUploadSlot 获取一个上传槽位，阻塞直到有可用槽位或 ctx 取消

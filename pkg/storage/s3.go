@@ -503,8 +503,8 @@ func (w *S3File) uploadTempFile() error {
 	// 上传链路的真实超时由每次 attempt 的 WithTimeout 控制.
 	uploadCtx := context.WithoutCancel(w.ctx)
 
-	// 获取上传槽位（并发控制）
-	if err := AcquireUploadSlot(uploadCtx); err != nil {
+	// 获取上传槽位（并发控制;带超时上限,超时按上传失败处理走 pending 补传）
+	if err := AcquireUploadSlotWithTimeout(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
