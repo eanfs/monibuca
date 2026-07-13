@@ -486,6 +486,12 @@ Automatic migration is handled for core models including users, proxies, and str
 - **影响**: 全仓 `go build ./...` 失败。变通:用具体子路径 `go build -tags cluster ./plugin/cluster/... ./plugin/mp4/... ./example/cluster/...`。
 - **修复需要**: 修 `plugin/crypto/pkg/transform.go`(应该是 m7s 核心某些类型/方法重命名/移除后没同步更新),与 cluster 解耦。
 
+### progressive MP4 录制中崩溃不可恢复(结构性限制)
+
+- **现象**: `record.type: mp4`(progressive)的 moov 仅在停止时写入(`writeTrailerTask.Start`),录制中磁盘上无 moov、mdat 占位 size=8;进程被 kill/断电则该段不可播,`plugin/mp4/recovery.go` 依赖 demuxer 找 moov 也无法重建。
+- **缓解**: 配 `fragment` 分段可把损失限制在当前段;或改用 `record.type: fmp4` —— init moov 修复后 moof/mdat 自描述,录制中崩溃文件仍可播,天然崩溃安全。
+- **彻底修复方向**: progressive 周期性 moov 快照(IO 代价大,31 路并发录制场景需评估)或崩溃后从裸 mdat 重建索引的恢复工具;与 trailer 零重写/fMP4 旁路计划同族,待排期。
+
 ### example/cluster-e2e 未实跑验证
 
 - **位置**: `example/cluster-e2e/`(Dockerfile + docker-compose + 3 configs + smoke.sh + README)。

@@ -75,6 +75,42 @@ func (t *writeTrailerTask) Run() (err error) {
 		}
 	}()
 
+	// fMP4(fragment)文件本身已是最终形态 [ftyp][moov(init)][moof/mdat...][mfra]，
+	// 不需要 moov 前移重写；走下方 progressive 全量重写会把它毁掉。
+	// 这里只设置元数据并触发最终持久化(对象存储=上传；本地=已就位)。
+	if t.muxer.isFragment() {
+		var size int64
+		if size, err = t.file.Seek(0, io.SeekEnd); err != nil {
+			t.Error("seek fragment file", "err", err)
+			return
+		}
+		t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", size))
+		if t.durationMs > 0 {
+			t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		}
+		var localPath string
+		if inserter, ok := t.file.(storage.RangeInserter); ok {
+			if fd := inserter.LocalFd(); fd != nil {
+				localPath = fd.Name()
+			}
+		}
+		if err = t.file.Close(); err != nil {
+			t.Error("fragment close/upload failed", "err", err, "filePath", t.filePath)
+			t.file = nil
+			if localPath != "" {
+				t.recoverFastPathFailure(localPath, size, err)
+			}
+			return
+		}
+		t.file = nil
+		if t.dbWrite != nil {
+			if dbErr := t.dbWrite(&writeTrailerQueueTask); dbErr != nil {
+				t.reportOrphan(dbErr)
+			}
+		}
+		return
+	}
+
 	// 阶段 A：progressive MP4 优先用 fallocate INSERT_RANGE 原地插 moov，
 	// 把 trailer 磁盘写从 O(mdat 全量) 降到 O(moov)。不支持时回退下方全量重写。
 	if handled, e := t.runInsertRangeFastPath(); handled {
@@ -114,15 +150,20 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("copy pre-mdat data", "err", err)
 		return
 	}
-	for _, track := range t.muxer.Tracks {
-		for i := range len(track.Samplelist) {
-			track.Samplelist[i].Offset += int64(t.muxer.moov.Size())
-		}
+	// moov 前移后 sample 偏移需整体右移；右移可能使偏移跨过 4GB 触发
+	// stco→co64 升级、moov 变大,PrepareFrontMoov 内部迭代平移至尺寸收敛。
+	moov, moovErr := t.muxer.PrepareFrontMoov()
+	if moovErr != nil {
+		err = moovErr
+		t.Error("prepare front moov", "err", err)
+		return
 	}
-	if err = t.muxer.WriteMoov(bw); err != nil {
+	var moovN int64
+	if moovN, err = box.WriteTo(bw, moov); err != nil {
 		t.Error("write moov to temp", "err", err)
 		return
 	}
+	t.muxer.CurrentOffset += moovN
 	// 复制 mdat box
 	if _, err = io.CopyN(bw, t.file, int64(t.muxer.mdatSize)+BeforeMdatData); err != nil {
 		if err == pkg.ErrSkip {
@@ -259,11 +300,7 @@ func (t *writeTrailerTask) reportOrphan(dbErr error) {
 // shiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta，
 // 用于 INSERT_RANGE 把 mdat 逻辑后移后校正 moov 内的 chunk offset。
 func (t *writeTrailerTask) shiftSampleOffsets(delta int64) {
-	for _, track := range t.muxer.Tracks {
-		for i := range track.Samplelist {
-			track.Samplelist[i].Offset += delta
-		}
-	}
+	t.muxer.ShiftSampleOffsets(delta)
 }
 
 // writeMoovHead 在 INSERT_RANGE 撑开的 [0,insertLen) 空间写入 [ftyp][moov][free padding]，

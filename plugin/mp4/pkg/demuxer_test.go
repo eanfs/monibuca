@@ -14,7 +14,11 @@ import (
 // TestDemuxerBoxTree tests the Demuxer by reading a test MP4 file and printing the box tree structure.
 func TestDemuxerBoxTree(t *testing.T) {
 	// Open the test mp4 file. It is assumed to be located in 'testdata/test_regular.mp4'.
-	f, err := os.Open("/Users/dexter/project/v5/monibuca/example/default/dump/test_regular.mp4")
+	const testFile = "/Users/dexter/project/v5/monibuca/example/default/dump/test_regular.mp4"
+	if _, statErr := os.Stat(testFile); statErr != nil {
+		t.Skipf("test media file not available: %v", statErr)
+	}
+	f, err := os.Open(testFile)
 	if err != nil {
 		t.Fatalf("failed to open test mp4 file: %v", err)
 	}

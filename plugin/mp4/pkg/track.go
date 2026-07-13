@@ -77,7 +77,7 @@ func (track *Track) makeElstBox() *EditListBox {
 	firstTimestamp := track.Samplelist[0].Timestamp
 	firstCTS := track.Samplelist[0].CTS
 	mediaTime := int64(firstTimestamp) + int64(firstCTS)
-	
+
 	entrys[entryCount-1].SegmentDuration = uint64(track.Duration)
 	// MediaTime应该是第一个sample的PTS (DTS + CTS)
 	entrys[entryCount-1].MediaTime = mediaTime
@@ -109,11 +109,15 @@ func (track *Track) AddSampleEntry(entry Sample) {
 	if len(track.Samplelist) < 1 {
 		track.Duration = 0
 	} else {
-		delta := int64(entry.Timestamp - track.Samplelist[len(track.Samplelist)-1].Timestamp)
-		track.Samplelist[len(track.Samplelist)-1].Duration = uint32(delta)
+		last := &track.Samplelist[len(track.Samplelist)-1]
+		// uint32 直接相减会回绕成天量正数,必须先转有符号再判回退,
+		// 否则时间戳回退时 Duration 被污染(mvhd/tkhd 时长错乱、trun 非法)。
+		delta := int64(entry.Timestamp) - int64(last.Timestamp)
 		if delta < 0 {
+			last.Duration = 1
 			track.Duration += 1
 		} else {
+			last.Duration = uint32(delta)
 			track.Duration += uint32(delta)
 		}
 	}

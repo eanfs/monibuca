@@ -161,7 +161,11 @@ func (c *RTSPMockConn) SetWriteDeadline(t time.Time) error {
 }
 
 func TestNetConnection_Pull(t *testing.T) {
-	conn, err := NewRTSPMockConn("/Users/dexter/project/v5/monibuca/example/default/dump/rtsp", 1)
+	const dumpDir = "/Users/dexter/project/v5/monibuca/example/default/dump/rtsp"
+	if _, statErr := os.Stat(dumpDir); statErr != nil {
+		t.Skipf("test dump dir not available: %v", statErr)
+	}
+	conn, err := NewRTSPMockConn(dumpDir, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package box
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -212,8 +213,10 @@ func WriteTo(w io.Writer, box ...IBox) (n int64, err error) {
 		if err != nil {
 			return
 		}
-		if n1+n2 != int64(b.Size()) {
-			// panic(fmt.Sprintf("write to %s size error, %d != %d", b.Type(), n1+n2, b.Size()))
+		// 声明尺寸与实际写出不一致会产出结构错位的静默损坏文件,必须报错。
+		// n2==0 豁免:mdat/free 等仅覆盖 box header 的写法(payload 已在盘上)。
+		if n2 > 0 && n1+n2 != int64(b.Size()) {
+			return n, fmt.Errorf("box %s size mismatch: wrote %d, declared %d", b.Type(), n1+n2, b.Size())
 		}
 		n += n1 + n2
 	}

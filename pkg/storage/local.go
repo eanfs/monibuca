@@ -653,12 +653,26 @@ func (f *LocalFile) FinalizeFromTemp(srcPath string) error {
 	if err := f.File.Close(); err != nil {
 		return fmt.Errorf("close dest before finalize: %w", err)
 	}
+	// rename 前先把 src 数据块 fsync 落盘：rename 只持久化目录项,不保证文件
+	// 内容已回写；否则断电窗口内 destPath 存在但内容为空/坏块(有 DB 记录、文件却坏)。
+	if src, openErr := os.OpenFile(srcPath, os.O_RDWR, 0); openErr == nil {
+		syncErr := src.Sync()
+		src.Close()
+		if syncErr != nil {
+			return fmt.Errorf("sync src before finalize: %w", syncErr)
+		}
+	}
 	if err := os.Rename(srcPath, destPath); err != nil {
 		// 跨设备（如 /tmp 与录像目录不同挂载点）：复制后删除源。
 		if copyErr := copyFileContents(srcPath, destPath); copyErr != nil {
 			return fmt.Errorf("cross-device finalize: %w", copyErr)
 		}
 		os.Remove(srcPath)
+	}
+	// rename 后 fsync 父目录,持久化目录项本身(best-effort,失败不阻断)。
+	if dir, openErr := os.Open(filepath.Dir(destPath)); openErr == nil {
+		dir.Sync()
+		dir.Close()
 	}
 	// 重新打开目标文件，使后续 Close() 仍然有效。
 	reopened, err := os.OpenFile(destPath, os.O_RDWR, 0644)

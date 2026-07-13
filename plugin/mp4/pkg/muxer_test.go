@@ -12,7 +12,11 @@ import (
 
 func TestFLVToMP4(t *testing.T) {
 	// Open FLV file
-	flvFile, err := os.Open("/Users/dexter/Movies/frame_counter_4k_60fps.flv")
+	const testFile = "/Users/dexter/Movies/frame_counter_4k_60fps.flv"
+	if _, statErr := os.Stat(testFile); statErr != nil {
+		t.Skipf("test media file not available: %v", statErr)
+	}
+	flvFile, err := os.Open(testFile)
 	if err != nil {
 		t.Fatalf("Failed to open FLV file: %v", err)
 	}
