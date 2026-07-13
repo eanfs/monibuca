@@ -343,3 +343,68 @@ func TestStreamRegistry_SuccessfulAcquireReleasesOnDispose(t *testing.T) {
 		t.Fatal("must release acquired key on dispose")
 	}
 }
+
+// TestStreamRegistry_DisposeBeforeAcquireCompletes 守护 TOCTOU 幽灵流:
+// publisher 在异步 acquire 完成前就 dispose(秒断/Consul 慢)。dispose 时
+// acquired=false 跳过 release;acquire 事后成功,必须回查 disposed 并补偿
+// release —— 否则 KV 键被本节点健康 session 永久持有,流名全集群被毒化。
+func TestStreamRegistry_DisposeBeforeAcquireCompletes(t *testing.T) {
+	sr := &StreamRegistry{localStreams: make(map[string]struct{})}
+	sr.acquireFn = func(string) error { return nil }
+	releaseCount := 0
+	sr.releaseFn = func(string) error { releaseCount++; return nil }
+	var queue []func()
+	sr.dispatch = func(fn func()) { queue = append(queue, fn) } // 捕获,模拟异步
+
+	var disposeHook func()
+	sr.handleLocalPublish("live/x", false, func(error) {}, func(h func()) { disposeHook = h })
+
+	// acquire 已入队未执行时 publisher 先 dispose
+	disposeHook()
+	if releaseCount != 0 {
+		t.Fatalf("release must not run before acquire succeeded, got %d", releaseCount)
+	}
+	// acquire 此后才完成 → 补偿 release 必须恰好执行一次
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		fn()
+	}
+	if releaseCount != 1 {
+		t.Fatalf("compensating release must run exactly once, got %d", releaseCount)
+	}
+}
+
+// TestStreamRegistry_DisposeReleaseIsDispatched 守护 Streams 循环阻塞(RC2 对称面):
+// dispose 回调跑在 Server.Streams 事件循环上,release 是阻塞式 Consul I/O,
+// 必须经 dispatch 挪走,绝不能在 dispose 调用栈里同步执行。
+func TestStreamRegistry_DisposeReleaseIsDispatched(t *testing.T) {
+	sr := &StreamRegistry{localStreams: make(map[string]struct{})}
+	sr.acquireFn = func(string) error { return nil }
+	releaseCalled := false
+	sr.releaseFn = func(string) error { releaseCalled = true; return nil }
+	var queue []func()
+	sr.dispatch = func(fn func()) { queue = append(queue, fn) }
+
+	var disposeHook func()
+	sr.handleLocalPublish("live/x", false, func(error) {}, func(h func()) { disposeHook = h })
+	// 先让 acquire 完成
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		fn()
+	}
+
+	disposeHook()
+	if releaseCalled {
+		t.Fatal("release must NOT run on dispose caller stack (Server.Streams 事件循环)")
+	}
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		fn()
+	}
+	if !releaseCalled {
+		t.Fatal("release should run via dispatched closure")
+	}
+}
