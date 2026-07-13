@@ -38,11 +38,6 @@ var (
 	trailerSem            chan struct{}
 	activeTrailerWrites   int32
 	maxConcurrentTrailers int
-
-	// OnUploadFailed 上传失败回调，由上层（server）注册。
-	// 参数: localPath=本地文件路径, objectKey=远端对象键, storageType=存储类型,
-	//       fileSize=文件大小, metadata=用户元数据, err=错误信息
-	OnUploadFailed func(localPath, objectKey, storageType string, fileSize int64, metadata map[string]string, err error)
 )
 
 // ErrPendingDirFull 表示 pending 暂存目录已达水位上限,拒绝再接收文件。
@@ -152,9 +147,11 @@ func MoveToPendingDir(srcPath string) (string, error) {
 	}
 	dstPath := filepath.Join(pendingDir, filepath.Base(srcPath))
 
-	// 避免同名冲突
+	// 避免同名冲突:后缀必须唯一(纳秒时间戳)。固定后缀在第三次同名冲突时
+	// 会被 os.Rename 静默覆盖,顶掉仍在等待补传的文件导致录像丢失。
 	if _, err := os.Stat(dstPath); err == nil {
-		dstPath = filepath.Join(pendingDir, filepath.Base(srcPath)+"."+filepath.Base(os.TempDir()))
+		dstPath = filepath.Join(pendingDir,
+			fmt.Sprintf("%s.%d", filepath.Base(srcPath), time.Now().UnixNano()))
 	}
 
 	// 尝试 rename

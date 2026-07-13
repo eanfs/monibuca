@@ -324,16 +324,8 @@ func (f *COSFile) Close() error {
 		}
 	}
 	err := f.uploadTempFile()
+	// 上传失败时保留临时文件（供补传，由调用方经 m7s.RecoverFailedUpload 登记），成功时删除
 	f.cleanup(err == nil)
-	if err != nil && OnUploadFailed != nil && f.filePath != "" {
-		var fileSize int64
-		if f.tempFile != nil {
-			if stat, statErr := f.tempFile.Stat(); statErr == nil {
-				fileSize = stat.Size()
-			}
-		}
-		OnUploadFailed(f.filePath, f.objectKey, "cos", fileSize, nil, err)
-	}
 	return err
 }
 
@@ -406,6 +398,16 @@ func (f *COSFile) uploadTempFile() error {
 		func() error {
 			if _, err := f.storage.client.Object.PutFromFile(uploadCtx, f.objectKey, f.filePath, nil); err != nil {
 				return fmt.Errorf("failed to upload to COS: %w", err)
+			}
+			// 上传后校验:对象大小必须与本地文件一致,否则本次视为失败重试。
+			if fileSize > 0 {
+				resp, herr := f.storage.client.Object.Head(uploadCtx, f.objectKey, nil)
+				if herr != nil {
+					return fmt.Errorf("post-upload verify head: %w", herr)
+				}
+				if resp.ContentLength != fileSize {
+					return fmt.Errorf("post-upload size mismatch: remote=%d local=%d", resp.ContentLength, fileSize)
+				}
 			}
 			log.Printf("[COS] upload successful: %s", f.objectKey)
 			return nil

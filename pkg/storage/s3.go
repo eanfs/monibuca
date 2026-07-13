@@ -433,17 +433,8 @@ func (w *S3File) Close() error {
 		}
 	}
 	err := w.uploadTempFile()
-	// 上传失败时保留临时文件（供补传），成功时删除
+	// 上传失败时保留临时文件（供补传，由调用方经 m7s.RecoverFailedUpload 登记），成功时删除
 	w.cleanup(err == nil)
-	if err != nil && OnUploadFailed != nil && w.filePath != "" {
-		var fileSize int64
-		if w.tempFile != nil {
-			if stat, statErr := w.tempFile.Stat(); statErr == nil {
-				fileSize = stat.Size()
-			}
-		}
-		OnUploadFailed(w.filePath, w.objectKey, "s3", fileSize, w.metadata, err)
-	}
 	return err
 }
 
@@ -547,6 +538,21 @@ func (w *S3File) uploadTempFile() error {
 
 			if _, err := w.storage.uploader.UploadWithContext(ctx, uploadInput); err != nil {
 				return fmt.Errorf("failed to upload to S3: %w", err)
+			}
+
+			// 上传后校验:对象大小必须与本地文件一致,否则本次视为失败重试。
+			// 防止后端返回成功但对象不完整时,上层凭 err==nil 删掉唯一的本地副本。
+			if fileSize > 0 {
+				head, herr := w.storage.s3Client.HeadObjectWithContext(ctx, &s3.HeadObjectInput{
+					Bucket: aws.String(w.storage.config.Bucket),
+					Key:    aws.String(w.objectKey),
+				})
+				if herr != nil {
+					return fmt.Errorf("post-upload verify head: %w", herr)
+				}
+				if remote := aws.Int64Value(head.ContentLength); remote != fileSize {
+					return fmt.Errorf("post-upload size mismatch: remote=%d local=%d", remote, fileSize)
+				}
 			}
 
 			log.Printf("[S3] upload successful: %s", w.objectKey)

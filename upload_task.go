@@ -172,9 +172,11 @@ func MarkUploadRetryFailed(db *gorm.DB, taskID uint, retryCount int, err error) 
 }
 
 // staleUploadingThreshold:Uploading 状态超过此时长即视为卡死(进程崩溃 /
-// goroutine 超时残留)。须大于单文件最长上传耗时(retryUpload 的 30min 超时),
-// 留 buffer 取 35min。
-const staleUploadingThreshold = 35 * time.Minute
+// goroutine 超时残留)。须大于单任务最坏总耗时,否则健康的慢上传会被扫回
+// Failed 触发重复并发补传。最坏路径:uploadTempFile 内等槽 ≤30min
+// (storage.UploadSlotWaitTimeout)+ 每次 attempt 15min(默认 getTimeout)
+// × 4 次(MaxRetries+1)= 90min;留 buffer 取 2h。
+const staleUploadingThreshold = 2 * time.Hour
 
 // ReclaimStaleUploading 把卡在 Uploading 状态超过 threshold 的任务扫回 Failed,
 // 使其重新进入补传循环。崩溃 / 超时不计入 retry_count,不消耗重试配额。
