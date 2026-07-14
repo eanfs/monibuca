@@ -211,42 +211,29 @@ func (t *writeTrailerTask) Run() (err error) {
 	}
 
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
-	if finalizer, ok := t.file.(storage.TempFileFinalizer); ok {
-		// 快路径：直接移交 tempPath，省去全量回拷。
-		if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
-			t.Error("finalize from temp", "err", err)
-			// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
-			// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
-			// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
-			t.file = nil
-			recoverToPending(err)
-			return
-		}
-		tempOwned = false // 所有权已移交 t.file
-	} else {
-		// 回退路径：旧的全量回拷（供未实现 TempFileFinalizer 的 File）。
-		// 注意：此处的 io.Copy 写入不经限速器（限速只覆盖阶段 1 的临时文件写入）。
-		// 当前 local/s3/oss/cos 全部实现了 TempFileFinalizer，此分支为死路径，
-		// 仅作未来自定义 File 实现的兜底；若将来有后端走此路径需另行限速。
-		if _, err = t.file.Seek(0, io.SeekStart); err != nil {
-			t.Error("seek file for overwrite", "err", err)
-			return
-		}
-		if _, err = temp.Seek(0, io.SeekStart); err != nil {
-			t.Error("seek temp file", "err", err)
-			return
-		}
-		var written int64
-		if written, err = io.Copy(t.file, temp); err != nil {
-			t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
-			return
-		}
-		if written != expectedSize {
-			err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
-			t.Error("incomplete overwrite", "err", err)
-			return
-		}
+	finalizer, ok := t.file.(storage.TempFileFinalizer)
+	if !ok {
+		// 所有内置后端(local/s3/oss/cos)均实现 TempFileFinalizer。未实现的
+		// 自定义 File 直接报错并把完整的 tempPath 移入 pending 补传(补传走
+		// UploadLocalFile,不依赖 TempFileFinalizer,数据可恢复)。
+		// 不再保留旧的 io.Copy 全量回拷:那条路径的异步失败恢复闭包引用的
+		// tempPath 会被 defer 提前删除,存在误删唯一副本的隐患。
+		err = fmt.Errorf("storage file %T does not implement TempFileFinalizer", t.file)
+		t.Error("finalize from temp", "err", err)
+		recoverToPending(err)
+		return
 	}
+	// 快路径：直接移交 tempPath，省去全量回拷。
+	if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
+		t.Error("finalize from temp", "err", err)
+		// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
+		// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
+		// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
+		t.file = nil
+		recoverToPending(err)
+		return
+	}
+	tempOwned = false // 所有权已移交 t.file
 
 	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
 	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
