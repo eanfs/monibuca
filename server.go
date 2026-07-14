@@ -325,8 +325,17 @@ func (s *Server) Start() (err error) {
 				return
 			}
 			sqlDB, _ := s.DB.DB()
-			sqlDB.SetMaxIdleConns(25)
-			sqlDB.SetMaxOpenConns(100)
+			// SQLite/DuckDB 是单写者文件库:连接池 >1 时并发写以
+			// "database is locked" 失败——录制启动的 record_streams INSERT 在
+			// 帧回调里等锁直至超时(实测 10s)→ 订阅者被 ring buffer 丢弃 →
+			// 录制反复重启雪崩。单连接让全部 DB 访问在池内排队,普通写毫秒级。
+			if s.config.DBType == "sqlite" || s.config.DBType == "duckdb" {
+				sqlDB.SetMaxIdleConns(1)
+				sqlDB.SetMaxOpenConns(1)
+			} else {
+				sqlDB.SetMaxIdleConns(25)
+				sqlDB.SetMaxOpenConns(100)
+			}
 			sqlDB.SetConnMaxLifetime(5 * time.Minute)
 			// Auto-migrate models
 			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}, &UploadTask{}); err != nil {

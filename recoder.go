@@ -120,7 +120,10 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	}
 
 	if recordJob.Plugin.DB != nil && recordJob.RecConf.Mode != config.RecordModeTest {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// ⚠️ 本函数在录制订阅的媒体路径上同步执行:超时过长时(旧值 10s),
+		// DB 慢/锁等待会阻塞帧回调 → 订阅者被 ring buffer 丢弃 → 录制重启雪崩。
+		// 2s 为 ring buffer 可承受的最坏阻塞;失败仅 WRN(录制照常,尾部入库兜底)。
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer dbCancel()
 		if recordJob.Event != nil {
 			r.Event.RecordEvent = recordJob.Event
