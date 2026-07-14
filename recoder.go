@@ -307,7 +307,10 @@ func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, 
 		"fragment":   conf.Fragment,
 	})
 	recorder.SetRetry(-1, time.Second)
-	recorder.GetTask().SetMaxRetryInterval(2 * time.Second)
+	// 退避上限 30s 作雪崩断路器:录制反复失败(如磁盘 IO 风暴导致订阅者被
+	// ring discard)时,1-2s 疯狂重启会以「新建文件+trailer+上传」持续放大
+	// IO 形成正反馈。首次重试仍 1s 起步,持续失败时指数退避到 30s。
+	recorder.GetTask().SetMaxRetryInterval(30 * time.Second)
 	if sender, webhook := plugin.getHookSender(config.HookOnRecordStart); sender != nil {
 		recorder.OnStart(func() {
 			alarmInfo := AlarmInfo{

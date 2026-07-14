@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -321,10 +322,23 @@ type S3File struct {
 	storage   *S3Storage
 	objectKey string
 	ctx       context.Context
-	tempFile  *os.File          // 本地临时文件，用于支持随机访问
-	filePath  string            // 临时文件路径
-	readOnly  bool              // 只读模式，不上传到S3
-	metadata  map[string]string // 用户自定义元数据，上传时携带
+	tempFile  *os.File // 本地临时文件，用于支持随机访问
+	// bw 顺序写缓冲(1MB):录制热路径每帧一次小写,多路直写会把机械盘
+	// IOPS 打满导致全局 write 停顿(订阅者被 ring discard → 录制重启雪崩)。
+	// 任何绕过 bw 直接访问 tempFile 的路径必须先 flushBuf()。
+	bw       *bufio.Writer
+	filePath string            // 临时文件路径
+	readOnly bool              // 只读模式，不上传到S3
+	metadata map[string]string // 用户自定义元数据，上传时携带
+}
+
+// flushBuf 把写缓冲落到 tempFile。所有随机访问(Seek/ReadAt/WriteAt/Sync/
+// Stat/上传/LocalFd)前必须调用,否则读到/传到不完整数据。调用方需持有 w.mu。
+func (w *S3File) flushBuf() error {
+	if w.bw != nil && w.bw.Buffered() > 0 {
+		return w.bw.Flush()
+	}
+	return nil
 }
 
 // SetMetadata 设置上传到 S3 时携带的用户元数据，须在 Close 前调用。
@@ -349,7 +363,10 @@ func (w *S3File) Write(p []byte) (n int, err error) {
 			return 0, err
 		}
 	}
-	return w.tempFile.Write(p)
+	if w.bw == nil {
+		w.bw = bufio.NewWriterSize(w.tempFile, 1<<20)
+	}
+	return w.bw.Write(p)
 }
 
 func (w *S3File) Read(p []byte) (n int, err error) {
@@ -359,6 +376,9 @@ func (w *S3File) Read(p []byte) (n int, err error) {
 		if err = w.downloadToTemp(); err != nil {
 			return 0, err
 		}
+	}
+	if err = w.flushBuf(); err != nil {
+		return 0, err
 	}
 	return w.tempFile.Read(p)
 }
@@ -371,6 +391,9 @@ func (w *S3File) WriteAt(p []byte, off int64) (n int, err error) {
 			return 0, err
 		}
 	}
+	if err = w.flushBuf(); err != nil {
+		return 0, err
+	}
 	return w.tempFile.WriteAt(p, off)
 }
 
@@ -381,6 +404,9 @@ func (w *S3File) ReadAt(p []byte, off int64) (n int, err error) {
 		if err = w.downloadToTemp(); err != nil {
 			return 0, err
 		}
+	}
+	if err = w.flushBuf(); err != nil {
+		return 0, err
 	}
 	return w.tempFile.ReadAt(p, off)
 }
@@ -393,6 +419,9 @@ func (w *S3File) Sync() error {
 			return w.tempFile.Sync()
 		}
 		return nil
+	}
+	if err := w.flushBuf(); err != nil {
+		return err
 	}
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
@@ -410,6 +439,10 @@ func (w *S3File) Seek(offset int64, whence int) (int64, error) {
 			return 0, err
 		}
 	}
+	// 缓冲中的字节属于 seek 前的写入位置,必须先落盘再移动偏移。
+	if err := w.flushBuf(); err != nil {
+		return 0, err
+	}
 	return w.tempFile.Seek(offset, whence)
 }
 
@@ -422,6 +455,11 @@ func (w *S3File) Close() error {
 			return w.tempFile.Sync()
 		}
 		return nil
+	}
+	if err := w.flushBuf(); err != nil {
+		// flush 失败=数据不完整,与 Sync 失败同语义:保留文件供补传。
+		defer w.cleanup(false)
+		return err
 	}
 	if w.tempFile != nil {
 		if err := w.tempFile.Sync(); err != nil {
@@ -440,6 +478,7 @@ func (w *S3File) Close() error {
 
 // cleanup 清理临时文件。deleteFile=true 时删除磁盘文件，否则仅关闭句柄保留文件。
 func (w *S3File) cleanup(deleteFile bool) {
+	w.bw = nil
 	if w.tempFile != nil {
 		w.tempFile.Close()
 		w.tempFile = nil
@@ -463,8 +502,14 @@ func (w *S3File) createTempFile() error {
 }
 
 func (w *S3File) Stat() (os.FileInfo, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.tempFile == nil {
 		return nil, fmt.Errorf("s3 file not initialized")
+	}
+	// 不 flush 的话 Size() 会少掉缓冲中的字节(上层用它校验完整性)。
+	if err := w.flushBuf(); err != nil {
+		return nil, err
 	}
 	return w.tempFile.Stat()
 }
@@ -476,6 +521,8 @@ func (w *S3File) Stat() (os.FileInfo, error) {
 func (w *S3File) FinalizeFromTemp(srcPath string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// 旧 tempFile 即将被 srcPath 整体取代,缓冲内容一并作废。
+	w.bw = nil
 	f, err := adoptUploadTempFile(w.tempFile, w.filePath, srcPath)
 	if err != nil {
 		w.tempFile = nil
@@ -598,8 +645,17 @@ func (w *S3File) downloadToTemp() error {
 var _ TempFileFinalizer = (*S3File)(nil)
 
 // LocalFd 返回 S3File 上传前承载录像数据的本地暂存文件句柄。
+// flush 失败时返回 nil(调用方按"不支持本地 fd"走回退路径),
+// 避免把带未落盘缓冲的 fd 交给 insert-range 就地改写导致损坏。
 // 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
-func (w *S3File) LocalFd() *os.File { return w.tempFile }
+func (w *S3File) LocalFd() *os.File {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.flushBuf(); err != nil {
+		return nil
+	}
+	return w.tempFile
+}
 
 var _ RangeInserter = (*S3File)(nil)
 
