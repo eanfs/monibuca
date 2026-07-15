@@ -102,10 +102,11 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 	p.setupRelayHooks()
 
 	var err error
+	var proxy m7s.IPullProxy
 	if hook := p.relayHook; hook != nil {
 		_, err = hook(conf)
 	} else if p.Server != nil {
-		_, _, err = p.Server.EnsurePullProxy(conf)
+		proxy, _, err = p.Server.EnsurePullProxy(conf)
 	} else {
 		err = fmt.Errorf("server not attached")
 	}
@@ -116,8 +117,24 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 		}
 		p.activeRelays[streamPath] = struct{}{}
 		p.activeRelaysMu.Unlock()
+		// relay pull-proxy 自身停止(StopOnIdle 空闲 / MaxRetry 耗尽)时 origin 的
+		// KV 键仍在,onStreamRemoved 不会触发 —— 必须绑定 proxy 的 Dispose 清理,
+		// 否则条目泄漏,且同名流之后在本节点真正本地发布时会被 isActiveRelay 误判,
+		// 跳过 KV 注册与 first-write-wins 冲突检测。重复注册/删除均幂等。
+		if proxy != nil {
+			proxy.OnDispose(func() {
+				p.removeActiveRelay(streamPath)
+			})
+		}
 	}
 	return err
+}
+
+// removeActiveRelay 从 activeRelays 中移除一条 relay 记录(幂等)。
+func (p *ClusterPlugin) removeActiveRelay(streamPath string) {
+	p.activeRelaysMu.Lock()
+	delete(p.activeRelays, streamPath)
+	p.activeRelaysMu.Unlock()
 }
 
 // stopRelayPullProxy 生产路径:遍历 Server 的 pull-proxies,找 Description 带

@@ -468,7 +468,12 @@ func (r *Receiver) Receive() (err error) {
 			var ctx mrtp.OPUSCtx
 			ctx.OPUSCtx = &codec.OPUSCtx{}
 			ctx.ParseFmtpLine(r.AudioCodecParameters)
-			ctx.OPUSCtx.Channels = int(ctx.RTPCodecParameters.Channels)
+			// 与 PCMA/PCMU 同理:SDP 缺声道数(如 "opus/48000")时 Channels=0
+			// 会写出非法的 mp4 音频轨元数据。Opus 默认 2 声道,仅 SDP 给有效值才覆盖。
+			ctx.OPUSCtx.Channels = 2
+			if ch := int(ctx.RTPCodecParameters.Channels); ch > 0 {
+				ctx.OPUSCtx.Channels = ch
+			}
 			audioClockRate = ctx.RTPCodecParameters.ClockRate
 			writer.AudioFrame.ICodecCtx = &ctx
 		case webrtc.MimeTypePCMA:

@@ -29,6 +29,16 @@ type WriteTrailerQueueTask struct {
 
 var writeTrailerQueueTask WriteTrailerQueueTask
 
+// UploadQueueTask 独立上传队列:承载录像文件的最终持久化(Close→对象存储上传→入库)。
+// 与 writeTrailerQueueTask 分离的原因:trailer 队列单线程只做磁盘工作,若上传内联
+// 其中,一个慢上传会阻塞所有后续录像的 moov 重写/finalize;拆出后每个上传跑在
+// 自己的 goroutine 上,并发度由上传槽位(默认 4)真正决定。
+type UploadQueueTask struct {
+	task.Work
+}
+
+var uploadQueueTask UploadQueueTask
+
 type writeTrailerTask struct {
 	task.Task
 	muxer      *Muxer
@@ -75,6 +85,31 @@ func (t *writeTrailerTask) Run() (err error) {
 		}
 	}()
 
+	// fMP4(fragment)文件本身已是最终形态 [ftyp][moov(init)][moof/mdat...][mfra]，
+	// 不需要 moov 前移重写；走下方 progressive 全量重写会把它毁掉。
+	// 这里只设置元数据并触发最终持久化(对象存储=上传；本地=已就位)。
+	if t.muxer.isFragment() {
+		var size int64
+		if size, err = t.file.Seek(0, io.SeekEnd); err != nil {
+			t.Error("seek fragment file", "err", err)
+			return
+		}
+		t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", size))
+		if t.durationMs > 0 {
+			t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		}
+		var localPath string
+		if inserter, ok := t.file.(storage.RangeInserter); ok {
+			if fd := inserter.LocalFd(); fd != nil {
+				localPath = fd.Name()
+			}
+		}
+		t.handoffToUploadQueue(func(cause error) {
+			t.recoverLocalFile(localPath, size, cause)
+		})
+		return
+	}
+
 	// 阶段 A：progressive MP4 优先用 fallocate INSERT_RANGE 原地插 moov，
 	// 把 trailer 磁盘写从 O(mdat 全量) 降到 O(moov)。不支持时回退下方全量重写。
 	if handled, e := t.runInsertRangeFastPath(); handled {
@@ -114,15 +149,20 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.Error("copy pre-mdat data", "err", err)
 		return
 	}
-	for _, track := range t.muxer.Tracks {
-		for i := range len(track.Samplelist) {
-			track.Samplelist[i].Offset += int64(t.muxer.moov.Size())
-		}
+	// moov 前移后 sample 偏移需整体右移；右移可能使偏移跨过 4GB 触发
+	// stco→co64 升级、moov 变大,PrepareFrontMoov 内部迭代平移至尺寸收敛。
+	moov, moovErr := t.muxer.PrepareFrontMoov()
+	if moovErr != nil {
+		err = moovErr
+		t.Error("prepare front moov", "err", err)
+		return
 	}
-	if err = t.muxer.WriteMoov(bw); err != nil {
+	var moovN int64
+	if moovN, err = box.WriteTo(bw, moov); err != nil {
 		t.Error("write moov to temp", "err", err)
 		return
 	}
+	t.muxer.CurrentOffset += moovN
 	// 复制 mdat box
 	if _, err = io.CopyN(bw, t.file, int64(t.muxer.mdatSize)+BeforeMdatData); err != nil {
 		if err == pkg.ErrSkip {
@@ -161,109 +201,60 @@ func (t *writeTrailerTask) Run() (err error) {
 	}
 
 	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
-	// 用于 trailer 重写完成后的任何失败路径（FinalizeFromTemp 失败 / Close 失败）：
-	// 此刻 tempPath 已是完整的 moov-first MP4，绝不能随 defer 一起删掉。
+	// 用于 FinalizeFromTemp 失败路径:此刻 tempPath 已是完整的 moov-first MP4,
+	// 绝不能随 defer 一起删掉。db 为 nil 或移动失败时让 defer 按 tempOwned 处理。
 	recoverToPending := func(cause error) {
-		if t.db == nil {
-			// 无 DB（测试模式 / 无库部署）：没有补传队列可登记，
-			// 让 defer 按 tempOwned 删除临时文件即可。
-			return
+		if pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
+			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr == nil && pendingPath != "" {
+			tempOwned = false // 已移走，不需 defer 删除
 		}
-		pendingPath, moveErr := storage.MoveToPendingDir(tempPath)
-		if moveErr != nil {
-			t.Error("move to pending dir failed", "err", moveErr)
-			if errors.Is(moveErr, storage.ErrPendingDirFull) {
-				m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
-					"pending dir full", t.streamPath, t.filePath,
-					"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
-			}
-			return
-		}
-		tempOwned = false // 已移走，不需 defer 删除
-		m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
-			t.streamPath, expectedSize, t.durationMs, metadata, cause)
-		t.Info("saved failed upload for retry",
-			"pendingPath", pendingPath, "objectKey", t.filePath)
 	}
 
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
-	if finalizer, ok := t.file.(storage.TempFileFinalizer); ok {
-		// 快路径：直接移交 tempPath，省去全量回拷。
-		if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
-			t.Error("finalize from temp", "err", err)
-			// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
-			// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
-			// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
-			t.file = nil
-			recoverToPending(err)
-			return
-		}
-		tempOwned = false // 所有权已移交 t.file
-	} else {
-		// 回退路径：旧的全量回拷（供未实现 TempFileFinalizer 的 File）。
-		// 注意：此处的 io.Copy 写入不经限速器（限速只覆盖阶段 1 的临时文件写入）。
-		// 当前 local/s3/oss/cos 全部实现了 TempFileFinalizer，此分支为死路径，
-		// 仅作未来自定义 File 实现的兜底；若将来有后端走此路径需另行限速。
-		if _, err = t.file.Seek(0, io.SeekStart); err != nil {
-			t.Error("seek file for overwrite", "err", err)
-			return
-		}
-		if _, err = temp.Seek(0, io.SeekStart); err != nil {
-			t.Error("seek temp file", "err", err)
-			return
-		}
-		var written int64
-		if written, err = io.Copy(t.file, temp); err != nil {
-			t.Error("copy temp to file", "err", err, "written", written, "expected", expectedSize)
-			return
-		}
-		if written != expectedSize {
-			err = fmt.Errorf("MOOV rewrite incomplete: expected %d bytes, wrote %d", expectedSize, written)
-			t.Error("incomplete overwrite", "err", err)
-			return
-		}
-	}
-
-	// ---- 阶段 3：Close 触发最终持久化（对象存储=上传；本地=已就位）----
-	if err = t.file.Close(); err != nil {
-		t.Error("upload failed after retries", "err", err,
-			"filePath", t.filePath, "streamPath", t.streamPath,
-			"storageType", t.storageKey, "durationMs", t.durationMs)
-		t.file = nil
-		// 上传失败：MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close
-		// 失败路径——含 Sync 失败、上传失败——均不删除它），移入 pending 补传。
+	finalizer, ok := t.file.(storage.TempFileFinalizer)
+	if !ok {
+		// 所有内置后端(local/s3/oss/cos)均实现 TempFileFinalizer。未实现的
+		// 自定义 File 直接报错并把完整的 tempPath 移入 pending 补传(补传走
+		// UploadLocalFile,不依赖 TempFileFinalizer,数据可恢复)。
+		// 不再保留旧的 io.Copy 全量回拷:那条路径的异步失败恢复闭包引用的
+		// tempPath 会被 defer 提前删除,存在误删唯一副本的隐患。
+		err = fmt.Errorf("storage file %T does not implement TempFileFinalizer", t.file)
+		t.Error("finalize from temp", "err", err)
 		recoverToPending(err)
 		return
 	}
-	t.file = nil
-	// 文件已完整持久化，此时才将记录写入数据库（延迟入库，确保 DB 与可播放文件一致）。
-	if t.dbWrite != nil {
-		if dbErr := t.dbWrite(&writeTrailerQueueTask); dbErr != nil {
-			t.reportOrphan(dbErr)
-		}
+	// 快路径：直接移交 tempPath，省去全量回拷。
+	if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
+		t.Error("finalize from temp", "err", err)
+		// FinalizeFromTemp 失败后 storage.File 内部状态不完整（如 S3File
+		// 的 tempFile 为 nil），不能再 Close（会触发对空句柄上传）。置 nil
+		// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
+		t.file = nil
+		recoverToPending(err)
+		return
 	}
-	return
-}
+	tempOwned = false // 所有权已移交 t.file
 
-// reportOrphan 处理「文件已持久化成功但 record_streams 入库失败」——
-// 对象存储上有文件、DB 无索引记录,即孤儿文件。Phase 1 仅做可感知:
-// 错误日志 + 告警入 alarm_info;自动补偿(重试入库)由 Phase 3 补偿队列负责。
-func (t *writeTrailerTask) reportOrphan(dbErr error) {
-	t.Error("upload ok but db record save failed — orphan file",
-		"err", dbErr, "filePath", t.filePath, "streamPath", t.streamPath)
-	m7s.RaiseUploadAlarm(t.db, config.AlarmStorageException,
-		"record db save failed", t.streamPath, t.filePath,
-		"录像已上传成功但 record_streams 入库失败(孤儿文件): "+dbErr.Error())
+	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
+	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
+	// 均不删除它），移入 pending 补传;无 DB / pending 满时与旧行为一致清理临时文件。
+	t.handoffToUploadQueue(func(cause error) {
+		if t.db == nil {
+			os.Remove(tempPath) // 无 DB 部署:无补传队列可登记,按旧行为清理
+			return
+		}
+		if _, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
+			t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr != nil {
+			os.Remove(tempPath) // pending 目录满等异常(已告警):清理避免临时文件堆积
+		}
+	})
+	return
 }
 
 // shiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta，
 // 用于 INSERT_RANGE 把 mdat 逻辑后移后校正 moov 内的 chunk offset。
 func (t *writeTrailerTask) shiftSampleOffsets(delta int64) {
-	for _, track := range t.muxer.Tracks {
-		for i := range track.Samplelist {
-			track.Samplelist[i].Offset += delta
-		}
-	}
+	t.muxer.ShiftSampleOffsets(delta)
 }
 
 // writeMoovHead 在 INSERT_RANGE 撑开的 [0,insertLen) 空间写入 [ftyp][moov][free padding]，
@@ -291,29 +282,15 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 	return nil
 }
 
-// recoverFastPathFailure 在 INSERT fast path 改写文件后、最终持久化失败时，
-// 把本地文件登记到 pending 目录供定时补传。
-func (t *writeTrailerTask) recoverFastPathFailure(localPath string, fileSize int64, cause error) {
-	if t.db == nil {
-		return
-	}
-	pendingPath, moveErr := storage.MoveToPendingDir(localPath)
-	if moveErr != nil {
-		t.Error("move to pending dir failed", "err", moveErr)
-		if errors.Is(moveErr, storage.ErrPendingDirFull) {
-			m7s.RaiseUploadAlarm(t.db, config.AlarmDiskSpaceFull,
-				"pending dir full", t.streamPath, t.filePath,
-				"pending 暂存目录已满,本录像无法暂存补传可能丢失: "+moveErr.Error())
-		}
-		return
-	}
+// recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记到 pending
+// 目录供定时补传。用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
+func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) {
 	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
 	if t.durationMs > 0 {
 		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
 	}
-	m7s.SaveFailedUpload(t.db, pendingPath, t.filePath, t.storageKey,
+	m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
 		t.streamPath, fileSize, t.durationMs, metadata, cause)
-	t.Info("saved failed upload for retry", "pendingPath", pendingPath, "objectKey", t.filePath)
 }
 
 // runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，
@@ -380,7 +357,7 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 			t.file.Close()
 			t.file = nil
 			err = fmt.Errorf("insert-range write+rollback failed: %w", writeErr)
-			t.recoverFastPathFailure(localPath, preLen, err)
+			t.recoverLocalFile(localPath, preLen, err)
 			return true, err
 		}
 		t.shiftSampleOffsets(-insertLen)
@@ -402,26 +379,70 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 
-	// 持久化：对象存储=上传，本地=已就位。
-	if e := t.file.Close(); e != nil {
-		t.Error("insert-range close/upload failed", "err", e, "filePath", t.filePath)
-		t.file = nil
-		t.recoverFastPathFailure(localPath, uploadSize, e)
-		return true, e
-	}
-	t.file = nil
-	if t.dbWrite != nil {
-		if dbErr := t.dbWrite(&writeTrailerQueueTask); dbErr != nil {
-			t.reportOrphan(dbErr)
-		}
-	}
-	t.Info("insert-range fast path done",
+	// 持久化（对象存储=上传）移交独立上传队列,不阻塞 trailer 队列。
+	t.handoffToUploadQueue(func(cause error) {
+		t.recoverLocalFile(localPath, uploadSize, cause)
+	})
+	t.Info("insert-range fast path done, upload handed off",
 		"filePath", t.filePath, "moovBytes", moovSize, "insertedBytes", insertLen)
 	return true, nil
 }
 
 func init() {
 	m7s.Servers.AddTask(&writeTrailerQueueTask)
+	m7s.Servers.AddTask(&uploadQueueTask)
+}
+
+// finalizeUploadTask 在独立 goroutine(Go)中执行单个录像文件的最终持久化:
+// Close 触发对象存储上传(带槽位并发控制与重试),成功后执行延迟入库,
+// 失败经 onFail 登记 pending 补传。
+type finalizeUploadTask struct {
+	task.Task
+	file       storage.File
+	filePath   string
+	streamPath string
+	db         *gorm.DB
+	dbWrite    func(tailJob task.IJob) error
+	onFail     func(cause error)
+}
+
+func (u *finalizeUploadTask) Go() (err error) {
+	if err = u.file.Close(); err != nil {
+		u.Error("upload failed after retries", "err", err,
+			"filePath", u.filePath, "streamPath", u.streamPath)
+		u.file = nil
+		if u.onFail != nil {
+			u.onFail(err)
+		}
+		return
+	}
+	u.file = nil
+	// 文件已完整持久化,此时才将记录写入数据库(延迟入库,确保 DB 与可播放文件一致)。
+	if u.dbWrite != nil {
+		if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
+			u.Error("upload ok but db record save failed — orphan file",
+				"err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
+			m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
+				"record db save failed", u.streamPath, u.filePath,
+				"录像已上传成功但 record_streams 入库失败(孤儿文件): "+dbErr.Error())
+		}
+	}
+	return
+}
+
+// handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
+// 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
+func (t *writeTrailerTask) handoffToUploadQueue(onFail func(cause error)) {
+	ft := &finalizeUploadTask{
+		file:       t.file,
+		filePath:   t.filePath,
+		streamPath: t.streamPath,
+		db:         t.db,
+		dbWrite:    t.dbWrite,
+		onFail:     onFail,
+	}
+	t.file = nil // 所有权移交
+	uploadQueueTask.AddTask(ft, t.Logger)
 }
 
 func NewRecorder(conf config.Record) m7s.IRecorder {

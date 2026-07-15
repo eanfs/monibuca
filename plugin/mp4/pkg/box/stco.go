@@ -3,7 +3,6 @@ package box
 import (
 	"encoding/binary"
 	"io"
-	"net"
 )
 
 // aligned(8) class ChunkOffsetBox
@@ -29,6 +28,13 @@ type STCOBox struct {
 type CO64Box STCOBox
 
 func CreateSTCOBox(entries []uint64) *STCOBox {
+	// 任一 chunk offset 超出 32 位范围时自动升级为 co64(64 位偏移),
+	// 否则 >4GB 录像的偏移会被 uint32 截断,moov 内偏移全错、文件损坏。
+	for _, e := range entries {
+		if e > 0xFFFFFFFF {
+			return (*STCOBox)(CreateCO64Box(entries))
+		}
+	}
 	return &STCOBox{
 
 		FullBox: FullBox{
@@ -58,6 +64,10 @@ func CreateCO64Box(entries []uint64) *CO64Box {
 }
 
 func (box *STCOBox) WriteTo(w io.Writer) (n int64, err error) {
+	// CreateSTCOBox 检测到大偏移时会把 typ 升级为 co64,此处按类型分发写出格式。
+	if box.typ == TypeCO64 {
+		return (*CO64Box)(box).WriteTo(w)
+	}
 	buf := make([]byte, 4+len(box.Entries)*4)
 
 	// Write entry count
@@ -73,20 +83,18 @@ func (box *STCOBox) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (box *CO64Box) WriteTo(w io.Writer) (n int64, err error) {
-	var tmp [8]byte
-	buffers := make(net.Buffers, 0, len(box.Entries)+1)
+	buf := make([]byte, 4+len(box.Entries)*8)
 
 	// Write entry count
-	binary.BigEndian.PutUint32(tmp[:], uint32(len(box.Entries)))
-	buffers = append(buffers, tmp[:])
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(box.Entries)))
 
 	// Write entries
-	for _, chunkOffset := range box.Entries {
-		binary.BigEndian.PutUint64(tmp[:], chunkOffset)
-		buffers = append(buffers, tmp[:])
+	for i, chunkOffset := range box.Entries {
+		binary.BigEndian.PutUint64(buf[4+i*8:], chunkOffset)
 	}
 
-	return buffers.WriteTo(w)
+	_, err = w.Write(buf)
+	return int64(len(buf)), err
 }
 
 func (box *STCOBox) Unmarshal(buf []byte) (IBox, error) {

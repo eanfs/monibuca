@@ -194,7 +194,11 @@ func findBoxOffsets(filename string) error {
 
 func TestFLVToFMP4(t *testing.T) {
 	// Open FLV file
-	flvFile, err := os.Open("/Users/dexter/Movies/002.flv")
+	const testFile = "/Users/dexter/Movies/002.flv"
+	if _, statErr := os.Stat(testFile); statErr != nil {
+		t.Skipf("test media file not available: %v", statErr)
+	}
+	flvFile, err := os.Open(testFile)
 	if err != nil {
 		t.Fatalf("Failed to open FLV file: %v", err)
 	}

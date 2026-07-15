@@ -120,7 +120,10 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	}
 
 	if recordJob.Plugin.DB != nil && recordJob.RecConf.Mode != config.RecordModeTest {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// ⚠️ 本函数在录制订阅的媒体路径上同步执行:超时过长时(旧值 10s),
+		// DB 慢/锁等待会阻塞帧回调 → 订阅者被 ring buffer 丢弃 → 录制重启雪崩。
+		// 2s 为 ring buffer 可承受的最坏阻塞;失败仅 WRN(录制照常,尾部入库兜底)。
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer dbCancel()
 		if recordJob.Event != nil {
 			r.Event.RecordEvent = recordJob.Event
@@ -304,7 +307,10 @@ func (p *RecordJob) Init(recorder IRecorder, plugin *Plugin, streamPath string, 
 		"fragment":   conf.Fragment,
 	})
 	recorder.SetRetry(-1, time.Second)
-	recorder.GetTask().SetMaxRetryInterval(2 * time.Second)
+	// 退避上限 30s 作雪崩断路器:录制反复失败(如磁盘 IO 风暴导致订阅者被
+	// ring discard)时,1-2s 疯狂重启会以「新建文件+trailer+上传」持续放大
+	// IO 形成正反馈。首次重试仍 1s 起步,持续失败时指数退避到 30s。
+	recorder.GetTask().SetMaxRetryInterval(30 * time.Second)
 	if sender, webhook := plugin.getHookSender(config.HookOnRecordStart); sender != nil {
 		recorder.OnStart(func() {
 			alarmInfo := AlarmInfo{

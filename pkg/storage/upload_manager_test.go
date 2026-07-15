@@ -78,3 +78,36 @@ func TestGetDiskFreeBytes(t *testing.T) {
 		t.Error("Unix 下磁盘可用空间应 > 0")
 	}
 }
+
+// TestMoveToPendingDir_NameCollisionUnique 守护同名冲突覆盖(review #16):
+// 多个同 basename 的文件先后进 pending,冲突后缀必须唯一,
+// 绝不能 rename 覆盖仍在等待补传的旧文件。
+func TestMoveToPendingDir_NameCollisionUnique(t *testing.T) {
+	srcDir := t.TempDir()
+	pendingDir := t.TempDir()
+	InitUploadManager(UploadConfig{PendingDir: pendingDir})
+
+	dsts := make(map[string]struct{})
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(srcDir, "same.mp4")
+		if err := os.WriteFile(p, []byte{byte(i)}, 0644); err != nil {
+			t.Fatal(err)
+		}
+		dst, err := MoveToPendingDir(p)
+		if err != nil {
+			t.Fatalf("move %d: %v", i, err)
+		}
+		if _, dup := dsts[dst]; dup {
+			t.Fatalf("第 %d 次冲突产生重复目标路径 %s(会静默覆盖待补传文件)", i, dst)
+		}
+		dsts[dst] = struct{}{}
+	}
+	// 三个文件都必须还在 pending 目录里
+	entries, err := os.ReadDir(pendingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("pending 目录应有 3 个文件,实际 %d", len(entries))
+	}
+}

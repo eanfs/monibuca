@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	consulapi "github.com/hashicorp/consul/api"
 	task "github.com/eanfs/gotask"
+	consulapi "github.com/hashicorp/consul/api"
 	m7s "m7s.live/v5"
 )
 
@@ -50,9 +50,10 @@ type StreamRegistry struct {
 	releaseFn func(streamPath string) error
 
 	// dispatch 把一段工作异步投递到 StreamRegistry 自己的事件循环(默认 = 一次性
-	// callbackGoTask)。OnPublish 用它把阻塞式 KV acquire 与 first-write-wins 冲突
-	// 停流挪出 Server.Streams 事件循环 —— 避免重入 Streams.Call 死锁(RC1)与阻塞
-	// Streams 事件循环(RC2)。单测可注入同步/捕获版。
+	// callbackGoTask,Run 内联执行,FIFO 串行)。OnPublish/OnDispose 用它把阻塞式
+	// KV acquire/release 与 first-write-wins 冲突停流挪出 Server.Streams 事件循环
+	// —— 避免重入 Streams.Call 死锁(RC1)与阻塞 Streams 事件循环(RC2);FIFO 保证
+	// 同一 streamPath 的 acquire/release 有序。单测可注入同步/捕获版。
 	dispatch func(func())
 }
 
@@ -117,19 +118,36 @@ func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay b
 	sr.localStreams[streamPath] = struct{}{}
 	sr.localMu.Unlock()
 
-	// acquired 标记我们是否真正抢到了这个 streamPath 的 KV 键。只有抢到了,dispose
-	// 时才能 release —— 否则 release 的 KV.Delete 会把属主 peer 的键删掉。
-	var acquired atomic.Bool
+	// 每个本地 publish 一组握手标志:acquired 记录是否真正抢到了 KV 键(只有抢到了
+	// 才能 release,否则 KV.Delete 会把属主 peer 的键删掉);disposed 记录 publisher
+	// 是否已 dispose。acquire 跑在 StreamRegistry 循环、dispose 跑在 Streams 循环,
+	// 两个事件先后不定 —— 谁后到谁负责 release,releaseOnce CAS 保证最多释放一次
+	// (双重 release 的第二次 Delete 可能误删新 publisher 刚抢到的键)。
+	var acquired, disposed, releaseOnce atomic.Bool
+
+	// releaseKey 释放 KV 键。调用方必须已在 StreamRegistry 循环上(dispatch 内或
+	// acquire 闭包内),不得在 Streams 事件循环上直接调用(阻塞式 Consul I/O)。
+	releaseKey := func() {
+		if !releaseOnce.CompareAndSwap(false, true) {
+			return
+		}
+		if err := sr.releaseFn(streamPath); err != nil {
+			sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
+		}
+	}
 
 	if registerOnDispose != nil {
 		registerOnDispose(func() {
 			sr.localMu.Lock()
 			delete(sr.localStreams, streamPath)
 			sr.localMu.Unlock()
+			disposed.Store(true)
 			if acquired.Load() {
-				if err := sr.releaseFn(streamPath); err != nil {
-					sr.Warn("release stream key failed", "streamPath", streamPath, "error", err)
-				}
+				// release 与 acquire 对称:阻塞式 Consul I/O 必须 dispatch 到
+				// StreamRegistry 自己的循环,否则 Consul 抖动时 dispose 回调会
+				// 冻结 Server.Streams 事件循环(全机 publish/subscribe 停摆)。
+				// dispatch 为 FIFO 串行,天然排在同名流后续 publish 的 acquire 之前。
+				sr.dispatch(releaseKey)
 			}
 		})
 	}
@@ -149,6 +167,14 @@ func (sr *StreamRegistry) handleLocalPublish(streamPath string, isClusterRelay b
 			return
 		}
 		acquired.Store(true)
+		// TOCTOU 补偿:acquire 异步完成时 publisher 可能已 dispose(秒断/Consul 慢),
+		// 彼时 dispose 回调看到 acquired=false 跳过了 release。这里回查 disposed 立即
+		// 补一次 release(已在本循环上,内联执行,先于队列中后续同名流的 acquire),
+		// 否则键被本节点健康 session 永久持有 —— 该流名在全集群被毒化:任何节点
+		// 无法再发布、订阅被错误路由到本节点,直到本节点重启。
+		if disposed.Load() {
+			releaseKey()
+		}
 	})
 }
 
@@ -179,15 +205,20 @@ func (sr *StreamRegistry) fireStreamRemoved(streamPath string) {
 	}
 }
 
-// callbackGoTask 是一次性任务:在 StreamRegistry 自己的事件循环里(经 Go() 的独立
-// goroutine)跑一段回调然后完成退出。用于把 OnPublish 的阻塞式 KV acquire 与冲突
-// 停流挪出 Server.Streams 事件循环(RC1/RC2)。
+// callbackGoTask 是一次性任务:在 StreamRegistry 自己的事件循环上 **内联(Run)**
+// 跑一段回调然后完成退出。用于把 OnPublish 的阻塞式 KV acquire/release 与冲突停流
+// 挪出 Server.Streams 事件循环(RC1/RC2)。
+//
+// 刻意用 Run() 而非 Go():同一 streamPath 的 acquire → release → 再 acquire 必须
+// 严格 FIFO 串行,否则流秒断重推时,上一个 publish 的异步 release 可能删掉新
+// publish 刚抢到的 KV 键。串行的代价是 Consul 慢时本队列积压,但不影响
+// Server.Streams 与 streamWatcher(后者是 Go() 独立 goroutine)。
 type callbackGoTask struct {
 	task.Task
 	fn func()
 }
 
-func (t *callbackGoTask) Go() error {
+func (t *callbackGoTask) Run() error {
 	t.fn()
 	return task.ErrTaskComplete
 }

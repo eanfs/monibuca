@@ -71,6 +71,11 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 			"id", ut.ID, "path", ut.LocalPath)
 		// 标记为超出最大重试（不再重试）
 		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.MaxRetries, err)
+		// pending 文件消失 = 该录像已实际丢失,必须与补传耗尽路径一样告警,
+		// 否则运维永远收不到这条录像丢失的信号。
+		RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+			"pending file missing", ut.StreamPath, ut.LocalPath,
+			"补传暂存文件已丢失,该录像无法恢复: "+ut.ObjectKey)
 		return
 	}
 
@@ -79,15 +84,13 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		return
 	}
 
-	// 获取上传槽位（并发控制）
+	// ⚠️ 此处不能抢上传槽位:UploadLocalFile → storage.File.Close → uploadTempFile
+	// 内部会抢同一个槽位。若这里先占一个再等内部的第二个,≥槽位数(默认 4)个补传
+	// goroutine 同时运行时,全部槽位被外层占住、内层永远等不到 —— 上传系统整体
+	// 死锁,连正常录制的上传一起冻结。并发控制统一交给 uploadTempFile 内部的槽位。
+	// ctx 只约束本地文件打开与向暂存文件的拷贝阶段(上传阶段自带超时与重试)。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if err := storage.AcquireUploadSlot(ctx); err != nil {
-		// 已抢占 Uploading 但拿不到槽位,留待 ReclaimStaleUploading 回收
-		u.Warn("acquire upload slot timeout", "id", ut.ID, "err", err)
-		return
-	}
-	defer storage.ReleaseUploadSlot()
 
 	// 解析元数据
 	var metadata map[string]string
