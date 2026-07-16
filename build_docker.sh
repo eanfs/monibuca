@@ -47,7 +47,7 @@ echo "✓ ARM64 编译完成"
 # 返回根目录
 cd ../..
 
-# 构建 AMD64 Docker 镜像并保存为 tar
+# 构建 AMD64 Docker 镜像并加载到本地
 echo ""
 echo "=========================================="
 echo "构建 AMD64 Docker 镜像..."
@@ -56,11 +56,11 @@ docker buildx build \
   --platform=linux/amd64 \
   --no-cache \
   --progress=plain \
+  --load \
   -t ${artifactId}:${version}-amd64 \
-  -f ./Dockerfile \
-  -o type=docker,dest=- . > ${artifactId}-amd64.tar
+  -f ./Dockerfile .
 
-# 构建 ARM64 Docker 镜像并保存为 tar
+# 构建 ARM64 Docker 镜像并加载到本地
 echo ""
 echo "=========================================="
 echo "构建 ARM64 Docker 镜像..."
@@ -69,15 +69,10 @@ docker buildx build \
   --platform=linux/arm64 \
   --no-cache \
   --progress=plain \
+  --load \
   -t ${artifactId}:${version}-arm64 \
-  -f ./Dockerfile \
-  -o type=docker,dest=- . > ${artifactId}-arm64.tar
+  -f ./Dockerfile .
 
-# 加载 tar 文件到本地 Docker
-echo ""
-echo "加载 Docker 镜像..."
-docker load < ${artifactId}-amd64.tar
-docker load < ${artifactId}-arm64.tar
 
 # 推送到私有仓库
 echo ""
@@ -134,8 +129,6 @@ docker manifest push ${group}/${artifactId}:latest
 # 清理临时文件
 echo ""
 echo "清理临时文件..."
-rm -rf ${artifactId}-amd64.tar
-rm -rf ${artifactId}-arm64.tar
 
 rm -f monibuca_amd64 monibuca_arm64 2>/dev/null || true
 

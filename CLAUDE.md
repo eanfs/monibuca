@@ -458,11 +458,28 @@ Automatic migration is handled for core models including users, proxies, and str
 - Importing `github.com/langhuihui/gotask` instead of the fork `github.com/eanfs/gotask`
 - Pushing multi-arch images to SWR without `--provenance=false --sbom=false`
 - mp4 record API: `POST /mp4/api/start|stop/<streamPath>` (gRPC-gateway, streamPath in URL), records **local** streams only; cluster HTTP is under `/cluster/api/cluster/*`
+- mp4 start API 请求体所有字段都是 proto **string**——`duration`/`fragment` 必须传 JSON 字符串(`"900s"`/`"0"`),传数字会被 grpc-gateway 拒绝 **400** `invalid value for string type`。老版本(无该字段)因 `DiscardUnknown` 静默忽略数字字段,升级后才暴露(2026-07-15 196 演示环境 its-server 事故根因,报告见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`)
+- mp4 start 不传 `fragment` 时**默认 1 分钟分片**(`StartRecord` handler 里 `fragment = time.Minute`);要录单文件必须显式 `"fragment":"0"`
+- **指定 `fileName` + fragment>0 = 静默丢数据**:`CustomFileName` 对每个分片返回同一路径,分片轮转反复覆盖同一 S3 对象键/本地文件,最终只剩最后一个分片(见 Known Issues)
+- `duration` 到点后 monibuca 自行停录,之后外部再调 `/mp4/api/stop` 会得 **500 not found**——调用方应把 not-found 当幂等成功
 - Cross-node record on a non-owner node: trigger auto-relay first via an RTSP/RTMP **subscribe** (FLV 302-redirects, won't relay), then record the now-local stream
 
 ## Known Issues (待其它环境修复)
 
 记录 cluster v1 工作中发现、但本环境无法或不应当处修的事项。
+
+### mp4 分片录制 + 指定 fileName 时反复覆盖同一文件(数据丢失)
+
+- **位置**: `plugin/mp4/pkg/record.go` `CustomFileName`——`RecConf.FileName` 非空时每个分片都返回 `filePath/fileName.mp4` 同一路径;仅 fileName 为空才用时间戳命名。
+- **后果**: fragment>0(含 API 不传 fragment 的默认 1 分钟)且指定 fileName 时,每次分片轮转覆盖同一 S3 对象键/本地文件,**只保留最后一个分片**,且全程无告警(2026-07-15 三节点 FINAL2 批次 30 路 15min 录制每路只剩最后 1 分钟,全批作废)。
+- **修复方向**: fileName 指定且 fragment>0 时给分片追加时间戳/序号(如 `fileName_2006-01-02-15-04-05.mp4`),或在 `StartRecord` 校验该组合直接拒绝;修复前调用方必须显式 `"fragment":"0"`。
+
+### its-server(xde-media-spring-boot-starter)对接 v5.3.1 的 3 处待改
+
+2026-07-15 196 演示环境事故(录制 400、视频未上传 MinIO)结论,详见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`:
+1. `Mp4StartRequest.duration` 需 `Integer`→`String`(发 `"900"` 或 `"900s"`);
+2. stop 收到 500 not-found 应视为幂等成功(duration 到点 monibuca 已自停);
+3. 录单文件需补传 `"fragment":"0"`(否则默认 1 分钟分片,叠加上面 fileName 覆盖缺陷)。
 
 ### gotask 库 `-race` 下 EventLoop 数据竞争
 
