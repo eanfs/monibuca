@@ -87,6 +87,8 @@ func (p *TransformJob) Init(transformer ITransformer, plugin *Plugin, pub *Publi
 		"conf":       conf,
 	})
 	transformer.SetRetry(-1, time.Second*2)
+	// 退避上限 30s,理由同 puller:无上限时持续失败后转码任务不自愈。
+	transformer.GetTask().SetMaxRetryInterval(30 * time.Second)
 	if sender, webhook := plugin.getHookSender(config.HookOnTransformStart); sender != nil {
 		transformer.OnStart(func() {
 			alarmInfo := AlarmInfo{

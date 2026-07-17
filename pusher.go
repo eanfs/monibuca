@@ -1,6 +1,8 @@
 package m7s
 
 import (
+	"time"
+
 	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 )
@@ -39,6 +41,8 @@ func (p *PushJob) Init(pusher IPusher, plugin *Plugin, streamPath string, conf c
 		"maxRetry":   conf.MaxRetry,
 	})
 	pusher.SetRetry(conf.MaxRetry, conf.RetryInterval)
+	// 退避上限 30s,理由同 puller:无上限时目标端长时间不可达后推流不自愈。
+	pusher.GetTask().SetMaxRetryInterval(30 * time.Second)
 	if sender, webhook := plugin.getHookSender(config.HookOnPushStart); sender != nil {
 		pusher.OnStart(func() {
 			alarmInfo := AlarmInfo{

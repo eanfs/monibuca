@@ -199,6 +199,8 @@ func (c *CascadeClientPlugin) startSingleServer() (err error) {
 		secret:     c.Secret,
 	}
 	connectTask.SetRetry(-1, time.Second)
+	// 退避上限 30s,理由同 puller:无上限时上级长时间不可达后级联不自愈。
+	connectTask.GetTask().SetMaxRetryInterval(30 * time.Second)
 	connectTask.SetDescription("serverAddr", c.Server)
 	connectTask.SetDescription("secret", c.Secret)
 	c.AddTask(&connectTask)

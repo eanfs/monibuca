@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	task "github.com/eanfs/gotask"
 	"github.com/gorilla/websocket"
 	"github.com/langhuihui/gomem"
-	task "github.com/eanfs/gotask"
 	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/format"
@@ -137,6 +137,10 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 		"maxRetry":   conf.MaxRetry,
 	})
 	puller.SetRetry(conf.MaxRetry, conf.RetryInterval)
+	// 退避上限 30s:不设则 gotask 指数退避无界(RetryInterval×2^n),源长时间
+	// 中断后 retryDelay 可涨到小时/天级,网络恢复了 puller 还在睡 → 流不自愈,
+	// 只能重启进程(2026-07-17 IPS 封禁 16h 后实证 11h22m40s)。
+	puller.GetTask().SetMaxRetryInterval(30 * time.Second)
 
 	if sender, webhook := plugin.getHookSender(config.HookOnPullStart); sender != nil {
 		puller.OnStart(func() {
