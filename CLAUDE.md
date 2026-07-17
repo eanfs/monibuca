@@ -456,13 +456,14 @@ Automatic migration is handled for core models including users, proxies, and str
 - Using bare goroutines instead of the task system
 - Bypassing task lifecycle conventions in async plugin code
 - Importing `github.com/langhuihui/gotask` instead of the fork `github.com/eanfs/gotask`
+- **Registering `OnStart` *after* `AddTask` — the callback never fires.** `Task.OnStart` only appends to `afterStartListeners` (no already-started check) and that slice is consumed once during the start sequence, so `AddTask(&x); x.OnStart(f)` silently drops `f`. Always register `OnStart` **before** `AddTask`. This silently killed both `UploadRetryScheduler` (upload retry never ran → failed uploads stranded in `pending_uploads` forever) and `CheckSubWaitTimeout` until 2026-07-16; regression tests in `upload_retry_register_test.go`. 已核查全仓其余 `.OnStart(` 调用点均在 AddTask 之前(Manager.Add 正确封装,经其路由的任务天然安全)。根治在上游 gotask:`OnStart` 检查任务已启动则立即补发(连带修监听器切片的并发写);上游修复后 `TestOnStartAfterAddTaskNeverFires` 会转红,即为可放宽此顺序约束的信号
 - Pushing multi-arch images to SWR without `--provenance=false --sbom=false`
 - mp4 record API: `POST /mp4/api/start|stop/<streamPath>` (gRPC-gateway, streamPath in URL), records **local** streams only; cluster HTTP is under `/cluster/api/cluster/*`
 - mp4 start API 请求体所有字段都是 proto **string**——`duration`/`fragment` 必须传 JSON 字符串(`"900s"`/`"0"`),传数字会被 grpc-gateway 拒绝 **400** `invalid value for string type`。老版本(无该字段)因 `DiscardUnknown` 静默忽略数字字段,升级后才暴露(2026-07-15 196 演示环境 its-server 事故根因,报告见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`)
 - mp4 start 不传 `fragment` 时**默认 1 分钟分片**(`StartRecord` handler 里 `fragment = time.Minute`);要录单文件必须显式 `"fragment":"0"`
 - **指定 `fileName` + fragment>0 = 静默丢数据**:`CustomFileName` 对每个分片返回同一路径,分片轮转反复覆盖同一 S3 对象键/本地文件,最终只剩最后一个分片(见 Known Issues)
 - `duration` 到点后 monibuca 自行停录,之后外部再调 `/mp4/api/stop` 会得 **500 not found**——调用方应把 not-found 当幂等成功
-- Cross-node record on a non-owner node: trigger auto-relay first via an RTSP/RTMP **subscribe** (FLV 302-redirects, won't relay), then record the now-local stream
+- Cross-node record on a non-owner node: trigger auto-relay first via a **subscribe**, then record the now-local stream. Whether a subscribe relays or 302-redirects depends on the per-plugin `proxyOnRedirect` flag (`default:"false"` = 302 redirect; set `true` = local pull proxy instead). With `proxyOnRedirect: false` FLV 302-redirects and won't relay — use RTSP/RTMP; with `proxyOnRedirect: true` (the 3-node e2e configs set this on rtsp+flv) FLV/RTSP relay and return 200
 
 ## Known Issues (待其它环境修复)
 
@@ -497,11 +498,19 @@ Automatic migration is handled for core models including users, proxies, and str
 - **原因**: mp4 record API 路径 / record id schema 在多种部署下表现不同,需真实 docker-compose stack 上手动逐场景 curl + 看日志,无法纯 bash 一次断完。
 - **修复需要**: 在已起的真 docker stack 上跑 smoke.sh,看哪些手动场景能自动化、补 assertion。
 
-### `plugin/crypto/pkg/transform.go` 预存在编译错
+### cluster 必须节点本地 sqlite —— 不支持共享 DB(决策已定)
 
-- **症状**: `go build ./...`(全仓)报 `undefined: pkg.RawAudio`, `pkg.H26xFrame`, `WriteAudio`, `WriteVideo` 等;cluster 工作之前就存在,与 cluster 无关。
-- **影响**: 全仓 `go build ./...` 失败。变通:用具体子路径 `go build -tags cluster ./plugin/cluster/... ./plugin/mp4/... ./example/cluster/...`。
-- **修复需要**: 修 `plugin/crypto/pkg/transform.go`(应该是 m7s 核心某些类型/方法重命名/移除后没同步更新),与 cluster 解耦。
+- **约束**: cluster 部署**每节点各自本地 sqlite**(`dsn: /data/m7s.db`),集群协调全走 Consul。`example/cluster-e2e/` 的 compose + 三份 config 已按此形态。
+- **原因**: `PullProxyConfig`(`pull_proxy.go`)**无节点归属列**,共享 DB 时任一节点重启会加载全表 `pull_on_start` → **拉全网 + KV 属主冲突 + 负载激增**(2026-06-03 实证)。
+- **代价(已接受)**: 录制元数据各存各的 → **跨节点录制列表聚合 / 跨节点 `/download` 302 不支持**;需在属主节点直接取回。
+- **若将来要支持共享 DB**: 需给 `PullProxyConfig` 加节点归属列 + 按本节点过滤(含 migration),并重跑 cluster 全套回归。
+
+### ~~cluster auto-relay 后 first-write-wins 永久失效~~(已修,2026-07-17)
+
+- **真实根因**(修复时勘误,非最初判断的"OnDispose 泄漏"):relay pull-proxy 是**常驻按需路由**——`StopOnIdle` 只让空闲 publisher 5s 关闭,proxy 本体不销毁(下次订阅由 `Server.OnSubscribe` 重新 `Pull()`),所以 `activeRelays` 条目常驻是**设计使然**。缺陷在分类:`StreamRegistry.OnPublish` 只按 streamPath 命中 `activeRelays` 就把 publisher 当 relay 派生跳过 first-write-wins——入站推流(`Type="server"`)撞上曾 relay 过的路径即漏防 → 脑裂,全程无告警。
+- **实证**(2026-07-16 报告 §3):同一条流同一节点,relay 前推同名流 `exit=224`(被停,正确);relay 后推 `exit=0`(漏防)。
+- **修复**: `streamregistry.go` OnPublish 分类加 `pub.Type == PublishTypePull` 门槛(relay 派生必为 pull 派生,`PullJob.Init` 强制 PubType=pull)。回归测试 `plugin/cluster/streamregistry_c5_test.go`(push 撞 relay 路由必须 acquire / relay 本体仍跳过 / 普通 pull 照常注册)。
+- **排障陷阱**: `/api/proxy/pull/list` 只列 **DB 持久化**的 pull proxy;`EnsurePullProxy` 建的内存 relay proxy 永远不在里面,别据此判断 relay proxy 已消失。
 
 ### progressive MP4 录制中崩溃不可恢复(结构性限制)
 

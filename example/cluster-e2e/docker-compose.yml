@@ -10,18 +10,10 @@ services:
       timeout: 3s
       retries: 10
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_PASSWORD: m7s
-      POSTGRES_DB: m7s
-      POSTGRES_USER: postgres
-    ports: ["5432:5432"]
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+  # 注意:cluster 形态刻意【不】用共享数据库。每个节点各自持有本地 sqlite
+  # (见 config-node-*.yaml 的 dsn: /data/m7s.db),集群协调全部走 Consul。
+  # 共享 DB 会触发 pull_proxy_configs 无节点归属列的问题:任一节点重启即加载
+  # 全表 pull_on_start → 拉全网 + KV 属主冲突。详见 CLAUDE.md Known Issues。
 
   minio:
     image: minio/minio:latest
@@ -58,6 +50,7 @@ services:
     command: ["-c", "/app/config-node-1.yaml"]
     volumes:
       - ./config-node-1.yaml:/app/config-node-1.yaml:ro
+      - node-1-data:/data
     ports:
       - "1935:1935"
       - "5541:554"
@@ -65,8 +58,6 @@ services:
       - "50051:50051"
     depends_on:
       consul:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
@@ -78,6 +69,7 @@ services:
     command: ["-c", "/app/config-node-2.yaml"]
     volumes:
       - ./config-node-2.yaml:/app/config-node-2.yaml:ro
+      - node-2-data:/data
     ports:
       - "1936:1935"
       - "5542:554"
@@ -85,8 +77,6 @@ services:
       - "50052:50051"
     depends_on:
       consul:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
@@ -98,6 +88,7 @@ services:
     command: ["-c", "/app/config-node-3.yaml"]
     volumes:
       - ./config-node-3.yaml:/app/config-node-3.yaml:ro
+      - node-3-data:/data
     ports:
       - "1937:1935"
       - "5543:554"
@@ -106,7 +97,10 @@ services:
     depends_on:
       consul:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:

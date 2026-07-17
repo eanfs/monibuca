@@ -117,10 +117,10 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 		}
 		p.activeRelays[streamPath] = struct{}{}
 		p.activeRelaysMu.Unlock()
-		// relay pull-proxy 自身停止(StopOnIdle 空闲 / MaxRetry 耗尽)时 origin 的
-		// KV 键仍在,onStreamRemoved 不会触发 —— 必须绑定 proxy 的 Dispose 清理,
-		// 否则条目泄漏,且同名流之后在本节点真正本地发布时会被 isActiveRelay 误判,
-		// 跳过 KV 注册与 first-write-wins 冲突检测。重复注册/删除均幂等。
+		// activeRelays 条目生命周期 = relay pull-proxy 生命周期:proxy 是常驻按需路由
+		// (StopOnIdle 只关空闲 publisher;proxy 本体仅在 origin 失联或进程退出时销毁),
+		// 绑定 Dispose 保证销毁时清条目。路由存续期间同名推流的冲突防护不靠本表,
+		// 见 StreamRegistry.OnPublish 的 pull 门槛(C5)。重复注册/删除均幂等。
 		if proxy != nil {
 			proxy.OnDispose(func() {
 				p.removeActiveRelay(streamPath)

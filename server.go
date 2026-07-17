@@ -444,6 +444,20 @@ func (s *Server) Start() (err error) {
 		}
 	}
 
+	// OnStart 必须在 AddTask 之前注册：AddTask 会立即启动任务，而 OnStart 只是把回调
+	// 追加进 afterStartListeners，不检查任务是否已启动，该切片又只在启动流程里消费一次。
+	// 注册晚了回调就永远不触发（补传调度器与心跳检查都曾因此静默失效）。
+	// 启动上传补传调度器（定时检查失败的上传任务并重试）
+	if s.DB != nil {
+		s.Records.OnStart(func() {
+			s.Records.AddTask(&UploadRetryScheduler{s: s})
+		})
+	}
+	if s.PulseInterval > 0 {
+		s.Streams.OnStart(func() {
+			s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
+		})
+	}
 	s.AddTask(&s.Records)
 	s.AddTask(&s.Streams)
 	s.AddTask(&s.Pulls)
@@ -452,12 +466,6 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
-	// 启动上传补传调度器（定时检查失败的上传任务并重试）
-	if s.DB != nil {
-		s.Records.OnStart(func() {
-			s.Records.AddTask(&UploadRetryScheduler{s: s})
-		})
-	}
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
@@ -479,11 +487,6 @@ func (s *Server) Start() (err error) {
 	s.handle("/api/metrics", promhttpHandler)
 	if grpcServer != nil {
 		s.AddTask(grpcServer, s.Logger)
-	}
-	if s.PulseInterval > 0 {
-		s.Streams.OnStart(func() {
-			s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
-		})
 	}
 	s.loadAdminZip()
 	// s.Transforms.AddTask(&TransformsPublishEvent{Transforms: &s.Transforms})

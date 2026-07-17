@@ -90,9 +90,20 @@ func (sr *StreamRegistry) OnPublish(pub *m7s.Publisher) {
 	// 直接返回、丢弃新 conf 的 cluster-relay 标记,见 pull_proxy.go EnsurePullProxy)。
 	// 改以 cluster 插件权威自持的 activeRelays(ensureRelay 同步写入)为准,
 	// Description 仅作兜底信号。
-	isClusterRelay := (pub.PullProxyConfig != nil &&
-		strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix)) ||
-		(sr.plugin != nil && sr.plugin.isActiveRelay(pub.StreamPath))
+	//
+	// C5 修复(2026-07-16):activeRelays 是「本节点存在到 origin 的 relay 路由」,
+	// 不是「这个 publisher 是 relay 派生的」。relay pull-proxy 常驻(StopOnIdle 只关
+	// 空闲 publisher,不销毁 proxy),路径命中会一直成立;若只按路径判,入站推流
+	// (Type="server")撞上曾 relay 过的路径就会被跳过 first-write-wins → 脑裂。
+	// relay 派生的 publisher 一定是 pull 派生(PullJob.Init 强制 PubType=pull),
+	// 故必须同时要求 pub.Type == PublishTypePull。注:个别 puller 会在 Init 后改写
+	// PubType(如 rtp DumpPuller→replay);relay 走的 rtmp/rtsp/flv puller 不改,
+	// 未来给 relay 接入会改写 PubType 的协议时需同步此门槛。误判方向是 fail-safe:
+	// 被误判的 relay 会多走一次 acquire(自愈),而非跳过防护。
+	isClusterRelay := pub.Type == m7s.PublishTypePull &&
+		((pub.PullProxyConfig != nil &&
+			strings.HasPrefix(pub.PullProxyConfig.Description, ClusterRelayDescPrefix)) ||
+			(sr.plugin != nil && sr.plugin.isActiveRelay(pub.StreamPath)))
 	// stop 直接绑定到该 publisher 的 Stop —— 不再经 Server.Streams.SafeGet 反查。
 	// SafeGet 会重入 Server.Streams 事件循环(m.Call),而 OnPublish 本身就跑在该
 	// 事件循环上,重入会永久死锁(RC1)。

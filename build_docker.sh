@@ -52,10 +52,14 @@ echo ""
 echo "=========================================="
 echo "构建 AMD64 Docker 镜像..."
 echo "=========================================="
+# SWR 不认 buildkit attestation manifest("Invalid image, fail to parse manifest.json"),
+# 显式关闭 provenance/sbom,不依赖 --load 恰好剥离它们的巧合行为。
 docker buildx build \
   --platform=linux/amd64 \
   --no-cache \
   --progress=plain \
+  --provenance=false \
+  --sbom=false \
   --load \
   -t ${artifactId}:${version}-amd64 \
   -f ./Dockerfile .
@@ -69,6 +73,8 @@ docker buildx build \
   --platform=linux/arm64 \
   --no-cache \
   --progress=plain \
+  --provenance=false \
+  --sbom=false \
   --load \
   -t ${artifactId}:${version}-arm64 \
   -f ./Dockerfile .

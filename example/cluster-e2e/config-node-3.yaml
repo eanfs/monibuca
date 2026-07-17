@@ -5,8 +5,8 @@ global:
   tcp:
     listenaddr: :50051
   db:
-    dsn: "postgres://postgres:m7s@postgres:5432/m7s?sslmode=disable"
-    dbtype: postgres
+    dsn: /data/m7s.db
+    dbtype: sqlite
   storage:
     s3:
       endpoint: http://minio:9000
