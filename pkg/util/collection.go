@@ -22,7 +22,7 @@ func (c *Collection[K, T]) OnRemove(listener func(T)) {
 	c.removeListeners = append(c.removeListeners, listener)
 }
 
-func (c *Collection[K, T]) Add(item T, opt ...any) {
+func (c *Collection[K, T]) Add(item T) {
 	if c.L != nil {
 		c.L.Lock()
 		defer c.L.Unlock()
@@ -43,25 +43,42 @@ func (c *Collection[K, T]) Add(item T, opt ...any) {
 	}
 }
 
-func (c *Collection[K, T]) AddUnique(item T, opt ...any) (ok bool) {
+func (c *Collection[K, T]) AddUnique(item T) (ok bool) {
 	if _, ok = c.Get(item.GetKey()); !ok {
-		c.Add(item, opt...)
+		c.Add(item)
 	}
 	return !ok
 }
 
-func (c *Collection[K, T]) Set(item T, opt ...any) (added bool) {
-	key := item.GetKey()
-	if c.m != nil {
-		c.m[key] = item
+func (c *Collection[K, T]) Set(item T) (added bool) {
+	if c.L != nil {
+		c.L.Lock()
+		defer c.L.Unlock()
 	}
+	key := item.GetKey()
 	for i := range c.Items {
 		if c.Items[i].GetKey() == key {
 			c.Items[i] = item
+			if c.m != nil {
+				c.m[key] = item
+			}
 			return false
 		}
 	}
-	c.Add(item, opt...)
+	c.Items = append(c.Items, item)
+	if c.Length > 100 || c.m != nil {
+		if c.m == nil {
+			c.m = make(map[K]T)
+			for _, v := range c.Items {
+				c.m[v.GetKey()] = v
+			}
+		}
+		c.m[key] = item
+	}
+	c.Length++
+	for _, listener := range c.addListeners {
+		listener(item)
+	}
 	return true
 }
 
@@ -87,7 +104,7 @@ func (c *Collection[K, T]) RemoveByKey(key K) bool {
 		defer c.L.Unlock()
 	}
 	delete(c.m, key)
-	for i := range c.Length {
+	for i := 0; i < len(c.Items); i++ {
 		if c.Items[i].GetKey() == key {
 			item := c.Items[i]
 			c.Items = slices.Delete(c.Items, i, i+1)

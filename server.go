@@ -14,6 +14,7 @@ import (
 	runtimepprof "runtime/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"m7s.live/v5/pkg/storage"
@@ -132,6 +133,8 @@ type (
 		Storage           storage.Storage
 		apiRoute          *apiRouter
 		rawConfig         RawConfig
+		// cpuPercent 由 startCPUWatchdog 独立 goroutine 异步更新，避免在事件循环内阻塞
+		cpuPercent atomic.Uint32
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -651,13 +654,9 @@ func (c *CheckSubWaitTimeout) Tick(any) {
 			c.Error("tick panic recovered", "err", r, "stack", string(debug.Stack()))
 		}
 	}()
-	var cpuPct float64
-	if percents, err := cpu.Percent(time.Second, false); err == nil {
-		for _, p := range percents {
-			cpuPct = p
-			c.Info("tick", "cpu", fmt.Sprintf("%.2f%%", p), "streams", c.s.Streams.Length, "subscribers", c.s.Subscribers.Length, "waits", c.s.Waiting.Length)
-		}
-	}
+	// 直接读取由 startCPUWatchdog 异步维护的原子值，避免在事件循环内同步阻塞 ~1s
+	cpuPct := float64(c.s.cpuPercent.Load())
+	c.Info("tick", "cpu", fmt.Sprintf("%.0f%%", cpuPct), "streams", c.s.Streams.Length, "subscribers", c.s.Subscribers.Length, "waits", c.s.Waiting.Length)
 	c.s.Waiting.checkTimeout()
 
 	// Scan all running subscribers for ones that are stuck (publisher gone /
@@ -770,6 +769,8 @@ func (s *Server) startCPUWatchdog() {
 					continue
 				}
 				cpuPct := percents[0]
+				// 更新原子值供 CheckSubWaitTimeout.Tick() 非阻塞读取
+				s.cpuPercent.Store(uint32(cpuPct))
 				if cpuPct >= cpuThreshold {
 					consecutiveHigh++
 					// Dump on first detection and then every 60s
@@ -842,9 +843,16 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 	for pullProxy := range s.PullProxies.Range {
 		conf := pullProxy.GetConfig()
 		if conf.Status == PullProxyStatusOnline && pullProxy.GetStreamPath() == streamPath {
-			pullProxy.Pull()
+			existingJob := pullProxy.GetPullJob()
+			if existingJob == nil || existingJob.IsStopped() {
+				pullProxy.Pull()
+			} else {
+				s.Debug("[fix5] OnSubscribe: skip Pull(), existingJob still active", "streamPath", streamPath, "jobId", existingJob.ID)
+			}
 			if w, ok := s.Waiting.Get(streamPath); ok {
-				pullProxy.GetPullJob().Progress = &w.Progress
+				if job := pullProxy.GetPullJob(); job != nil {
+					job.Progress = &w.Progress
+				}
 			}
 		}
 	}
