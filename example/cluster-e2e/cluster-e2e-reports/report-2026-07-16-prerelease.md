@@ -416,9 +416,39 @@ DB duration **30810ms ≈ 实际收流 30s** ✅ —— 正常 unpublish 路径�
 
 **恢复需人工介入**:关闭 IPS / 联系网络管理员解封;恢复后按 3s 间隔错峰加载,勿一次性全拉。
 
+### §11.1 后续(2026-07-17):封禁解除后流不自愈 → 发现第三个缺陷(退避无上限)
+
+IPS 解封后(摄像头 554 全部可达)三节点流数仍为 0。排查:
+
+- 任务树 10 个 PullJob 全部存活(`maxRetry:-1` 无限重试),`pullStarted=true` 无误;
+- **铁证**:10 个 RTSPPuller 的 description 全部 `retryDelay=11h22m40s, retryCount=14`,与 `5s×2^13=40960s` **精确吻合**;
+- 根因:gotask 退避 `RetryInterval×2^(retryCount-1)`,上限判断被 `MaxRetryInterval>0` 门控;`puller.go` 只调 `SetRetry`,从不设上限 → 无界。`retryCount` 仅在 Start **成功后**归零(task.go:386),故短暂抖动自愈正常,**长中断后 puller 沉睡数小时,网络恢复也不再尝试** → 永不自愈,只能重启进程。
+- 已核实 `WaitCloseTimeout`/`PublishTimeout`/`IdleTimeout`/`WaitTimeout` 等配置均作用于 Publisher/Subscriber 层,**无法缓解**此问题;`RetryInterval: 5s` 只是退避基数,不是固定间隔。
+- 影响面:`ae298dab`(R5)当时只给 recorder 设了 30s 上限,**puller/pusher/transformer/cascade 四处全部漏配** —— 不完整修复。
+- **修复**:commit `3a554681`,四处补 `SetMaxRetryInterval(30s)`;语义回归 `retry_backoff_test.go`。
+- **连带结论**:昨天 IPS 封禁的最大实际伤害不是封禁本身,而是它触发了这个不自愈状态 —— 生产若遇交换机维护/网段抖动超过约 1 小时,同样会静默丢流直到有人重启。
+
 ---
 
-## 12. 环境状态(收尾)
+## 12. 二轮测试(2026-07-17,镜像 v5.3.3.2607171320)
+
+三个修复(F4 调度器注册竞态 `1665f6b2` / C5 relay 分类 `1665f6b2` / 退避无上限 `3a554681`)合入后打正式镜像 `v5.3.3.2607171320`(git tag == 镜像 `vcs.revision=3a554681`,一致性问题已修),推 SWR,三节点逐台错峰升级(各保留 `-old-v532` 回滚容器),复跑报告 §0 要求项:
+
+| 项 | 结果 |
+|---|---|
+| A1/A5 | ✅ 新 `--provenance=false --sbom=false` 生效:manifest 恰 2 条目(amd64+arm64),无 attestation |
+| A2 | ✅ `-tags=cluster,postgres,sqlite,s3`;`vcs.revision=3a554681` == git tag;`vcs.modified=false`;gotask v1.0.5 |
+| A4 | ✅ 三台 pull manifest tag 成功 |
+| C1 | ✅ peers=3/3/3;Consul nodes=3、streams=30;属主 10/10/10 |
+| **C5** | ✅ **修复真机闭环**:同一条 camera12,relay 前推 exit=224;relay 一次(日志证实路由建立);**relay 后推 exit=224(一轮时为 exit=0 漏防)**;日志显示 relay 后推流走了 `acquire stream key failed` → `unpublish reason=cluster: streamPath already owned by peer`;死锁探测 3/3=200;属主全程 node-1 |
+| **F4** | ✅ **正式镜像(非挂载二进制)闭环**:任务树 `UploadRetryScheduler=1`、`CheckSubWaitTimeout=1`;切断→pending(6,107,971 字节)→DB 登记→恢复→**tick 自动补传成功**(`found pending uploads count=1 → retry upload succeeded`)→pending 清空、DB status=2、5.8MiB 对象落 MinIO |
+| **退避上限**(§11.1 修复) | ✅ 升级重启后三节点 30 路**全部即时恢复**(反向坐实退避为不自愈根因);真机探针观察到 `count=2→delay=10s`(退避公式生效;探针拉空流会间歇成功重置 count,未持续到 count≥4 的直接封顶观察);30s 封顶由 `retry_backoff_test.go` 语义测试 + BuildInfo 含 `3a554681` 保证 |
+
+二轮后集群:三节点 api=200、流 10/10/10、Consul 30 键;测试容器/转发器/临时对象已清理。
+
+**发布状态:三个阻断/严重缺陷全部修复并在正式产物上验证,`v5.3.3.2607171320` 为当前发布候选。**
+
+## 13. 环境状态(收尾)
 
 **集群**:三节点 **api=200 / peers=3 / Consul `m7s/nodes`=3**,进程与集群协调健康。
 **流**:因 §11 的网段封禁,摄像头流为 **0**(需人工解封 IPS 后错峰恢复)。
