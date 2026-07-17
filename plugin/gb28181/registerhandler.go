@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
+	task "github.com/eanfs/gotask"
 	"github.com/emiago/sipgo/sip"
 	myip "github.com/husanpao/ip"
 	"github.com/icholy/digest"
-	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/util"
@@ -213,11 +213,17 @@ func (task *registerHandlerTask) Run() (err error) {
 		if d, ok := task.gb.devices.Get(deviceid); ok {
 			d.Online = false
 			d.Status = DeviceOfflineStatus
+			d.ensureCollectionMutex()
 			d.channels.Range(func(channel *Channel) bool {
 				channel.Status = "OFF"
 				return true
 			})
-			d.resetKeepaliveTick(time.Minute * 1440)
+			// DeviceKeepaliveTickTask 仅在 catalog() 完成后创建；注销时可能尚未建连,
+			// 注销路径不新建保活任务,仅在已存在时调整间隔(resetKeepaliveTick 的
+			// 非 nil 分支 = 设 seconds + ticker.Reset + Tick)。
+			if d.DeviceKeepaliveTickTask != nil {
+				d.resetKeepaliveTick(time.Minute * 1440)
+			}
 			//d.Stop(errors.New("unregister"))
 		}
 	} else {

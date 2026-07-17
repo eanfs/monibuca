@@ -15,9 +15,9 @@ import (
 
 	"m7s.live/v5"
 
+	task "github.com/eanfs/gotask"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/util"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
@@ -257,6 +257,17 @@ func (d *Device) GetKey() string {
 	return d.DeviceId
 }
 
+// ensureCollectionMutex 确保 channels/catalogReqs 的读写锁已初始化。
+// 从数据库恢复的设备可能未走 Register/Recover 路径，L 为 nil 时 Collection 无并发保护。
+func (d *Device) ensureCollectionMutex() {
+	if d.channels.L == nil {
+		d.channels.L = new(sync.RWMutex)
+	}
+	if d.catalogReqs.L == nil {
+		d.catalogReqs.L = new(sync.RWMutex)
+	}
+}
+
 func (d *Device) resetKeepaliveTick(interval time.Duration) {
 	if d.DeviceKeepaliveTickTask == nil {
 		d.DeviceKeepaliveTickTask = &DeviceKeepaliveTickTask{
@@ -340,6 +351,7 @@ type catalogHandlerTask struct {
 func (c *catalogHandlerTask) Run() (err error) {
 	// 处理目录信息
 	d := c.d
+	d.ensureCollectionMutex()
 	d.Cataloging = true
 	msg := c.msg
 
@@ -564,7 +576,7 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 				// 不手动添加Via头部，让Client自动创建并由TransportLayer填充正确的IP
 
 				// 设置Content-Type
-				contentTypeHeader := sip.ContentTypeHeader("Application/MANSCDP+xml")
+				contentTypeHeader := sip.ContentTypeHeader("application/MANSCDP+xml")
 				request.AppendHeader(&contentTypeHeader)
 
 				// 直接使用原始消息体
@@ -760,7 +772,7 @@ func (d *Device) CreateRequest(Method sip.RequestMethod, Recipient any) *sip.Req
 	}
 	fromHDR.Params.Add("tag", sip.GenerateTagN(32))
 	req.AppendHeader(&fromHDR)
-	contentType := sip.ContentTypeHeader("Application/MANSCDP+xml")
+	contentType := sip.ContentTypeHeader("application/MANSCDP+xml")
 	req.AppendHeader(sip.NewHeader("User-Agent", "M7S/"+m7s.Version))
 	req.AppendHeader(&contentType)
 	toHeader := sip.ToHeader{
@@ -884,6 +896,7 @@ func (d *Device) frontEndCmdString(cmdCode int32, parameter1 int32, parameter2 i
 }
 
 func (d *Device) addOrUpdateChannel(c gb28181.DeviceChannel) {
+	d.ensureCollectionMutex()
 	var resultChannel *Channel
 	if channel, ok := d.plugin.channels.Get(c.ID); ok {
 		// 通道已存在，保留自定义字段
