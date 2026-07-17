@@ -19,6 +19,29 @@ import (
 
 const apiRouteForwardedMetaKey = "x-m7s-api-routed"
 
+// apiRouteMu 保护 APIRoute 配置的运行期读写。m7s 的 config 默认「启动后只读」,
+// 但 cluster 插件的 peerSyncTask 会周期性更新 Nodes/Enable(节点动态加入退出),
+// 与 gRPC 请求路径上的读取并发 —— slice 头的无锁并发读写是数据竞争(-race 必报)。
+var apiRouteMu sync.RWMutex
+
+// APIRouteSnapshot 返回 APIRoute 配置的并发安全快照(值拷贝)。
+// 写侧(UpdateAPIRouteNodes)每次整体替换 slice、从不原地修改,因此快照内的
+// slice 可安全读取。运行期读 APIRoute 一律走本方法,不要直接读 GetCommonConf()。
+func (s *Server) APIRouteSnapshot() cfg.APIRoute {
+	apiRouteMu.RLock()
+	defer apiRouteMu.RUnlock()
+	return s.GetCommonConf().APIRoute
+}
+
+// UpdateAPIRouteNodes 供集群组件运行期更新节点映射表(并发安全)。
+func (s *Server) UpdateAPIRouteNodes(nodes []cfg.APIRouteNode, enable bool) {
+	apiRouteMu.Lock()
+	defer apiRouteMu.Unlock()
+	conf := s.GetCommonConf()
+	conf.APIRoute.Nodes = nodes
+	conf.APIRoute.Enable = enable
+}
+
 type apiRouteCacheEntry struct {
 	target string
 	expAt  time.Time
@@ -140,7 +163,7 @@ func (s *Server) APIRouteGRPCPeers() []string {
 	if s == nil {
 		return nil
 	}
-	return s.apiRouteGRPCPeers(s.GetCommonConf().APIRoute)
+	return s.apiRouteGRPCPeers(s.APIRouteSnapshot())
 }
 
 func (s *Server) apiRouteGRPCPeers(conf cfg.APIRoute) []string {
@@ -318,7 +341,7 @@ func apiRouteCoerceStringSlice(v any) []string {
 // RouteInterceptor routes configured methods to the node hosting the stream.
 func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		conf := s.GetCommonConf().APIRoute
+		conf := s.APIRouteSnapshot()
 		if !conf.Enable {
 			return handler(ctx, req)
 		}

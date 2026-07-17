@@ -5,7 +5,7 @@ import (
 	"io"
 
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	mpegps "m7s.live/v5/pkg/format/ps"
 	"m7s.live/v5/pkg/util"
 )

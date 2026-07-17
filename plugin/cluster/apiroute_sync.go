@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	cfg "m7s.live/v5/pkg/config"
 )
 
@@ -55,7 +55,7 @@ func (t *peerSyncTask) Tick(_ any) {
 		return
 	}
 	nodes := buildAPIRouteNodes(t.plugin.membership.Peers(), t.plugin.NodeID)
-	conf := t.plugin.Server.GetCommonConf()
-	conf.APIRoute.Nodes = nodes
-	conf.APIRoute.Enable = true
+	// 必须走并发安全入口:直接写 GetCommonConf().APIRoute.Nodes 会与 gRPC
+	// 请求路径上的读取形成数据竞争(config 唯一的运行期写点在此)。
+	t.plugin.Server.UpdateAPIRouteNodes(nodes, true)
 }

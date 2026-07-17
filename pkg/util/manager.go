@@ -1,7 +1,7 @@
 package util
 
 import (
-	. "github.com/langhuihui/gotask"
+	. "github.com/eanfs/gotask"
 )
 
 type Manager[K comparable, T ManagerItem[K]] struct {

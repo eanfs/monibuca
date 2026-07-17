@@ -24,21 +24,22 @@ const (
 
 // UploadTask 上传任务持久化模型，用于追踪失败上传和定时补传
 type UploadTask struct {
-	ID           uint         `gorm:"primarykey"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	LocalPath    string       `gorm:"size:512;index" json:"localPath" desc:"本地文件路径"`
-	ObjectKey    string       `gorm:"size:512" json:"objectKey" desc:"远端对象键"`
-	StorageType  string       `gorm:"size:20" json:"storageType" desc:"存储类型(s3/oss/cos)"`
-	Status       UploadStatus `gorm:"default:0;index" json:"status" desc:"状态: 0=待传 1=传输中 2=成功 3=失败"`
-	RetryCount   int          `gorm:"default:0" json:"retryCount" desc:"已重试次数"`
-	MaxRetries   int          `gorm:"default:10" json:"maxRetries" desc:"最大重试次数"`
-	FileSize     int64        `json:"fileSize" desc:"文件大小(字节)"`
-	ErrorMessage string       `gorm:"size:1024" json:"errorMessage" desc:"最近一次错误信息"`
-	StreamPath   string       `gorm:"size:255;index" json:"streamPath" desc:"关联流路径"`
-	DurationMs   uint32       `json:"durationMs" desc:"视频时长(毫秒)"`
-	MetadataJSON string       `gorm:"column:metadata;type:text" json:"metadata" desc:"JSON编码的用户元数据"`
-	NextRetryAt  time.Time    `gorm:"index" json:"nextRetryAt" desc:"下次重试时间"`
+	ID              uint `gorm:"primarykey"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LocalPath       string       `gorm:"size:512;index" json:"localPath" desc:"本地文件路径"`
+	ObjectKey       string       `gorm:"size:512" json:"objectKey" desc:"远端对象键"`
+	StorageType     string       `gorm:"size:20" json:"storageType" desc:"存储类型(s3/oss/cos)"`
+	Status          UploadStatus `gorm:"default:0;index" json:"status" desc:"状态: 0=待传 1=传输中 2=成功 3=失败"`
+	RetryCount      int          `gorm:"default:0" json:"retryCount" desc:"已重试次数"`
+	MaxRetries      int          `gorm:"default:10" json:"maxRetries" desc:"最大重试次数"`
+	FileSize        int64        `json:"fileSize" desc:"文件大小(字节)"`
+	ErrorMessage    string       `gorm:"size:1024" json:"errorMessage" desc:"最近一次错误信息"`
+	StreamPath      string       `gorm:"size:255;index" json:"streamPath" desc:"关联流路径"`
+	DurationMs      uint32       `json:"durationMs" desc:"视频时长(毫秒)"`
+	MetadataJSON    string       `gorm:"column:metadata;type:text" json:"metadata" desc:"JSON编码的用户元数据"`
+	NextRetryAt     time.Time    `gorm:"index" json:"nextRetryAt" desc:"下次重试时间"`
+	UploadStartedAt time.Time    `gorm:"index" json:"uploadStartedAt" desc:"本次进入上传中状态的时间"`
 }
 
 // TableName GORM 表名
@@ -108,9 +109,38 @@ func QueryPendingUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
 	return tasks, err
 }
 
-// MarkUploading 标记任务为上传中
-func MarkUploading(db *gorm.DB, taskID uint) {
-	db.Model(&UploadTask{}).Where("id = ?", taskID).Update("status", UploadStatusUploading)
+// QueryExhaustedUploads 查询补传次数已耗尽(retry_count >= max_retries)的失败任务,
+// 供运维查看与人工介入。这类任务已不会被 QueryPendingUploads 命中。
+func QueryExhaustedUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
+	var tasks []UploadTask
+	err := db.Where("status = ? AND retry_count >= max_retries", UploadStatusFailed).
+		Order("updated_at DESC").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+// ResetUploadForRetry 重置一个任务的重试状态,使其重新进入补传循环。
+// 用于运维修复存储故障后手动重新拉起已耗尽的任务。
+func ResetUploadForRetry(db *gorm.DB, taskID uint) error {
+	return db.Model(&UploadTask{}).Where("id = ?", taskID).Updates(map[string]any{
+		"status":        UploadStatusFailed,
+		"retry_count":   0,
+		"next_retry_at": time.Now(),
+		"error_message": "",
+	}).Error
+}
+
+// MarkUploading 原子抢占任务:仅当任务仍为 Failed 时置 Uploading 并记录开始时间。
+// 返回 true 表示本次抢占成功(可继续上传);false 表示已被其他 goroutine 抢占。
+func MarkUploading(db *gorm.DB, taskID uint) (claimed bool) {
+	res := db.Model(&UploadTask{}).
+		Where("id = ? AND status = ?", taskID, UploadStatusFailed).
+		Updates(map[string]any{
+			"status":            UploadStatusUploading,
+			"upload_started_at": time.Now(),
+		})
+	return res.RowsAffected > 0
 }
 
 // MarkUploadSuccess 标记任务上传成功，删除本地文件
@@ -139,6 +169,26 @@ func MarkUploadRetryFailed(db *gorm.DB, taskID uint, retryCount int, err error) 
 		"error_message": errMsg,
 		"next_retry_at": time.Now().Add(nextRetryDelay(retryCount + 1)),
 	})
+}
+
+// staleUploadingThreshold:Uploading 状态超过此时长即视为卡死(进程崩溃 /
+// goroutine 超时残留)。须大于单任务最坏总耗时,否则健康的慢上传会被扫回
+// Failed 触发重复并发补传。最坏路径:uploadTempFile 内等槽 ≤30min
+// (storage.UploadSlotWaitTimeout)+ 每次 attempt 15min(默认 getTimeout)
+// × 4 次(MaxRetries+1)= 90min;留 buffer 取 2h。
+const staleUploadingThreshold = 2 * time.Hour
+
+// ReclaimStaleUploading 把卡在 Uploading 状态超过 threshold 的任务扫回 Failed,
+// 使其重新进入补传循环。崩溃 / 超时不计入 retry_count,不消耗重试配额。
+// 返回回收的任务数。
+func ReclaimStaleUploading(db *gorm.DB, threshold time.Duration) (int64, error) {
+	res := db.Model(&UploadTask{}).
+		Where("status = ? AND upload_started_at <= ?", UploadStatusUploading, time.Now().Add(-threshold)).
+		Updates(map[string]any{
+			"status":        UploadStatusFailed,
+			"next_retry_at": time.Now(),
+		})
+	return res.RowsAffected, res.Error
 }
 
 // UploadLocalFile 将本地文件上传到云存储（通用方法，用于补传）

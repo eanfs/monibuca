@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
+	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
@@ -55,13 +56,31 @@ type writeMetaTagTask struct {
 	writer   *FlvWriter
 	flags    byte
 	metaData []byte
+	// onCloseFail 上传失败兜底:把仍在本地的录像移入 pending 登记补传,
+	// 避免 FLV 走对象存储时上传失败即静默丢失(mp4 同款机制)。
+	onCloseFail func(localPath string, fileSize int64, cause error)
 }
 
 func (task *writeMetaTagTask) Start() (err error) {
 	defer func() {
+		// Close 前抓取本地暂存路径与大小:对象存储后端 Close 失败后内部句柄
+		// 已清空,不提前抓就无法为补传登记提供 localPath。
+		var localPath string
+		var fileSize int64
+		if inserter, ok := task.file.(storage.RangeInserter); ok {
+			if fd := inserter.LocalFd(); fd != nil {
+				localPath = fd.Name()
+				if st, statErr := fd.Stat(); statErr == nil {
+					fileSize = st.Size()
+				}
+			}
+		}
 		closeErr := task.file.Close()
 		if closeErr != nil {
 			task.Error("writeMetaTagTask close file (upload may have failed after retries)", "err", closeErr, "file", task.file.Name())
+			if task.onCloseFail != nil {
+				task.onCloseFail(localPath, fileSize, closeErr)
+			}
 			if err == nil {
 				err = closeErr
 			}
@@ -109,7 +128,8 @@ func (task *writeMetaTagTask) Start() (err error) {
 	}
 }
 
-func writeMetaTag(file storage.File, metadata *MetaData, filepositions []uint64, times []float64, duration *int64) {
+func writeMetaTag(file storage.File, metadata *MetaData, filepositions []uint64, times []float64, duration *int64,
+	onCloseFail func(localPath string, fileSize int64, cause error)) {
 	hasAudio, hasVideo := metadata.HasAudio, metadata.HasVideo
 	var amf rtmp.AMF
 	metaData := rtmp.EcmaArray{
@@ -157,9 +177,10 @@ func writeMetaTag(file storage.File, metadata *MetaData, filepositions []uint64,
 	amf.GetBuffer().Reset()
 	marshals := amf.Marshals("onMetaData", metaData)
 	wrTask := &writeMetaTagTask{
-		file:     file,
-		flags:    flags,
-		metaData: marshals,
+		file:        file,
+		flags:       flags,
+		metaData:    marshals,
+		onCloseFail: onCloseFail,
 	}
 	wrTask.Logger = metadata.Logger.With("file", file.Name())
 	writeMetaTagQueueTask.AddTask(wrTask)
@@ -225,6 +246,27 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	return
 }
 
+// uploadFailHandler 构造上传失败兜底回调:把仍在本地的录像移入 pending 登记补传。
+// 必须在 writeMetaTag 调用时构造,以捕获当前分片的 FilePath/Duration 快照。
+func (r *Recorder) uploadFailHandler() func(localPath string, fileSize int64, cause error) {
+	var db *gorm.DB
+	if r.RecordJob.Plugin != nil {
+		db = r.RecordJob.Plugin.DB
+	}
+	var storageKey string
+	if st := r.RecordJob.GetStorage(); st != nil {
+		storageKey = st.GetKey()
+	}
+	logger := r.Logger
+	objectKey := r.Event.FilePath
+	streamPath := r.Event.StreamPath
+	durationMs := r.Event.Duration
+	return func(localPath string, fileSize int64, cause error) {
+		m7s.RecoverFailedUpload(logger, db, localPath, objectKey, storageKey, streamPath,
+			fileSize, durationMs, nil, cause)
+	}
+}
+
 func (r *Recorder) writeTailer(end time.Time) {
 	if r.Event.EndTime.After(r.Event.StartTime) {
 		return
@@ -254,11 +296,11 @@ func (r *Recorder) Run() (err error) {
 
 	noFragment := ctx.RecConf.Fragment == 0 || ctx.RecConf.Append
 	suber.OnStop(func() {
-		writeMetaTag(r.file, r.metadata, filepositions, times, &duration)
+		writeMetaTag(r.file, r.metadata, filepositions, times, &duration, r.uploadFailHandler())
 	})
 	checkFragment := func(absTime uint32, writeTime time.Time) {
 		if duration = int64(absTime); time.Duration(duration)*time.Millisecond >= ctx.RecConf.Fragment {
-			writeMetaTag(r.file, r.metadata, filepositions, times, &duration)
+			writeMetaTag(r.file, r.metadata, filepositions, times, &duration, r.uploadFailHandler())
 			r.writeTailer(writeTime)
 			filepositions = []uint64{0}
 			times = []float64{0}

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/langhuihui/gomem"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 

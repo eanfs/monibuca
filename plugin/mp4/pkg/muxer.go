@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 
 	"m7s.live/v5/pkg/storage"
@@ -140,6 +141,14 @@ func (m *Muxer) CreateFlagment(t *Track, sample Sample) (moof IBox, mdat IBox) {
 
 func (m *Muxer) WriteSample(w io.Writer, t *Track, sample Sample) (err error) {
 	if m.isFragment() {
+		// fMP4 首个 moof 落盘前必须先写出 init segment 的 moov(含 mvex/trex),
+		// 否则文件没有轨道/codec 描述,播放器整档无法解码。
+		// len(t.Samplelist) > 0 表示本次 CreateFlagment 将产出首个 moof。
+		if m.moov == nil && len(t.Samplelist) > 0 {
+			if err = m.WriteMoov(w); err != nil {
+				return
+			}
+		}
 		moof, mdat := m.CreateFlagment(t, sample)
 		_, err = WriteTo(w, moof, mdat)
 		return
@@ -259,6 +268,38 @@ func (m *Muxer) WriteMoov(w io.Writer) (err error) {
 	n, err = WriteTo(w, m.MakeMoov())
 	m.CurrentOffset += n
 	return
+}
+
+// ShiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta,
+// 用于把 moov 移到 mdat 之前(或 INSERT_RANGE 后移 mdat)时校正 chunk offset。
+func (m *Muxer) ShiftSampleOffsets(delta int64) {
+	for _, track := range m.Tracks {
+		for i := range track.Samplelist {
+			track.Samplelist[i].Offset += delta
+		}
+	}
+}
+
+// PrepareFrontMoov 为「moov 前移到 mdat 之前」重建 moov:
+// 先按当前 moov 尺寸右移全部 sample 偏移,再重建。右移可能使偏移跨过 4GB
+// 触发 stco→co64 升级,moov 随之变大、偏移需再移,循环直到尺寸收敛
+// (co64 升级单向且只发生一次,正常至多两轮)。
+func (m *Muxer) PrepareFrontMoov() (IBox, error) {
+	moovSize := int64(m.moov.Size())
+	m.ShiftSampleOffsets(moovSize)
+	moov := m.MakeMoov()
+	for range 4 {
+		if int64(moov.Size()) == moovSize {
+			return moov, nil
+		}
+		m.ShiftSampleOffsets(int64(moov.Size()) - moovSize)
+		moovSize = int64(moov.Size())
+		moov = m.MakeMoov()
+	}
+	if int64(moov.Size()) != moovSize {
+		return nil, fmt.Errorf("moov size did not converge: %d != %d", moov.Size(), moovSize)
+	}
+	return moov, nil
 }
 
 func (m *Muxer) WriteTrailer(file storage.Writer) (err error) {

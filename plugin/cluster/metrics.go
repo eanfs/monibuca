@@ -6,7 +6,8 @@ import (
 	"runtime"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
+	m7s "m7s.live/v5"
 )
 
 // LoadReporter 周期把本节点指标写到 m7s/nodes/<self> 的 Metrics 字段。
@@ -36,13 +37,20 @@ func (r *LoadReporter) Tick(_ any) {
 }
 
 // collectMetrics 采集 v1 范围指标。
-// Server.Streams.Length 是 pkg/util.Collection 的 int 字段(非方法)。
 func (r *LoadReporter) collectMetrics() map[string]any {
 	m := map[string]any{
 		"goroutines": runtime.NumGoroutine(),
 	}
 	if r.plugin != nil && r.plugin.Server != nil {
-		m["streams"] = r.plugin.Server.Streams.Length
+		// Streams.Length 在 Streams 事件循环上无锁自增减,跨 goroutine 直接读是
+		// 数据竞争;经 SafeRange(在事件循环内执行)计数。本方法跑在 LoadReporter
+		// 自己的 TickTask goroutine 上、不在 Streams 循环内,无重入死锁风险。
+		streams := 0
+		r.plugin.Server.Streams.SafeRange(func(*m7s.Publisher) bool {
+			streams++
+			return true
+		})
+		m["streams"] = streams
 	}
 	return m
 }

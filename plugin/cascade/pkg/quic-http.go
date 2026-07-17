@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	flv "m7s.live/v5/plugin/flv/pkg"
 
 	"github.com/quic-go/quic-go"

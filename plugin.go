@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"gorm.io/gorm"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/db"

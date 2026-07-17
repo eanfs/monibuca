@@ -34,10 +34,12 @@ $COMPOSE up -d --build
 
 step "Waiting for nodes to be ready (60s timeout)"
 deadline=$(($(date +%s) + 60))
+# m7s core prefixes plugin HTTP handlers with /<pluginName>/, so the cluster
+# plugin's /api/cluster/* handlers live under /cluster/api/cluster/*.
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -fs http://localhost:8081/api/cluster/nodes >/dev/null 2>&1 \
-       && curl -fs http://localhost:8082/api/cluster/nodes >/dev/null 2>&1 \
-       && curl -fs http://localhost:8083/api/cluster/nodes >/dev/null 2>&1; then
+    if curl -fs http://localhost:8081/cluster/api/cluster/nodes >/dev/null 2>&1 \
+       && curl -fs http://localhost:8082/cluster/api/cluster/nodes >/dev/null 2>&1 \
+       && curl -fs http://localhost:8083/cluster/api/cluster/nodes >/dev/null 2>&1; then
         echo "All 3 nodes responding"
         break
     fi
@@ -46,7 +48,7 @@ done
 
 # Scenario 1: cluster membership
 step "Scenario 1: three nodes in cluster"
-count=$(curl -fs http://localhost:8081/api/cluster/nodes | jq '.peers | length')
+count=$(curl -fs http://localhost:8081/cluster/api/cluster/nodes | jq '.peers | length')
 [ "$count" = "3" ] || fail "expected 3 peers, got $count"
 echo "PASS"
 
@@ -96,7 +98,7 @@ echo "records visible from node-2: $records (manual verification — should incl
 # Scenarios 7-8 require pickup of record id + 302 inspection.
 # Scenario 7 (manual): GET /download/<streamPath> from node-2 should 302 to node-1 if file is on node-1.
 step "Scenario 7: download redirect (manual check)"
-echo "Run: curl -v http://localhost:8082/download/live/foo  (expect 302 → node-1)"
+echo "Run: curl -v http://localhost:8082/mp4/download/live/foo  (expect 302 → node-1)"
 
 # Scenario 8: kill node-1, expect m7s/streams/live/foo to disappear within 12s
 step "Scenario 8: kill node-1, expect m7s/streams/live/foo to vanish in <12s"
@@ -121,7 +123,7 @@ echo "Manual: push same live/bar to node-1 and node-2 simultaneously. Expect one
 
 # Scenario 10: lb-suggest works
 step "Scenario 10: /api/cluster/lb-suggest"
-sug=$(curl -fs "http://localhost:8082/api/cluster/lb-suggest?excludeSelf=false" 2>/dev/null || echo '{"suggested":""}')
+sug=$(curl -fs "http://localhost:8082/cluster/api/cluster/lb-suggest?excludeSelf=false" 2>/dev/null || echo '{"suggested":""}')
 echo "lb-suggest from node-2 (with node-1 down): $sug"
 suggested=$(echo "$sug" | jq -r '.suggested // empty' 2>/dev/null || echo "")
 [ -n "$suggested" ] || fail "lb-suggest returned no suggested node"

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -319,16 +320,8 @@ func (f *OSSFile) Close() error {
 		}
 	}
 	err := f.uploadTempFile()
+	// 上传失败时保留临时文件（供补传，由调用方经 m7s.RecoverFailedUpload 登记），成功时删除
 	f.cleanup(err == nil)
-	if err != nil && OnUploadFailed != nil && f.filePath != "" {
-		var fileSize int64
-		if f.tempFile != nil {
-			if stat, statErr := f.tempFile.Stat(); statErr == nil {
-				fileSize = stat.Size()
-			}
-		}
-		OnUploadFailed(f.filePath, f.objectKey, "oss", fileSize, nil, err)
-	}
 	return err
 }
 
@@ -382,7 +375,7 @@ func (f *OSSFile) uploadTempFile() error {
 	// 解耦上传 ctx 与文件 ctx (= Recorder.Context). 详见 s3.go uploadTempFile 注释.
 	uploadCtx := context.WithoutCancel(f.ctx)
 
-	if err := AcquireUploadSlot(uploadCtx); err != nil {
+	if err := AcquireUploadSlotWithTimeout(uploadCtx); err != nil {
 		return fmt.Errorf("acquire upload slot: %w", err)
 	}
 	defer ReleaseUploadSlot()
@@ -401,6 +394,18 @@ func (f *OSSFile) uploadTempFile() error {
 		func() error {
 			if err := f.storage.bucket.PutObjectFromFile(f.objectKey, f.filePath); err != nil {
 				return fmt.Errorf("failed to upload to OSS: %w", err)
+			}
+			// 上传后校验:对象大小必须与本地文件一致,否则本次视为失败重试。
+			if fileSize > 0 {
+				meta, herr := f.storage.bucket.GetObjectDetailedMeta(f.objectKey)
+				if herr != nil {
+					return fmt.Errorf("post-upload verify meta: %w", herr)
+				}
+				remote, perr := strconv.ParseInt(meta.Get("Content-Length"), 10, 64)
+				if perr != nil || remote != fileSize {
+					return fmt.Errorf("post-upload size mismatch: remote=%q local=%d",
+						meta.Get("Content-Length"), fileSize)
+				}
 			}
 			log.Printf("[OSS] upload successful: %s", f.objectKey)
 			return nil

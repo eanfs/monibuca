@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 )
 
 //go:embed local.monibuca.com_bundle.pem

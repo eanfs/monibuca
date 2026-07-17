@@ -22,7 +22,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 
 	sysruntime "runtime"
@@ -80,6 +80,7 @@ type (
 			} `desc:"用户列表,仅在启用登录机制时生效"`
 		} `desc:"管理员界面配置"`
 		Storage map[string]any
+		Upload  storage.UploadConfig `desc:"录像上传管理配置"`
 	}
 	WaitStream struct {
 		StreamPath string
@@ -298,11 +299,8 @@ func (s *Server) Start() (err error) {
 	}
 	s.LogHandler.SetLevel(ParseLevel(s.config.LogLevel))
 	s.initStorage()
-	// 初始化上传并发控制器
-	storage.InitUploadManager(storage.UploadConfig{
-		MaxConcurrentUploads: 4,
-		PendingDir:           "pending_uploads",
-	})
+	// 初始化上传并发控制器（配置来自 ServerConfig.Upload，0 值由 InitUploadManager 兜底）
+	storage.InitUploadManager(s.ServerConfig.Upload)
 	err = debug.SetCrashOutput(util.InitFatalLog(s.FatalDir), debug.CrashOptions{})
 	if err != nil {
 		s.Error("SetCrashOutput", "error", err)
@@ -327,8 +325,17 @@ func (s *Server) Start() (err error) {
 				return
 			}
 			sqlDB, _ := s.DB.DB()
-			sqlDB.SetMaxIdleConns(25)
-			sqlDB.SetMaxOpenConns(100)
+			// SQLite/DuckDB 是单写者文件库:连接池 >1 时并发写以
+			// "database is locked" 失败——录制启动的 record_streams INSERT 在
+			// 帧回调里等锁直至超时(实测 10s)→ 订阅者被 ring buffer 丢弃 →
+			// 录制反复重启雪崩。单连接让全部 DB 访问在池内排队,普通写毫秒级。
+			if s.config.DBType == "sqlite" || s.config.DBType == "duckdb" {
+				sqlDB.SetMaxIdleConns(1)
+				sqlDB.SetMaxOpenConns(1)
+			} else {
+				sqlDB.SetMaxIdleConns(25)
+				sqlDB.SetMaxOpenConns(100)
+			}
 			sqlDB.SetConnMaxLifetime(5 * time.Minute)
 			// Auto-migrate models
 			if err = s.DB.AutoMigrate(&db.User{}, &PullProxyConfig{}, &PushProxyConfig{}, &StreamAliasDB{}, &AlarmInfo{}, &UploadTask{}); err != nil {
@@ -437,6 +444,20 @@ func (s *Server) Start() (err error) {
 		}
 	}
 
+	// OnStart 必须在 AddTask 之前注册：AddTask 会立即启动任务，而 OnStart 只是把回调
+	// 追加进 afterStartListeners，不检查任务是否已启动，该切片又只在启动流程里消费一次。
+	// 注册晚了回调就永远不触发（补传调度器与心跳检查都曾因此静默失效）。
+	// 启动上传补传调度器（定时检查失败的上传任务并重试）
+	if s.DB != nil {
+		s.Records.OnStart(func() {
+			s.Records.AddTask(&UploadRetryScheduler{s: s})
+		})
+	}
+	if s.PulseInterval > 0 {
+		s.Streams.OnStart(func() {
+			s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
+		})
+	}
 	s.AddTask(&s.Records)
 	s.AddTask(&s.Streams)
 	s.AddTask(&s.Pulls)
@@ -445,12 +466,6 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
-	// 启动上传补传调度器（定时检查失败的上传任务并重试）
-	if s.DB != nil {
-		s.Records.OnStart(func() {
-			s.Records.AddTask(&UploadRetryScheduler{s: s})
-		})
-	}
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
@@ -472,11 +487,6 @@ func (s *Server) Start() (err error) {
 	s.handle("/api/metrics", promhttpHandler)
 	if grpcServer != nil {
 		s.AddTask(grpcServer, s.Logger)
-	}
-	if s.PulseInterval > 0 {
-		s.Streams.OnStart(func() {
-			s.Streams.AddTask(&CheckSubWaitTimeout{s: s})
-		})
 	}
 	s.loadAdminZip()
 	// s.Transforms.AddTask(&TransformsPublishEvent{Transforms: &s.Transforms})

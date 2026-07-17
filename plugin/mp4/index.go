@@ -62,6 +62,8 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 		"/extract/compressed/{streamPath...}": p.extractCompressedVideoHandel,
 		"/extract/gop/{streamPath...}":        p.extractGopVideoHandel,
 		"/snap/{streamPath...}":               p.snapHandel,
+		"/api/upload/exhausted":               p.handleListExhaustedUploads,
+		"/api/upload/retry":                   p.handleRetryUpload,
 	}
 }
 

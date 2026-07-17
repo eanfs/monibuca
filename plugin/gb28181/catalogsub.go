@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo/sip"
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 )
 
 // CatalogSubscribeTask 目录订阅任务

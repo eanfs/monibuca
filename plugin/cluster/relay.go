@@ -102,10 +102,11 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 	p.setupRelayHooks()
 
 	var err error
+	var proxy m7s.IPullProxy
 	if hook := p.relayHook; hook != nil {
 		_, err = hook(conf)
 	} else if p.Server != nil {
-		_, _, err = p.Server.EnsurePullProxy(conf)
+		proxy, _, err = p.Server.EnsurePullProxy(conf)
 	} else {
 		err = fmt.Errorf("server not attached")
 	}
@@ -116,8 +117,24 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 		}
 		p.activeRelays[streamPath] = struct{}{}
 		p.activeRelaysMu.Unlock()
+		// activeRelays 条目生命周期 = relay pull-proxy 生命周期:proxy 是常驻按需路由
+		// (StopOnIdle 只关空闲 publisher;proxy 本体仅在 origin 失联或进程退出时销毁),
+		// 绑定 Dispose 保证销毁时清条目。路由存续期间同名推流的冲突防护不靠本表,
+		// 见 StreamRegistry.OnPublish 的 pull 门槛(C5)。重复注册/删除均幂等。
+		if proxy != nil {
+			proxy.OnDispose(func() {
+				p.removeActiveRelay(streamPath)
+			})
+		}
 	}
 	return err
+}
+
+// removeActiveRelay 从 activeRelays 中移除一条 relay 记录(幂等)。
+func (p *ClusterPlugin) removeActiveRelay(streamPath string) {
+	p.activeRelaysMu.Lock()
+	delete(p.activeRelays, streamPath)
+	p.activeRelaysMu.Unlock()
 }
 
 // stopRelayPullProxy 生产路径:遍历 Server 的 pull-proxies,找 Description 带

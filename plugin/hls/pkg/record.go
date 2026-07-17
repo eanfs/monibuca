@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
@@ -73,7 +74,34 @@ func (r *Recorder) writeTailer(end time.Time) {
 		}
 		r.WriteTo(r.file)
 	}
-	r.file.Close()
+	if r.file != nil {
+		// Close 前抓取本地暂存路径与大小:对象存储后端 Close 失败后内部句柄已清空。
+		var localPath string
+		var fileSize int64
+		if inserter, ok := r.file.(storage.RangeInserter); ok {
+			if fd := inserter.LocalFd(); fd != nil {
+				localPath = fd.Name()
+				if st, statErr := fd.Stat(); statErr == nil {
+					fileSize = st.Size()
+				}
+			}
+		}
+		if closeErr := r.file.Close(); closeErr != nil {
+			// 上传失败兜底:移入 pending 登记补传,避免走对象存储时静默丢失。
+			r.Error("hls record close file (upload may have failed after retries)",
+				"err", closeErr, "filePath", r.Event.FilePath)
+			var db *gorm.DB
+			if r.RecordJob.Plugin != nil {
+				db = r.RecordJob.Plugin.DB
+			}
+			var storageKey string
+			if st := r.RecordJob.GetStorage(); st != nil {
+				storageKey = st.GetKey()
+			}
+			m7s.RecoverFailedUpload(r.Logger, db, localPath, r.Event.FilePath, storageKey,
+				r.Event.StreamPath, fileSize, r.Event.Duration, nil, closeErr)
+		}
+	}
 	r.WriteTail(end, nil)
 }
 

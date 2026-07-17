@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/langhuihui/gotask"
+	"github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 )
 

@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pb"
 	. "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/auth"

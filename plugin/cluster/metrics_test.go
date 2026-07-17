@@ -9,7 +9,7 @@ import (
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 )
 
 // TestLoadReporter_UpdatesMetricsField: 启动 LoadReporter,等一个 tick,

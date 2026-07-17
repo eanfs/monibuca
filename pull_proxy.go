@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	"github.com/mcuadros/go-defaults"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -296,6 +296,16 @@ func (s *Server) EnsurePullProxy(conf *PullProxyConfig) (pullProxy IPullProxy, c
 	if existing, ok := s.PullProxies.Find(func(pullProxy IPullProxy) bool {
 		return pullProxy.GetStreamPath() == streamPath
 	}); ok {
+		// 复用已存在的 pull-proxy,丢弃本次 conf。这对常规调用是正确语义(不覆盖
+		// 已有配置),但会丢掉新 conf 的 Description 等字段 —— 历史上曾导致 cluster
+		// relay 标记丢失(现已由 ClusterPlugin.activeRelays 权威判定 relay,不再依赖
+		// 此处的 Description)。保留一条非静默日志,便于以后排查配置不一致。
+		if conf.Description != "" && existing.GetConfig().Description != conf.Description {
+			s.Debug("EnsurePullProxy reuse existing, dropping incoming conf",
+				"streamPath", streamPath,
+				"existingDesc", existing.GetConfig().Description,
+				"droppedDesc", conf.Description)
+		}
 		return existing, false, nil
 	}
 

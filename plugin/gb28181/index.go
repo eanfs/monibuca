@@ -23,7 +23,7 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	task "github.com/langhuihui/gotask"
+	task "github.com/eanfs/gotask"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/config"
 	"m7s.live/v5/pkg/util"

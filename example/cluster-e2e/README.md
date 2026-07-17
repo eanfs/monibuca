@@ -1,6 +1,17 @@
 # Cluster v1 e2e
 
-3 节点 m7s + 1 consul + 1 postgres + 1 minio 的端到端验证环境。
+3 节点 m7s + 1 consul + 1 minio 的端到端验证环境。
+
+> **⚠️ DB 形态:每节点本地 sqlite(`/data/m7s.db`),刻意不用共享数据库。**
+> 集群协调全部走 Consul,DB 只存节点本地状态 —— 这与生产已验证的形态一致
+> (2026-07-15 / 07-16 三节点真机回归)。
+>
+> **不要改成共享 PostgreSQL**:`pull_proxy_configs` 无节点归属列
+> (`pull_proxy.go` `PullProxyConfig`),共享 DB 时任一节点重启会加载全表
+> `pull_on_start` → **拉全网 + KV 属主冲突 + 负载激增**。详见 CLAUDE.md Known Issues。
+>
+> **因此不支持**:跨节点录制列表聚合、跨节点 `/download` 302(录制元数据各存各的)。
+> 下表场景 6 / 7 已相应标注。
 
 ## 一次性准备
 
@@ -45,7 +56,7 @@ docker compose down -v
 | node-2 | 1936 | 5542 | 8082 | 50052 |
 | node-3 | 1937 | 5543 | 8083 | 50053 |
 
-Consul HTTP: 8500; Postgres: 5432; MinIO: 9000 (S3 API) / 9001 (Console).
+Consul HTTP: 8500; MinIO: 9000 (S3 API) / 9001 (Console)。各节点 sqlite 在各自的 `node-N-data` 卷(`/data/m7s.db`)。
 
 MinIO Console 访问: http://localhost:9001 (admin / m7sm7sm7s)
 Consul UI: http://localhost:8500
@@ -59,8 +70,8 @@ Consul UI: http://localhost:8500
 | 3 | 从 node-2 订阅 RTMP,500ms 内出图 | 是 | ffmpeg 订阅计时 |
 | 4 | 从 node-3 再订阅同流,node-2 上 pull-proxy 不增加(复用) | 手动 | 需要 metrics 计数验证 |
 | 5 | 推 record API 到 node-3 → 文件落 node-1 | 部分 | API 调用自动,node_id 校验手动 |
-| 6 | 从 node-2 list records → 包含 node-1 的录制 | 部分 | 需目视确认 JSON 中 nodeid=node-1 |
-| 7 | 从 node-2 `/download` → 302 到 node-1 | 手动 | `curl -v http://localhost:8082/download/live/foo` |
+| 6 | ~~从 node-2 list records → 包含 node-1 的录制~~ | **不支持** | 本地 sqlite 形态下录制元数据各存各的,跨节点聚合无意义 |
+| 7 | ~~从 node-2 `/download` → 302 到 node-1~~ | **不支持** | 同上;需在属主节点直接取回 |
 | 8 | kill node-1 → 10-12s 内 `m7s/streams/live/foo` 消失,relay 退出 | 是 | Consul KV 轮询 |
 | 9 | 同 streamPath 同时推 node-1 + node-2 → first-write-wins | 手动 | 需要两个终端并发推流 |
 | 10 | `/api/cluster/lb-suggest` 返回 streams 最少节点 | 是 | 验证 suggested 字段非空 |
