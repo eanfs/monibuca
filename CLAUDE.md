@@ -48,6 +48,12 @@ Windows:
 goreleaser build
 ```
 
+**发版闭环链路(v5.3.5 实践定型,缺陷修复类发版照此执行):**
+根因确认 → 修复+回归钉测试 → 单元/压测(`-race` 全绿)→ 真机复现旧缺陷+验证修复 → PR(base=develop)merge → tag → 多架构镜像 → 目标环境真机部署冒烟 → 清理测试容器/镜像/临时文件/凭证
+- tag 格式 `v5.X.Y.YYMMDDHHMM`(如 v5.3.5.2607291051),打在 develop 的 merge commit 上并推 origin
+- 构建机 `172.16.12.82:/home/monibuca`:github 不通 → 用 git bundle 同步(`git bundle create ^<对端HEAD> develop <tag>` → scp → 对端 fetch);非交互 shell 跑 `build_docker.sh` 需 `PATH=/usr/local/go/bin:$PATH GOPROXY=https://goproxy.cn,direct GOTOOLCHAIN=auto`;arm64 build 需 qemu binfmt(缺则报 `exec format error`,`docker run --privileged --rm tonistiigi/binfmt --install arm64` 一次性装好)
+- 容器冒烟:镜像 CMD 期望 `/etc/monibuca/config.yaml`,最小配置仅需 `global.db.{dsn,dbtype}`;未登录 SWR 的机器用 `docker save | gzip` + ssh 管道 + `docker load` 送镜像(勿复制 docker 凭证);验证点=容器零重启、日志无 DB 错误、API 200,页大小敏感问题必须上真机(mac `Getpagesize()` 恒报 4096)
+
 **Cross-compile (multi-arch, no CGO):**
 - `CGO_ENABLED=0 GOOS=linux GOARCH={amd64,arm64} go build -tags "cluster sqlite s3" -o monibuca_${ARCH} ./example/cluster`
 - `sqlite` tag = pure-Go `ncruces/go-sqlite3` (WASM) → cross-compiles incl. arm64 with no CGO (`sqliteCGO` = mattn/CGO variant; avoid for cross-builds)
@@ -447,6 +453,8 @@ Automatic migration is handled for core models including users, proxies, and str
 - Monitor task retry counts and failure reasons in logs
 
 ## Common Pitfalls
+- staticcheck 二进制的编译 go 版本低于 go.mod `go 1.26` 时报 "module requires at least go1.26" 拒跑——非代码问题,升级 staticcheck 或跳过
+- gopls/IDE 对 build-tag 门控文件(`//go:build sqlite` 等)报 "No packages found" 是误报,以 `go vet -tags <tag>` 为准
 - Forgetting required build tags for DB/protocol/storage-specific behavior
 - Editing `.proto` but not regenerating with `scripts/protoc.sh`
 - Adding non-whitelisted dot imports
