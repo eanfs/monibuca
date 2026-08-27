@@ -60,8 +60,10 @@ func TestIsPermanentConnectionErrorUsesSentinelAndCodes(t *testing.T) {
 		{name: "invalid config sentinel", err: fmt.Errorf("wrapped: %w", ErrInvalidStorageConfig), permanent: true},
 		{name: "access denied code", err: fmt.Errorf("wrapped: %w", testConnectionCodeError{code: "AccessDenied"}), permanent: true},
 		{name: "signature code", err: testConnectionCodeError{code: "SignatureDoesNotMatch"}, permanent: true},
+		{name: "invalid endpoint URL code", err: testConnectionCodeError{code: "InvalidEndpointURL"}, permanent: true},
 		{name: "missing bucket remains transient", err: testConnectionCodeError{code: "NoSuchBucket"}, permanent: false},
-		{name: "unknown code remains transient", err: testConnectionCodeError{code: "RequestTimeout"}, permanent: false},
+		{name: "request timeout remains transient", err: testConnectionCodeError{code: "RequestTimeout"}, permanent: false},
+		{name: "request canceled remains transient", err: testConnectionCodeError{code: "RequestCanceled"}, permanent: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -84,7 +84,7 @@ func isPermanentConnectionCode(code string) bool {
 	case "NoSuchBucket":
 		return false
 	case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
-		"InvalidBucketName", "MalformedXML", "InvalidObjectName":
+		"InvalidBucketName", "MalformedXML", "InvalidObjectName", "InvalidEndpointURL":
 		return true
 	default:
 		return false
