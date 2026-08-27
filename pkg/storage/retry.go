@@ -49,6 +49,26 @@ func IsPermanentError(err error) bool {
 	return false
 }
 
+// IsPermanentConnectionError reports startup errors that cannot recover by
+// retrying. NoSuchBucket intentionally remains retryable because the S3
+// initializer may create it after the service becomes ready.
+func IsPermanentConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	permanentPatterns := []string{
+		"AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+		"InvalidBucketName", "MalformedXML", "InvalidObjectName",
+	}
+	for _, pattern := range permanentPatterns {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // UploadWithRetry 带指数退避的上传重试。
 // ctx 用于支持外部取消（如 shutdown），resetFn 在每次重试前调用（如重置文件指针），可为 nil。
 func UploadWithRetry(ctx context.Context, config RetryConfig, storageType string, objectKey string, resetFn func() error, uploadFn func() error) error {
