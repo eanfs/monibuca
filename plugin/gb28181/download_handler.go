@@ -2,7 +2,6 @@ package plugin_gb28181pro
 
 import (
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 
@@ -52,52 +51,39 @@ func (gb *GB28181Plugin) handleDownloadFile(w http.ResponseWriter, r *http.Reque
 		http.Error(w, storage.ErrStorageNotAvailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	filePath, _ := st.GetURL(r.Context(), record.FilePath)
-	filename := filepath.Base(filePath)
+	gb.serveStoredRecordFile(st, w, r, &record)
+}
 
-	gb.Info("从缓存记录获取文件路径",
-		"downloadId", downloadId,
-		"filePath", filePath)
-
-	// 检查文件是否存在
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "File not found", http.StatusNotFound)
-		} else {
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-		gb.Error("文件访问失败", "filePath", filePath, "error", err)
-		return
-	}
-
-	// 检查是否是文件（不是目录）
-	if fileInfo.IsDir() {
-		http.Error(w, "Path is a directory", http.StatusBadRequest)
-		return
-	}
-
-	// 打开文件
-	file, err := os.Open(filePath)
+func (gb *GB28181Plugin) serveStoredRecordFile(st storage.Storage, w http.ResponseWriter, r *http.Request, record *gb28181.GB28181Record) {
+	file, err := st.OpenFile(r.Context(), record.FilePath)
 	if err != nil {
 		http.Error(w, "Failed to open file", http.StatusInternalServerError)
-		gb.Error("打开文件失败", "filePath", filePath, "error", err)
+		gb.Warn("open stored record failed", "recordId", record.DownloadId, "objectKey", record.FilePath)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			gb.Warn("close stored record failed", "recordId", record.DownloadId, "objectKey", record.FilePath)
+		}
+	}()
 
-	// 设置响应头
+	fileInfo, err := file.Stat()
+	if err != nil {
+		http.Error(w, "Failed to stat file", http.StatusInternalServerError)
+		gb.Warn("stat stored record failed", "recordId", record.DownloadId, "objectKey", record.FilePath)
+		return
+	}
+	if fileInfo.IsDir() {
+		http.Error(w, "Path is a directory", http.StatusBadRequest)
+		gb.Warn("stored record is a directory", "recordId", record.DownloadId, "objectKey", record.FilePath)
+		return
+	}
+
+	filename := filepath.Base(record.FilePath)
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.Header().Set("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
 	w.Header().Set("Accept-Ranges", "bytes")
-
-	// 支持断点续传
 	http.ServeContent(w, r, filename, fileInfo.ModTime(), file)
-
-	gb.Info("文件下载",
-		"filename", filename,
-		"filePath", filePath,
-		"size", fileInfo.Size(),
-		"remote", r.RemoteAddr)
+	gb.Info("stored record downloaded", "recordId", record.DownloadId, "objectKey", record.FilePath)
 }

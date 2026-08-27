@@ -2,6 +2,9 @@ package m7s
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -54,4 +57,36 @@ func TestStorageSnapshotSwitchIsAtomic(t *testing.T) {
 		}
 	}()
 	wait.Wait()
+}
+
+func TestInitStorageFallsBackFromInvalidExplicitLocalConfig(t *testing.T) {
+	server := &Server{
+		ServerConfig: ServerConfig{Storage: map[string]any{
+			string(storage.StorageTypeLocal): 42,
+		}},
+	}
+	server.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server.initStorage()
+
+	active, ok := server.GetStorage().(*storage.LocalStorage)
+	if !ok {
+		t.Fatalf("invalid explicit local config must fall back to healthy local storage, got %T", server.GetStorage())
+	}
+	if got := active.GetStoragePath(1); got != "." {
+		t.Errorf("fallback local path = %q, want .", got)
+	}
+	registry := server.storageRuntime.registry
+	owned, err := registry.GetOrCreate(string(storage.StorageTypeLocal))
+	if err != nil {
+		t.Fatalf("get registry-owned fallback: %v", err)
+	}
+	if owned != active {
+		t.Error("active fallback must be owned by the installed registry")
+	}
+
+	server.Dispose()
+	if _, err = registry.GetOrCreate(string(storage.StorageTypeLocal)); !errors.Is(err, storage.ErrStorageRegistryClosed) {
+		t.Fatalf("Dispose must close fallback registry, got %v", err)
+	}
 }

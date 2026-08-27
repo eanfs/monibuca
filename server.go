@@ -855,11 +855,19 @@ func (s *Server) initStorage() {
 		}
 		s.Warn("create storage failed", "type", storageType, "err", err)
 	}
-	st, err := s.storageRuntime.registry.GetOrCreate(string(storage.StorageTypeLocal))
+	fallbackRegistry := storage.NewRegistry(nil)
+	st, err := fallbackRegistry.GetOrCreate(string(storage.StorageTypeLocal))
 	if err != nil {
 		s.Error("fallback local storage failed", "err", err)
+		if closeErr := fallbackRegistry.Close(); closeErr != nil {
+			s.Error("close fallback storage registry failed", "err", closeErr)
+		}
 		return
 	}
+	if err := s.storageRuntime.registry.Close(); err != nil {
+		s.Error("close failed storage registry failed", "err", err)
+	}
+	s.storageRuntime = &storageRuntime{registry: fallbackRegistry}
 	s.activateStorage(st, newStorageStatus("local", "local", false, false, time.Now(), nil))
 	s.Info("fallback to local storage", "path", ".")
 }

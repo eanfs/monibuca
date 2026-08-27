@@ -57,6 +57,16 @@ func (c *ContentPart) Close() error {
 	return c.file.Close()
 }
 
+func (p *MP4Plugin) redirectToStorageURL(st storage.Storage, storageType, objectKey string, w http.ResponseWriter, r *http.Request) error {
+	url, err := st.GetURL(r.Context(), objectKey)
+	if err != nil {
+		return err
+	}
+	p.Info("redirect to storage URL", "storageType", storageType)
+	http.Redirect(w, r, url, http.StatusFound)
+	return nil
+}
+
 func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
 	// 获取文件（本地或远程）
 	var file storage.File
@@ -163,14 +173,11 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 					}
 				} else {
 					// 其他存储类型，使用 GetURL 并重定向
-					url, err := st.GetURL(context.Background(), stream.FilePath)
-					if err != nil {
-						http.Error(w, fmt.Sprintf("failed to get URL: %v", err), http.StatusInternalServerError)
-						p.Error("failed to get URL", "err", err)
+					if err := p.redirectToStorageURL(st, stream.StorageType, stream.FilePath, w, r); err != nil {
+						http.Error(w, "failed to get storage URL", http.StatusInternalServerError)
+						p.Error("failed to get storage URL", "storageType", stream.StorageType)
 						return
 					}
-					p.Info("redirect to storage URL", "storageType", stream.StorageType, "url", url)
-					http.Redirect(w, r, url, http.StatusFound)
 				}
 			} else {
 				// 兜底逻辑：直接使用 stream.FilePath
