@@ -57,13 +57,13 @@ func (c *S3StorageConfig) GetType() StorageType {
 
 func (c *S3StorageConfig) Validate() error {
 	if c.AccessKeyID == "" {
-		return fmt.Errorf("access_key_id is required for S3 storage")
+		return fmt.Errorf("%w: access_key_id is required for S3 storage", ErrInvalidStorageConfig)
 	}
 	if c.SecretAccessKey == "" {
-		return fmt.Errorf("secret_access_key is required for S3 storage")
+		return fmt.Errorf("%w: secret_access_key is required for S3 storage", ErrInvalidStorageConfig)
 	}
 	if c.Bucket == "" {
-		return fmt.Errorf("bucket is required for S3 storage")
+		return fmt.Errorf("%w: bucket is required for S3 storage", ErrInvalidStorageConfig)
 	}
 	return nil
 }

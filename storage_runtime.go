@@ -83,8 +83,29 @@ func storageErrorSummary(err error) string {
 		return "configured storage type is unavailable in this build"
 	case errors.Is(err, storage.ErrStorageTypeNotConfigured):
 		return "record storage type is no longer configured"
+	case errors.Is(err, storage.ErrInvalidStorageConfig):
+		return "configured storage settings are invalid"
+	case storage.IsPermanentConnectionError(err):
+		return "configured storage authentication or settings are invalid"
 	default:
 		return "configured storage is temporarily unavailable"
+	}
+}
+
+func storageErrorCategory(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, storage.ErrUnsupportedStorageType):
+		return "unsupported_build"
+	case errors.Is(err, storage.ErrStorageTypeNotConfigured):
+		return "not_configured"
+	case errors.Is(err, storage.ErrInvalidStorageConfig):
+		return "invalid_config"
+	case storage.IsPermanentConnectionError(err):
+		return "permanent_connection"
+	default:
+		return "transient_connection"
 	}
 }
 

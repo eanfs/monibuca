@@ -105,34 +105,35 @@ type (
 		Plugin
 
 		ServerConfig
-		Plugins           util.Collection[string, *Plugin]
-		Streams           util.Manager[string, *Publisher]
-		AliasStreams      util.Collection[string, *AliasStream]
-		Waiting           WaitManager
-		Pulls             task.WorkCollection[string, *PullJob]
-		Pushs             task.WorkCollection[string, *PushJob]
-		Records           task.WorkCollection[string, *RecordJob]
-		Transforms        TransformManager
-		PullProxies       PullProxyManager
-		PushProxies       PushProxyManager
-		Subscribers       SubscriberCollection
-		LogHandler        MultiLogHandler
-		redirectAdvisor   RedirectAdvisor
-		redirectOnce      sync.Once
-		pullProxyMu       sync.Mutex
-		apiList           []string
-		grpcServer        *grpc.Server
-		grpcClientConn    *grpc.ClientConn
-		lastSummaryTime   time.Time
-		lastSummary       *pb.SummaryResponse
-		conf              any
-		configFilePath    string
-		configFileContent []byte
-		disabledPlugins   []*Plugin
-		prometheusDesc    prometheusDesc
-		storageRuntime    *storageRuntime
-		apiRoute          *apiRouter
-		rawConfig         RawConfig
+		Plugins              util.Collection[string, *Plugin]
+		Streams              util.Manager[string, *Publisher]
+		AliasStreams         util.Collection[string, *AliasStream]
+		Waiting              WaitManager
+		Pulls                task.WorkCollection[string, *PullJob]
+		Pushs                task.WorkCollection[string, *PushJob]
+		Records              task.WorkCollection[string, *RecordJob]
+		Transforms           TransformManager
+		PullProxies          PullProxyManager
+		PushProxies          PushProxyManager
+		Subscribers          SubscriberCollection
+		LogHandler           MultiLogHandler
+		redirectAdvisor      RedirectAdvisor
+		redirectOnce         sync.Once
+		pullProxyMu          sync.Mutex
+		apiList              []string
+		grpcServer           *grpc.Server
+		grpcClientConn       *grpc.ClientConn
+		lastSummaryTime      time.Time
+		lastSummary          *pb.SummaryResponse
+		conf                 any
+		configFilePath       string
+		configFileContent    []byte
+		disabledPlugins      []*Plugin
+		prometheusDesc       prometheusDesc
+		storageRuntime       *storageRuntime
+		storageReconnectWork *StorageReconnectWork
+		apiRoute             *apiRouter
+		rawConfig            RawConfig
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -436,6 +437,9 @@ func (s *Server) Start() (err error) {
 		}
 	}
 
+	if s.storageReconnectWork != nil {
+		s.AddTask(s.storageReconnectWork)
+	}
 	// Register children before Records starts; gotask does not replay OnStart.
 	if s.DB != nil {
 		s.Records.OnStart(func() {
@@ -845,9 +849,10 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 }
 
 // initStorage creates the configured global backend. S3 startup failures use
-// explicit fallback policy and are retried in the Records task queue.
+// explicit fallback policy and are retried in a dedicated storage work queue.
 func (s *Server) initStorage() {
 	s.storageRuntime = &storageRuntime{registry: storage.NewRegistry(s.ServerConfig.Storage)}
+	s.storageReconnectWork = nil
 	_, hasS3 := s.ServerConfig.Storage[string(storage.StorageTypeS3)]
 	if !hasS3 {
 		s.initLegacyStorage()
@@ -865,15 +870,23 @@ func (s *Server) initStorage() {
 	if s.StorageAllowLocalFallback {
 		local, localErr := s.storageRuntime.registry.GetOrCreate(string(storage.StorageTypeLocal))
 		if localErr != nil {
-			s.Error("create fallback local storage failed", "err", localErr)
+			s.Error("create fallback local storage failed",
+				"errorCategory", storageErrorCategory(localErr),
+				"error", storageErrorSummary(localErr))
 			s.activateStorage(storage.NewUnavailableStorage("s3"), newStorageStatus("s3", "s3", true, false, checkedAt, err))
 		} else {
 			s.activateStorage(local, newStorageStatus("s3", "local", true, true, checkedAt, err))
-			s.Warn("S3 unavailable, temporary local fallback active", "type", "s3", "err", err)
+			s.Warn("S3 unavailable, temporary local fallback active",
+				"type", "s3",
+				"errorCategory", storageErrorCategory(err),
+				"error", storageErrorSummary(err))
 		}
 	} else {
 		s.activateStorage(storage.NewUnavailableStorage("s3"), newStorageStatus("s3", "s3", true, false, checkedAt, err))
-		s.Error("S3 unavailable, recording disabled until recovery", "type", "s3", "err", err)
+		s.Error("S3 unavailable, recording disabled until recovery",
+			"type", "s3",
+			"errorCategory", storageErrorCategory(err),
+			"error", storageErrorSummary(err))
 	}
 	s.scheduleStorageReconnect()
 }

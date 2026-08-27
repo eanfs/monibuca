@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -56,6 +57,15 @@ func IsPermanentConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, ErrInvalidStorageConfig) {
+		return true
+	}
+
+	var coded interface{ Code() string }
+	if errors.As(err, &coded) {
+		return isPermanentConnectionCode(coded.Code())
+	}
+
 	message := err.Error()
 	permanentPatterns := []string{
 		"AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
@@ -67,6 +77,18 @@ func IsPermanentConnectionError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isPermanentConnectionCode(code string) bool {
+	switch code {
+	case "NoSuchBucket":
+		return false
+	case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+		"InvalidBucketName", "MalformedXML", "InvalidObjectName":
+		return true
+	default:
+		return false
+	}
 }
 
 // UploadWithRetry 带指数退避的上传重试。

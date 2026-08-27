@@ -110,6 +110,7 @@ func CreateStorage(t string, config any) (Storage, error) {
 // 错误定义
 var (
 	ErrUnsupportedStorageType   = fmt.Errorf("unsupported storage type")
+	ErrInvalidStorageConfig     = fmt.Errorf("invalid storage config")
 	ErrFileNotFound             = fmt.Errorf("file not found")
 	ErrStorageNotAvailable      = fmt.Errorf("storage not available")
 	ErrStorageTypeNotConfigured = fmt.Errorf("storage type not configured")
