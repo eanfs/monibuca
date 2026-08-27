@@ -196,7 +196,7 @@ func (t *StorageManagementTask) manageLocalStorage() {
 	t.Debug("manageLocalStorage", "status", "starting")
 
 	// 检查全局存储是否存在且为 LocalStorage 类型
-	st := t.plugin.Server.Storage
+	st := t.plugin.Server.GetStorage()
 	if st == nil {
 		t.Debug("manageLocalStorage", "status", "global storage not initialized, using fallback logic")
 		t.manageFallbackStorage()
@@ -230,7 +230,7 @@ func (t *StorageManagementTask) manageFallbackStorage() {
 
 	// 尝试从全局存储获取路径
 	var storagePath string
-	if st := t.plugin.Server.Storage; st != nil {
+	if st := t.plugin.Server.GetStorage(); st != nil {
 		if localStorage, ok := st.(*storage.LocalStorage); ok {
 			// 使用主存储路径
 			storagePath = localStorage.GetStoragePath(1)
@@ -299,7 +299,7 @@ func (t *StorageManagementTask) manageFallbackStorage() {
 			absolutePath = record.FilePath
 		} else {
 			// 相对路径，使用全局存储的 GetFullPath 方法
-			if st := t.plugin.Server.Storage; st != nil {
+			if st := t.plugin.Server.GetStorage(); st != nil {
 				if localStorage, ok := st.(*storage.LocalStorage); ok {
 					absolutePath = localStorage.GetFullPath(record.FilePath, record.StorageLevel)
 				} else {

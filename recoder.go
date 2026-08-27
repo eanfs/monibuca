@@ -89,7 +89,7 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	fileName := filepath.Base(filePath)
 
 	var storageType string
-	recordJob.storage = recordJob.Plugin.Server.Storage
+	recordJob.storage = recordJob.Plugin.Server.GetStorage()
 	if recordJob.storage != nil {
 		storageType = recordJob.storage.GetKey()
 	}

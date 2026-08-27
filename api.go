@@ -1008,7 +1008,7 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 		} else if filepath.IsAbs(filePath) {
 			return os.Remove(filePath)
 		} else {
-			st := s.Storage
+			st := s.GetStorage()
 			var globalStorageType string
 			if st != nil {
 				globalStorageType = st.GetKey()

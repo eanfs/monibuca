@@ -129,7 +129,7 @@ type (
 		configFileContent []byte
 		disabledPlugins   []*Plugin
 		prometheusDesc    prometheusDesc
-		Storage           storage.Storage
+		storageRuntime    *storageRuntime
 		apiRoute          *apiRouter
 		rawConfig         RawConfig
 	}
@@ -799,6 +799,11 @@ func (s *Server) Dispose() {
 			}
 		}
 	}
+	if s.storageRuntime != nil && s.storageRuntime.registry != nil {
+		if err := s.storageRuntime.registry.Close(); err != nil {
+			s.Error("close storage registry failed", "err", err)
+		}
+	}
 }
 
 func (s *Server) GetPublisher(streamPath string) (publisher *Publisher, err error) {
@@ -840,20 +845,21 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 
 // initStorage 创建全局存储实例，失败时回落到本地存储（空配置）
 func (s *Server) initStorage() {
-	for t, conf := range s.ServerConfig.Storage {
-		st, err := storage.CreateStorage(t, conf)
+	s.storageRuntime = &storageRuntime{registry: storage.NewRegistry(s.ServerConfig.Storage)}
+	for storageType := range s.ServerConfig.Storage {
+		st, err := s.storageRuntime.registry.GetOrCreate(storageType)
 		if err == nil {
-			s.Storage = st
-			s.Info("global storage created", "type", t)
+			s.activateStorage(st, newStorageStatus(storageType, storageType, false, false, time.Now(), nil))
+			s.Info("global storage created", "type", storageType)
 			return
 		}
-		s.Warn("create storage failed", "type", t, "err", err)
+		s.Warn("create storage failed", "type", storageType, "err", err)
 	}
-	// 兜底：local 需要路径，这里用当前目录
-	if st, err := storage.CreateStorage("local", "."); err == nil {
-		s.Storage = st
-		s.Info("fallback to local storage", "path", ".")
-	} else {
+	st, err := s.storageRuntime.registry.GetOrCreate(string(storage.StorageTypeLocal))
+	if err != nil {
 		s.Error("fallback local storage failed", "err", err)
+		return
 	}
+	s.activateStorage(st, newStorageStatus("local", "local", false, false, time.Now(), nil))
+	s.Info("fallback to local storage", "path", ".")
 }

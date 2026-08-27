@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/langhuihui/gomem"
 	task "github.com/eanfs/gotask"
+	"github.com/langhuihui/gomem"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/codec"
@@ -64,7 +64,7 @@ func (p *RecordReader) Run() (err error) {
 				writer.PublishVideoWriter = m7s.NewPublishVideoWriter[*VideoFrame](publisher, allocator)
 			}
 		},
-		storage: pullJob.Plugin.Server.Storage,
+		storage: pullJob.Plugin.Server.GetStorage(),
 	}
 	demuxerRange.OnAudio = func(a box.Sample) error {
 		if publisher.Paused != nil {

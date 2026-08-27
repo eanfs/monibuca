@@ -135,7 +135,7 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 	} else {
 		// 相对路径：使用 storage 处理
 		// 检查全局存储是否存在且类型匹配
-		st := p.Server.Storage
+		st := p.Server.GetStorage()
 		var globalStorageType string
 		if st != nil {
 			globalStorageType = st.GetKey()
@@ -504,7 +504,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			file = &storage.LocalFile{File: osFile}
 		} else {
 			// 相对路径：使用 storage 处理
-			st := p.Server.Storage
+			st := p.Server.GetStorage()
 			var globalStorageType string
 			if st != nil {
 				globalStorageType = st.GetKey()

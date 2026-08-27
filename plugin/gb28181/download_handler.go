@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"m7s.live/v5/pkg/storage"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 )
 
@@ -46,7 +47,12 @@ func (gb *GB28181Plugin) handleDownloadFile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	filePath, _ := gb.Server.Storage.GetURL(gb, record.FilePath)
+	st := gb.Server.GetStorage()
+	if st == nil {
+		http.Error(w, storage.ErrStorageNotAvailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	filePath, _ := st.GetURL(r.Context(), record.FilePath)
 	filename := filepath.Base(filePath)
 
 	gb.Info("从缓存记录获取文件路径",

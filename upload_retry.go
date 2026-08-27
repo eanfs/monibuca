@@ -28,7 +28,7 @@ func (u *UploadRetryScheduler) GetTickInterval() time.Duration {
 
 // Tick 每个周期执行一次补传检查
 func (u *UploadRetryScheduler) Tick(any) {
-	if u.s == nil || u.s.DB == nil || u.s.Storage == nil {
+	if u.s == nil || u.s.DB == nil || u.s.GetStorage() == nil {
 		return
 	}
 
@@ -102,7 +102,7 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		"fileSize", ut.FileSize)
 
 	// 执行上传
-	err := UploadLocalFile(ctx, u.s.Storage, ut.LocalPath, ut.ObjectKey, metadata)
+	err := UploadLocalFile(ctx, u.s.GetStorage(), ut.LocalPath, ut.ObjectKey, metadata)
 	if err != nil {
 		u.Warn("retry upload failed",
 			"id", ut.ID,
