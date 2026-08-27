@@ -1008,28 +1008,17 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 		} else if filepath.IsAbs(filePath) {
 			return os.Remove(filePath)
 		} else {
-			st := s.GetStorage()
-			var globalStorageType string
-			if st != nil {
-				globalStorageType = st.GetKey()
+			st, err := s.GetStorageForType(recordFile.StorageType)
+			if err != nil {
+				s.Error("resolve record storage for delete failed", "storageType", recordFile.StorageType, "err", err)
+				return fmt.Errorf("record storage unavailable: %w", err)
 			}
-			isLocalStorage := recordFile.StorageType == string(storage.StorageTypeLocal) || recordFile.StorageType == ""
-			useGlobalStorage := st != nil && globalStorageType == recordFile.StorageType
-			if useGlobalStorage {
-				if isLocalStorage {
-					if localStorage, ok := st.(*storage.LocalStorage); ok {
-						fullPath := localStorage.GetFullPath(filePath, recordFile.StorageLevel)
-						return os.Remove(fullPath)
-					}
-					return st.Delete(ctx, filePath)
+			if recordFile.StorageType == "" || recordFile.StorageType == string(storage.StorageTypeLocal) {
+				if local, ok := st.(*storage.LocalStorage); ok {
+					return os.Remove(local.GetFullPath(filePath, recordFile.StorageLevel))
 				}
-				return st.Delete(ctx, filePath)
 			}
-			if isLocalStorage {
-				return os.Remove(filePath)
-			}
-			s.Error("storage type mismatch, cannot delete file", "streamType", recordFile.StorageType, "globalType", globalStorageType)
-			return fmt.Errorf("storage type mismatch: stream=%s, global=%s", recordFile.StorageType, globalStorageType)
+			return st.Delete(ctx, filePath)
 		}
 	}
 
