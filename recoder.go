@@ -2,10 +2,11 @@ package m7s
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	task "github.com/eanfs/gotask"
@@ -80,6 +81,29 @@ func (r *DefaultRecorder) Start() (err error) {
 	return
 }
 
+func validateRecordingStorage(backend storage.Storage, current StorageStatus) error {
+	if current.Degraded && !current.FallbackActive {
+		return status.Error(codes.Unavailable, "configured storage is not ready")
+	}
+	if backend == nil {
+		return status.Error(codes.Unavailable, "storage is not initialized")
+	}
+	return nil
+}
+
+func (s *Server) ValidateRecordingStorage() error {
+	backend, current := s.loadStorageSnapshot()
+	return validateRecordingStorage(backend, current)
+}
+
+func (s *Server) recordingStorage() (storage.Storage, error) {
+	backend, current := s.loadStorageSnapshot()
+	if err := validateRecordingStorage(backend, current); err != nil {
+		return nil, err
+	}
+	return backend, nil
+}
+
 func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*RecordJob) string) (err error) {
 	recordJob := &r.RecordJob
 	sub := recordJob.Subscriber
@@ -88,15 +112,11 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	filePath := customFileName(recordJob)
 	fileName := filepath.Base(filePath)
 
-	var storageType string
-	recordJob.storage = recordJob.Plugin.Server.GetStorage()
-	if recordJob.storage != nil {
-		storageType = recordJob.storage.GetKey()
+	recordJob.storage, err = recordJob.Plugin.Server.recordingStorage()
+	if err != nil {
+		return err
 	}
-
-	if recordJob.storage == nil {
-		return fmt.Errorf("storage config is required")
-	}
+	storageType := recordJob.storage.GetKey()
 
 	r.Event.RecordStream = RecordStream{
 		StartTime:    start,

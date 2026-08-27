@@ -723,6 +723,9 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		err = pkg.ErrNotFound
 		return
 	}
+	if err = p.Server.ValidateRecordingStorage(); err != nil {
+		return nil, err
+	}
 	job := p.Record(stream, recordConf, nil)
 	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
 	res.Data = uint64(job.GetTaskPointer())
