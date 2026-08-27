@@ -35,6 +35,25 @@ import (
 
 var localIP string
 
+func (s *Server) GetStorageStatusHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	current := sanitizeStorageStatusForHTTP(s.GetStorageStatus())
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if current.Degraded {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	if err := json.NewEncoder(w).Encode(current); err != nil {
+		s.Error("encode storage status failed", "err", err)
+	}
+}
+
 func (s *Server) SysInfo(context.Context, *emptypb.Empty) (res *pb.SysInfoResponse, err error) {
 	if localIP == "" {
 		localIP = myip.LocalIP()

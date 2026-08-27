@@ -317,6 +317,7 @@ func (s *Server) Start() (err error) {
 		"/api/audiotrack/sse/{streamPath...}": s.api_AudioTrack_SSE,
 		"/annexb/{streamPath...}":             s.annexB,
 		"/api/storage/schemas":                s.GetStorageSchemas,
+		"/api/storage/status":                 s.GetStorageStatusHTTP,
 	})
 
 	if s.config.DSN != "" {

@@ -75,20 +75,50 @@ func (s *Server) GetStorageForType(storageType string) (storage.Storage, error) 
 	return resolved, nil
 }
 
+const (
+	storageUnsupportedBuildSummary = "configured storage type is unavailable in this build"
+	storageNotConfiguredSummary    = "record storage type is no longer configured"
+	storageInvalidConfigSummary    = "configured storage settings are invalid"
+	storageAuthenticationSummary   = "configured storage authentication or settings are invalid"
+	storageUnavailableSummary      = "configured storage is temporarily unavailable"
+)
+
 func storageErrorSummary(err error) string {
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, storage.ErrUnsupportedStorageType):
-		return "configured storage type is unavailable in this build"
+		return storageUnsupportedBuildSummary
 	case errors.Is(err, storage.ErrStorageTypeNotConfigured):
-		return "record storage type is no longer configured"
+		return storageNotConfiguredSummary
 	case errors.Is(err, storage.ErrInvalidStorageConfig):
-		return "configured storage settings are invalid"
+		return storageInvalidConfigSummary
 	case storage.IsPermanentConnectionError(err):
-		return "configured storage authentication or settings are invalid"
+		return storageAuthenticationSummary
 	default:
-		return "configured storage is temporarily unavailable"
+		return storageUnavailableSummary
+	}
+}
+
+func sanitizeStorageStatusForHTTP(current StorageStatus) StorageStatus {
+	lastError := current.LastError
+	switch lastError {
+	case "",
+		storageUnsupportedBuildSummary,
+		storageNotConfiguredSummary,
+		storageInvalidConfigSummary,
+		storageAuthenticationSummary,
+		storageUnavailableSummary:
+	default:
+		lastError = storageUnavailableSummary
+	}
+	return StorageStatus{
+		DesiredType:    current.DesiredType,
+		ActiveType:     current.ActiveType,
+		Degraded:       current.Degraded,
+		FallbackActive: current.FallbackActive,
+		LastCheckTime:  current.LastCheckTime,
+		LastError:      lastError,
 	}
 }
 
