@@ -1,0 +1,74 @@
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    user: "${STORAGE_RACE_UID:?required}:${STORAGE_RACE_GID:?required}"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        sleep "$${MINIO_DELAY_SECONDS}"
+        exec minio server /data --console-address :9001
+    environment:
+      HOME: /tmp
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+      MINIO_DELAY_SECONDS: ${MINIO_DELAY_SECONDS:-15}
+    volumes:
+      - ${STORAGE_RACE_MINIO_DIR:?required}:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    user: "${STORAGE_RACE_UID:?required}:${STORAGE_RACE_GID:?required}"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until mc ls race >/dev/null 2>&1; do sleep 1; done
+        until mc mb --ignore-existing race/storage-race >/dev/null 2>&1; do sleep 1; done
+    environment:
+      HOME: /tmp
+      MC_HOST_race: http://${MINIO_ROOT_USER:?required}:${MINIO_ROOT_PASSWORD:?required}@minio:9000
+    restart: "no"
+
+  monibuca:
+    image: ${STORAGE_RACE_IMAGE:?required}
+    build:
+      context: ../..
+      dockerfile: example/record-test/Dockerfile.storage-race
+    user: "${STORAGE_RACE_UID:?required}:${STORAGE_RACE_GID:?required}"
+    init: true
+    working_dir: /data
+    command: ["-c", "/run/monibuca/config.yaml"]
+    environment:
+      HOME: /tmp
+    volumes:
+      - ${STORAGE_RACE_CONFIG:?required}:/run/monibuca/config.yaml:ro
+      - ${STORAGE_RACE_DATA_DIR:?required}:/data
+      - ${STORAGE_RACE_ARTIFACT_DIR:?required}:/artifacts
+    ports:
+      - "127.0.0.1:${STORAGE_RACE_HTTP_PORT:?required}:8080"
+
+  publisher:
+    image: ${STORAGE_RACE_IMAGE:?required}
+    user: "${STORAGE_RACE_UID:?required}:${STORAGE_RACE_GID:?required}"
+    init: true
+    working_dir: /data
+    depends_on:
+      monibuca:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until curl --silent --output /dev/null http://monibuca:8080/api/storage/status 2>/dev/null; do sleep 1; done
+        while true; do
+          ffmpeg -nostdin -hide_banner -loglevel error \
+            -re -f lavfi -i testsrc2=size=640x360:rate=15 \
+            -re -f lavfi -i sine=frequency=1000:sample_rate=48000 \
+            -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 \
+            -c:a aac -f flv rtmp://monibuca/live/storage-race >/dev/null 2>&1 || true
+          sleep 1
+        done
+    environment:
+      HOME: /tmp
+    restart: unless-stopped

@@ -1,0 +1,15 @@
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -tags "sqlite s3" -o /out/monibuca ./example/default
+
+FROM debian:trixie-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /data /artifacts /run/monibuca \
+    && chmod 1777 /data /artifacts
+WORKDIR /data
+COPY --from=build /out/monibuca /usr/local/bin/monibuca
+ENTRYPOINT ["/usr/local/bin/monibuca"]
+CMD ["-c", "/run/monibuca/config.yaml"]
