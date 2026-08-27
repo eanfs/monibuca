@@ -157,7 +157,7 @@ func (p *MP4Plugin) downloadSingleFileWithResolver(resolve recordStorageResolver
 		st, resolveErr := resolve(stream.StorageType)
 		isLocalStorage := stream.StorageType == "" || stream.StorageType == string(storage.StorageTypeLocal)
 		if resolveErr != nil {
-			p.Error("resolve record storage failed", "storageType", stream.StorageType, "err", resolveErr)
+			p.Error("resolve record storage failed", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(resolveErr))
 			http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -173,7 +173,7 @@ func (p *MP4Plugin) downloadSingleFileWithResolver(resolve recordStorageResolver
 				http.ServeFile(w, r, localStorage.GetFullPath(stream.FilePath, stream.StorageLevel))
 			} else if err := p.redirectToStorageURL(st, stream.StorageType, stream.FilePath, w, r); err != nil {
 				http.Error(w, "failed to get storage URL", http.StatusInternalServerError)
-				p.Error("failed to get storage URL", "storageType", stream.StorageType, "err", err)
+				p.Error("failed to get storage URL", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(err))
 			}
 			return
 		}
@@ -190,8 +190,11 @@ func (p *MP4Plugin) downloadSingleFileWithResolver(resolve recordStorageResolver
 			file, err = st.OpenFile(r.Context(), stream.FilePath)
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to open file: %v", err), http.StatusInternalServerError)
-			p.Error("failed to open record file", "storageType", stream.StorageType, "path", stream.FilePath, "err", err)
+			http.Error(w, "failed to open record file", http.StatusInternalServerError)
+			p.Error("failed to open record file",
+				"storageType", stream.StorageType,
+				"path", stream.FilePath,
+				"error", m7s.StorageErrorSummary(err))
 			return
 		}
 		defer file.Close()
@@ -360,7 +363,7 @@ func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, str
 	defer func() {
 		for index, openedFile := range openedFiles {
 			if closeErr := openedFile.Close(); closeErr != nil {
-				p.Error("close range download file failed", "index", index, "err", closeErr)
+				p.Error("close range download file failed", "index", index, "error", m7s.StorageErrorSummary(closeErr))
 			}
 		}
 	}()
@@ -478,7 +481,7 @@ func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, str
 			// 相对路径：按录像持久化的存储类型解析后端。
 			st, resolveErr := resolve(stream.StorageType)
 			if resolveErr != nil {
-				p.Error("resolve record storage failed", "storageType", stream.StorageType, "err", resolveErr)
+				p.Error("resolve record storage failed", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(resolveErr))
 				http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
@@ -495,7 +498,7 @@ func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, str
 				file, err = st.OpenFile(r.Context(), stream.FilePath)
 			}
 			if err != nil {
-				p.Error("failed to open file from storage", "storageType", stream.StorageType, "path", stream.FilePath, "err", err)
+				p.Error("failed to open file from storage", "storageType", stream.StorageType, "path", stream.FilePath, "error", m7s.StorageErrorSummary(err))
 				return
 			}
 		}

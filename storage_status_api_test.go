@@ -163,7 +163,7 @@ func TestStorageStatusErrorIsSanitized(t *testing.T) {
 		t.Errorf("sanitizer modified input: %+v", unsafe)
 	}
 
-	safeSummary := storageErrorSummary(errors.New("connection refused"))
+	safeSummary := StorageErrorSummary(errors.New("connection refused"))
 	safe := StorageStatus{DesiredType: "s3", ActiveType: "local", Degraded: true, FallbackActive: true, LastError: safeSummary}
 	sanitizedSafe := sanitizeStorageStatusForHTTP(safe)
 	if sanitizedSafe.LastError != safeSummary {

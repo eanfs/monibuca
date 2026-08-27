@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,13 +17,17 @@ import (
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 )
 
-type redirectStorage struct{ key string }
+type redirectStorage struct {
+	key       string
+	openErr   error
+	getURLErr error
+}
 
 func (s *redirectStorage) CreateFile(context.Context, string) (storage.File, error) {
 	return nil, nil
 }
 func (s *redirectStorage) OpenFile(context.Context, string) (storage.File, error) {
-	return nil, nil
+	return nil, s.openErr
 }
 func (s *redirectStorage) Delete(context.Context, string) error { return nil }
 func (s *redirectStorage) Exists(context.Context, string) (bool, error) {
@@ -30,6 +35,9 @@ func (s *redirectStorage) Exists(context.Context, string) (bool, error) {
 }
 func (s *redirectStorage) GetSize(context.Context, string) (int64, error) { return 1, nil }
 func (s *redirectStorage) GetURL(context.Context, string) (string, error) {
+	if s.getURLErr != nil {
+		return "", s.getURLErr
+	}
 	return "https://object.invalid/record.mp4", nil
 }
 func (s *redirectStorage) List(context.Context, string) ([]storage.FileInfo, error) {
@@ -69,7 +77,9 @@ func TestDownloadSingleFileReturnsGenericServiceUnavailableWhenResolverFails(t *
 		objectType = "retired-object-storage"
 		secret     = "endpoint=https://admin:password@storage.invalid"
 	)
+	var logs bytes.Buffer
 	plugin := &MP4Plugin{}
+	plugin.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	stream := m7s.RecordStream{StorageType: objectType, FilePath: "records/a.mp4"}
 	request := httptest.NewRequest(http.MethodGet, "/mp4/download/live/test?id=1", nil)
 	response := httptest.NewRecorder()
@@ -88,6 +98,71 @@ func TestDownloadSingleFileReturnsGenericServiceUnavailableWhenResolverFails(t *
 		t.Fatalf("body=%q, want generic service unavailable message", body)
 	} else if strings.Contains(body, secret) || strings.Contains(body, "password") {
 		t.Fatalf("body leaks resolver details: %q", body)
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "password") {
+		t.Fatalf("logs leak resolver details: %s", logs.String())
+	}
+}
+
+func TestDownloadRangeDoesNotLogResolverDetails(t *testing.T) {
+	const secret = "endpoint=https://operator:credential@storage.invalid?X-Amz-Signature=must-not-appear"
+	var logs bytes.Buffer
+	plugin := &MP4Plugin{}
+	plugin.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	request := httptest.NewRequest(http.MethodGet, "/mp4/download/live/test", nil)
+	response := httptest.NewRecorder()
+
+	plugin.downloadRangeWithResolver(
+		func(string) (storage.Storage, error) { return nil, errors.New(secret) },
+		[]m7s.RecordStream{{StorageType: "s3", FilePath: "records/a.mp4"}},
+		time.Time{},
+		time.Time{},
+		0,
+		response,
+		request,
+	)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "X-Amz-Signature") {
+		t.Fatalf("logs leak resolver details: %s", logs.String())
+	}
+}
+
+func TestDownloadSingleFileDoesNotExposeStorageOperationDetails(t *testing.T) {
+	const secret = "endpoint=https://operator:credential@storage.invalid?X-Amz-Signature=must-not-appear"
+	tests := []struct {
+		name    string
+		flag    mp4pkg.Flag
+		backend *redirectStorage
+	}{
+		{name: "presign failure", backend: &redirectStorage{key: "s3", getURLErr: errors.New(secret)}},
+		{name: "open failure", flag: mp4pkg.FLAG_FRAGMENT, backend: &redirectStorage{key: "s3", openErr: errors.New(secret)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			plugin := &MP4Plugin{}
+			plugin.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			request := httptest.NewRequest(http.MethodGet, "/mp4/download/live/test", nil)
+			response := httptest.NewRecorder()
+
+			plugin.downloadSingleFileWithResolver(
+				func(string) (storage.Storage, error) { return test.backend, nil },
+				m7s.RecordStream{StorageType: "s3", FilePath: "records/a.mp4"},
+				test.flag,
+				response,
+				request,
+			)
+
+			observed := response.Body.String() + "\n" + logs.String()
+			for _, forbidden := range []string{secret, "credential", "X-Amz-Signature"} {
+				if strings.Contains(observed, forbidden) {
+					t.Fatalf("storage detail %q escaped through HTTP or logs: %s", forbidden, observed)
+				}
+			}
+		})
 	}
 }
 

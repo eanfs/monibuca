@@ -1029,15 +1029,23 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 		} else {
 			st, err := s.GetStorageForType(recordFile.StorageType)
 			if err != nil {
-				s.Error("resolve record storage for delete failed", "storageType", recordFile.StorageType, "err", err)
-				return fmt.Errorf("record storage unavailable: %w", err)
+				s.Error("resolve record storage for delete failed",
+					"storageType", recordFile.StorageType,
+					"error", storageErrorSummary(err))
+				return newSanitizedStorageError("record storage unavailable", err)
 			}
 			if recordFile.StorageType == "" || recordFile.StorageType == string(storage.StorageTypeLocal) {
 				if local, ok := st.(*storage.LocalStorage); ok {
 					return os.Remove(local.GetFullPath(filePath, recordFile.StorageLevel))
 				}
 			}
-			return st.Delete(ctx, filePath)
+			if err := st.Delete(ctx, filePath); err != nil {
+				s.Error("delete record storage file failed",
+					"storageType", recordFile.StorageType,
+					"error", storageErrorSummary(err))
+				return newSanitizedStorageError("record storage operation failed", err)
+			}
+			return nil
 		}
 	}
 

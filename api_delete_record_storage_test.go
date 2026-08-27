@@ -1,9 +1,12 @@
 package m7s
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	_ "github.com/ncruces/go-sqlite3/embed"
@@ -163,14 +166,19 @@ func TestDeleteRecordUsesEachPersistedStorageTypeWithoutActiveBackend(t *testing
 }
 
 func TestDeleteRecordRollsBackDatabaseWhenPhysicalDeleteFails(t *testing.T) {
-	const storageType = "delete-failing-archive"
+	const (
+		storageType = "delete-failing-archive"
+		secret      = "endpoint=https://operator:credential@storage.invalid?X-Amz-Signature=must-not-appear"
+	)
 	db := newDeleteRecordTestDB(t)
-	deleteErr := errors.New("physical delete failed")
+	deleteErr := errors.New(secret)
 	backend := &deleteRecordStorage{key: storageType, deleteErr: deleteErr}
 	active := &deleteRecordStorage{key: "unrelated-active"}
 	server := newDeleteRecordTestServer(t, db, map[string]*deleteRecordStorage{
 		storageType: backend,
 	}, active)
+	var logs bytes.Buffer
+	server.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	records := createDeleteRecordFixtures(t, db, storageType)
 
 	response, err := server.DeleteRecord(context.Background(), &pb.ReqRecordDelete{
@@ -180,7 +188,13 @@ func TestDeleteRecordRollsBackDatabaseWhenPhysicalDeleteFails(t *testing.T) {
 	})
 
 	if !errors.Is(err, deleteErr) {
-		t.Fatalf("error=%v, want %v", err, deleteErr)
+		t.Fatalf("error does not preserve physical delete cause")
+	}
+	observed := err.Error() + "\n" + logs.String()
+	for _, forbidden := range []string{secret, "credential", "X-Amz-Signature"} {
+		if strings.Contains(observed, forbidden) {
+			t.Fatalf("storage detail %q escaped through API error or logs: %s", forbidden, observed)
+		}
 	}
 	if response != nil {
 		t.Fatalf("response=%+v, want nil on failure", response)
@@ -196,6 +210,58 @@ func TestDeleteRecordRollsBackDatabaseWhenPhysicalDeleteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	if remaining != 1 {
+		t.Fatalf("remaining records=%d, want rollback to preserve 1", remaining)
+	}
+}
+
+func TestDeleteRecordResolverFailureDoesNotExposeStorageDetails(t *testing.T) {
+	const (
+		storageType = "delete-unavailable-archive"
+		secret      = "endpoint=https://operator:credential@storage.invalid?X-Amz-Signature=must-not-appear"
+	)
+	db := newDeleteRecordTestDB(t)
+	originalFactory, existed := storage.Factory[storageType]
+	storage.Factory[storageType] = func(any) (storage.Storage, error) {
+		return nil, errors.New(secret)
+	}
+	t.Cleanup(func() {
+		if existed {
+			storage.Factory[storageType] = originalFactory
+		} else {
+			delete(storage.Factory, storageType)
+		}
+	})
+	registry := storage.NewRegistry(map[string]any{storageType: struct{}{}})
+	t.Cleanup(func() { _ = registry.Close() })
+	var logs bytes.Buffer
+	server := &Server{
+		Plugin:         Plugin{DB: db},
+		storageRuntime: &storageRuntime{registry: registry},
+	}
+	server.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	server.activateStorage(&deleteRecordStorage{key: "unrelated-active"}, StorageStatus{ActiveType: "unrelated-active"})
+	records := createDeleteRecordFixtures(t, db, storageType)
+
+	response, err := server.DeleteRecord(context.Background(), &pb.ReqRecordDelete{
+		StreamPath: "live/test",
+		Type:       "mp4",
+		Ids:        recordIDs(records),
+	})
+
+	if err == nil {
+		t.Fatal("DeleteRecord must fail when persisted storage cannot be resolved")
+	}
+	if response != nil {
+		t.Fatalf("response=%+v, want nil on failure", response)
+	}
+	observed := err.Error() + "\n" + logs.String()
+	for _, forbidden := range []string{secret, "credential", "X-Amz-Signature"} {
+		if strings.Contains(observed, forbidden) {
+			t.Fatalf("storage detail %q escaped through API error or logs: %s", forbidden, observed)
+		}
+	}
+	var remaining int64
+	if db.Model(&RecordStream{}).Count(&remaining).Error != nil || remaining != 1 {
 		t.Fatalf("remaining records=%d, want rollback to preserve 1", remaining)
 	}
 }

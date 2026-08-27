@@ -112,7 +112,7 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 		}
 		file, cleanup, err := d.openRecordFile(ctx, stream)
 		if err != nil {
-			d.Error("open record segment failed", "storageType", stream.StorageType, "path", stream.FilePath, "err", err)
+			d.Error("open record segment failed", "storageType", stream.StorageType, "path", stream.FilePath, "error", m7s.StorageErrorSummary(err))
 			continue
 		}
 

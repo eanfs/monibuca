@@ -100,6 +100,23 @@ func storageErrorSummary(err error) string {
 	}
 }
 
+// StorageErrorSummary returns a bounded diagnostic safe for logs and HTTP-adjacent paths.
+func StorageErrorSummary(err error) string {
+	return storageErrorSummary(err)
+}
+
+type sanitizedStorageError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedStorageError) Error() string { return e.message }
+func (e *sanitizedStorageError) Unwrap() error { return e.cause }
+
+func newSanitizedStorageError(message string, cause error) error {
+	return &sanitizedStorageError{message: message, cause: cause}
+}
+
 func sanitizeStorageStatusForHTTP(current StorageStatus) StorageStatus {
 	lastError := current.LastError
 	switch lastError {
