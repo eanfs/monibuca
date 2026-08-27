@@ -69,6 +69,10 @@ func (p *MP4Plugin) redirectToStorageURL(st storage.Storage, storageType, object
 
 type recordStorageResolver func(string) (storage.Storage, error)
 
+type storageLevelFileOpener interface {
+	OpenFileFromStorageLevel(context.Context, string, int) (storage.File, error)
+}
+
 func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
 	p.downloadSingleFileWithResolver(p.Server.GetStorageForType, *stream, flag, w, r)
 }
@@ -328,6 +332,10 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	}
 	p.DB.Where(&queryRecord).Find(&streams, "end_time>? AND start_time<? AND stream_path=?", startTime, endTime, streamPath)
 
+	p.downloadRangeWithResolver(p.Server.GetStorageForType, streams, startTime, endTime, flag, w, r)
+}
+
+func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, streams []m7s.RecordStream, startTime, endTime time.Time, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
 	// 创建 MP4 混合器
 	muxer := mp4.NewMuxer(flag)
 	ftyp := muxer.CreateFTYPBox()
@@ -335,17 +343,25 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	muxer.CurrentOffset = int64(n)
 
 	// 初始化变量
+	var err error
 	var lastTs, tsOffset int64                               // 时间戳偏移量，用于合并多个文件时保持时间连续性
 	var parts []*ContentPart                                 // 内容片段列表
 	sampleOffset := muxer.CurrentOffset + mp4.BeforeMdatData // 样本数据偏移量
 	mdatOffset := sampleOffset                               // 媒体数据偏移量
 	var audioTrack, videoTrack *mp4.Track                    // 音频和视频轨道
-	var file storage.File                                    // 当前处理的文件
 	var moov box.IBox                                        // MOOV box，包含元数据
 	var tmpFiles []string                                    // 临时文件列表，用于清理
 	defer func() {
 		for _, tmpPath := range tmpFiles {
 			os.Remove(tmpPath)
+		}
+	}()
+	var openedFiles []storage.File
+	defer func() {
+		for index, openedFile := range openedFiles {
+			if closeErr := openedFile.Close(); closeErr != nil {
+				p.Error("close range download file failed", "index", index, "err", closeErr)
+			}
 		}
 	}()
 	streamCount := len(streams) // 流的总数
@@ -417,6 +433,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	// 遍历处理每个录制文件
 	for i, stream := range streams {
 		tsOffset = lastTs // 设置时间戳偏移
+		var file storage.File
 
 		// 打开录制文件（与 downloadSingleFile 保持一致的存储路径解析逻辑）
 		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
@@ -459,7 +476,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			file = &storage.LocalFile{File: osFile}
 		} else {
 			// 相对路径：按录像持久化的存储类型解析后端。
-			st, resolveErr := p.Server.GetStorageForType(stream.StorageType)
+			st, resolveErr := resolve(stream.StorageType)
 			if resolveErr != nil {
 				p.Error("resolve record storage failed", "storageType", stream.StorageType, "err", resolveErr)
 				http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
@@ -467,13 +484,13 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			}
 			isLocalStorage := stream.StorageType == "" || stream.StorageType == string(storage.StorageTypeLocal)
 			if isLocalStorage {
-				localStorage, ok := st.(*storage.LocalStorage)
+				localStorage, ok := st.(storageLevelFileOpener)
 				if !ok {
 					p.Error("resolved local record storage has unexpected backend", "storageType", stream.StorageType)
 					http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
 					return
 				}
-				file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
+				file, err = localStorage.OpenFileFromStorageLevel(r.Context(), stream.FilePath, stream.StorageLevel)
 			} else {
 				file, err = st.OpenFile(r.Context(), stream.FilePath)
 			}
@@ -482,6 +499,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		openedFiles = append(openedFiles, file)
 
 		// 创建解复用器并解析文件
 		demuxer := mp4.NewDemuxer(file)
@@ -615,7 +633,6 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			totalWritten += written
-			part.Close()
 		}
 	} else {
 
@@ -638,7 +655,6 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		for _, part := range parts {
 			totalSize += uint64(part.Size)
 			children = append(children, part.boxies...)
-			part.Close()
 		}
 
 		// 设置内容长度并写入数据

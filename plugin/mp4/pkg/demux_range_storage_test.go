@@ -11,14 +11,17 @@ import (
 )
 
 type openFileStorage struct {
-	key  string
-	file storage.File
+	key         string
+	file        storage.File
+	openFileKey string
+	getURLCalls int
 }
 
 func (s *openFileStorage) CreateFile(context.Context, string) (storage.File, error) {
 	return nil, nil
 }
-func (s *openFileStorage) OpenFile(context.Context, string) (storage.File, error) {
+func (s *openFileStorage) OpenFile(_ context.Context, key string) (storage.File, error) {
+	s.openFileKey = key
 	return s.file, nil
 }
 func (s *openFileStorage) Delete(context.Context, string) error { return nil }
@@ -26,7 +29,10 @@ func (s *openFileStorage) Exists(context.Context, string) (bool, error) {
 	return true, nil
 }
 func (s *openFileStorage) GetSize(context.Context, string) (int64, error) { return 0, nil }
-func (s *openFileStorage) GetURL(context.Context, string) (string, error) { return "", nil }
+func (s *openFileStorage) GetURL(context.Context, string) (string, error) {
+	s.getURLCalls++
+	return "", nil
+}
 func (s *openFileStorage) List(context.Context, string) ([]storage.FileInfo, error) {
 	return nil, nil
 }
@@ -43,10 +49,11 @@ func TestOpenRecordFileUsesRecordStorageType(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedFile := &storage.LocalFile{File: osFile}
+	backend := &openFileStorage{file: expectedFile, key: "s3"}
 	var resolvedType string
 	demuxer := &DemuxerRange{StorageResolver: func(storageType string) (storage.Storage, error) {
 		resolvedType = storageType
-		return &openFileStorage{file: expectedFile, key: storageType}, nil
+		return backend, nil
 	}}
 	stream := m7s.RecordStream{StorageType: "s3", FilePath: "records/a.mp4"}
 
@@ -57,5 +64,11 @@ func TestOpenRecordFileUsesRecordStorageType(t *testing.T) {
 	defer cleanup()
 	if resolvedType != "s3" || file != expectedFile {
 		t.Fatalf("resolvedType=%q file=%p", resolvedType, file)
+	}
+	if backend.openFileKey != "records/a.mp4" {
+		t.Fatalf("OpenFile key=%q, want %q", backend.openFileKey, "records/a.mp4")
+	}
+	if backend.getURLCalls != 0 {
+		t.Fatalf("GetURL calls=%d, want 0", backend.getURLCalls)
 	}
 }
