@@ -1,6 +1,9 @@
 package plugin_gb28181pro
 
 import (
+	"errors"
+	"io"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -66,6 +69,23 @@ func (gb *GB28181Plugin) serveStoredRecordFile(st storage.Storage, w http.Respon
 			gb.Warn("close stored record failed", "recordId", record.DownloadId, "objectKey", record.FilePath)
 		}
 	}()
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		status := http.StatusInternalServerError
+		message := "Failed to initialize file"
+		errorCategory := "initializeFailed"
+		if errors.Is(err, storage.ErrFileNotFound) || errors.Is(err, fs.ErrNotExist) {
+			status = http.StatusNotFound
+			message = "File not found"
+			errorCategory = "notFound"
+		}
+		http.Error(w, message, status)
+		gb.Warn("initialize stored record failed",
+			"recordId", record.DownloadId,
+			"objectKey", record.FilePath,
+			"errorCategory", errorCategory)
+		return
+	}
 
 	fileInfo, err := file.Stat()
 	if err != nil {
