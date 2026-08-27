@@ -16,9 +16,11 @@ type registryEntry struct {
 }
 
 type Registry struct {
-	mu      sync.RWMutex
-	entries map[string]*registryEntry
-	creator storageCreator
+	mu       sync.RWMutex
+	entries  map[string]*registryEntry
+	creator  storageCreator
+	closed   bool
+	closeErr error
 }
 
 func NewRegistry(configs map[string]any) *Registry {
@@ -49,8 +51,11 @@ func (r *Registry) HasConfig(storageType string) bool {
 
 func (r *Registry) GetOrCreate(storageType string) (Storage, error) {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return nil, ErrStorageRegistryClosed
+	}
 	entry, ok := r.entries[storageType]
-	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrStorageTypeNotConfigured, storageType)
 	}
@@ -69,15 +74,15 @@ func (r *Registry) GetOrCreate(storageType string) (Storage, error) {
 }
 
 func (r *Registry) Close() error {
-	r.mu.RLock()
-	entries := make([]*registryEntry, 0, len(r.entries))
-	for _, entry := range r.entries {
-		entries = append(entries, entry)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return r.closeErr
 	}
-	r.mu.RUnlock()
+	r.closed = true
 
 	var closeErrors []error
-	for _, entry := range entries {
+	for _, entry := range r.entries {
 		entry.mu.Lock()
 		instance := entry.instance
 		entry.instance = nil
@@ -88,5 +93,6 @@ func (r *Registry) Close() error {
 			}
 		}
 	}
-	return errors.Join(closeErrors...)
+	r.closeErr = errors.Join(closeErrors...)
+	return r.closeErr
 }

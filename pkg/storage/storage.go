@@ -113,4 +113,5 @@ var (
 	ErrFileNotFound             = fmt.Errorf("file not found")
 	ErrStorageNotAvailable      = fmt.Errorf("storage not available")
 	ErrStorageTypeNotConfigured = fmt.Errorf("storage type not configured")
+	ErrStorageRegistryClosed    = fmt.Errorf("storage registry closed")
 )
