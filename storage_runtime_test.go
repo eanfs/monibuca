@@ -28,6 +28,83 @@ func (s *runtimeTestStorage) List(context.Context, string) ([]storage.FileInfo, 
 func (s *runtimeTestStorage) Close() error   { return nil }
 func (s *runtimeTestStorage) GetKey() string { return s.key }
 
+func TestGetStorageForTypeDoesNotDependOnActiveBackend(t *testing.T) {
+	const objectType = "storage-runtime-object-test"
+	original, existed := storage.Factory[objectType]
+	t.Cleanup(func() {
+		if existed {
+			storage.Factory[objectType] = original
+		} else {
+			delete(storage.Factory, objectType)
+		}
+	})
+	objectBackend := &runtimeTestStorage{key: objectType}
+	storage.Factory[objectType] = func(any) (storage.Storage, error) { return objectBackend, nil }
+
+	server := &Server{storageRuntime: &storageRuntime{registry: storage.NewRegistry(map[string]any{objectType: struct{}{}})}}
+	server.activateStorage(&runtimeTestStorage{key: "local"}, StorageStatus{DesiredType: objectType, ActiveType: "local", Degraded: true, FallbackActive: true})
+
+	resolved, err := server.GetStorageForType(objectType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != objectBackend {
+		t.Fatalf("resolved %p, expected %p", resolved, objectBackend)
+	}
+	if server.GetStorage().GetKey() != "local" {
+		t.Fatal("resolving a historical backend must not change active storage")
+	}
+}
+
+func TestGetStorageForTypeNormalizesLegacyLocal(t *testing.T) {
+	server := &Server{storageRuntime: &storageRuntime{registry: storage.NewRegistry(nil)}}
+	for _, storageType := range []string{"", "local"} {
+		resolved, err := server.GetStorageForType(storageType)
+		if err != nil {
+			t.Fatalf("type %q: %v", storageType, err)
+		}
+		if resolved.GetKey() != "local" {
+			t.Fatalf("type %q resolved to %q", storageType, resolved.GetKey())
+		}
+	}
+}
+
+func TestGetStorageForTypeReturnsUnavailableWithoutRegistry(t *testing.T) {
+	tests := []struct {
+		name   string
+		server *Server
+	}{
+		{name: "runtime is nil", server: &Server{}},
+		{name: "registry is nil", server: &Server{storageRuntime: &storageRuntime{}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := test.server.GetStorageForType("local")
+			if !errors.Is(err, storage.ErrStorageNotAvailable) {
+				t.Fatalf("GetStorageForType() error = %v, want ErrStorageNotAvailable", err)
+			}
+		})
+	}
+}
+
+func TestGetStorageForTypePreservesRegistryErrorChain(t *testing.T) {
+	registry := storage.NewRegistry(nil)
+	server := &Server{storageRuntime: &storageRuntime{registry: registry}}
+
+	_, err := server.GetStorageForType("not-configured")
+	if !errors.Is(err, storage.ErrStorageTypeNotConfigured) {
+		t.Fatalf("unconfigured error = %v, want ErrStorageTypeNotConfigured", err)
+	}
+
+	if err = registry.Close(); err != nil {
+		t.Fatalf("close registry: %v", err)
+	}
+	_, err = server.GetStorageForType("local")
+	if !errors.Is(err, storage.ErrStorageRegistryClosed) {
+		t.Fatalf("closed error = %v, want ErrStorageRegistryClosed", err)
+	}
+}
+
 func TestStorageSnapshotSwitchIsAtomic(t *testing.T) {
 	server := &Server{}
 	local := &runtimeTestStorage{key: "local"}

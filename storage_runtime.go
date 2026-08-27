@@ -2,6 +2,7 @@ package m7s
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -53,6 +54,25 @@ func (s *Server) GetStorage() storage.Storage {
 func (s *Server) GetStorageStatus() StorageStatus {
 	_, status := s.loadStorageSnapshot()
 	return status
+}
+
+func normalizeRecordStorageType(storageType string) string {
+	if storageType == "" {
+		return string(storage.StorageTypeLocal)
+	}
+	return storageType
+}
+
+func (s *Server) GetStorageForType(storageType string) (storage.Storage, error) {
+	normalized := normalizeRecordStorageType(storageType)
+	if s.storageRuntime == nil || s.storageRuntime.registry == nil {
+		return nil, storage.ErrStorageNotAvailable
+	}
+	resolved, err := s.storageRuntime.registry.GetOrCreate(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("resolve record storage %s: %w", normalized, err)
+	}
+	return resolved, nil
 }
 
 func storageErrorSummary(err error) string {
