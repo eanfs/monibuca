@@ -25,34 +25,31 @@ fi
 
 group=swr.cn-east-3.myhuaweicloud.com/intetech
 
-# 切换到 example/default 目录进行编译
-cd example/cluster || exit 1
-
-# 清理旧的编译产物
+# 清理旧的编译产物（保持在仓库根: Dockerfile 以仓库根为 build context）
 echo "清理旧的编译产物..."
-rm -f ../../monibuca_amd64 ../../monibuca_arm64 2>/dev/null || true
+rm -f monibuca_amd64 monibuca_arm64 2>/dev/null || true
 
 # 编译 Linux AMD64 架构的二进制文件
 echo ""
 echo "编译 Linux AMD64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags postgres,sqlite,s3 -o ../../monibuca_amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags postgres,sqlite,s3,cluster -o monibuca_amd64 ./example/cluster
 echo "✓ AMD64 编译完成"
 
 # 编译 Linux ARM64 架构的二进制文件
 echo ""
 echo "编译 Linux ARM64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags postgres,sqlite,s3 -o ../../monibuca_arm64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags postgres,sqlite,s3,cluster -o monibuca_arm64 ./example/cluster
 echo "✓ ARM64 编译完成"
 
-# 返回根目录
-cd ../..
-
 # 构建 AMD64 Docker 镜像并保存为 tar
+# docker-container driver (m7s-multiarch) 支持 docker exporter;
+# desktop-linux 默认 docker driver 在未开启 containerd image store 时不支持
 echo ""
 echo "=========================================="
 echo "构建 AMD64 Docker 镜像..."
 echo "=========================================="
 docker buildx build \
+  --builder m7s-multiarch \
   --platform=linux/amd64 \
   --no-cache \
   --progress=plain \
@@ -66,6 +63,7 @@ echo "=========================================="
 echo "构建 ARM64 Docker 镜像..."
 echo "=========================================="
 docker buildx build \
+  --builder m7s-multiarch \
   --platform=linux/arm64 \
   --no-cache \
   --progress=plain \

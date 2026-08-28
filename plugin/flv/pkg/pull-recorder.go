@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/langhuihui/gomem"
 	task "github.com/eanfs/gotask"
+	"github.com/langhuihui/gomem"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
@@ -79,7 +79,7 @@ func (p *RecordReader) Run() (err error) {
 			// 解析存储路径：优先绝对路径，其次按 storage 配置拼完整路径
 			filePath := stream.FilePath
 			if !filepath.IsAbs(filePath) {
-				if st := pullJob.Plugin.Server.Storage; st != nil {
+				if st := pullJob.Plugin.Server.GetStorage(); st != nil {
 					targetType := stream.StorageType
 					if targetType == "" {
 						targetType = string(storage.StorageTypeLocal)

@@ -28,7 +28,7 @@ func (u *UploadRetryScheduler) GetTickInterval() time.Duration {
 
 // Tick 每个周期执行一次补传检查
 func (u *UploadRetryScheduler) Tick(any) {
-	if u.s == nil || u.s.DB == nil || u.s.Storage == nil {
+	if u.s == nil || u.s.DB == nil || u.s.GetStorage() == nil {
 		return
 	}
 
@@ -65,6 +65,25 @@ func (u *UploadRetryScheduler) Tick(any) {
 
 // retryUpload 执行单个上传重试
 func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
+	if u.s == nil || u.s.DB == nil {
+		return
+	}
+	st := u.s.GetStorage()
+	if st == nil {
+		u.Warn("retry upload skipped: storage unavailable",
+			"id", ut.ID,
+			"taskStorageType", ut.StorageType)
+		return
+	}
+	activeStorageType := st.GetKey()
+	if activeStorageType != ut.StorageType {
+		u.Warn("retry upload skipped: storage type mismatch",
+			"id", ut.ID,
+			"taskStorageType", ut.StorageType,
+			"activeStorageType", activeStorageType)
+		return
+	}
+
 	// 检查本地文件是否存在
 	if _, err := os.Stat(ut.LocalPath); os.IsNotExist(err) {
 		u.Warn("local file not found, marking permanently failed",
@@ -102,7 +121,7 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		"fileSize", ut.FileSize)
 
 	// 执行上传
-	err := UploadLocalFile(ctx, u.s.Storage, ut.LocalPath, ut.ObjectKey, metadata)
+	err := UploadLocalFile(ctx, st, ut.LocalPath, ut.ObjectKey, metadata)
 	if err != nil {
 		u.Warn("retry upload failed",
 			"id", ut.ID,

@@ -79,8 +79,9 @@ type (
 				Role     string `default:"user" desc:"角色,可选值:admin,user"`
 			} `desc:"用户列表,仅在启用登录机制时生效"`
 		} `desc:"管理员界面配置"`
-		Storage map[string]any
-		Upload  storage.UploadConfig `desc:"录像上传管理配置"`
+		Storage                   map[string]any
+		StorageAllowLocalFallback bool                 `default:"false" desc:"配置的S3不可用时是否临时使用本地存储;启用后仍保持降级状态并后台重连"`
+		Upload                    storage.UploadConfig `desc:"录像上传管理配置"`
 	}
 	WaitStream struct {
 		StreamPath string
@@ -104,34 +105,35 @@ type (
 		Plugin
 
 		ServerConfig
-		Plugins           util.Collection[string, *Plugin]
-		Streams           util.Manager[string, *Publisher]
-		AliasStreams      util.Collection[string, *AliasStream]
-		Waiting           WaitManager
-		Pulls             task.WorkCollection[string, *PullJob]
-		Pushs             task.WorkCollection[string, *PushJob]
-		Records           task.WorkCollection[string, *RecordJob]
-		Transforms        TransformManager
-		PullProxies       PullProxyManager
-		PushProxies       PushProxyManager
-		Subscribers       SubscriberCollection
-		LogHandler        MultiLogHandler
-		redirectAdvisor   RedirectAdvisor
-		redirectOnce      sync.Once
-		pullProxyMu       sync.Mutex
-		apiList           []string
-		grpcServer        *grpc.Server
-		grpcClientConn    *grpc.ClientConn
-		lastSummaryTime   time.Time
-		lastSummary       *pb.SummaryResponse
-		conf              any
-		configFilePath    string
-		configFileContent []byte
-		disabledPlugins   []*Plugin
-		prometheusDesc    prometheusDesc
-		Storage           storage.Storage
-		apiRoute          *apiRouter
-		rawConfig         RawConfig
+		Plugins              util.Collection[string, *Plugin]
+		Streams              util.Manager[string, *Publisher]
+		AliasStreams         util.Collection[string, *AliasStream]
+		Waiting              WaitManager
+		Pulls                task.WorkCollection[string, *PullJob]
+		Pushs                task.WorkCollection[string, *PushJob]
+		Records              task.WorkCollection[string, *RecordJob]
+		Transforms           TransformManager
+		PullProxies          PullProxyManager
+		PushProxies          PushProxyManager
+		Subscribers          SubscriberCollection
+		LogHandler           MultiLogHandler
+		redirectAdvisor      RedirectAdvisor
+		redirectOnce         sync.Once
+		pullProxyMu          sync.Mutex
+		apiList              []string
+		grpcServer           *grpc.Server
+		grpcClientConn       *grpc.ClientConn
+		lastSummaryTime      time.Time
+		lastSummary          *pb.SummaryResponse
+		conf                 any
+		configFilePath       string
+		configFileContent    []byte
+		disabledPlugins      []*Plugin
+		prometheusDesc       prometheusDesc
+		storageRuntime       *storageRuntime
+		storageReconnectWork *StorageReconnectWork
+		apiRoute             *apiRouter
+		rawConfig            RawConfig
 	}
 	CheckSubWaitTimeout struct {
 		task.TickTask
@@ -315,6 +317,7 @@ func (s *Server) Start() (err error) {
 		"/api/audiotrack/sse/{streamPath...}": s.api_AudioTrack_SSE,
 		"/annexb/{streamPath...}":             s.annexB,
 		"/api/storage/schemas":                s.GetStorageSchemas,
+		"/api/storage/status":                 s.GetStorageStatusHTTP,
 	})
 
 	if s.config.DSN != "" {
@@ -435,6 +438,15 @@ func (s *Server) Start() (err error) {
 		}
 	}
 
+	if s.storageReconnectWork != nil {
+		s.AddTask(s.storageReconnectWork)
+	}
+	// Register children before Records starts; gotask does not replay OnStart.
+	if s.DB != nil {
+		s.Records.OnStart(func() {
+			s.Records.AddTask(&UploadRetryScheduler{s: s})
+		})
+	}
 	s.AddTask(&s.Records)
 	s.AddTask(&s.Streams)
 	s.AddTask(&s.Pulls)
@@ -443,12 +455,6 @@ func (s *Server) Start() (err error) {
 	s.AddTask(&s.PullProxies)
 	s.AddTask(&s.PushProxies)
 	s.AddTask(&webHookQueueTask)
-	// 启动上传补传调度器（定时检查失败的上传任务并重试）
-	if s.DB != nil {
-		s.Records.OnStart(func() {
-			s.Records.AddTask(&UploadRetryScheduler{s: s})
-		})
-	}
 	promReg := prometheus.NewPedanticRegistry()
 	promReg.MustRegister(s)
 	for _, plugin := range plugins {
@@ -799,6 +805,11 @@ func (s *Server) Dispose() {
 			}
 		}
 	}
+	if s.storageRuntime != nil && s.storageRuntime.registry != nil {
+		if err := s.storageRuntime.registry.Close(); err != nil {
+			s.Error("close storage registry failed", "err", err)
+		}
+	}
 }
 
 func (s *Server) GetPublisher(streamPath string) (publisher *Publisher, err error) {
@@ -838,22 +849,73 @@ func (s *Server) OnSubscribe(streamPath string, args url.Values) {
 	}
 }
 
-// initStorage 创建全局存储实例，失败时回落到本地存储（空配置）
+// initStorage creates the configured global backend. S3 startup failures use
+// explicit fallback policy and are retried in a dedicated storage work queue.
 func (s *Server) initStorage() {
-	for t, conf := range s.ServerConfig.Storage {
-		st, err := storage.CreateStorage(t, conf)
+	s.storageRuntime = &storageRuntime{registry: storage.NewRegistry(s.ServerConfig.Storage)}
+	s.storageReconnectWork = nil
+	_, hasS3 := s.ServerConfig.Storage[string(storage.StorageTypeS3)]
+	if !hasS3 {
+		s.initLegacyStorage()
+		return
+	}
+
+	checkedAt := time.Now()
+	backend, err := s.storageRuntime.registry.GetOrCreate(string(storage.StorageTypeS3))
+	if err == nil {
+		s.activateStorage(backend, newStorageStatus("s3", "s3", false, false, checkedAt, nil))
+		s.Info("global storage created", "type", "s3")
+		return
+	}
+
+	if s.StorageAllowLocalFallback {
+		local, localErr := s.storageRuntime.registry.GetOrCreate(string(storage.StorageTypeLocal))
+		if localErr != nil {
+			s.Error("create fallback local storage failed",
+				"errorCategory", storageErrorCategory(localErr),
+				"error", storageErrorSummary(localErr))
+			s.activateStorage(storage.NewUnavailableStorage("s3"), newStorageStatus("s3", "s3", true, false, checkedAt, err))
+		} else {
+			s.activateStorage(local, newStorageStatus("s3", "local", true, true, checkedAt, err))
+			s.Warn("S3 unavailable, temporary local fallback active",
+				"type", "s3",
+				"errorCategory", storageErrorCategory(err),
+				"error", storageErrorSummary(err))
+		}
+	} else {
+		s.activateStorage(storage.NewUnavailableStorage("s3"), newStorageStatus("s3", "s3", true, false, checkedAt, err))
+		s.Error("S3 unavailable, recording disabled until recovery",
+			"type", "s3",
+			"errorCategory", storageErrorCategory(err),
+			"error", storageErrorSummary(err))
+	}
+	s.scheduleStorageReconnect()
+}
+
+// initLegacyStorage preserves the pre-recovery behavior for local, OSS and COS.
+func (s *Server) initLegacyStorage() {
+	for storageType := range s.ServerConfig.Storage {
+		backend, err := s.storageRuntime.registry.GetOrCreate(storageType)
 		if err == nil {
-			s.Storage = st
-			s.Info("global storage created", "type", t)
+			s.activateStorage(backend, newStorageStatus(storageType, storageType, false, false, time.Now(), nil))
+			s.Info("global storage created", "type", storageType)
 			return
 		}
-		s.Warn("create storage failed", "type", t, "err", err)
+		s.Warn("create storage failed", "type", storageType, "err", err)
 	}
-	// 兜底：local 需要路径，这里用当前目录
-	if st, err := storage.CreateStorage("local", "."); err == nil {
-		s.Storage = st
-		s.Info("fallback to local storage", "path", ".")
-	} else {
+	fallbackRegistry := storage.NewRegistry(nil)
+	backend, err := fallbackRegistry.GetOrCreate(string(storage.StorageTypeLocal))
+	if err != nil {
 		s.Error("fallback local storage failed", "err", err)
+		if closeErr := fallbackRegistry.Close(); closeErr != nil {
+			s.Error("close fallback storage registry failed", "err", closeErr)
+		}
+		return
 	}
+	if err := s.storageRuntime.registry.Close(); err != nil {
+		s.Error("close failed storage registry failed", "err", err)
+	}
+	s.storageRuntime = &storageRuntime{registry: fallbackRegistry}
+	s.activateStorage(backend, newStorageStatus("local", "local", false, false, time.Now(), nil))
+	s.Info("fallback to local storage", "path", ".")
 }

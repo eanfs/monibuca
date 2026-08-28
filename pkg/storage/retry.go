@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -47,6 +48,47 @@ func IsPermanentError(err error) bool {
 		}
 	}
 	return false
+}
+
+// IsPermanentConnectionError reports startup errors that cannot recover by
+// retrying. NoSuchBucket intentionally remains retryable because the S3
+// initializer may create it after the service becomes ready.
+func IsPermanentConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrInvalidStorageConfig) {
+		return true
+	}
+
+	var coded interface{ Code() string }
+	if errors.As(err, &coded) {
+		return isPermanentConnectionCode(coded.Code())
+	}
+
+	message := err.Error()
+	permanentPatterns := []string{
+		"AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+		"InvalidBucketName", "MalformedXML", "InvalidObjectName",
+	}
+	for _, pattern := range permanentPatterns {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPermanentConnectionCode(code string) bool {
+	switch code {
+	case "NoSuchBucket":
+		return false
+	case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+		"InvalidBucketName", "MalformedXML", "InvalidObjectName", "InvalidEndpointURL":
+		return true
+	default:
+		return false
+	}
 }
 
 // UploadWithRetry 带指数退避的上传重试。

@@ -3,9 +3,10 @@
 # 生成日期版本号：yymmdd 格式（例如 260119 表示 2026-01-19）
 DATE_VERSION=`date '+%y%m%d%H%M'`
 
-# 获取最新的 tag
+# 获取全仓库最新的 tag（git describe 只能沿当前分支历史查找，
+# 发布 tag 打在 v5 分支上时会找不到，导致版本号回退）
 # VERSION=v2.11.5.260119
-VERSION=`git describe --tags --abbrev=0`
+VERSION=`git tag -l --sort=-creatordate | head -1`
 
 # 将 . 替换为空格以便分割成数组
 VERSION_BITS=(${VERSION//./ })

@@ -57,7 +57,27 @@ func (c *ContentPart) Close() error {
 	return c.file.Close()
 }
 
+func (p *MP4Plugin) redirectToStorageURL(st storage.Storage, storageType, objectKey string, w http.ResponseWriter, r *http.Request) error {
+	url, err := st.GetURL(r.Context(), objectKey)
+	if err != nil {
+		return err
+	}
+	p.Info("redirect to storage URL", "storageType", storageType)
+	http.Redirect(w, r, url, http.StatusFound)
+	return nil
+}
+
+type recordStorageResolver func(string) (storage.Storage, error)
+
+type storageLevelFileOpener interface {
+	OpenFileFromStorageLevel(context.Context, string, int) (storage.File, error)
+}
+
 func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
+	p.downloadSingleFileWithResolver(p.Server.GetStorageForType, *stream, flag, w, r)
+}
+
+func (p *MP4Plugin) downloadSingleFileWithResolver(resolve recordStorageResolver, stream m7s.RecordStream, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
 	// 获取文件（本地或远程）
 	var file storage.File
 	var err error
@@ -133,110 +153,52 @@ func (p *MP4Plugin) downloadSingleFile(stream *m7s.RecordStream, flag mp4.Flag, 
 		p.Info("reading file for fmp4 conversion from absolute path", "path", stream.FilePath)
 		// 继续执行 fMP4 转换处理
 	} else {
-		// 相对路径：使用 storage 处理
-		// 检查全局存储是否存在且类型匹配
-		st := p.Server.Storage
-		var globalStorageType string
-		if st != nil {
-			globalStorageType = st.GetKey()
+		// 相对路径：按录像持久化的存储类型解析后端。
+		st, resolveErr := resolve(stream.StorageType)
+		isLocalStorage := stream.StorageType == "" || stream.StorageType == string(storage.StorageTypeLocal)
+		if resolveErr != nil {
+			p.Error("resolve record storage failed", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(resolveErr))
+			http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		useGlobalStorage := st != nil && globalStorageType == stream.StorageType
-		isLocalStorage := stream.StorageType == string(storage.StorageTypeLocal) || stream.StorageType == ""
 
-		// 对于普通 MP4，优先直接获取存储URL或路径
 		if flag == 0 {
-			if useGlobalStorage {
-				if isLocalStorage {
-					// 本地存储：根据存储级别获取完整路径
-					if localStorage, ok := st.(*storage.LocalStorage); ok {
-						fullPath := localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
-						http.ServeFile(w, r, fullPath)
-					} else {
-						// 类型不匹配，使用 GetURL 作为兜底
-						url, err := st.GetURL(context.Background(), stream.FilePath)
-						if err != nil {
-							http.Error(w, fmt.Sprintf("failed to get URL: %v", err), http.StatusInternalServerError)
-							p.Error("failed to get URL", "err", err)
-							return
-						}
-						http.ServeFile(w, r, url)
-					}
-				} else {
-					// 其他存储类型，使用 GetURL 并重定向
-					url, err := st.GetURL(context.Background(), stream.FilePath)
-					if err != nil {
-						http.Error(w, fmt.Sprintf("failed to get URL: %v", err), http.StatusInternalServerError)
-						p.Error("failed to get URL", "err", err)
-						return
-					}
-					p.Info("redirect to storage URL", "storageType", stream.StorageType, "url", url)
-					http.Redirect(w, r, url, http.StatusFound)
+			if isLocalStorage {
+				localStorage, ok := st.(*storage.LocalStorage)
+				if !ok {
+					p.Error("resolved local record storage has unexpected backend", "storageType", stream.StorageType)
+					http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
+					return
 				}
-			} else {
-				// 兜底逻辑：直接使用 stream.FilePath
-				if isLocalStorage {
-					http.ServeFile(w, r, stream.FilePath)
-				} else {
-					http.Error(w, "storage type mismatch, cannot serve file", http.StatusInternalServerError)
-					p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
-				}
+				http.ServeFile(w, r, localStorage.GetFullPath(stream.FilePath, stream.StorageLevel))
+			} else if err := p.redirectToStorageURL(st, stream.StorageType, stream.FilePath, w, r); err != nil {
+				http.Error(w, "failed to get storage URL", http.StatusInternalServerError)
+				p.Error("failed to get storage URL", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(err))
 			}
 			return
 		}
 
-		// 对于 fmp4，需要读取文件进行转换（只读模式，不会上传）
-		if useGlobalStorage {
-			if isLocalStorage {
-				// 本地存储：根据存储级别获取完整路径后打开文件
-				if localStorage, ok := st.(*storage.LocalStorage); ok {
-					file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
-					if err != nil {
-						http.Error(w, fmt.Sprintf("failed to open local file: %v", err), http.StatusInternalServerError)
-						p.Error("failed to open local file", "err", err, "path", stream.FilePath, "storageLevel", stream.StorageLevel)
-						return
-					}
-					defer file.Close()
-					p.Info("reading file for fmp4 conversion from local storage", "storageLevel", stream.StorageLevel, "path", stream.FilePath)
-				} else {
-					// 类型不匹配，使用 OpenFile 作为兜底
-					file, err = st.OpenFile(context.Background(), stream.FilePath)
-					if err != nil {
-						http.Error(w, fmt.Sprintf("failed to open file: %v", err), http.StatusInternalServerError)
-						p.Error("failed to open file", "err", err)
-						return
-					}
-					defer file.Close()
-					p.Info("reading file for fmp4 conversion from global storage", "storageType", stream.StorageType, "path", stream.FilePath)
-				}
-			} else {
-				// 其他存储类型，使用 OpenFile
-				file, err = st.OpenFile(context.Background(), stream.FilePath)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("failed to open file: %v", err), http.StatusInternalServerError)
-					p.Error("failed to open file", "err", err)
-					return
-				}
-				defer file.Close()
-				p.Info("reading file for fmp4 conversion from global storage", "storageType", stream.StorageType, "path", stream.FilePath)
-			}
-		} else {
-			// 兜底逻辑：直接使用 stream.FilePath 作为本地文件
-			if isLocalStorage {
-				if osFile, osErr := os.Open(stream.FilePath); osErr != nil {
-					http.Error(w, fmt.Sprintf("failed to open local file: %v", osErr), http.StatusInternalServerError)
-					p.Error("failed to open local file", "err", osErr)
-					return
-				} else {
-					file = &storage.LocalFile{File: osFile}
-				}
-				defer file.Close()
-				p.Info("reading file for fmp4 conversion from local path", "path", stream.FilePath)
-			} else {
-				http.Error(w, "storage type mismatch, cannot open file", http.StatusInternalServerError)
-				p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
+		if isLocalStorage {
+			localStorage, ok := st.(*storage.LocalStorage)
+			if !ok {
+				p.Error("resolved local record storage has unexpected backend", "storageType", stream.StorageType)
+				http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
+			file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
+		} else {
+			file, err = st.OpenFile(r.Context(), stream.FilePath)
 		}
+		if err != nil {
+			http.Error(w, "failed to open record file", http.StatusInternalServerError)
+			p.Error("failed to open record file",
+				"storageType", stream.StorageType,
+				"path", stream.FilePath,
+				"error", m7s.StorageErrorSummary(err))
+			return
+		}
+		defer file.Close()
+		p.Info("reading file for fmp4 conversion", "storageType", stream.StorageType, "path", stream.FilePath)
 	}
 
 	// fmp4 转换处理（本地和远程文件统一处理）
@@ -373,6 +335,10 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	}
 	p.DB.Where(&queryRecord).Find(&streams, "end_time>? AND start_time<? AND stream_path=?", startTime, endTime, streamPath)
 
+	p.downloadRangeWithResolver(p.Server.GetStorageForType, streams, startTime, endTime, flag, w, r)
+}
+
+func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, streams []m7s.RecordStream, startTime, endTime time.Time, flag mp4.Flag, w http.ResponseWriter, r *http.Request) {
 	// 创建 MP4 混合器
 	muxer := mp4.NewMuxer(flag)
 	ftyp := muxer.CreateFTYPBox()
@@ -380,17 +346,25 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	muxer.CurrentOffset = int64(n)
 
 	// 初始化变量
+	var err error
 	var lastTs, tsOffset int64                               // 时间戳偏移量，用于合并多个文件时保持时间连续性
 	var parts []*ContentPart                                 // 内容片段列表
 	sampleOffset := muxer.CurrentOffset + mp4.BeforeMdatData // 样本数据偏移量
 	mdatOffset := sampleOffset                               // 媒体数据偏移量
 	var audioTrack, videoTrack *mp4.Track                    // 音频和视频轨道
-	var file storage.File                                    // 当前处理的文件
 	var moov box.IBox                                        // MOOV box，包含元数据
 	var tmpFiles []string                                    // 临时文件列表，用于清理
 	defer func() {
 		for _, tmpPath := range tmpFiles {
 			os.Remove(tmpPath)
+		}
+	}()
+	var openedFiles []storage.File
+	defer func() {
+		for index, openedFile := range openedFiles {
+			if closeErr := openedFile.Close(); closeErr != nil {
+				p.Error("close range download file failed", "index", index, "error", m7s.StorageErrorSummary(closeErr))
+			}
 		}
 	}()
 	streamCount := len(streams) // 流的总数
@@ -462,6 +436,7 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 	// 遍历处理每个录制文件
 	for i, stream := range streams {
 		tsOffset = lastTs // 设置时间戳偏移
+		var file storage.File
 
 		// 打开录制文件（与 downloadSingleFile 保持一致的存储路径解析逻辑）
 		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
@@ -503,42 +478,31 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 			}
 			file = &storage.LocalFile{File: osFile}
 		} else {
-			// 相对路径：使用 storage 处理
-			st := p.Server.Storage
-			var globalStorageType string
-			if st != nil {
-				globalStorageType = st.GetKey()
+			// 相对路径：按录像持久化的存储类型解析后端。
+			st, resolveErr := resolve(stream.StorageType)
+			if resolveErr != nil {
+				p.Error("resolve record storage failed", "storageType", stream.StorageType, "error", m7s.StorageErrorSummary(resolveErr))
+				http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
+				return
 			}
-			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
-			isLocalStorage := stream.StorageType == string(storage.StorageTypeLocal) || stream.StorageType == ""
-			if useGlobalStorage {
-				if isLocalStorage {
-					if localStorage, ok := st.(*storage.LocalStorage); ok {
-						file, err = localStorage.OpenFileFromStorageLevel(p, stream.FilePath, stream.StorageLevel)
-					} else {
-						file, err = st.OpenFile(context.Background(), stream.FilePath)
-					}
-				} else {
-					file, err = st.OpenFile(context.Background(), stream.FilePath)
-				}
-			} else {
-				if isLocalStorage {
-					osFile, openErr := os.Open(stream.FilePath)
-					if openErr != nil {
-						err = openErr
-					} else {
-						file = &storage.LocalFile{File: osFile}
-					}
-				} else {
-					p.Error("storage type mismatch", "streamType", stream.StorageType, "globalType", globalStorageType)
+			isLocalStorage := stream.StorageType == "" || stream.StorageType == string(storage.StorageTypeLocal)
+			if isLocalStorage {
+				localStorage, ok := st.(storageLevelFileOpener)
+				if !ok {
+					p.Error("resolved local record storage has unexpected backend", "storageType", stream.StorageType)
+					http.Error(w, "record storage is temporarily unavailable", http.StatusServiceUnavailable)
 					return
 				}
+				file, err = localStorage.OpenFileFromStorageLevel(r.Context(), stream.FilePath, stream.StorageLevel)
+			} else {
+				file, err = st.OpenFile(r.Context(), stream.FilePath)
 			}
 			if err != nil {
-				p.Error("failed to open file from storage", "err", err, "path", stream.FilePath)
+				p.Error("failed to open file from storage", "storageType", stream.StorageType, "path", stream.FilePath, "error", m7s.StorageErrorSummary(err))
 				return
 			}
 		}
+		openedFiles = append(openedFiles, file)
 
 		// 创建解复用器并解析文件
 		demuxer := mp4.NewDemuxer(file)
@@ -672,7 +636,6 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			totalWritten += written
-			part.Close()
 		}
 	} else {
 
@@ -695,7 +658,6 @@ func (p *MP4Plugin) download(w http.ResponseWriter, r *http.Request) {
 		for _, part := range parts {
 			totalSize += uint64(part.Size)
 			children = append(children, part.boxies...)
-			part.Close()
 		}
 
 		// 设置内容长度并写入数据
@@ -763,6 +725,9 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	if stream, ok = p.Server.Streams.SafeGet(req.StreamPath); !ok {
 		err = pkg.ErrNotFound
 		return
+	}
+	if err = p.Server.ValidateRecordingStorage(); err != nil {
+		return nil, err
 	}
 	job := p.Record(stream, recordConf, nil)
 	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
