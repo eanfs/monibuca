@@ -32,13 +32,13 @@ rm -f monibuca_amd64 monibuca_arm64 2>/dev/null || true
 # 编译 Linux AMD64 架构的二进制文件
 echo ""
 echo "编译 Linux AMD64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags postgres,sqlite,s3 -o monibuca_amd64 ./example/cluster
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags postgres,sqlite,s3,cluster -o monibuca_amd64 ./example/cluster
 echo "✓ AMD64 编译完成"
 
 # 编译 Linux ARM64 架构的二进制文件
 echo ""
 echo "编译 Linux ARM64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags postgres,sqlite,s3 -o monibuca_arm64 ./example/cluster
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags postgres,sqlite,s3,cluster -o monibuca_arm64 ./example/cluster
 echo "✓ ARM64 编译完成"
 
 # 构建 AMD64 Docker 镜像并保存为 tar
