@@ -35,6 +35,25 @@ import (
 
 var localIP string
 
+func (s *Server) GetStorageStatusHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	current := sanitizeStorageStatusForHTTP(s.GetStorageStatus())
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if current.Degraded {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	if err := json.NewEncoder(w).Encode(current); err != nil {
+		s.Error("encode storage status failed", "err", err)
+	}
+}
+
 func (s *Server) SysInfo(context.Context, *emptypb.Empty) (res *pb.SysInfoResponse, err error) {
 	if localIP == "" {
 		localIP = myip.LocalIP()
@@ -1008,28 +1027,25 @@ func (s *Server) DeleteRecord(ctx context.Context, req *pb.ReqRecordDelete) (res
 		} else if filepath.IsAbs(filePath) {
 			return os.Remove(filePath)
 		} else {
-			st := s.Storage
-			var globalStorageType string
-			if st != nil {
-				globalStorageType = st.GetKey()
+			st, err := s.GetStorageForType(recordFile.StorageType)
+			if err != nil {
+				s.Error("resolve record storage for delete failed",
+					"storageType", recordFile.StorageType,
+					"error", storageErrorSummary(err))
+				return newSanitizedStorageError("record storage unavailable", err)
 			}
-			isLocalStorage := recordFile.StorageType == string(storage.StorageTypeLocal) || recordFile.StorageType == ""
-			useGlobalStorage := st != nil && globalStorageType == recordFile.StorageType
-			if useGlobalStorage {
-				if isLocalStorage {
-					if localStorage, ok := st.(*storage.LocalStorage); ok {
-						fullPath := localStorage.GetFullPath(filePath, recordFile.StorageLevel)
-						return os.Remove(fullPath)
-					}
-					return st.Delete(ctx, filePath)
+			if recordFile.StorageType == "" || recordFile.StorageType == string(storage.StorageTypeLocal) {
+				if local, ok := st.(*storage.LocalStorage); ok {
+					return os.Remove(local.GetFullPath(filePath, recordFile.StorageLevel))
 				}
-				return st.Delete(ctx, filePath)
 			}
-			if isLocalStorage {
-				return os.Remove(filePath)
+			if err := st.Delete(ctx, filePath); err != nil {
+				s.Error("delete record storage file failed",
+					"storageType", recordFile.StorageType,
+					"error", storageErrorSummary(err))
+				return newSanitizedStorageError("record storage operation failed", err)
 			}
-			s.Error("storage type mismatch, cannot delete file", "streamType", recordFile.StorageType, "globalType", globalStorageType)
-			return fmt.Errorf("storage type mismatch: stream=%s, global=%s", recordFile.StorageType, globalStorageType)
+			return nil
 		}
 	}
 

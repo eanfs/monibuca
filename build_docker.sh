@@ -25,60 +25,63 @@ fi
 
 group=swr.cn-east-3.myhuaweicloud.com/intetech
 
-# 切换到 example/default 目录进行编译
-cd example/cluster || exit 1
-
-# 清理旧的编译产物
+# 清理旧的编译产物（保持在仓库根: Dockerfile 以仓库根为 build context）
 echo "清理旧的编译产物..."
-rm -f ../../monibuca_amd64 ../../monibuca_arm64 2>/dev/null || true
+rm -f monibuca_amd64 monibuca_arm64 2>/dev/null || true
 
 # 编译 Linux AMD64 架构的二进制文件
 echo ""
 echo "编译 Linux AMD64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags cluster,postgres,sqlite,s3 -o ../../monibuca_amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags postgres,sqlite,s3,cluster -o monibuca_amd64 ./example/cluster
 echo "✓ AMD64 编译完成"
 
 # 编译 Linux ARM64 架构的二进制文件
 echo ""
 echo "编译 Linux ARM64 架构..."
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags cluster,postgres,sqlite,s3 -o ../../monibuca_arm64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags postgres,sqlite,s3,cluster -o monibuca_arm64 ./example/cluster
 echo "✓ ARM64 编译完成"
 
-# 返回根目录
-cd ../..
-
-# 构建 AMD64 Docker 镜像并加载到本地
+# 构建 AMD64 Docker 镜像并保存为 tar
+# docker-container driver (m7s-multiarch) 支持 docker exporter;
+# desktop-linux 默认 docker driver 在未开启 containerd image store 时不支持
 echo ""
 echo "=========================================="
 echo "构建 AMD64 Docker 镜像..."
 echo "=========================================="
 # SWR 不认 buildkit attestation manifest("Invalid image, fail to parse manifest.json"),
-# 显式关闭 provenance/sbom,不依赖 --load 恰好剥离它们的巧合行为。
+# 显式关闭 provenance/sbom,不依赖导出器恰好剥离它们的巧合行为。
 docker buildx build \
+  --builder m7s-multiarch \
   --platform=linux/amd64 \
   --no-cache \
   --progress=plain \
   --provenance=false \
   --sbom=false \
-  --load \
   -t ${artifactId}:${version}-amd64 \
-  -f ./Dockerfile .
+  -f ./Dockerfile \
+  -o type=docker,dest=- . > ${artifactId}-amd64.tar
 
-# 构建 ARM64 Docker 镜像并加载到本地
+# 构建 ARM64 Docker 镜像并保存为 tar
 echo ""
 echo "=========================================="
 echo "构建 ARM64 Docker 镜像..."
 echo "=========================================="
 docker buildx build \
+  --builder m7s-multiarch \
   --platform=linux/arm64 \
   --no-cache \
   --progress=plain \
   --provenance=false \
   --sbom=false \
-  --load \
   -t ${artifactId}:${version}-arm64 \
-  -f ./Dockerfile .
+  -f ./Dockerfile \
+  -o type=docker,dest=- . > ${artifactId}-arm64.tar
 
+# 加载 tar 文件到本地 Docker
+echo ""
+echo "加载 Docker 镜像..."
+docker load < ${artifactId}-amd64.tar
+docker load < ${artifactId}-arm64.tar
 
 # 推送到私有仓库
 echo ""
@@ -135,6 +138,8 @@ docker manifest push ${group}/${artifactId}:latest
 # 清理临时文件
 echo ""
 echo "清理临时文件..."
+rm -rf ${artifactId}-amd64.tar
+rm -rf ${artifactId}-arm64.tar
 
 rm -f monibuca_amd64 monibuca_arm64 2>/dev/null || true
 

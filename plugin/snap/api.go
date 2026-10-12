@@ -282,7 +282,7 @@ func (p *SnapPlugin) querySnap(rw http.ResponseWriter, r *http.Request) {
 
 	// 读取图片文件
 	var imgData []byte
-	if st := p.Server.Storage; st != nil {
+	if st := p.Server.GetStorage(); st != nil {
 		// 优先通过全局存储读取
 		if localStorage, ok := st.(*storage.LocalStorage); ok {
 			path := record.SnapPath
@@ -688,7 +688,7 @@ func (p *SnapPlugin) executePlayBackSnapTask(streamPath string, startTime, endTi
 	p.Info("playback snap task started", "streamPath", streamPath, "startTime", startTime, "endTime", endTime)
 
 	// 必须有全局存储且为本地存储，便于 ffmpeg 输出到文件系统
-	st := p.Server.Storage
+	st := p.Server.GetStorage()
 	localStorage, ok := st.(*storage.LocalStorage)
 	if !ok || st == nil {
 		p.Error("playback snap aborted: storage is not LocalStorage")
@@ -718,7 +718,7 @@ func (p *SnapPlugin) executePlayBackSnapTask(streamPath string, startTime, endTi
 	})
 
 	// 检查全局存储是否可用
-	if p.Server.Storage == nil {
+	if st == nil {
 		p.Error("global storage not initialized")
 		return
 	}
@@ -733,12 +733,12 @@ func (p *SnapPlugin) executePlayBackSnapTask(streamPath string, startTime, endTi
 			if _, err := os.Stat(stream.FilePath); os.IsNotExist(err) {
 				// 如果文件不存在，尝试从全局存储获取完整路径
 				var absFilePath string
-				if localStorage, ok := p.Server.Storage.(*storage.LocalStorage); ok {
+				if localStorage, ok := st.(*storage.LocalStorage); ok {
 					// 使用本地存储的方法根据存储级别获取完整路径
 					absFilePath = localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
 				} else {
 					// 非本地存储，尝试使用 GetURL 获取路径
-					url, err := p.Server.Storage.GetURL(context.Background(), stream.FilePath)
+					url, err := st.GetURL(context.Background(), stream.FilePath)
 					if err != nil {
 						p.Warn("failed to get file URL from storage", "path", stream.FilePath, "err", err)
 						continue
@@ -827,12 +827,12 @@ func (p *SnapPlugin) executePlayBackSnapTask(streamPath string, startTime, endTi
 		// 检查文件是否存在
 		if _, err := os.Stat(targetStream.FilePath); os.IsNotExist(err) {
 			// 如果文件不存在，尝试从全局存储获取完整路径
-			if localStorage, ok := p.Server.Storage.(*storage.LocalStorage); ok {
+			if localStorage, ok := st.(*storage.LocalStorage); ok {
 				// 使用本地存储的方法根据存储级别获取完整路径
 				targetStream.FilePath = localStorage.GetFullPath(targetStream.FilePath, targetStream.StorageLevel)
 			} else {
 				// 非本地存储，尝试使用 GetURL 获取路径
-				url, err := p.Server.Storage.GetURL(context.Background(), targetStream.FilePath)
+				url, err := st.GetURL(context.Background(), targetStream.FilePath)
 				if err != nil {
 					p.Warn("mp4 file not found and failed to get URL", "path", targetStream.FilePath, "err", err)
 					failCount++

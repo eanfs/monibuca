@@ -27,123 +27,100 @@ type DemuxerRange struct {
 	AudioCodec, VideoCodec codec.ICodecCtx
 	OnAudio, OnVideo       func(box.Sample) error
 	OnCodec                func(codec.ICodecCtx, codec.ICodecCtx)
-	storage                storage.Storage
+	StorageResolver        func(string) (storage.Storage, error)
+}
+
+func (d *DemuxerRange) downloadRemoteFile(ctx context.Context, rawURL string) (storage.File, func(), error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	defer response.Body.Close()
+
+	tmpFile, err := os.CreateTemp("", "mp4-*.tmp")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err = io.Copy(tmpFile, response.Body); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return nil, func() {}, err
+	}
+	if err = tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return nil, func() {}, err
+	}
+
+	localFile, err := os.Open(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, func() {}, err
+	}
+	file := &storage.LocalFile{File: localFile}
+	return file, func() {
+		file.Close()
+		os.Remove(tmpPath)
+	}, nil
+}
+
+func (d *DemuxerRange) openRecordFile(ctx context.Context, stream m7s.RecordStream) (storage.File, func(), error) {
+	if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
+		return d.downloadRemoteFile(ctx, stream.FilePath)
+	}
+	if filepath.IsAbs(stream.FilePath) {
+		file, err := os.Open(stream.FilePath)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return &storage.LocalFile{File: file}, func() { file.Close() }, nil
+	}
+	if d.StorageResolver == nil {
+		return nil, func() {}, storage.ErrStorageNotAvailable
+	}
+	st, err := d.StorageResolver(stream.StorageType)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if stream.StorageType == "" || stream.StorageType == string(storage.StorageTypeLocal) {
+		if local, ok := st.(*storage.LocalStorage); ok {
+			file, openErr := os.Open(local.GetFullPath(stream.FilePath, stream.StorageLevel))
+			if openErr != nil {
+				return nil, func() {}, openErr
+			}
+			return &storage.LocalFile{File: file}, func() { file.Close() }, nil
+		}
+	}
+	file, err := st.OpenFile(ctx, stream.FilePath)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return file, func() { file.Close() }, nil
 }
 
 func (d *DemuxerRange) Demux(ctx context.Context) error {
 	var ts, tsOffset int64
 	var audioInitialized, videoInitialized bool
-	st := d.storage
-	var globalStorageType string
-	var file storage.File
-	var err error
-	if st != nil {
-		globalStorageType = st.GetKey()
-	}
 	for _, stream := range d.Streams {
 		// 检查流的时间范围是否在指定范围内
 		if stream.EndTime.Before(d.StartTime) || stream.StartTime.After(d.EndTime) {
 			continue
 		}
-		// 如果是 HTTP/HTTPS URL，下载到临时文件
-		if strings.HasPrefix(stream.FilePath, "http://") || strings.HasPrefix(stream.FilePath, "https://") {
-			resp, err := http.Get(stream.FilePath)
-			if err != nil {
-				d.Error("failed to download file from URL", "err", err, "url", stream.FilePath)
-				continue
-			}
-			defer resp.Body.Close()
-
-			// 创建临时文件
-			tmpFile, err := os.CreateTemp("", "mp4-*.tmp")
-			if err != nil {
-				d.Error("failed to create temp file", "err", err)
-				continue
-			}
-			tmpPath := tmpFile.Name()
-
-			// 复制内容到临时文件
-			_, err = io.Copy(tmpFile, resp.Body)
-			tmpFile.Close()
-			if err != nil {
-				os.Remove(tmpPath)
-				d.Error("failed to save downloaded file", "err", err)
-				continue
-			}
-
-			// 打开临时文件
-			tmpFile, err = os.Open(tmpPath)
-			if err != nil {
-				os.Remove(tmpPath)
-				d.Error("failed to open downloaded file", "err", err)
-				continue
-			}
-			file = &storage.LocalFile{File: tmpFile}
-			// 延迟关闭和删除临时文件
-			defer func() {
-				if file != nil {
-					file.Close()
-				}
-				os.Remove(tmpPath)
-			}()
-			d.Info("reading downloaded file from URL", "url", stream.FilePath)
-		} else if filepath.IsAbs(stream.FilePath) {
-			if f, openErr := os.Open(stream.FilePath); openErr != nil {
-				err = openErr
-				continue
-			} else {
-				file = &storage.LocalFile{File: f}
-			}
-		} else {
-			useGlobalStorage := st != nil && globalStorageType == stream.StorageType
-			isLocalStorage := stream.StorageType == string(storage.StorageTypeLocal) || stream.StorageType == ""
-			if useGlobalStorage {
-				if isLocalStorage {
-					if localStorage, ok := st.(*storage.LocalStorage); ok {
-						fullPath := localStorage.GetFullPath(stream.FilePath, stream.StorageLevel)
-						if f, openErr := os.Open(fullPath); openErr != nil {
-							err = openErr
-							continue
-						} else {
-							file = &storage.LocalFile{File: f}
-						}
-					} else {
-						// 类型不匹配，使用 OpenFile 作为兜底
-						file, err = st.OpenFile(ctx, stream.FilePath)
-						if err != nil {
-							continue
-						}
-					}
-				} else {
-					filePath, err := st.GetURL(ctx, stream.FilePath)
-					if err != nil || filePath == "" {
-						continue
-					}
-					file, err = st.OpenFile(ctx, filePath)
-					if err != nil {
-						continue
-					}
-				}
-			} else {
-				if f, openErr := os.Open(stream.FilePath); openErr != nil {
-					err = openErr
-					continue
-				} else {
-					file = &storage.LocalFile{File: f}
-				}
-			}
+		file, cleanup, err := d.openRecordFile(ctx, stream)
+		if err != nil {
+			d.Error("open record segment failed", "storageType", stream.StorageType, "path", stream.FilePath, "error", m7s.StorageErrorSummary(err))
+			continue
 		}
 
 		// 保存上一个文件的最后时间戳，用于跨文件连续
 		baseOffset := ts
-		//file, err := os.Open(stream.FilePath)
-		//if err != nil {
-		//	continue
-		//}
-		defer file.Close()
-
 		demuxer := NewDemuxer(file)
-		if err = demuxer.Demux(); err != nil {
+		if err := demuxer.Demux(); err != nil {
+			cleanup()
 			return err
 		}
 
@@ -186,6 +163,7 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 		// 读取和处理样本
 		for track, sample := range demuxer.ReadSample {
 			if ctx.Err() != nil {
+				cleanup()
 				return context.Cause(ctx)
 			}
 			// 检查是否超出结束时间
@@ -211,14 +189,17 @@ func (d *DemuxerRange) Demux(ctx context.Context) error {
 			sample.Timestamp = uint32(ts)
 			if track.Cid.IsAudio() {
 				if err := d.OnAudio(sample); err != nil {
+					cleanup()
 					return err
 				}
 			} else {
 				if err := d.OnVideo(sample); err != nil {
+					cleanup()
 					return err
 				}
 			}
 		}
+		cleanup()
 	}
 	return nil
 }

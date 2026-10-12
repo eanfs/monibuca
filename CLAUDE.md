@@ -48,6 +48,12 @@ Windows:
 goreleaser build
 ```
 
+**发版闭环链路(v5.3.5 实践定型,缺陷修复类发版照此执行):**
+根因确认 → 修复+回归钉测试 → 单元/压测(`-race` 全绿)→ 真机复现旧缺陷+验证修复 → PR(base=develop)merge → tag → 多架构镜像 → 目标环境真机部署冒烟 → 清理测试容器/镜像/临时文件/凭证
+- tag 格式 `v5.X.Y.YYMMDDHHMM`(如 v5.3.5.2607291051),打在 develop 的 merge commit 上并推 origin
+- 构建机 `172.16.12.82:/home/monibuca`:github 不通 → 用 git bundle 同步(`git bundle create ^<对端HEAD> develop <tag>` → scp → 对端 fetch);非交互 shell 跑 `build_docker.sh` 需 `PATH=/usr/local/go/bin:$PATH GOPROXY=https://goproxy.cn,direct GOTOOLCHAIN=auto`;arm64 build 需 qemu binfmt(缺则报 `exec format error`,`docker run --privileged --rm tonistiigi/binfmt --install arm64` 一次性装好)
+- 容器冒烟:镜像 CMD 期望 `/etc/monibuca/config.yaml`,最小配置仅需 `global.db.{dsn,dbtype}`;未登录 SWR 的机器用 `docker save | gzip` + ssh 管道 + `docker load` 送镜像(勿复制 docker 凭证);验证点=容器零重启、日志无 DB 错误、API 200,页大小敏感问题必须上真机(mac `Getpagesize()` 恒报 4096)
+
 **Cross-compile (multi-arch, no CGO):**
 - `CGO_ENABLED=0 GOOS=linux GOARCH={amd64,arm64} go build -tags "cluster sqlite s3" -o monibuca_${ARCH} ./example/cluster`
 - `sqlite` tag = pure-Go `ncruces/go-sqlite3` (WASM) → cross-compiles incl. arm64 with no CGO (`sqliteCGO` = mattn/CGO variant; avoid for cross-builds)
@@ -447,6 +453,8 @@ Automatic migration is handled for core models including users, proxies, and str
 - Monitor task retry counts and failure reasons in logs
 
 ## Common Pitfalls
+- staticcheck 二进制的编译 go 版本低于 go.mod `go 1.26` 时报 "module requires at least go1.26" 拒跑——非代码问题,升级 staticcheck 或跳过
+- gopls/IDE 对 build-tag 门控文件(`//go:build sqlite` 等)报 "No packages found" 是误报,以 `go vet -tags <tag>` 为准
 - Forgetting required build tags for DB/protocol/storage-specific behavior
 - Editing `.proto` but not regenerating with `scripts/protoc.sh`
 - Adding non-whitelisted dot imports
@@ -459,6 +467,7 @@ Automatic migration is handled for core models including users, proxies, and str
 - **Registering `OnStart` *after* `AddTask` — the callback never fires.** `Task.OnStart` only appends to `afterStartListeners` (no already-started check) and that slice is consumed once during the start sequence, so `AddTask(&x); x.OnStart(f)` silently drops `f`. Always register `OnStart` **before** `AddTask`. This silently killed both `UploadRetryScheduler` (upload retry never ran → failed uploads stranded in `pending_uploads` forever) and `CheckSubWaitTimeout` until 2026-07-16; regression tests in `upload_retry_register_test.go`. 已核查全仓其余 `.OnStart(` 调用点均在 AddTask 之前(Manager.Add 正确封装,经其路由的任务天然安全)。根治在上游 gotask:`OnStart` 检查任务已启动则立即补发(连带修监听器切片的并发写);上游修复后 `TestOnStartAfterAddTaskNeverFires` 会转红,即为可放宽此顺序约束的信号
 - **`SetRetry` 不配 `SetMaxRetryInterval` = 指数退避无上限。** gotask 退避 = `RetryInterval×2^(retryCount-1)`,上限判断被 `MaxRetryInterval > 0` 门控——不设就无界。源/目标长时间中断后 retryDelay 涨到小时级,网络恢复了任务还在睡,**永不自愈只能重启进程**(2026-07-17 实证:IPS 封禁 16h 后 30 路 puller 全部 `retryDelay=11h22m40s`;`RetryInterval: 5s` 配置只是基数,不是"每 5s 重试")。凡 `SetRetry(非零,...)` 必须跟 `GetTask().SetMaxRetryInterval(30*time.Second)`;已修 puller/pusher/transformer/cascade 四处(recoder 早在 `ae298dab` 修过);语义钉在 `retry_backoff_test.go`。注意 `retryCount` 只在 Start 成功后归零(task.go:386),所以短暂抖动无感、长中断致命
 - Pushing multi-arch images to SWR without `--provenance=false --sbom=false`
+- **ncruces sqlite 的 WAL 在 64K 页 ARM 内核上必崩 —— 别为并发锁把 WAL 加回默认 DSN。** ncruces/go-sqlite3(纯 Go/WASM,`sqlite` tag)的 WAL 依赖 `-shm` 共享内存 mmap,页大小 65536 的内核(Kylin V10 SP3 / openEuler 20.03 SP3,kernel 4.19 aarch64)上 DB 初始化即报 `sqlite3: disk I/O error` crashloop,删 m7s.db 重建也无效(非文件损坏,是页大小不兼容);4K 页 x86 不触发,所以"SWR 有 arm64 镜像跑过"≠"64K 页内核能跑"。v5.3.x(`dd2b96ec`)为治并发写锁给纯路径 DSN 注入 WAL 引入此回归,2026-07-29 修复:`pkg/db/sqlite.go` 去掉 WAL 与 synchronous,仅留 busy_timeout。并发写锁的真正根治是 `server.go` 的 `MaxOpenConns(1)` 单连接池,不依赖 WAL;24 写+24 读压测(`pkg/db/sqlite_stress_test.go`)钉死无锁风暴/不卡死/尾延迟 <2s,回归钉 `TestBuildSQLiteDSN_NoWALNoSync`。真机验证工具 `example/arm-sqlite-check/`(172.16.12.175/.216 双机实证:旧 WAL DSN 崩、新 DSN 正常)。另注意:非 WAL 下 `synchronous=NORMAL` 断电可能损坏整库,不要单独加回
 - mp4 record API: `POST /mp4/api/start|stop/<streamPath>` (gRPC-gateway, streamPath in URL), records **local** streams only; cluster HTTP is under `/cluster/api/cluster/*`
 - mp4 start API 请求体所有字段都是 proto **string**——`duration`/`fragment` 必须传 JSON 字符串(`"900s"`/`"0"`),传数字会被 grpc-gateway 拒绝 **400** `invalid value for string type`。老版本(无该字段)因 `DiscardUnknown` 静默忽略数字字段,升级后才暴露(2026-07-15 196 演示环境 its-server 事故根因,报告见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`)
 - mp4 start 不传 `fragment` 时**默认 1 分钟分片**(`StartRecord` handler 里 `fragment = time.Minute`);要录单文件必须显式 `"fragment":"0"`

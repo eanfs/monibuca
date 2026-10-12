@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -57,16 +58,46 @@ func (c *S3StorageConfig) GetType() StorageType {
 }
 
 func (c *S3StorageConfig) Validate() error {
+	_, err := c.validateAndNormalizeEndpoint()
+	return err
+}
+
+func (c *S3StorageConfig) validateAndNormalizeEndpoint() (string, error) {
 	if c.AccessKeyID == "" {
-		return fmt.Errorf("access_key_id is required for S3 storage")
+		return "", fmt.Errorf("%w: access_key_id is required for S3 storage", ErrInvalidStorageConfig)
 	}
 	if c.SecretAccessKey == "" {
-		return fmt.Errorf("secret_access_key is required for S3 storage")
+		return "", fmt.Errorf("%w: secret_access_key is required for S3 storage", ErrInvalidStorageConfig)
 	}
 	if c.Bucket == "" {
-		return fmt.Errorf("bucket is required for S3 storage")
+		return "", fmt.Errorf("%w: bucket is required for S3 storage", ErrInvalidStorageConfig)
 	}
-	return nil
+	return normalizeS3Endpoint(c.Endpoint, c.UseSSL)
+}
+
+func normalizeS3Endpoint(endpoint string, useSSL bool) (string, error) {
+	if endpoint == "" {
+		return "", nil
+	}
+
+	normalized := endpoint
+	if !strings.Contains(normalized, "://") {
+		scheme := "http"
+		if useSSL {
+			scheme = "https"
+		}
+		normalized = scheme + "://" + normalized
+	}
+
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return "", fmt.Errorf("%w: S3 endpoint must use HTTP or HTTPS and include a host", ErrInvalidStorageConfig)
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("%w: S3 endpoint must use HTTP or HTTPS and include a host", ErrInvalidStorageConfig)
+	}
+	return parsed.String(), nil
 }
 
 // getTimeout 获取上传超时时间，默认 15 分钟
@@ -122,7 +153,8 @@ type S3Storage struct {
 
 // NewS3Storage 创建S3存储实例
 func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
-	if err := cfg.Validate(); err != nil {
+	normalizedEndpoint, err := cfg.validateAndNormalizeEndpoint()
+	if err != nil {
 		return nil, err
 	}
 
@@ -135,17 +167,9 @@ func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
 	}
 
 	// 设置端点（用于MinIO或其他S3兼容服务）
-	if cfg.Endpoint != "" {
-		endpoint := cfg.Endpoint
-		if !strings.HasPrefix(endpoint, "http") {
-			protocol := "http"
-			if cfg.UseSSL {
-				protocol = "https"
-			}
-			endpoint = protocol + "://" + endpoint
-		}
-		awsConfig.Endpoint = aws.String(endpoint)
-		awsConfig.DisableSSL = aws.Bool(!cfg.UseSSL)
+	if normalizedEndpoint != "" {
+		awsConfig.Endpoint = aws.String(normalizedEndpoint)
+		awsConfig.DisableSSL = aws.Bool(strings.HasPrefix(normalizedEndpoint, "http://"))
 	}
 
 	// 创建AWS会话
