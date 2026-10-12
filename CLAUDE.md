@@ -48,10 +48,11 @@ Windows:
 goreleaser build
 ```
 
-**发版闭环链路(v5.3.5 实践定型,缺陷修复类发版照此执行):**
-根因确认 → 修复+回归钉测试 → 单元/压测(`-race` 全绿)→ 真机复现旧缺陷+验证修复 → PR(base=develop)merge → tag → 多架构镜像 → 目标环境真机部署冒烟 → 清理测试容器/镜像/临时文件/凭证
-- tag 格式 `v5.X.Y.YYMMDDHHMM`(如 v5.3.5.2607291051),打在 develop 的 merge commit 上并推 origin
-- 构建机 `172.16.12.82:/home/monibuca`:github 不通 → 用 git bundle 同步(`git bundle create ^<对端HEAD> develop <tag>` → scp → 对端 fetch);非交互 shell 跑 `build_docker.sh` 需 `PATH=/usr/local/go/bin:$PATH GOPROXY=https://goproxy.cn,direct GOTOOLCHAIN=auto`;arm64 build 需 qemu binfmt(缺则报 `exec format error`,`docker run --privileged --rm tonistiigi/binfmt --install arm64` 一次性装好)
+**发版闭环链路(v5.3.5 实践定型,缺陷修复类发版照此执行;2026-10-12 起基线分支改为 main):**
+根因确认 → 修复+回归钉测试 → 单元/压测(`-race` 全绿)→ 真机复现旧缺陷+验证修复 → PR(base=main)merge → tag → 多架构镜像 → 目标环境真机部署冒烟 → 清理测试容器/镜像/临时文件/凭证
+- **分支约定(2026-10-12 起)**:`main` 是唯一集成分支与默认基线(GitHub default branch);**`develop` 已弃用**—— 冻结、不再接收合并,也不要再以它为 PR base 或从它切分支;新工作一律基于 `main`
+- tag 格式 `v5.X.Y.YYMMDDHHMM`(如 `v5.3.7.2610121357`),打在 **main 的发版 merge commit** 上并推 origin
+- 构建机 `172.16.12.82:/home/monibuca`:github 不通 → 用 git bundle 同步(`git bundle create ^<对端HEAD> main <tag>` → scp → 对端 fetch);非交互 shell 跑 `build_docker.sh` 需 `PATH=/usr/local/go/bin:$PATH GOPROXY=https://goproxy.cn,direct GOTOOLCHAIN=auto`;arm64 build 需 qemu binfmt(缺则报 `exec format error`,`docker run --privileged --rm tonistiigi/binfmt --install arm64` 一次性装好)
 - 容器冒烟:镜像 CMD 期望 `/etc/monibuca/config.yaml`,最小配置仅需 `global.db.{dsn,dbtype}`;未登录 SWR 的机器用 `docker save | gzip` + ssh 管道 + `docker load` 送镜像(勿复制 docker 凭证);验证点=容器零重启、日志无 DB 错误、API 200,页大小敏感问题必须上真机(mac `Getpagesize()` 恒报 4096)
 
 **Cross-compile (multi-arch, no CGO):**

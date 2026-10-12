@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify-130.sh —— 130 端到端验证一键脚本
 #
-# 验证两项已合入 develop 的修复:
+# 验证两项已合入 main 的修复(原 develop 已弃用):
 #   1. Storage upload ctx 解耦   docs/superpowers/plans/2026-05-15-storage-upload-detach-recorder-context.md
 #   2. Trailer 重写/限速         docs/superpowers/plans/2026-05-16-trailer-rewrite-io-reduction.md
 #
@@ -308,7 +308,7 @@ write_report() {
 		echo
 		echo "- 目标: $SSH_HOST  容器: \`$CONTAINER\`"
 		echo "- 流数: ${#STREAMS[@]}   录制时长: ${RECORD_SECONDS}s"
-		echo "- 验证: storage upload ctx 解耦 + trailer 重写/限速 (develop)"
+		echo "- 验证: storage upload ctx 解耦 + trailer 重写/限速 (main)"
 		echo
 		echo "## 指标"
 		echo
