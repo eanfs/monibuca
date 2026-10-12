@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/langhuihui/gomem"
 	task "github.com/eanfs/gotask"
+	"github.com/langhuihui/gomem"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/config"
 
@@ -41,6 +41,7 @@ type (
 	}
 	SpeedController struct {
 		speed           float64
+		hintSpeed       float64 // Publisher 同步的倍速提示（供 Reader；勿直接改 speed，以免跳过 SpeedControl 重初始化）
 		pausedTime      time.Duration
 		beginTime       time.Time
 		beginTimestamp  time.Duration // 记录开始播放时的第一个时间戳
@@ -150,18 +151,21 @@ func (t *AVTrack) changeDropFrameLevel(newLevel int) {
 }
 
 func (t *AVTrack) CheckIfNeedDropFrame(maxFPS int, speed float64) (drop bool) {
+	// BUG-022 方案A：≥8× 固定只发关键帧，避免 MaxFPS/dropLevel 振荡导致忽快忽慢与写环挤爆
+	if speed >= 8 {
+		drop = !t.Value.IDR
+		return drop
+	}
+
 	drop = maxFPS > 0 && (t.accpetFPS > maxFPS)
 
 	// 根据倍速调整丢帧策略，避免过度丢帧导致播放不均匀
 	if speed > 2 && speed <= 4 {
 		// 4倍速：非常保守，只在极端情况下才丢帧
 		drop = drop && (t.accpetFPS > maxFPS*3)
-	} else if speed > 4 && speed <= 8 {
-		// 5-8倍速：保守策略
+	} else if speed > 4 && speed < 8 {
+		// 5–8×（不含 8）：保守策略；≥8 已走关键帧固定策略
 		drop = drop && (t.accpetFPS > maxFPS*2)
-	} else if speed > 16 {
-		// 极高倍速：激进策略
-		drop = drop || (t.accpetFPS > maxFPS/2)
 	}
 	// 正常倍速(<=2倍)和慢放(speed<1)保持原有逻辑
 
@@ -269,9 +273,17 @@ func (t *AVTrack) AddPausedTime(d time.Duration) {
 	t.pausedTime += d
 }
 
-// GetSpeed 返回当前的播放倍速
+// GetSpeed 返回当前的播放倍速（优先 Publisher 提示，供 Reader 跳跃阈值）
 func (t *AVTrack) GetSpeed() float64 {
+	if t.hintSpeed != 0 {
+		return t.hintSpeed
+	}
 	return t.speed
+}
+
+// SetSpeedHint 仅更新 Reader 可见倍速，不改 SpeedController.speed，避免跳过倍速切换重初始化
+func (t *AVTrack) SetSpeedHint(speed float64) {
+	t.hintSpeed = speed
 }
 
 // ResetSpeedController 重置倍速控制器的状态，用于避免状态冲突

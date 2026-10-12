@@ -122,6 +122,8 @@ type Device struct {
 	AlarmSubscribeTask      *AlarmSubscribeTask      `gorm:"-:all"`
 	Cataloging              bool                     `gorm:"-:all" default:"false"`
 	DeviceKeepaliveTickTask *DeviceKeepaliveTickTask `gorm:"-:all"`
+	// catalogMu 串行化 Catalog 处理（队列消费与 AddTask 失败时的同步回退共用）
+	catalogMu sync.Mutex `gorm:"-:all"`
 }
 
 func (d *Device) TableName() string {
@@ -300,12 +302,13 @@ func (d *Device) ensureCatalogSubscribeTask() {
 }
 
 // CatalogRequest 目录请求结构体
-// 注意：由于 catalogHandlerTask.Run() 在 Work 的串行协程中执行，
-// 所有对 CatalogRequest 字段的访问都是串行的，不需要锁保护
+// 访问需在 Device.catalogMu 保护下（队列 Run 与同步回退、超时定时器共用）
 type CatalogRequest struct {
 	SN, SumNum, TotalCount int
 	FirstResponse          bool      // 是否为第一个响应
 	CreateTime             time.Time // 创建时间，用于超时检测
+	timeoutTimer           *time.Timer
+	finished               bool // 已完成收尾（complete 或 timeout），防重复
 	*util.Promise
 }
 
@@ -348,8 +351,103 @@ type catalogHandlerTask struct {
 	msg *gb28181.Message
 }
 
+// clearDeviceChannelsLocked 清空本设备通道：先按 key 从 plugin.channels 删除，再 Clear d.channels。
+// 不会清空其他设备的全局通道。调用方须持有 d.catalogMu。
+func (d *Device) clearDeviceChannelsLocked() {
+	var keys []string
+	d.channels.Range(func(channel *Channel) bool {
+		keys = append(keys, channel.ID)
+		return true
+	})
+	// 兼清全局集合中挂在本设备上、但不在 d.channels 里的残留（历史 Clear 未同步删除导致）
+	if d.plugin != nil {
+		d.plugin.channels.Range(func(ch *Channel) bool {
+			if ch == nil {
+				return true
+			}
+			if ch.Device == d || (ch.Device != nil && ch.Device.DeviceId == d.DeviceId) {
+				keys = append(keys, ch.ID)
+			}
+			return true
+		})
+		seen := make(map[string]struct{}, len(keys))
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			d.plugin.channels.RemoveByKey(key)
+		}
+	}
+	d.channels.Clear()
+}
+
+// finishCatalogLocked 结束一次 Catalog 收尾并落库。调用方必须持有 d.catalogMu。
+func (d *Device) finishCatalogLocked(catalogReq *CatalogRequest, timedOut bool) {
+	if catalogReq == nil || catalogReq.finished {
+		return
+	}
+	catalogReq.finished = true
+	if catalogReq.timeoutTimer != nil {
+		catalogReq.timeoutTimer.Stop()
+		catalogReq.timeoutTimer = nil
+	}
+	if timedOut {
+		d.Warn("Catalog请求超时",
+			"SN", catalogReq.SN,
+			"SumNum", catalogReq.SumNum,
+			"TotalCount", catalogReq.TotalCount,
+			"已等待", time.Since(catalogReq.CreateTime))
+		if !catalogReq.IsComplete() {
+			catalogReq.TotalCount = catalogReq.SumNum
+		}
+	} else {
+		d.Info("Catalog响应接收完成",
+			"SN", catalogReq.SN,
+			"SumNum", catalogReq.SumNum,
+			"TotalCount", catalogReq.TotalCount,
+			"耗时", time.Since(catalogReq.CreateTime))
+	}
+	catalogReq.Resolve()
+	d.catalogReqs.RemoveByKey(catalogReq.SN)
+	d.Cataloging = false
+	if d.plugin != nil && d.plugin.DB != nil {
+		d.channels.Range(func(channel *Channel) bool {
+			d.plugin.DB.Save(channel.DeviceChannel)
+			return true
+		})
+	}
+}
+
+// startCatalogTimeoutLocked 启动独立超时（不依赖后续 handler 是否还能入队）。调用方持有 catalogMu。
+func (d *Device) startCatalogTimeoutLocked(catalogReq *CatalogRequest) {
+	if catalogReq == nil || catalogReq.timeoutTimer != nil {
+		return
+	}
+	sn := catalogReq.SN
+	catalogReq.timeoutTimer = time.AfterFunc(10*time.Second, func() {
+		d.catalogMu.Lock()
+		defer d.catalogMu.Unlock()
+		req, ok := d.catalogReqs.Get(sn)
+		if !ok || req.finished {
+			return
+		}
+		d.finishCatalogLocked(req, true)
+	})
+}
+
 func (c *catalogHandlerTask) Run() (err error) {
-	// 处理目录信息
+	d := c.d
+	d.catalogMu.Lock()
+	defer d.catalogMu.Unlock()
+	return c.runLocked()
+}
+
+func (c *catalogHandlerTask) runLocked() (err error) {
+	// 处理目录信息（调用方已持有 d.catalogMu）
 	d := c.d
 	d.ensureCollectionMutex()
 	d.Cataloging = true
@@ -383,8 +481,13 @@ func (c *catalogHandlerTask) Run() (err error) {
 			Promise:       util.NewPromise(context.Background()),
 		}
 		d.catalogReqs.Set(catalogReq)
+		d.startCatalogTimeoutLocked(catalogReq)
 		d.Debug("创建新的Catalog请求", "SN", msg.SN, "SumNum", msg.SumNum)
 	} else {
+		if catalogReq.finished {
+			d.Warn("Catalog响应在收尾后到达，已忽略", "SN", msg.SN, "SumNum", msg.SumNum)
+			return nil
+		}
 		// 验证SumNum是否一致（不同响应的SumNum应该相同）
 		if catalogReq.SumNum != msg.SumNum {
 			d.Warn("Catalog响应SumNum不一致",
@@ -394,26 +497,14 @@ func (c *catalogHandlerTask) Run() (err error) {
 		}
 	}
 
-	// 检查超时
-	if catalogReq.IsTimeout() {
-		d.Warn("Catalog请求超时",
-			"SN", msg.SN,
-			"SumNum", catalogReq.SumNum,
-			"TotalCount", catalogReq.TotalCount,
-			"已等待", time.Since(catalogReq.CreateTime))
-		// 超时后强制完成
-		if !catalogReq.IsComplete() {
-			catalogReq.TotalCount = catalogReq.SumNum // 强制设置为完成
-		}
-	}
-
 	// 添加响应并获取是否是第一个响应
 	isFirst := catalogReq.AddResponse()
 
 	// 更新设备信息到数据库
 	// 如果是第一个响应，先清空原有通道，并记录期望的总通道数
 	if isFirst {
-		d.channels.Clear()
+		// Confirmed via 寸止: 方案A — 同步按 key 清理插件全局 channels，避免 channel/list 残留与 list 展开不一致
+		d.clearDeviceChannelsLocked()
 		d.ChannelCount = msg.SumNum
 		d.Debug("清空通道列表，开始接收Catalog响应", "SN", msg.SN, "SumNum", msg.SumNum)
 	}
@@ -446,28 +537,62 @@ func (c *catalogHandlerTask) Run() (err error) {
 		"是否第一个响应", isFirst)
 	d.UpdateTime = time.Now()
 
-	// 在所有通道都添加完成后，检查是否完成接收
+	// 独立定时器为主；此处兼容处理过程中已超时或收齐的收尾
+	if catalogReq.IsTimeout() {
+		d.finishCatalogLocked(catalogReq, true)
+		return nil
+	}
 	if catalogReq.IsComplete() {
-		d.Info("Catalog响应接收完成",
-			"SN", msg.SN,
-			"SumNum", catalogReq.SumNum,
-			"TotalCount", catalogReq.TotalCount,
-			"耗时", time.Since(catalogReq.CreateTime))
-
 		// 批量同步通道数据到数据库
 		d.SyncChannelsToStorage()
 		// 同步设备信息（如通道数量更新）
 		d.SyncDeviceToStorage()
-
-		catalogReq.Resolve()
-		d.catalogReqs.RemoveByKey(msg.SN)
-		d.Cataloging = false
-		d.channels.Range(func(channel *Channel) bool {
-			d.plugin.DB.Save(channel.DeviceChannel)
-			return true
-		})
+		d.finishCatalogLocked(catalogReq, false)
 	}
 	return
+}
+
+// submitCatalogHandler 投递 Catalog 处理；gotask EventLoop 缓冲满导致 AddTask 拒绝时同步回退。
+// Confirmed via 寸止: 方案4
+func (d *Device) submitCatalogHandler(msg *gb28181.Message) {
+	catalogHandler := &catalogHandlerTask{
+		d:   d,
+		msg: msg,
+	}
+	sizeBefore := catalogHandlerQueueTask.Size.Load()
+	chID := ""
+	if len(msg.DeviceList.DeviceChannelList) > 0 {
+		chID = msg.DeviceList.DeviceChannelList[0].DeviceId
+	}
+	added := catalogHandlerQueueTask.AddTask(catalogHandler)
+	sizeAfter := catalogHandlerQueueTask.Size.Load()
+	droppedHint := sizeAfter <= sizeBefore
+
+	// Size 仅作提示：真正失败时 startup 会立刻 Reject，WaitStarted 立即返回 err。
+	// 若只是 Size 竞态误报，WaitStarted 会阻塞在队列中，短超时后放弃回退，避免重复处理/乱序。
+	if added == nil {
+		d.Warn("Catalog AddTask 返回 nil，同步 Run", "SN", msg.SN)
+		_ = catalogHandler.Run()
+		return
+	}
+	if !droppedHint {
+		return
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- added.WaitStarted()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			d.Warn("Catalog AddTask 被拒绝，同步 Run 回退",
+				"SN", msg.SN, "err", err, "channelId", chID,
+				"sizeBefore", sizeBefore, "sizeAfter", sizeAfter)
+			_ = catalogHandler.Run()
+		}
+	case <-time.After(2 * time.Millisecond):
+		// 已在队列中等待执行，非拒绝
+	}
 }
 
 func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28181.Message) (err error) {
@@ -501,11 +626,7 @@ func (d *Device) onMessage(req *sip.Request, tx sip.ServerTransaction, msg *gb28
 	case "Keepalive":
 		d.KeepaliveTime = time.Now()
 	case "Catalog":
-		catalogHandler := &catalogHandlerTask{
-			d:   d,
-			msg: msg,
-		}
-		catalogHandlerQueueTask.AddTask(catalogHandler)
+		d.submitCatalogHandler(msg)
 	case "RecordInfo":
 		if channel, ok := d.channels.Get(d.DeviceId + "_" + msg.DeviceID); ok {
 			// 检查是否有上级平台映射（用于转发）

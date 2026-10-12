@@ -1,13 +1,13 @@
 package rtsp
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	pkg "m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/util"
 )
 
@@ -15,6 +15,9 @@ type Stream struct {
 	*NetConnection
 	AudioChannelID int
 	VideoChannelID int
+	// Scale 当前回放倍速；0 表示未设置（PLAY 不写 Scale 头），>0 时 PLAY 携带 Scale
+	// Confirmed via 寸止(REQ-RTSP-002)
+	Scale float64
 }
 
 func (c *Stream) Do(req *util.Request) (*util.Response, error) {
@@ -35,13 +38,17 @@ func (c *Stream) Do(req *util.Request) (*util.Response, error) {
 			if c.Auth.ReadNone(res) {
 				return c.Do(req)
 			}
-			return nil, errors.New("user/pass not provided")
+			// {{ AURA-X: Modify - 无凭据收到 401，归为鉴权失败哨兵. Confirmed via 寸止. }}
+			return nil, pkg.ErrInvalidCredentials
 		case util.AuthUnknown:
 			if c.Auth.Read(res) {
 				return c.Do(req)
 			}
+			// {{ AURA-X: Modify - 挑战解析失败也视为鉴权失败，避免继续重试. Confirmed via 寸止. }}
+			return nil, pkg.ErrInvalidCredentials
 		default:
-			return nil, errors.New("wrong user/pass")
+			// 已带凭据后仍 401：协议层鉴权失败（非厂商文案匹配）
+			return nil, pkg.ErrInvalidCredentials
 		}
 	case http.StatusFound, http.StatusMovedPermanently:
 		oldHost := ""
@@ -270,9 +277,34 @@ func (c *Stream) Play() (err error) {
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
 	}
+	// {{ AURA-X: Add - Pause 恢复 / 首次 PLAY 携带已设定的 Scale. Confirmed via 寸止(REQ-RTSP-002). }}
+	if c.Scale > 0 {
+		req.Header.Set("Scale", strconv.FormatFloat(c.Scale, 'f', -1, 64))
+	}
 
 	_, err = c.Do(req)
 	return
+}
+
+// PlayScale 运行中改速：二次 PLAY 注入 Scale，仅写请求（响应由 Receive 读环消化）。
+// 参考 m7s/rtsp_scale.go；Range 用 npt=now- 从当前位置续播。
+// Confirmed via 寸止(REQ-RTSP-002)
+func (c *Stream) PlayScale(scale float64) error {
+	c.Scale = scale
+	req := &util.Request{
+		Method: MethodPlay,
+		URL:    c.URL,
+		Header: map[string][]string{},
+	}
+	req.Header.Set("Scale", strconv.FormatFloat(scale, 'f', -1, 64))
+	req.Header.Set("Range", "npt=now-")
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+	c.StartWrite()
+	err := c.WriteRequest(req)
+	c.StopWrite()
+	return err
 }
 
 func (c *Stream) Pause() (err error) {

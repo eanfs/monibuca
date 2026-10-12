@@ -2,6 +2,7 @@ package m7s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -29,6 +30,17 @@ const (
 	PullProxyStatusDisabled
 )
 
+// normalizePullRecordType REQ-MP4-002：空串表示未指定（默认 mp4）；仅允许 mp4/fmp4
+func normalizePullRecordType(t string) (string, bool) {
+	t = strings.ToLower(strings.TrimSpace(t))
+	switch t {
+	case "", "mp4", "fmp4":
+		return t, true
+	default:
+		return "", false
+	}
+}
+
 type (
 	IPullProxy interface {
 		task.ITask
@@ -54,7 +66,10 @@ type (
 		Status                         byte
 		Description                    string
 		CheckInterval                  time.Duration `default:"10s"`
-		RTT                            time.Duration
+		// ReadTimeout：RTSP 等媒体 TCP 读/拨号超时（BufReader.SetTimeout）；0 表示用默认 10s。
+		// Confirmed via 寸止: BUG-021 R1
+		ReadTimeout time.Duration `default:"10s" gorm:"comment:拉流读超时"`
+		RTT         time.Duration
 	}
 	PullProxyFactory = func() IPullProxy
 	PullProxyManager struct {
@@ -65,6 +80,8 @@ type (
 		Plugin      *Plugin
 		PullJob     *PullJob
 		pullStarted bool // 标记是否已经首次拉流成功，避免断线重连时重复创建任务
+		// authFailed REQ-RTSP-001：鉴权失败停重试后置位，避免探活/再上线继续带错误凭据打设备
+		authFailed bool
 	}
 	HTTPPullProxy struct {
 		TCPPullProxy
@@ -79,6 +96,11 @@ type (
 
 func (b *BasePullProxy) GetBase() *BasePullProxy {
 	return b
+}
+
+// IsAuthFailed 是否因鉴权失败已停止重试（供 RTSP 探活等跨包读取）
+func (b *BasePullProxy) IsAuthFailed() bool {
+	return b.authFailed
 }
 
 func NewHTTPPullPorxy() IPullProxy {
@@ -112,6 +134,11 @@ func (d *BasePullProxy) ChangeStatus(status byte) {
 		// 只有首次拉流成功后才设置 pullStarted，断线重连时不触发自动拉流
 		// 由 Dispose() 中调用 PullJob.Stop() 来停止旧任务
 		if d.PullOnStart && !d.pullStarted && (from == PullProxyStatusOffline) {
+			// {{ AURA-X: Modify - 鉴权失败停重试后禁止因 Offline→Online 再次自动拉流. Confirmed via 寸止. }}
+			if d.StopRetryOnAuthFail && d.authFailed {
+				d.Plugin.Warn("skip auto pull after auth fail", "streamPath", d.StreamPath, "pullProxyId", d.ID)
+				return
+			}
 			d.Pull()
 		}
 	}
@@ -166,6 +193,8 @@ func (d *BasePullProxy) Pull() {
 	var pubConf = d.Plugin.config.Publish
 	pubConf.PubAudio = d.Audio
 	pubConf.DelayCloseTimeout = util.Conditional(d.StopOnIdle, time.Second*5, 0)
+	// 主动再次拉流时清除鉴权失败标记（例如用户修正密码后 Update/手动拉流）
+	d.authFailed = false
 	job, err := d.Plugin.handler.Pull(d.GetStreamPath(), d.PullProxyConfig.Pull, &pubConf)
 	if err != nil {
 		d.Plugin.Warn("pull failed", "streamPath", d.GetStreamPath(), "error", err)
@@ -178,6 +207,11 @@ func (d *BasePullProxy) Pull() {
 	// 这样设备重新上线时可以再次自动拉流
 	d.PullJob.OnDispose(func() {
 		d.pullStarted = false
+		// {{ AURA-X: Add - 记录鉴权失败，阻断后续探活与自动重拉. Confirmed via 寸止. }}
+		if d.StopRetryOnAuthFail && d.PullJob != nil && errors.Is(d.PullJob.StopReason(), pkg.ErrInvalidCredentials) {
+			d.authFailed = true
+			d.Plugin.Warn("auth failed, stop retry", "streamPath", d.GetStreamPath(), "pullProxyId", d.ID, "error", d.PullJob.StopReason())
+		}
 		d.Plugin.Debug("pull job disposed, reset pullStarted flag", "streamPath", d.GetStreamPath())
 	})
 }
@@ -349,21 +383,25 @@ func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res 
 	for _, conf := range pullProxyConfigs {
 		// 获取运行时状态信息（如果需要的话）
 		info := &pb.PullProxyInfo{
-			Name:           conf.Name,
-			CreateTime:     timestamppb.New(conf.CreatedAt),
-			UpdateTime:     timestamppb.New(conf.UpdatedAt),
-			Type:           conf.Type,
-			PullURL:        conf.URL,
-			ParentID:       uint32(conf.ParentID),
-			Status:         uint32(conf.Status),
-			ID:             uint32(conf.ID),
-			PullOnStart:    conf.PullOnStart,
-			StopOnIdle:     conf.StopOnIdle,
-			Audio:          conf.Audio,
-			RecordPath:     conf.Record.FilePath,
-			RecordFragment: durationpb.New(conf.Record.Fragment),
-			Description:    conf.Description,
-			StreamPath:     conf.GetStreamPath(),
+			Name:                conf.Name,
+			CreateTime:          timestamppb.New(conf.CreatedAt),
+			UpdateTime:          timestamppb.New(conf.UpdatedAt),
+			Type:                conf.Type,
+			PullURL:             conf.URL,
+			ParentID:            uint32(conf.ParentID),
+			Status:              uint32(conf.Status),
+			ID:                  uint32(conf.ID),
+			PullOnStart:         conf.PullOnStart,
+			StopOnIdle:          conf.StopOnIdle,
+			Audio:               conf.Audio,
+			RecordPath:          conf.Record.FilePath,
+			RecordFragment:      durationpb.New(conf.Record.Fragment),
+			RecordType:          conf.Record.Type,
+			Description:         conf.Description,
+			StreamPath:          conf.GetStreamPath(),
+			StopRetryOnAuthFail: conf.StopRetryOnAuthFail,
+			CheckInterval:       durationpb.New(conf.CheckInterval),
+			ReadTimeout:         durationpb.New(util.Conditional(conf.ReadTimeout > 0, conf.ReadTimeout, time.Second*10)),
 		}
 		// 如果内存中有对应的设备，获取实时状态
 		if device, ok := s.PullProxies.Get(conf.ID); ok {
@@ -422,10 +460,32 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	pullProxyConfig.URL = req.PullURL
 	pullProxyConfig.Audio = req.Audio
 	pullProxyConfig.StopOnIdle = req.StopOnIdle
+	// REQ-RTSP-001：仅 RTSP 生效，其他协议忽略该开关
+	if strings.EqualFold(pullProxyConfig.Type, "rtsp") {
+		pullProxyConfig.StopRetryOnAuthFail = req.StopRetryOnAuthFail
+	} else if req.StopRetryOnAuthFail {
+		s.Debug("ignore stopRetryOnAuthFail for non-rtsp pull proxy", "type", pullProxyConfig.Type)
+	}
 	pullProxyConfig.Record.FilePath = req.RecordPath
 	pullProxyConfig.Record.Fragment = req.RecordFragment.AsDuration()
+	// Confirmed via 寸止: REQ-MP4-002 — 拉流代理录制容器格式
+	if rt, ok := normalizePullRecordType(req.RecordType); !ok {
+		err = fmt.Errorf("unsupported recordType %q, expect mp4 or fmp4", req.RecordType)
+		return
+	} else if rt != "" {
+		pullProxyConfig.Record.Type = rt
+	}
+	if req.CheckInterval != nil {
+		pullProxyConfig.CheckInterval = req.CheckInterval.AsDuration()
+	}
 	if pullProxyConfig.CheckInterval == 0 {
 		pullProxyConfig.CheckInterval = time.Second * 10
+	}
+	if req.ReadTimeout != nil {
+		pullProxyConfig.ReadTimeout = req.ReadTimeout.AsDuration()
+	}
+	if pullProxyConfig.ReadTimeout == 0 {
+		pullProxyConfig.ReadTimeout = time.Second * 10
 	}
 	if s.DB == nil {
 		err = pkg.ErrNoDB
@@ -457,30 +517,69 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 
 func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyRequest) (res *pb.SuccessResponse, err error) {
 	if s.DB == nil {
-		return nil, pkg.ErrNoDB
-	}
-	if req == nil || req.ID == 0 {
-		return nil, pkg.ErrNotFound
+		err = pkg.ErrNoDB
+		return
 	}
 	target := &PullProxyConfig{}
-	if err = s.DB.First(target, req.ID).Error; err != nil {
+	err = s.DB.First(target, req.ID).Error
+	if err != nil {
 		return
 	}
 
-	if req.ParentID != nil {
-		target.ParentID = uint(*req.ParentID)
-	}
+	// 只有当字段有值时才进行赋值
 	if req.Name != nil {
 		target.Name = *req.Name
-	}
-	if req.Type != nil {
-		target.Type = *req.Type
 	}
 	if req.PullURL != nil {
 		target.URL = *req.PullURL
 	}
+	if req.ParentID != nil {
+		target.ParentID = uint(*req.ParentID)
+	}
+	if req.Type != nil {
+		target.Type = *req.Type
+	}
+
+	// 如果Type字段被更新或者原来为空，则尝试从URL推导类型
+	if (req.Type != nil && *req.Type == "") || (req.PullURL != nil && target.Type == "") {
+		var urlToParse string
+		if req.PullURL != nil {
+			urlToParse = *req.PullURL
+		} else {
+			urlToParse = target.URL
+		}
+
+		if urlToParse != "" {
+			var u *url.URL
+			u, err = url.Parse(urlToParse)
+			if err != nil {
+				s.Error("parse pull url failed", "error", err)
+				return
+			}
+			switch u.Scheme {
+			case "srt", "rtsp", "rtmp", "webrtc":
+				target.Type = u.Scheme
+			default:
+				ext := filepath.Ext(u.Path)
+				switch ext {
+				case ".m3u8":
+					target.Type = "hls"
+				case ".flv":
+					target.Type = "flv"
+				case ".mp4":
+					target.Type = "mp4"
+				}
+			}
+		}
+	}
+
 	if req.PullOnStart != nil {
 		target.PullOnStart = *req.PullOnStart
+	}
+	if target.PullOnStart {
+		target.Pull.MaxRetry = -1
+	} else {
+		target.Pull.MaxRetry = 0
 	}
 	if req.StopOnIdle != nil {
 		target.StopOnIdle = *req.StopOnIdle
@@ -497,27 +596,107 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	if req.RecordFragment != nil {
 		target.Record.Fragment = req.RecordFragment.AsDuration()
 	}
+	if req.RecordType != nil {
+		if rt, ok := normalizePullRecordType(*req.RecordType); !ok {
+			err = fmt.Errorf("unsupported recordType %q, expect mp4 or fmp4", *req.RecordType)
+			return
+		} else {
+			target.Record.Type = rt
+		}
+	}
 	if req.StreamPath != nil {
 		target.StreamPath = *req.StreamPath
-	}
-	if req.Status != nil {
-		target.Status = byte(*req.Status)
 	}
 	if req.CheckInterval != nil {
 		target.CheckInterval = req.CheckInterval.AsDuration()
 	}
+	if target.CheckInterval == 0 {
+		target.CheckInterval = time.Second * 10
+	}
+	if req.ReadTimeout != nil {
+		target.ReadTimeout = req.ReadTimeout.AsDuration()
+	}
+	if target.ReadTimeout == 0 {
+		target.ReadTimeout = time.Second * 10
+	}
+	if req.StopRetryOnAuthFail != nil {
+		if strings.EqualFold(target.Type, "rtsp") {
+			target.StopRetryOnAuthFail = *req.StopRetryOnAuthFail
+		} else if *req.StopRetryOnAuthFail {
+			s.Debug("ignore stopRetryOnAuthFail for non-rtsp pull proxy", "type", target.Type, "id", req.ID)
+			target.StopRetryOnAuthFail = false
+		}
+	}
+	// 如果设置状态为非 disable，需要检查是否有相同 streamPath 的其他非 disable 代理
+	if req.Status != nil && *req.Status != uint32(PullProxyStatusDisabled) {
+		var existingCount int64
+		streamPath := target.StreamPath
+		if streamPath == "" {
+			streamPath = target.GetStreamPath()
+		}
+		s.DB.Model(&PullProxyConfig{}).Where("stream_path = ? AND id != ? AND status != ?", streamPath, req.ID, PullProxyStatusDisabled).Count(&existingCount)
 
-	if target.PullOnStart {
-		target.Pull.MaxRetry = -1
-	} else {
-		target.Pull.MaxRetry = 0
+		// 如果存在相同 streamPath 且状态不是 disabled 的其他记录，更新失败
+		if existingCount > 0 {
+			err = fmt.Errorf("已存在相同 streamPath [%s] 的非禁用代理，更新失败", streamPath)
+			return
+		}
+		target.Status = byte(*req.Status)
+	} else if req.Status != nil {
+		target.Status = PullProxyStatusDisabled
 	}
 
 	if err = s.DB.Save(target).Error; err != nil {
 		return
 	}
-	_, _ = s.createPullProxy(target)
-	return &pb.SuccessResponse{}, nil
+
+	// 检查是否从 disable 状态变为非 disable 状态
+	isNowDisabled := target.Status == PullProxyStatusDisabled
+
+	if device, ok := s.PullProxies.Get(uint(req.ID)); ok {
+		conf := device.GetConfig()
+		originalStatus := conf.Status
+		wasEnabled := originalStatus != PullProxyStatusDisabled
+		// 如果现在变为 disable 状态，需要停止并移除代理
+		if wasEnabled && isNowDisabled {
+			device.Stop(task.ErrStopByUser)
+			return
+		}
+
+		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath || conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment || conf.Record.Type != target.Record.Type {
+			device.Stop(task.ErrStopByUser)
+			device.WaitStopped()
+			device, err = s.createPullProxy(target)
+			device.WaitStarted()
+			if originalStatus == PullProxyStatusPulling {
+				device.Pull()
+			}
+		} else {
+			conf.Name = target.Name
+			conf.PullOnStart = target.PullOnStart
+			conf.StopOnIdle = target.StopOnIdle
+			conf.Description = target.Description
+			conf.StopRetryOnAuthFail = target.StopRetryOnAuthFail
+			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
+				device.Pull()
+			} else if originalStatus == PullProxyStatusPulling {
+				if pullJob := device.GetPullJob(); pullJob != nil {
+					pullJob.PublishConfig.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
+					if pullJob.Publisher != nil {
+						pullJob.Publisher.Publish.DelayCloseTimeout = pullJob.PublishConfig.DelayCloseTimeout
+					}
+				}
+			}
+		}
+	} else if !isNowDisabled {
+		// 尝试再次激活
+		_, err = s.createPullProxy(target)
+		if err != nil {
+			s.Error("create pull proxy failed", "error", err)
+		}
+	}
+	res = &pb.SuccessResponse{}
+	return
 }
 
 func (s *Server) RemovePullProxy(ctx context.Context, req *pb.RequestWithId) (res *pb.SuccessResponse, err error) {

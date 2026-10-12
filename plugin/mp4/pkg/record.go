@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,9 @@ import (
 
 	"github.com/langhuihui/gomem"
 )
+
+// progressDBInterval：fmp4 进行中切片周期刷新 EndTime 的节流间隔（REQ-MP4-001 方案 B / M1）
+const progressDBInterval = 10 * time.Second
 
 type WriteTrailerQueueTask struct {
 	task.Work
@@ -88,7 +92,7 @@ func (t *writeTrailerTask) Run() (err error) {
 	// fMP4(fragment)文件本身已是最终形态 [ftyp][moov(init)][moof/mdat...][mfra]，
 	// 不需要 moov 前移重写；走下方 progressive 全量重写会把它毁掉。
 	// 这里只设置元数据并触发最终持久化(对象存储=上传；本地=已就位)。
-	if t.muxer.isFragment() {
+	if t.muxer != nil && t.muxer.isFragment() {
 		var size int64
 		if size, err = t.file.Seek(0, io.SeekEnd); err != nil {
 			t.Error("seek fragment file", "err", err)
@@ -457,15 +461,62 @@ type bufferedSample struct {
 
 type Recorder struct {
 	m7s.DefaultRecorder
-	muxer           *Muxer
-	file            storage.File
-	firstVideoFrame bool // 标记是否是第一个视频帧
-	creating        bool
-	createDone      chan error
-	sampleBuffer    []bufferedSample
+	muxer            *Muxer
+	file             storage.File
+	firstVideoFrame  bool // 标记是否是第一个视频帧
+	creating         bool
+	createDone       chan error
+	sampleBuffer     []bufferedSample
+	audioTrack       *Track // FMP4 预置轨，避免与 WriteMoov 竞态
+	videoTrack       *Track
+	lastProgressDB   time.Time // fmp4 上次刷新 EndTime 的墙钟，用于节流
+	progressClosedID uint      // 已交给 writeTrailer 定稿的记录 ID，禁止再被进度刷新回退
+	// lastSampleWriteTime：最后成功写入样本的帧墙钟，Dispose 收尾用它写 EndTime，避免断流读超时把区间拖长。
+	// Confirmed via 寸止: BUG-021 方案 B
+	lastSampleWriteTime time.Time
+}
+
+// maybeFlushProgress 节流更新进行中 fmp4 记录的 EndTime/Duration，供 list/点播查询命中。
+// 普通 mp4 不刷新（进行中文件尚无 moov，写入 EndTime 会造成「可见但不可播」）。
+// Confirmed via 寸止: REQ-MP4-001 方案 B / M1+M4
+func (r *Recorder) maybeFlushProgress(end time.Time, duration uint32) {
+	if r.creating || r.Event.Type != "fmp4" || r.Event.ID == 0 {
+		return
+	}
+	id := r.Event.ID
+	// M4：已 writeTailer 的记录禁止再刷，避免与 deferred Save 竞态把 EndTime 写回去
+	if id == r.progressClosedID {
+		return
+	}
+	db := r.RecordJob.Plugin.DB
+	if db == nil || r.RecordJob.RecConf.Mode == config.RecordModeTest {
+		return
+	}
+	// 首次立即刷新；之后按 progressDBInterval 节流
+	if !r.lastProgressDB.IsZero() && end.Sub(r.lastProgressDB) < progressDBInterval {
+		return
+	}
+	r.lastProgressDB = end
+	r.Event.EndTime = end
+	r.Event.Duration = duration
+	dbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// 仅允许 end_time 单调前进，防止迟到的 Update 覆盖定稿值
+	if result := db.WithContext(dbCtx).Model(&m7s.RecordStream{}).
+		Where("id = ? AND end_time < ?", id, end).
+		Updates(map[string]any{
+			"end_time": end,
+			"duration": duration,
+		}); result.Error != nil {
+		r.Warn("db progress update failed", "id", id, "err", result.Error)
+	}
 }
 
 func (r *Recorder) writeTailer(end time.Time) {
+	// M4：先锁定当前记录 ID，阻断后续 maybeFlushProgress（含在途 goroutine 语义上的迟到写）
+	if r.Event.ID != 0 {
+		r.progressClosedID = r.Event.ID
+	}
 	// WriteTailDeferred 仅设置 EndTime 并返回延迟 DB 写入闭包，不立即写库。
 	// DB 写入将在 writeTrailerTask.Run() 成功（包含对象存储上传）后执行，
 	// 确保文件可播放后才入库；本地失败时也不会留下不一致的 DB 记录。
@@ -517,11 +568,17 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	if r.RecordJob.RecConf.Type == "" {
 		r.RecordJob.RecConf.Type = "mp4"
 	}
+	r.lastProgressDB = time.Time{}
+	r.lastSampleWriteTime = time.Time{}
 	t0 := time.Now()
 	err = r.CreateStream(start, CustomFileName)
 	r.Info("createStream step1 CreateStream", "elapsed", time.Since(t0))
 	if err != nil {
 		return
+	}
+	// fmp4：开片后记一次进度时间戳，避免紧接着的 maybeFlushProgress 重复写库
+	if r.Event.Type == "fmp4" && !r.Event.EndTime.IsZero() {
+		r.lastProgressDB = r.Event.EndTime
 	}
 
 	// 注意: 不要在这里关闭旧文件,因为它已经被传递给 writeTrailerTask
@@ -542,6 +599,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 		return
 	}
 
+	r.audioTrack, r.videoTrack = nil, nil
 	if r.Event.Type == "fmp4" {
 		r.muxer = NewMuxerWithStreamPath(FLAG_FRAGMENT, r.Event.StreamPath)
 	} else {
@@ -550,12 +608,83 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	t2 := time.Now()
 	err = r.muxer.WriteInitSegment(r.file)
 	r.Info("createStream step3 WriteInitSegment", "elapsed", time.Since(t2))
+	if err != nil {
+		return
+	}
+	// FMP4：在首个 moof 前写入含 mvex 的 moov（与 HTTP 点播路径一致）
+	if r.muxer.isFragment() {
+		t3 := time.Now()
+		if err = r.initFragmentTracks(); err != nil {
+			r.Error("createStream initFragmentTracks", "err", err)
+			return
+		}
+		if err = r.muxer.WriteMoov(r.file); err != nil {
+			r.Error("createStream WriteMoov", "err", err)
+			return
+		}
+		r.Info("createStream step4 WriteMoov", "elapsed", time.Since(t3))
+	}
 	r.Info("createStream total", "elapsed", time.Since(t0))
 	r.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
 	return
 }
 
+// initFragmentTracks 按 Publisher 已就绪轨预置 FMP4 Track，保证 WriteMoov 含全部轨
+func (r *Recorder) initFragmentTracks() (err error) {
+	sub := r.RecordJob.Subscriber
+	if sub == nil || sub.Publisher == nil {
+		return nil
+	}
+	pub := sub.Publisher
+	if pub.HasVideoTrack() && sub.SubVideo {
+		v := pub.VideoTrack.AVTrack
+		if err = v.WaitReady(); err != nil {
+			return
+		}
+		var codecID box.MP4_CODEC_TYPE
+		switch v.ICodecCtx.FourCC() {
+		case codec.FourCC_H264:
+			codecID = box.MP4_CODEC_H264
+		case codec.FourCC_H265:
+			codecID = box.MP4_CODEC_H265
+		default:
+			r.Warn("fmp4 skip unsupported video codec", "fourcc", v.ICodecCtx.FourCC())
+		}
+		if codecID != 0 {
+			track := r.muxer.AddTrack(codecID)
+			track.ICodecCtx = v.ICodecCtx
+			r.videoTrack = track
+		}
+	}
+	if pub.HasAudioTrack() && sub.SubAudio {
+		a := pub.AudioTrack.AVTrack
+		if err = a.WaitReady(); err != nil {
+			return
+		}
+		var codecID box.MP4_CODEC_TYPE
+		switch a.ICodecCtx.FourCC() {
+		case codec.FourCC_MP4A:
+			codecID = box.MP4_CODEC_AAC
+		case codec.FourCC_ALAW:
+			codecID = box.MP4_CODEC_G711A
+		case codec.FourCC_ULAW:
+			codecID = box.MP4_CODEC_G711U
+		case codec.FourCC_OPUS:
+			codecID = box.MP4_CODEC_OPUS
+		default:
+			r.Warn("fmp4 skip unsupported audio codec", "fourcc", a.ICodecCtx.FourCC())
+		}
+		if codecID != 0 {
+			track := r.muxer.AddTrack(codecID)
+			track.ICodecCtx = a.ICodecCtx
+			r.audioTrack = track
+		}
+	}
+	return nil
+}
+
 func (r *Recorder) Dispose() {
+	r.audioTrack, r.videoTrack = nil, nil
 	if r.creating {
 		// 异步分片 createStream 正在进行:OLD 文件已在 checkFragment 的 writeTailer 中移交给 writeTrailerTask。
 		// 等待 goroutine 结束,避免它在 retry Run() 启动后仍然修改 r.muxer/r.file 造成竞争。
@@ -572,7 +701,12 @@ func (r *Recorder) Dispose() {
 		return
 	}
 	if r.muxer != nil {
-		r.writeTailer(time.Now())
+		// {{ AURA-X: Modify - Dispose 用最后一帧 WriteTime 写 EndTime，与 checkFragment 一致；无样本则回退 Now. Confirmed via 寸止 BUG-021 B. }}
+		end := time.Now()
+		if !r.lastSampleWriteTime.IsZero() {
+			end = r.lastSampleWriteTime
+		}
+		r.writeTailer(end)
 		// 关键修复:将 muxer 和 file 置 nil,切断重试 Run() 对旧 muxer/file 的访问。
 		// 文件的关闭由 writeTrailerTask.Run() 负责。若不置 nil,重试 Run() 会向
 		// writeTrailerTask 正在处理的同一 muxer 写入新数据,导致 mdatSize 不匹配→EOF。
@@ -629,12 +763,14 @@ func (r *Recorder) Run() (err error) {
 			r.creating = true
 			r.createDone = make(chan error, 1)
 			r.sampleBuffer = r.sampleBuffer[:0]
+			r.audioTrack, r.videoTrack = nil, nil
 			go func() {
 				createErr := r.createStream(startTime)
 				r.Info("check fragment end async", "err", createErr)
 				r.createDone <- createErr
 			}()
 			at, vt = nil, nil
+			audioTrack, videoTrack = nil, nil
 			if vr := sub.VideoReader; vr != nil {
 				vr.ResetAbsTime()
 			}
@@ -648,23 +784,27 @@ func (r *Recorder) Run() (err error) {
 
 	// flushBuffer 将 createStream 异步执行期间缓存的帧写入新文件
 	flushBuffer := func() error {
+		audioTrack, videoTrack = r.audioTrack, r.videoTrack
 		for _, bs := range r.sampleBuffer {
 			if bs.isAudio {
 				if at == nil {
 					at = sub.AudioReader.Track
-					switch bs.codecCtx.GetBase().(type) {
-					case *codec.AACCtx:
-						track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
-						audioTrack = track
-						track.ICodecCtx = bs.codecCtx
-					case *codec.PCMACtx:
-						track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
-						audioTrack = track
-						track.ICodecCtx = bs.codecCtx
-					case *codec.PCMUCtx:
-						track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
-						audioTrack = track
-						track.ICodecCtx = bs.codecCtx
+					if audioTrack == nil {
+						switch bs.codecCtx.GetBase().(type) {
+						case *codec.AACCtx:
+							track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
+							audioTrack = track
+							track.ICodecCtx = bs.codecCtx
+						case *codec.PCMACtx:
+							track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
+							audioTrack = track
+							track.ICodecCtx = bs.codecCtx
+						case *codec.PCMUCtx:
+							track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
+							audioTrack = track
+							track.ICodecCtx = bs.codecCtx
+						}
+						r.audioTrack = audioTrack
 					}
 				}
 				if err := r.muxer.WriteSample(r.file, audioTrack, bs.sample); err != nil {
@@ -673,15 +813,18 @@ func (r *Recorder) Run() (err error) {
 			} else {
 				if vt == nil {
 					vt = sub.VideoReader.Track
-					switch bs.codecCtx.GetBase().(type) {
-					case *codec.H264Ctx:
-						track := r.muxer.AddTrack(box.MP4_CODEC_H264)
-						videoTrack = track
-						track.ICodecCtx = bs.codecCtx
-					case *codec.H265Ctx:
-						track := r.muxer.AddTrack(box.MP4_CODEC_H265)
-						videoTrack = track
-						track.ICodecCtx = bs.codecCtx
+					if videoTrack == nil {
+						switch bs.codecCtx.GetBase().(type) {
+						case *codec.H264Ctx:
+							track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+							videoTrack = track
+							track.ICodecCtx = bs.codecCtx
+						case *codec.H265Ctx:
+							track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+							videoTrack = track
+							track.ICodecCtx = bs.codecCtx
+						}
+						r.videoTrack = videoTrack
 					}
 				}
 				if err := r.muxer.WriteSample(r.file, videoTrack, bs.sample); err != nil {
@@ -756,25 +899,38 @@ func (r *Recorder) Run() (err error) {
 		}
 		if at == nil {
 			at = sub.AudioReader.Track
-			switch at.ICodecCtx.GetBase().(type) {
-			case *codec.AACCtx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
-				audioTrack = track
-				track.ICodecCtx = at.ICodecCtx
-			case *codec.PCMACtx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
-				audioTrack = track
-				track.ICodecCtx = at.ICodecCtx
-			case *codec.PCMUCtx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
-				audioTrack = track
-				track.ICodecCtx = at.ICodecCtx
+			if r.audioTrack != nil {
+				audioTrack = r.audioTrack
+			} else {
+				switch at.ICodecCtx.GetBase().(type) {
+				case *codec.AACCtx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_AAC)
+					audioTrack = track
+					track.ICodecCtx = at.ICodecCtx
+				case *codec.PCMACtx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_G711A)
+					audioTrack = track
+					track.ICodecCtx = at.ICodecCtx
+				case *codec.PCMUCtx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_G711U)
+					audioTrack = track
+					track.ICodecCtx = at.ICodecCtx
+				}
+				r.audioTrack = audioTrack
 			}
 			if audioTrack == nil {
 				return fmt.Errorf("unsupported audio codec for mp4 record: %T", at.ICodecCtx.GetBase())
 			}
 		}
-		return r.muxer.WriteSample(r.file, audioTrack, sample)
+		if err = r.muxer.WriteSample(r.file, audioTrack, sample); err != nil {
+			return err
+		}
+		r.lastSampleWriteTime = sub.AudioReader.Value.WriteTime
+		// 仅音轨录制时也推进进行中 EndTime
+		if sub.VideoReader == nil {
+			r.maybeFlushProgress(sub.AudioReader.Value.WriteTime, sub.AudioReader.AbsTime)
+		}
+		return nil
 	}, func(video *VideoFrame) error {
 		if r.muxer == nil {
 			err = r.createStream(sub.VideoReader.Value.WriteTime)
@@ -893,15 +1049,20 @@ func (r *Recorder) Run() (err error) {
 		}
 		if vt == nil {
 			vt = sub.VideoReader.Track
-			switch video.ICodecCtx.GetBase().(type) {
-			case *codec.H264Ctx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_H264)
-				videoTrack = track
-				track.ICodecCtx = video.ICodecCtx
-			case *codec.H265Ctx:
-				track := r.muxer.AddTrack(box.MP4_CODEC_H265)
-				videoTrack = track
-				track.ICodecCtx = video.ICodecCtx
+			if r.videoTrack != nil {
+				videoTrack = r.videoTrack
+			} else {
+				switch video.ICodecCtx.GetBase().(type) {
+				case *codec.H264Ctx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_H264)
+					videoTrack = track
+					track.ICodecCtx = video.ICodecCtx
+				case *codec.H265Ctx:
+					track := r.muxer.AddTrack(box.MP4_CODEC_H265)
+					videoTrack = track
+					track.ICodecCtx = video.ICodecCtx
+				}
+				r.videoTrack = videoTrack
 			}
 		}
 		//ctx := video.ICodecCtx.(pkg.IVideoCodecCtx)
@@ -935,6 +1096,11 @@ func (r *Recorder) Run() (err error) {
 		//		ar.ResetAbsTime()
 		//	}
 		//}
-		return r.muxer.WriteSample(r.file, videoTrack, sample)
+		if err = r.muxer.WriteSample(r.file, videoTrack, sample); err != nil {
+			return err
+		}
+		r.lastSampleWriteTime = sub.VideoReader.Value.WriteTime
+		r.maybeFlushProgress(sub.VideoReader.Value.WriteTime, sub.VideoReader.AbsTime)
+		return nil
 	})
 }

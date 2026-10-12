@@ -548,6 +548,29 @@ func (s *Server) SetStreamSpeed(ctx context.Context, req *pb.SetStreamSpeedReque
 	if s, ok := s.Streams.SafeGet(req.StreamPath); ok {
 		s.Speed = float64(req.Speed)
 		s.Scale = float64(req.Speed)
+		// 同步 Reader 可见倍速；并重置 SpeedController，确保下次 SpeedControl 按新倍速重新 begin
+		if s.HasVideoTrack() {
+			s.VideoTrack.Range(func(track *pkg.AVTrack) bool {
+				track.SetSpeedHint(s.Speed)
+				track.ResetSpeedController()
+				return true
+			})
+			if s.VideoTrack.AVTrack != nil {
+				s.VideoTrack.AVTrack.SetSpeedHint(s.Speed)
+				s.VideoTrack.AVTrack.ResetSpeedController()
+			}
+		}
+		if s.HasAudioTrack() {
+			s.AudioTrack.Range(func(track *pkg.AVTrack) bool {
+				track.SetSpeedHint(s.Speed)
+				track.ResetSpeedController()
+				return true
+			})
+			if s.AudioTrack.AVTrack != nil {
+				s.AudioTrack.AVTrack.SetSpeedHint(s.Speed)
+				s.AudioTrack.AVTrack.ResetSpeedController()
+			}
+		}
 		s.Info("set stream speed", "speed", req.Speed)
 	}
 	return &pb.SuccessResponse{}, err
@@ -601,6 +624,48 @@ func (s *Server) WaitList(context.Context, *emptypb.Empty) (res *pb.StreamWaitLi
 		for subs := range s.Waiting.Range {
 			res.List[subs.StreamPath] = int32(subs.Length)
 		}
+	})
+	return
+}
+
+func (s *Server) GetSubscriptionProgress(ctx context.Context, req *pb.StreamSnapRequest) (res *pb.SubscriptionProgressResponse, err error) {
+	s.CallOnStreamTask(func() {
+		if waitStream, ok := s.Waiting.Get(req.StreamPath); ok {
+			progress := waitStream.Progress
+			res = &pb.SubscriptionProgressResponse{
+				Code:    0,
+				Message: "success",
+				Data: &pb.SubscriptionProgressData{
+					CurrentStep: int32(progress.CurrentStep),
+				},
+			}
+			// Convert steps
+			for _, step := range progress.Steps {
+				pbStep := &pb.Step{
+					Name:        step.Name,
+					Description: step.Description,
+					Error:       step.Error,
+				}
+				if !step.StartedAt.IsZero() {
+					pbStep.StartedAt = timestamppb.New(step.StartedAt)
+				}
+				if !step.CompletedAt.IsZero() {
+					pbStep.CompletedAt = timestamppb.New(step.CompletedAt)
+				}
+				res.Data.Steps = append(res.Data.Steps, pbStep)
+			}
+			return
+		}
+		// Confirmed via 寸止：流已 publish（不在 Waiting）时返回成功完成态，避免前端轮询打出 500
+		if _, ok := s.Streams.Get(req.StreamPath); ok {
+			res = &pb.SubscriptionProgressResponse{
+				Code:    0,
+				Message: "success",
+				Data:    &pb.SubscriptionProgressData{},
+			}
+			return
+		}
+		err = pkg.ErrNotFound
 	})
 	return
 }
@@ -862,7 +927,12 @@ func (s *Server) GetRecordList(ctx context.Context, req *pb.ReqRecordList) (resp
 		query = query.Where("stream_path = ?", req.StreamPath)
 	}
 	if req.Type != "" {
-		query = query.Where("type = ?", req.Type)
+		// Confirmed via 寸止: REQ-MP4-001 — type=mp4 时同时列出 fmp4（边录边播）
+		if req.Type == "mp4" {
+			query = query.Where("type IN ?", []string{"mp4", "fmp4"})
+		} else {
+			query = query.Where("type = ?", req.Type)
+		}
 	}
 	startTime, endTime, err := util.TimeRangeQueryParse(url.Values{"range": []string{req.Range}, "start": []string{req.Start}, "end": []string{req.End}})
 	if err == nil {
@@ -984,7 +1054,12 @@ func (s *Server) GetRecordCatalog(ctx context.Context, req *pb.ReqRecordCatalog)
 	}
 	query := s.DB.Model(&RecordStream{})
 	if req.Type != "" {
-		query = query.Where("type = ?", req.Type)
+		// Confirmed via 寸止: REQ-MP4-001 — catalog 的 type=mp4 含 fmp4
+		if req.Type == "mp4" {
+			query = query.Where("type IN ?", []string{"mp4", "fmp4"})
+		} else {
+			query = query.Where("type = ?", req.Type)
+		}
 	}
 	err = query.Select("stream_path,count(id) as count,min(start_time) as start_time,max(end_time) as end_time").Group("stream_path").Find(&result).Error
 	if err != nil {
