@@ -1,0 +1,23 @@
+global:
+  http:
+    listenaddr: :8080
+  db:
+    dbtype: sqlite
+    dsn: /data/storage-race.db
+  storageallowlocalfallback: __ALLOW_LOCAL_FALLBACK__
+  storage:
+    s3:
+      endpoint: http://minio:9000
+      region: us-east-1
+      accesskeyid: __MINIO_ROOT_USER__
+      secretaccesskey: __MINIO_ROOT_PASSWORD__
+      bucket: storage-race
+      pathprefix: recordings
+      forcepathstyle: true
+      usessl: false
+      connecttimeout: 2s
+mp4:
+  enable: true
+rtmp:
+  tcp:
+    listenaddr: :1935

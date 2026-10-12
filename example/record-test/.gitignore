@@ -8,3 +8,4 @@ fatal/
 admin.zip
 reports/*
 !reports/.gitkeep
+.storage-race/
