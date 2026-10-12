@@ -118,8 +118,15 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	}
 	storageType := recordJob.storage.GetKey()
 
+	// Confirmed via 寸止: REQ-MP4-001 方案 B — fmp4 开片即写入 EndTime=StartTime，
+	// 使列表/点播查询（依赖 end_time）在切片未结束时也能命中进行中记录。
+	endTime := time.Time{}
+	if recordJob.RecConf.Type == "fmp4" {
+		endTime = start
+	}
 	r.Event.RecordStream = RecordStream{
 		StartTime:    start,
+		EndTime:      endTime,
 		StreamPath:   sub.StreamPath,
 		FilePath:     filePath,
 		FileName:     fileName,

@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -32,6 +33,10 @@ type (
 		mdatSize     uint64
 		StreamPath   string    // Added to store the stream path
 		Metadata     *Metadata // 添加元数据支持
+		moovWritten  bool      // FMP4：moov 是否已写入（须在首个 moof 之前）
+		// fmp4：开片 moov 写入后记录可回写时长的文件偏移；0 表示不可用
+		mvhdDurationOffset int64
+		mehdDurationOffset int64
 	}
 )
 
@@ -131,6 +136,7 @@ func (m *Muxer) CreateFlagment(t *Track, sample Sample) (moof IBox, mdat IBox) {
 			Duration: lastSample.Duration,
 			FirstTs:  uint64(lastSample.Timestamp),
 			LastTs:   uint64(sample.Timestamp),
+			KeyFrame: lastSample.KeyFrame,
 		})
 		t.Samplelist[0] = sample
 	} else {
@@ -141,6 +147,7 @@ func (m *Muxer) CreateFlagment(t *Track, sample Sample) (moof IBox, mdat IBox) {
 
 func (m *Muxer) WriteSample(w io.Writer, t *Track, sample Sample) (err error) {
 	if m.isFragment() {
+		// 首个 sample 只缓存，CreateFlagment 返回 nil,nil；等下一帧才写 moof/mdat
 		// fMP4 首个 moof 落盘前必须先写出 init segment 的 moov(含 mvex/trex),
 		// 否则文件没有轨道/codec 描述,播放器整档无法解码。
 		// len(t.Samplelist) > 0 表示本次 CreateFlagment 将产出首个 moof。
@@ -150,6 +157,16 @@ func (m *Muxer) WriteSample(w io.Writer, t *Track, sample Sample) (err error) {
 			}
 		}
 		moof, mdat := m.CreateFlagment(t, sample)
+		if moof == nil {
+			return nil
+		}
+		// 可播 FMP4 要求 moov(含 mvex) 在首个 moof 之前
+		if !m.moovWritten {
+			if err = m.WriteMoov(w); err != nil {
+				return
+			}
+			m.moovWritten = true
+		}
 		_, err = WriteTo(w, moof, mdat)
 		return
 	}
@@ -217,8 +234,8 @@ func (m *Muxer) makeMvex() *MovieExtendsBox {
 			trexs = append(trexs, trex)
 		}
 	}
-	// mehd := CreateMovieExtendsHeaderBox(m.maxdurtaion)
-	var mehd *MovieExtendsHeaderBox
+	// Confirmed via 寸止: 预留 mehd，trailer 时回写真实 fragment_duration，改善 VLC/浏览器 seek
+	mehd := CreateMovieExtendsHeaderBox(0)
 	return CreateMovieExtendsBox(mehd, trexs)
 }
 
@@ -263,10 +280,40 @@ func (m *Muxer) MakeMoov() IBox {
 	return m.moov
 }
 
-func (m *Muxer) WriteMoov(w io.Writer) (err error) {
-	var n int64
-	n, err = WriteTo(w, m.MakeMoov())
-	m.CurrentOffset += n
+// findMoovDurationFieldOffsets 在已序列化的 moov box 缓冲中定位 mvhd/mehd 的 duration 字段偏移（相对 moov 起始）。
+func findMoovDurationFieldOffsets(moovBuf []byte) (mvhdDurOff, mehdDurOff int64) {
+	mvhdDurOff, mehdDurOff = -1, -1
+	if len(moovBuf) < 16 || string(moovBuf[4:8]) != "moov" {
+		return
+	}
+	// 递归扫描 container，offset 为相对 moovBuf 起始
+	var walk func(start, end int)
+	walk = func(start, end int) {
+		pos := start
+		for pos+8 <= end {
+			size := int(binary.BigEndian.Uint32(moovBuf[pos : pos+4]))
+			if size < 8 || pos+size > end {
+				return
+			}
+			typ := string(moovBuf[pos+4 : pos+8])
+			switch typ {
+			case "mvhd":
+				// FullBox 头 12 字节后：creation(4)+modification(4)+timescale(4)+duration(4)（version 0）
+				if moovBuf[pos+8] == 0 && pos+28 <= end {
+					mvhdDurOff = int64(pos + 24)
+				}
+			case "mehd":
+				// FullBox 头 12 字节后即为 fragment_duration(4)（version 0）
+				if moovBuf[pos+8] == 0 && pos+16 <= end {
+					mehdDurOff = int64(pos + 12)
+				}
+			case "moov", "trak", "mdia", "minf", "stbl", "edts", "mvex", "udta":
+				walk(pos+8, pos+size)
+			}
+			pos += size
+		}
+	}
+	walk(8, len(moovBuf))
 	return
 }
 
@@ -302,15 +349,119 @@ func (m *Muxer) PrepareFrontMoov() (IBox, error) {
 	return moov, nil
 }
 
+func (m *Muxer) WriteMoov(w io.Writer) (err error) {
+	moov := m.MakeMoov()
+	moovStart := m.CurrentOffset
+	var buf bytes.Buffer
+	var n int64
+	n, err = WriteTo(&buf, moov)
+	if err != nil {
+		return
+	}
+	moovBytes := buf.Bytes()
+	if m.isFragment() {
+		mvhdRel, mehdRel := findMoovDurationFieldOffsets(moovBytes)
+		if mvhdRel >= 0 {
+			m.mvhdDurationOffset = moovStart + mvhdRel
+		}
+		if mehdRel >= 0 {
+			m.mehdDurationOffset = moovStart + mehdRel
+		}
+	}
+	if _, err = w.Write(moovBytes); err != nil {
+		return
+	}
+	m.CurrentOffset += n
+	m.moov = moov
+	m.moovWritten = true
+	return
+}
+
+// patchFMP4Duration 将实际媒体时长写回已落盘 moov 中的 mvhd/mehd（timescale=1000）。
+func (m *Muxer) patchFMP4Duration(file storage.Writer, duration uint32) (err error) {
+	if duration == 0 {
+		return nil
+	}
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], duration)
+	if m.mvhdDurationOffset > 0 {
+		if _, err = file.Seek(m.mvhdDurationOffset, io.SeekStart); err != nil {
+			return
+		}
+		if _, err = file.Write(tmp[:]); err != nil {
+			return
+		}
+	}
+	if m.mehdDurationOffset > 0 {
+		if _, err = file.Seek(m.mehdDurationOffset, io.SeekStart); err != nil {
+			return
+		}
+		if _, err = file.Write(tmp[:]); err != nil {
+			return
+		}
+	}
+	// 写回文件末尾，避免影响后续逻辑对偏移的假设
+	if _, err = file.Seek(0, io.SeekEnd); err != nil {
+		return
+	}
+	return nil
+}
+
+func (m *Muxer) fmp4MediaDuration() uint32 {
+	var maxTs uint64
+	for i := uint32(1); i < m.nextTrackId; i++ {
+		track := m.Tracks[i]
+		if track == nil {
+			continue
+		}
+		for _, f := range track.fragments {
+			if f.LastTs > maxTs {
+				maxTs = f.LastTs
+			}
+		}
+		if len(track.Samplelist) > 0 {
+			last := track.Samplelist[len(track.Samplelist)-1]
+			ts := uint64(last.Timestamp + last.Duration)
+			if ts > maxTs {
+				maxTs = ts
+			}
+		}
+	}
+	if maxTs > 0xffffffff {
+		return 0xffffffff
+	}
+	return uint32(maxTs)
+}
+
 func (m *Muxer) WriteTrailer(file storage.Writer) (err error) {
 	if m.isFragment() {
-		// Flush any remaining samples
-		// if err = m.flushFragment(file); err != nil {
-		// 	return err
-		// }
+		// 刷出各轨 Samplelist 中尚未形成 moof 的最后一个 sample
+		for i := uint32(1); i < m.nextTrackId; i++ {
+			track := m.Tracks[i]
+			if track == nil || len(track.Samplelist) == 0 {
+				continue
+			}
+			last := &track.Samplelist[0]
+			dur := last.Duration
+			if dur == 0 {
+				dur = 33 // timescale=1000 时约 30fps
+			}
+			moof, mdat := m.CreateFlagment(track, Sample{Timestamp: last.Timestamp + dur})
+			if moof == nil {
+				continue
+			}
+			if !m.moovWritten {
+				if err = m.WriteMoov(file); err != nil {
+					return
+				}
+			}
+			if _, err = WriteTo(file, moof, mdat); err != nil {
+				return
+			}
+			track.Samplelist = track.Samplelist[:0]
+		}
 		var mfraChildren []IBox
 		var mfraSize uint32 = 0
-		// Write mfra box
 		tfras := make([]*TrackFragmentRandomAccessBox, len(m.Tracks))
 		for i := uint32(1); i < m.nextTrackId; i++ {
 			if track := m.Tracks[i]; track != nil && len(track.fragments) > 0 {
@@ -319,8 +470,6 @@ func (m *Muxer) WriteTrailer(file storage.Writer) (err error) {
 				mfraSize += uint32(tfras[i-1].Size())
 			}
 		}
-
-		// Only write mfra if we have fragments
 		if mfraSize > 0 {
 			mfraChildren = append(mfraChildren, CreateMfroBox(uint32(mfraSize)+16))
 			mfra := CreateContainerBox(TypeMFRA, mfraChildren...)
@@ -329,14 +478,10 @@ func (m *Muxer) WriteTrailer(file storage.Writer) (err error) {
 				return err
 			}
 		}
-		// Clean up any remaining buffers
-		// for i := uint32(1); i < m.nextTrackId; i++ {
-		// 	if track := m.Tracks[i]; track != nil && track.writer != nil {
-		// 		if ws, ok := track.writer.(*Fmp4WriterSeeker); ok {
-		// 			ws.Buffer = nil
-		// 		}
-		// 	}
-		// }
+		// 回写 moov 内时长，使播放器不必仅依赖文件尾 mfra 才能 seek/显示时长
+		if err = m.patchFMP4Duration(file, m.fmp4MediaDuration()); err != nil {
+			return err
+		}
 	} else {
 		if err = m.reWriteMdatSize(file); err != nil {
 			return err

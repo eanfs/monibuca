@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/langhuihui/gomem"
 	task "github.com/eanfs/gotask"
+	"github.com/langhuihui/gomem"
 	"github.com/pion/rtcp"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
@@ -347,7 +347,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 		var rcc RTPCodecParameters
 		var audioCodec codec.FourCC
 		if actx.FourCC() == codec.FourCC_MP4A {
-			// AAC source, create Opus codec parameters for WebRTC
+			// AAC 源：尝试转 Opus；未启用转码 build tag 时仅输出视频
 			audioCodec = codec.FourCC_OPUS
 			rcc.PayloadType = 111
 			rcc.MimeType = MimeTypeOpus
@@ -356,10 +356,13 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 			rcc.SDPFmtpLine = "minptime=10;useinbandfec=1"
 			if base, ok := actx.GetBase().(*codec.AACCtx); ok {
 				if aacTranscoder, err = aacopus.NewAACToOpus(base, 64000); err != nil {
-					IO.Error("create AAC->Opus transcoder failed", "error", err)
-					// fallback to existing behavior: no RTP audio track for AAC
+					IO.Warn("AAC->Opus transcode unavailable, WebRTC video only", "error", err)
+					err = nil
 					goto audioDone
 				}
+			} else {
+				IO.Warn("AAC audio ctx invalid, WebRTC video only")
+				goto audioDone
 			}
 		} else {
 			audioCodec = actx.FourCC()

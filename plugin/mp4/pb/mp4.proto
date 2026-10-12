@@ -70,6 +70,8 @@ message ReqEventRecord {
   string eventDesc = 6;
   string eventLevel = 7;//事件级别,0表示重要事件，无法删除且表示无需自动删除,1表示非重要事件,达到自动删除时间后，自动删除
   string fragment = 8;
+  // REQ-MP4-002: 容器格式，mp4 或 fmp4，默认 mp4
+  string type = 9;
 }
 
 message ResponseEventRecord {
@@ -84,6 +86,8 @@ message ReqStartRecord {
   string filePath = 3;
   string fileName = 4;
   string duration = 5; // 录制时长，支持纯数字（秒）或带单位格式如 "60s"、"1m"
+  // REQ-MP4-002: 容器格式，mp4 或 fmp4，默认 mp4（type 用 6：4/5 已被本仓 fileName/duration 占用）
+  string type = 6;
 }
 
 message ResponseStartRecord {

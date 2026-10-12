@@ -78,6 +78,7 @@ type Subscriber struct {
 	waitStartTime              time.Time
 	AudioReader, VideoReader   *AVRingReader
 	StartAudioTS, StartVideoTS time.Duration
+	lastH14SubLog              time.Time // debug throttle H14
 }
 
 func createSubscriber(p *Plugin, streamPath string, conf config.Subscribe) *Subscriber {
@@ -407,6 +408,18 @@ func (handler *SubscribeHandler[A, V]) Run() (err error) {
 	for err == nil {
 		err = s.Err()
 		ar, vr := s.AudioReader, s.VideoReader
+		// BUG-022：≥8× 发布端停写音频；订阅端必须停读，否则会堵在写锁 RLock 上假死
+		if s.Publisher != nil && s.Publisher.Speed >= 8 {
+			if ar != nil {
+				ar.StopRead()
+				s.AudioReader = nil
+				ar = nil
+			}
+			handler.audioNotAvailable = true
+		} else if s.Publisher != nil && handler.audioNotAvailable && s.Publisher.Speed < 8 {
+			// 恢复常速后允许重新创建音频 Reader
+			handler.audioNotAvailable = false
+		}
 		if vr != nil {
 			for err == nil {
 				err = vr.ReadFrame(&s.Subscribe)
@@ -416,6 +429,14 @@ func (handler *SubscribeHandler[A, V]) Run() (err error) {
 				if err == nil {
 					handler.videoFrame = &vr.Value
 					err = s.Err()
+					// #region agent log
+					if s.Publisher != nil && s.Publisher.Speed >= 8 {
+						now := time.Now()
+						if now.Sub(s.lastH14SubLog) > 200*time.Millisecond {
+							s.lastH14SubLog = now
+						}
+					}
+					// #endregion
 				} else if errors.Is(err, ErrDiscard) {
 					s.Info("subscriber received ErrDiscard", "seq", vr.Value.Sequence)
 					s.VideoReader = nil

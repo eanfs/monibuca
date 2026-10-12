@@ -121,6 +121,8 @@ type (
 		Header        HTTPValues
 		Args          HTTPValues `gorm:"-:all"`              // 拉流参数
 		TestMode      int        `desc:"测试模式,0:关闭,1:只拉流不发布"` // 测试模式
+		// Confirmed via 寸止: RTSP 鉴权失败立即停重试；默认 false 兼容现网
+		StopRetryOnAuthFail bool `desc:"鉴权失败时停止重试"`
 	}
 	Push struct {
 		URL           string        `desc:"推送地址"`                    // 推送地址
@@ -143,7 +145,7 @@ type (
 		FilePath          string         `desc:"录制文件路径"` // 录制文件路径
 		FileName          string         `json:"fileName" desc:"录制文件名" gorm:"-"`
 		Fragment          time.Duration  `desc:"分片时长"`                         // 分片时长
-		Duration          time.Duration  `desc:"录制时长,到达时长后自动停止录像"`        // 录制时长,到达时长后自动停止录像
+		Duration          time.Duration  `desc:"录制时长,到达时长后自动停止录像"`             // 录制时长,到达时长后自动停止录像
 		RealTime          bool           `desc:"是否实时录制"`                       // 是否实时录制
 		Append            bool           `desc:"是否追加录制"`                       // 是否追加录制
 		Event             *RecordEvent   `json:"event" desc:"事件录像配置" gorm:"-"` // 事件录像配置

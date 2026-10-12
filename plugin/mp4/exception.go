@@ -210,8 +210,9 @@ func (t *StorageManagementTask) manageLocalStorage() {
 		return
 	}
 
-	// 设置数据库连接和全局阈值
+	// 设置数据库连接、日志和全局阈值
 	localStorage.SetDB(t.DB)
+	localStorage.SetLogger(t.Logger.With("component", "LocalStorage"))
 	localStorage.SetGlobalThreshold(t.OverwritePercent)
 
 	// 执行存储管理
@@ -267,7 +268,6 @@ func (t *StorageManagementTask) manageFallbackStorage(st storage.Storage) {
 		// 查询最旧的文件
 		var record m7s.RecordStream
 		err := t.DB.Where("storage_type = ?", "local").
-			Where("type = ?", "mp4").
 			Where("storage_level = ?", 1).
 			Where("record_level != ?", "high").
 			Where("end_time IS NOT NULL").
@@ -276,9 +276,8 @@ func (t *StorageManagementTask) manageFallbackStorage(st storage.Storage) {
 
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
-				// 没有非重要录像，查询所有录像
+				// 没有非重要录像，查询所有录像（Confirmed via 寸止: REQ-MP4-002 — 不按 type 过滤，全清）
 				err = t.DB.Where("storage_type = ?", "local").
-					Where("type = ?", "mp4").
 					Where("storage_level = ?", 1).
 					Where("end_time IS NOT NULL").
 					Order("end_time ASC").
