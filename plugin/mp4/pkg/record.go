@@ -241,6 +241,9 @@ func (t *writeTrailerTask) Run() (err error) {
 		if pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
 			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr == nil && pendingPath != "" {
 			tempOwned = false // 已移走，不需 defer 删除
+			// 媒体已移入 pending，原路径不再有数据；sidecar 留着会成为孤儿。
+			// 登记失败时保留 sidecar，文件仍在原地可供后续重试。
+			t.removeIndexAfterPendingRegistration(true)
 		}
 	}
 
@@ -283,10 +286,14 @@ func (t *writeTrailerTask) Run() (err error) {
 			os.Remove(tempPath) // 无 DB 部署:无补传队列可登记,按旧行为清理
 			return
 		}
-		if _, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
-			t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr != nil {
+		pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
+			t.streamPath, expectedSize, t.durationMs, metadata, cause)
+		if rerr != nil {
 			os.Remove(tempPath) // pending 目录满等异常(已告警):清理避免临时文件堆积
+			return
 		}
+		// 成功登记 pending：媒体已移出，删除 sidecar 避免指向不存在的文件。
+		t.removeIndexAfterPendingRegistration(pendingPath != "")
 	})
 	return
 }
@@ -390,13 +397,18 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 
 // recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记到 pending
 // 目录供定时补传。用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
-func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) {
+// 返回是否真正登记成功（媒体被移入 pending）：成功后原路径已无媒体，
+// sidecar 必须一并删除，否则会指向不存在的文件。
+func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (registered bool) {
 	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
 	if t.durationMs > 0 {
 		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
 	}
-	m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
+	pendingPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
 		t.streamPath, fileSize, t.durationMs, metadata, cause)
+	registered = err == nil && pendingPath != ""
+	t.removeIndexAfterPendingRegistration(registered)
+	return registered
 }
 
 // runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，
@@ -1044,30 +1056,33 @@ func (r *Recorder) resetIndex() {
 
 // commitIndex 追加 commit 扩展记录并关闭索引，返回 sidecar 路径供后续
 // 上传成功时删除。sidecar 本身保留在磁盘上（崩溃窗口内仍可恢复）。
+//
+// 无论本段是否还持有写句柄都无条件 resetIndex：indexPath/indexDisabled 是
+// 分片级状态，CreateIndex 失败或重建后重开失败都不能残留到下一段——否则
+// 第 1 个分片失败会导致后续所有分片都不再尝试建 sidecar。
+// 句柄为空但 sidecar 已存在时仍返回其路径，让上传成功分支能清理它。
 func (r *Recorder) commitIndex() (indexPath string) {
-	if r.index == nil {
-		return ""
-	}
 	idx, path := r.index, r.indexPath
-	r.index = nil // 防止重入时重复 Commit
-	if err := idx.Commit(r.Event.Duration, r.indexSamples); err != nil {
-		r.Warn("commit index sidecar", "err", err, "indexPath", path)
-	}
-	if err := idx.Close(); err != nil {
-		r.Warn("close index sidecar", "err", err, "indexPath", path)
+	if idx != nil {
+		r.index = nil // 防止重入时重复 Commit
+		if err := idx.Commit(r.Event.Duration, r.indexSamples); err != nil {
+			r.Warn("commit index sidecar", "err", err, "indexPath", path)
+		}
+		if err := idx.Close(); err != nil {
+			r.Warn("close index sidecar", "err", err, "indexPath", path)
+		}
 	}
 	r.resetIndex()
 	return path
 }
 
 // closeIndex 不写 commit 直接关闭索引（媒体文件被丢弃的分支）。
-// 按提交式删除约定，这里也不删除 sidecar。
+// 按提交式删除约定，这里也不删除 sidecar；同样无条件复位分片级索引状态。
 func (r *Recorder) closeIndex() {
-	if r.index == nil {
-		return
-	}
-	if err := r.index.Close(); err != nil {
-		r.Warn("close index sidecar", "err", err, "indexPath", r.indexPath)
+	if r.index != nil {
+		if err := r.index.Close(); err != nil {
+			r.Warn("close index sidecar", "err", err, "indexPath", r.indexPath)
+		}
 	}
 	r.resetIndex()
 }
@@ -1093,6 +1108,20 @@ func removeIndexAfterUpload(indexPath string) error {
 		return nil
 	}
 	return RemoveIndex(indexPath)
+}
+
+// removeIndexAfterPendingRegistration 在媒体已成功移入 pending 暂存目录后
+// 删除 sidecar。此时原路径的媒体已不存在，索引无法再用于恢复，留着只会
+// 成为指向不存在文件的孤儿。pending 登记失败（如 pending 满）时保留，
+// 供后续重试使用。
+func (t *writeTrailerTask) removeIndexAfterPendingRegistration(registered bool) {
+	if !registered || t.indexPath == "" {
+		return
+	}
+	if err := RemoveIndex(t.indexPath); err != nil {
+		t.Warn("remove index sidecar after pending registration failed",
+			"err", err, "indexPath", t.indexPath)
+	}
 }
 
 func (r *Recorder) Dispose() {

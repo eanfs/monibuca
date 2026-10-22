@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
+	"gorm.io/gorm"
+	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/codec"
 	"m7s.live/v5/pkg/storage"
 	"m7s.live/v5/plugin/mp4/pkg/box"
@@ -294,6 +298,186 @@ func TestIndexRemovedOnlyAfterUploadSuccess(t *testing.T) {
 		}
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("sidecar must be kept when upload fails: %v", err)
+		}
+	})
+}
+
+// 分片 1 建索引失败（indexDisabled=true）不得污染分片 2：commitIndex 必须
+// 无条件复位分片级状态，下一段首个 sample 重新尝试创建 sidecar。
+func TestIndexDisabledInFragmentRetriedNextFragment(t *testing.T) {
+	r, _, track, mediaPath := newIndexTestRecorder(t)
+	sidecar := indexFilePath(mediaPath)
+
+	// 用同名目录占住 sidecar 路径，让 CreateIndex 失败（模拟临时目录不可写）。
+	if err := os.Mkdir(sidecar, 0o755); err != nil {
+		t.Fatalf("block index path: %v", err)
+	}
+	if err := r.writeSample(track, newIndexTestSample(0, true, 1, 2, 3, 4)); err != nil {
+		t.Fatalf("write sample fragment 1: %v", err)
+	}
+	if !r.indexDisabled || r.indexPath != "" {
+		t.Fatalf("fragment 1 should disable index: disabled=%v indexPath=%q",
+			r.indexDisabled, r.indexPath)
+	}
+
+	// 分片边界：writeTailer 调 commitIndex。
+	if got := r.commitIndex(); got != "" {
+		t.Fatalf("commitIndex = %q, want empty (no sidecar was created)", got)
+	}
+	if r.indexDisabled || r.index != nil || r.indexPath != "" || r.indexMediaPath != "" {
+		t.Fatalf("fragment-level index state must be reset: disabled=%v index=%v indexPath=%q mediaPath=%q",
+			r.indexDisabled, r.index, r.indexPath, r.indexMediaPath)
+	}
+
+	// 分片 2：障碍解除后首个 sample 必须重新建索引并成功提交。
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatalf("unblock index path: %v", err)
+	}
+	if err := r.writeSample(track, newIndexTestSample(20, false, 5, 6, 7, 8)); err != nil {
+		t.Fatalf("write sample fragment 2: %v", err)
+	}
+	if r.index == nil || r.indexPath != sidecar {
+		t.Fatalf("index should be retried in next fragment: index=%v indexPath=%q",
+			r.index, r.indexPath)
+	}
+	r.Event.Duration = 40
+	if got := r.commitIndex(); got != sidecar {
+		t.Fatalf("commitIndex = %q, want %q", got, sidecar)
+	}
+	got, err := ReadIndex(sidecar)
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	if !got.Committed || len(got.Records) != 1 {
+		t.Fatalf("fragment 2 sidecar = %+v, want committed with 1 record", got)
+	}
+}
+
+// 重建后重开失败会留下 index=nil 但 indexPath!="" 的状态。commitIndex 仍须
+// 返回该路径（上传成功分支才能清理已有 sidecar），并复位状态让下一段重试。
+func TestCommitIndexReturnsPathWhenHandleLost(t *testing.T) {
+	r, _, track, mediaPath := newIndexTestRecorder(t)
+	if err := r.writeSample(track, newIndexTestSample(0, true, 1, 2)); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	sidecar := indexFilePath(mediaPath)
+	if err := r.index.Close(); err != nil {
+		t.Fatalf("close index handle: %v", err)
+	}
+	r.index = nil // 模拟重建后 openIndexAppend 失败：只剩路径，没有写句柄
+
+	if got := r.commitIndex(); got != sidecar {
+		t.Fatalf("commitIndex = %q, want %q even when handle is gone", got, sidecar)
+	}
+	if r.index != nil || r.indexPath != "" || r.indexMediaPath != "" || r.indexDisabled {
+		t.Fatalf("state must be reset: index=%v indexPath=%q mediaPath=%q disabled=%v",
+			r.index, r.indexPath, r.indexMediaPath, r.indexDisabled)
+	}
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Fatalf("existing sidecar must be kept on disk: %v", err)
+	}
+}
+
+// —— I-2：pending 登记与 sidecar 清理 ——
+
+func newPendingTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open in-memory sqlite: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1) // :memory: 每连接独立库，限单连接以共享同一库
+	if err := db.AutoMigrate(&m7s.UploadTask{}, &m7s.AlarmInfo{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	return db
+}
+
+// newPendingTestSidecar 造一个媒体文件及其已提交的 sidecar。
+func newPendingTestSidecar(t *testing.T, dir string) (mediaPath, indexPath string) {
+	t.Helper()
+	mediaPath = filepath.Join(dir, "rec.mp4")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o644); err != nil {
+		t.Fatalf("write media: %v", err)
+	}
+	indexPath = indexFilePath(mediaPath)
+	w, err := CreateIndex(indexPath, IndexHeader{Version: 1, MediaPath: mediaPath})
+	if err != nil {
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	if err := w.Commit(0, 0); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return mediaPath, indexPath
+}
+
+func newPendingTestTrailerTask(indexPath string, db *gorm.DB) *writeTrailerTask {
+	task := &writeTrailerTask{
+		indexPath:  indexPath,
+		db:         db,
+		storageKey: "s3",
+		streamPath: "live/test",
+		filePath:   "live/test/rec.mp4",
+	}
+	task.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	return task
+}
+
+// pending 登记成功后媒体被移出原目录，sidecar 必须一并删除，避免 MediaPath
+// 指向不存在的文件；登记失败（pending 满）时媒体留在原地，sidecar 保留供重试。
+func TestIndexRemovedAfterPendingRegistration(t *testing.T) {
+	t.Run("registered removes sidecar", func(t *testing.T) {
+		mediaDir := t.TempDir()
+		storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir()})
+		mediaPath, indexPath := newPendingTestSidecar(t, mediaDir)
+		db := newPendingTestDB(t)
+		task := newPendingTestTrailerTask(indexPath, db)
+
+		if registered := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); !registered {
+			t.Fatal("recoverLocalFile should report successful pending registration")
+		}
+		if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
+			t.Fatalf("sidecar must be removed after pending registration: %v", err)
+		}
+		if _, err := os.Stat(mediaPath); !os.IsNotExist(err) {
+			t.Fatalf("media should have been moved to pending: %v", err)
+		}
+		var count int64
+		if err := db.Model(&m7s.UploadTask{}).Count(&count).Error; err != nil {
+			t.Fatalf("count pending uploads: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("pending upload rows = %d, want 1", count)
+		}
+	})
+
+	t.Run("pending full keeps sidecar", func(t *testing.T) {
+		mediaDir := t.TempDir()
+		pendingDir := t.TempDir()
+		// 占满文件数上限，使 MoveToPendingDir 返回 ErrPendingDirFull。
+		if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed pending dir: %v", err)
+		}
+		storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+		mediaPath, indexPath := newPendingTestSidecar(t, mediaDir)
+		task := newPendingTestTrailerTask(indexPath, newPendingTestDB(t))
+
+		if registered := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); registered {
+			t.Fatal("recoverLocalFile must not report registration when pending dir is full")
+		}
+		if _, err := os.Stat(indexPath); err != nil {
+			t.Fatalf("sidecar must be kept when pending registration fails: %v", err)
+		}
+		if _, err := os.Stat(mediaPath); err != nil {
+			t.Fatalf("media must stay in place when pending registration fails: %v", err)
 		}
 	})
 }
