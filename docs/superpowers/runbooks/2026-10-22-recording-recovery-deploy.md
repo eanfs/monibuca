@@ -178,6 +178,10 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/minio/health/liv
 第二步，配置 `mc`。**AK/SK 绝不写进命令行参数或历史**：用 600 权限文件 +
 `MC_HOST_<alias>` 环境变量，`mc` 会自动读取。
 
+> 变量**必须用 `export` 赋值**。被 `.`（source）加载的裸赋值只是当前 shell 的
+> 普通变量，不会进入子进程环境；`mc` 是外部命令，拿不到 `MC_HOST_m7s` 就无法
+> 解析别名。已有旧文件（本次修复前创建的）也要补上 `export`。
+
 ```bash
 ALIAS=m7s; [ -f /root/.m7s-mc.env ] || install -m 600 /dev/null /root/.m7s-mc.env; chmod 600 /root/.m7s-mc.env; vi /root/.m7s-mc.env
 ```
@@ -185,18 +189,25 @@ ALIAS=m7s; [ -f /root/.m7s-mc.env ] || install -m 600 /dev/null /root/.m7s-mc.en
 在 `vi` 里写入一行（不经过 shell 历史）：
 
 ```
-MC_HOST_m7s=http://<S3_ACCESS_KEY>:<S3_SECRET_KEY>@<S3_ENDPOINT>
+export MC_HOST_m7s=http://<S3_ACCESS_KEY>:<S3_SECRET_KEY>@<S3_ENDPOINT>
 ```
 
 （AK/SK 含特殊字符时做 URL 编码；使用 `storage.xiding.tech` 时把 `http` 改成
 `https`，并同步把配置里的 `useSSL` 设为 `true`。）
 
+先自检变量确实进了子进程环境；**必须看到 `env-ok`**，否则后面的 `mc` 全部会
+失败，先回去检查文件里是不是漏了 `export`：
+
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env && mc ls "$ALIAS/<BUCKET>/" >/dev/null && echo "bucket readable"
+ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && echo "env-ok: MC_HOST_${ALIAS} exported"
 ```
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env && echo preflight-$(date +%s) | mc pipe "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc stat "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc rm "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt"
+ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && mc ls "$ALIAS/<BUCKET>/" >/dev/null && echo "bucket readable"
+```
+
+```bash
+ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && echo preflight-$(date +%s) | mc pipe "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc stat "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc rm "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt"
 ```
 
 第三步，容器网络侧验证。此时容器可能仍处于停机状态（§1.2），用同一网络临时起
@@ -383,10 +394,10 @@ sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "SELECT id,str
 ```
 
 再抽查 S3 对象（键 = `pathPrefix` + `file_path`，以后端实际规则为准）。先加载
-2.1 建立的 mc 凭证环境：
+2.1 建立的 mc 凭证环境，并确认 `MC_HOST_m7s` 已导出（必须看到 `env-ok`）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env
+ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && echo "env-ok: MC_HOST_${ALIAS} exported"
 ```
 
 ```bash
@@ -520,19 +531,19 @@ ffprobe -v error -show_entries format=duration:stream=codec_name -of json tmp/sa
 整体拒删）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch-01/.upload-ok; up=0; fail=0; for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; if mc cp "$f" "$ALIAS/<BUCKET>/<PREFIX>/recovered/"; then up=$((up+1)); else echo "ABORT upload failed: $f"; fail=1; break; fi; done; if [ "$fail" -eq 0 ]; then touch tmp/salvage-batch-01/.upload-ok; fi; echo "uploaded=$up fail=$fail"; [ "$fail" -eq 0 ]
+ALIAS=m7s; . /root/.m7s-mc.env; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），未上传、未生成 .upload-ok"; false; else cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch-01/.upload-ok; up=0; fail=0; for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; if mc cp "$f" "$ALIAS/<BUCKET>/<PREFIX>/recovered/"; then up=$((up+1)); else echo "ABORT upload failed: $f"; fail=1; break; fi; done; if [ "$fail" -eq 0 ]; then touch tmp/salvage-batch-01/.upload-ok; fi; echo "uploaded=$up fail=$fail"; [ "$fail" -eq 0 ]; fi
 ```
 
 确认远端对象齐全（数量 + 逐个 `mc stat`）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && echo "local=$(ls -1 tmp/salvage-batch-01/*.recovered.mp4 2>/dev/null | wc -l) remote=$(mc ls "$ALIAS/<BUCKET>/<PREFIX>/recovered/" | wc -l)" && stat_fail=0 && for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$(basename "$f")" >/dev/null || { echo "ABORT stat failed: $f"; stat_fail=1; break; }; done; if [ "$stat_fail" -eq 0 ]; then echo "stat pass"; else echo "stat FAILED: fix upload before deleting anything"; fi; [ "$stat_fail" -eq 0 ]
+ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && env | grep -q "^MC_HOST_${ALIAS}=" && echo "local=$(ls -1 tmp/salvage-batch-01/*.recovered.mp4 2>/dev/null | wc -l) remote=$(mc ls "$ALIAS/<BUCKET>/<PREFIX>/recovered/" | wc -l)" && stat_fail=0 && for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$(basename "$f")" >/dev/null || { echo "ABORT stat failed: $f"; stat_fail=1; break; }; done; if [ "$stat_fail" -eq 0 ]; then echo "stat pass"; else echo "stat FAILED: fix upload before deleting anything"; fi; [ "$stat_fail" -eq 0 ]
 ```
 
 抽样下载 + `ffprobe`（第 6.3 节已跑过本地产物；此处再验远端副本）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; mc cp "$ALIAS/<BUCKET>/<PREFIX>/recovered/<SAMPLE>.mp4" /tmp/verify-salvage.mp4 && ffprobe -v error -show_entries format=duration:stream=codec_name -of json /tmp/verify-salvage.mp4
+ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && mc cp "$ALIAS/<BUCKET>/<PREFIX>/recovered/<SAMPLE>.mp4" /tmp/verify-salvage.mp4 && ffprobe -v error -show_entries format=duration:stream=codec_name -of json /tmp/verify-salvage.mp4
 ```
 
 最后逐文件删除源 tmp。**只删「同名 `.recovered.mp4` 存在且远端 `mc stat` 成功」
@@ -540,7 +551,7 @@ ALIAS=m7s; . /root/.m7s-mc.env; mc cp "$ALIAS/<BUCKET>/<PREFIX>/recovered/<SAMPL
 上传步骤未完成（无 `.upload-ok`）时整体拒删：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca; if [ ! -f tmp/salvage-batch-01/.upload-ok ]; then echo "ABORT: upload step incomplete, nothing deleted"; else deleted=0; kept=0; for src in tmp/salvage-batch-01/s3writer_*.tmp; do [ -e "$src" ] || continue; rec="$src.recovered.mp4"; obj=$(basename "$rec"); if [ ! -s "$rec" ]; then echo "KEEP not-recovered: $src"; kept=$((kept+1)); continue; fi; if mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$obj" >/dev/null 2>&1; then rm -f -- "$src" && { echo "DELETED: $src"; deleted=$((deleted+1)); }; else echo "KEEP stat-failed: $src"; kept=$((kept+1)); fi; done; echo "deleted=$deleted kept=$kept"; fi
+ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），nothing deleted"; elif [ ! -f tmp/salvage-batch-01/.upload-ok ]; then echo "ABORT: upload step incomplete, nothing deleted"; else deleted=0; kept=0; for src in tmp/salvage-batch-01/s3writer_*.tmp; do [ -e "$src" ] || continue; rec="$src.recovered.mp4"; obj=$(basename "$rec"); if [ ! -s "$rec" ]; then echo "KEEP not-recovered: $src"; kept=$((kept+1)); continue; fi; if mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$obj" >/dev/null 2>&1; then rm -f -- "$src" && { echo "DELETED: $src"; deleted=$((deleted+1)); }; else echo "KEEP stat-failed: $src"; kept=$((kept+1)); fi; done; echo "deleted=$deleted kept=$kept"; fi
 ```
 
 > 源 tmp 是唯一副本。**禁止**用 `rm -f tmp/salvage-batch-01/s3writer_*.tmp` 这类
