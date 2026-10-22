@@ -6,8 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
+	"gorm.io/gorm"
+	"m7s.live/v5"
 	"m7s.live/v5/pkg/storage"
+	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 )
 
 // recoveryUploadFakeStorage 是 storage.Storage 的最小实现。这些测试只关心
@@ -110,5 +116,96 @@ func TestIndexRecoveryTaskLocalStorageFinishesWithoutUpload(t *testing.T) {
 	}
 	if _, statErr := os.Stat(sidecar); !os.IsNotExist(statErr) {
 		t.Fatalf("sidecar must be removed after local finalize: %v", statErr)
+	}
+}
+
+// M3 回归：崩溃前开录已插入 record_streams（end_time 空、duration=0），恢复
+// 成功后必须回写 end_time/duration/storage_type（local 分支同样要写），
+// 否则列表里永远是 0 时长。
+func TestIndexRecoveryTaskUpdatesRecordStream(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, "db_record.mp4", payload)
+	split := len(payload) / 2
+	records := []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: uint32(split), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		{TrackID: 1, Size: uint32(len(payload) - split), Offset: uint64(payloadStart) + uint64(split), DTS: 40, Duration: 40},
+	}
+	start := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	// 正常录制写入 file_path 的是逻辑录像路径；这里用绝对媒体路径以便直接校验。
+	filePath := mediaPath
+	header := mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/db_record",
+		MediaPath:   mediaPath,
+		FilePath:    filePath,
+		TargetName:  "db_record.mp4",
+		StorageType: "local",
+		StartTime:   start,
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240,
+			STSD: recoveryTestSTSD(t),
+		}},
+	}
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	writeRecoverySidecar(t, sidecar, header, records)
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	db, err := gorm.Open(gormlite.Open(filepath.Join(dir, "records.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err = db.AutoMigrate(&m7s.RecordStream{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// 模拟崩溃前开录插入的半成品行。
+	if err = db.Create(&m7s.RecordStream{
+		StartTime:   start,
+		FilePath:    filePath,
+		StreamPath:  "live/db_record",
+		Type:        "mp4",
+		StorageType: "local",
+	}).Error; err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	backend := &recoveryUploadFakeStorage{key: "local"}
+	recovery := &IndexRecoveryTask{
+		DB: db,
+		ResolveUploadStorage: func(storageType string) (storage.Storage, error) {
+			return backend, nil
+		},
+	}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want recovered=1", stats)
+	}
+
+	var got m7s.RecordStream
+	if err = db.Where("file_path = ?", filePath).First(&got).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if got.EndTime.IsZero() {
+		t.Fatal("end_time must be set after recovery")
+	}
+	if got.Duration != 80 {
+		t.Fatalf("duration = %d, want 80", got.Duration)
+	}
+	wantEnd := start.Add(80 * time.Millisecond)
+	if got.EndTime.UnixMilli() != wantEnd.UnixMilli() {
+		t.Fatalf("end_time = %v, want %v (start+duration)", got.EndTime, wantEnd)
+	}
+	if got.StorageType != "local" {
+		t.Fatalf("storage_type = %q, want local", got.StorageType)
+	}
+	var count int64
+	if err = db.Model(&m7s.RecordStream{}).Where("file_path = ?", filePath).Count(&count).Error; err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("record count = %d, want 1 (update, not duplicate)", count)
 	}
 }

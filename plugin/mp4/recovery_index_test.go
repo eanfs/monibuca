@@ -494,8 +494,8 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	if !plugin.RecordConfig.Recovery.OnStart {
 		t.Fatal("record.recovery.onstart must default to true")
 	}
-	if plugin.RecordConfig.Recovery.MinAge != 5*time.Second {
-		t.Fatalf("record.recovery.minage = %v, want 5s", plugin.RecordConfig.Recovery.MinAge)
+	if plugin.RecordConfig.Recovery.MinAge != 5*time.Minute {
+		t.Fatalf("record.recovery.minage = %v, want 5m", plugin.RecordConfig.Recovery.MinAge)
 	}
 	if plugin.RecordConfig.Recovery.Concurrency != 2 {
 		t.Fatalf("record.recovery.concurrency = %d, want 2", plugin.RecordConfig.Recovery.Concurrency)
@@ -530,7 +530,7 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	}
 }
 
-// Important 2：minage 配置默认值是 5s（非 0），因此夹紧必须无条件生效：
+// Important 2：minage 配置默认值是 5m（非 0），因此夹紧必须无条件生效：
 // flushinterval=10s 时，任何非负 minage 的生效值都不得低于 2×flushinterval=20s，
 // 也不得低于 5s 下限。否则运维调大 flushinterval 后活跃保护会被削弱。
 func TestIndexRecoveryTaskEffectiveMinAgeClamps(t *testing.T) {
@@ -685,6 +685,126 @@ func TestIndexRecoveryTaskSkipsFreshlyWrittenSidecar(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(dir, "s3writer_active.mp4")); !os.IsNotExist(err) {
 		t.Fatal("fresh file must not produce an output mp4")
+	}
+}
+
+// M2 回归：活跃 recorder 持有的 sidecar 即使 mtime 已陈旧（拉流重连退避、
+// 低帧率、上游抖动导致长时间无新样本），RunOnce 也必须跳过——不得 rename
+// sidecar、不得覆盖/删除媒体、不得产出恢复文件。这里显式关闭 mtime 保护
+// （MinAge<0），证明拦截来自进程级活跃集合而不是新鲜度兜底。
+func TestIndexRecoveryTaskSkipsActiveRecorderWithStaleSidecar(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "active_stale.tmp", []byte{0x01, 0x02, 0x03, 0x04})
+	original, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media: %v", err)
+	}
+	mp4pkg.RegisterActiveIndex(sidecar, mediaPath)
+	t.Cleanup(func() { mp4pkg.UnregisterActiveIndex(sidecar, mediaPath) })
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{
+		MinAge:        -time.Second, // 关闭 mtime 保护，隔离活跃集合判据
+		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
+	}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Scanned != 1 || stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want scanned=1 skipped=1", stats)
+	}
+	if enqueued != 0 {
+		t.Fatalf("active recording must not be enqueued, got %d", enqueued)
+	}
+	if _, err = os.Stat(sidecar); err != nil {
+		t.Fatalf("active sidecar must be left untouched: %v", err)
+	}
+	if _, err = os.Stat(sidecar + recoveringSuffix); !os.IsNotExist(err) {
+		t.Fatal("active sidecar must not be renamed to .recovering")
+	}
+	got, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media after skip: %v", err)
+	}
+	if !bytes.Equal(original, got) {
+		t.Fatal("active media must not be modified")
+	}
+	if _, err = os.Stat(filepath.Join(dir, "active_stale.mp4")); !os.IsNotExist(err) {
+		t.Fatal("active recording must not produce a recovery output")
+	}
+
+	// D：录制结束（commit/close）后活跃登记被移除，后续 RunOnce 必须能正常恢复。
+	mp4pkg.UnregisterActiveIndex(sidecar, mediaPath)
+	stats, err = recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce after commit: %v", err)
+	}
+	if stats.Recovered != 1 || stats.Skipped != 0 || stats.Failed != 0 {
+		t.Fatalf("stats after commit = %+v, want recovered=1", stats)
+	}
+	if enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1 after commit", enqueued)
+	}
+	if _, err = os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatal("sidecar should be removed after recovery")
+	}
+	assertRecoveredPlayable(t, filepath.Join(dir, "active_stale.mp4"), 2)
+}
+
+// M1 回归：storage.local.path 为相对路径时，旧 sidecar 的 MediaPath 也是相对
+// 路径。恢复必须按进程 CWD 解析为绝对路径后再做白名单校验，否则会永远
+// errRecoveryPathDenied（sidecar 常驻、每次启动重试、永远恢复不了）。
+func TestIndexRecoveryTaskRecoversRelativeLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join("record", "live"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload := []byte{0x11, 0x22, 0x33, 0x44}
+	mediaRel, payloadStart := writeHalfWrittenRecording(t, filepath.Join("record", "live"), "relative.mp4", payload)
+	split := len(payload) / 2
+	records := []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: uint32(split), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		{TrackID: 1, Size: uint32(len(payload) - split), Offset: uint64(payloadStart) + uint64(split), DTS: 40, Duration: 40},
+	}
+	// 故意写入相对 MediaPath，复现旧版本 storage.local.path="." 的现场。
+	header := mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/relative",
+		MediaPath:   mediaRel,
+		FilePath:    filepath.Join("record", "live", "relative.mp4"),
+		TargetName:  "relative.mp4",
+		StorageType: "local",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240,
+			STSD: recoveryTestSTSD(t),
+		}},
+	}
+	sidecarRel := mediaRel + mp4pkg.IndexExtension
+	writeRecoverySidecar(t, sidecarRel, header, records)
+	ageRecoveryFiles(t, mediaRel, sidecarRel)
+
+	backend := &recoveryUploadFakeStorage{key: "local"}
+	recovery := &IndexRecoveryTask{
+		ResolveUploadStorage: func(storageType string) (storage.Storage, error) {
+			if storageType != "local" {
+				t.Fatalf("storage type = %q, want local", storageType)
+			}
+			return backend, nil
+		},
+	}
+	stats, err := recovery.RunOnce([]string{filepath.Join("record", "live")})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 || stats.Failed != 0 || stats.Skipped != 0 {
+		t.Fatalf("stats = %+v, want recovered=1", stats)
+	}
+	absMedia := filepath.Join(dir, "record", "live", "relative.mp4")
+	assertRecoveredPlayable(t, absMedia, 2)
+	if _, err = os.Stat(sidecarRel); !os.IsNotExist(err) {
+		t.Fatal("sidecar should be removed after local recovery")
 	}
 }
 

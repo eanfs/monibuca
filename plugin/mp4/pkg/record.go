@@ -90,6 +90,23 @@ const IndexFlagKeyFrame = indexFlagKeyFrame
 // 不新增 storage.File 接口，路径由录制器已知的本地媒体路径推导。
 func indexFilePath(mediaPath string) string { return mediaPath + IndexExtension }
 
+// absoluteMediaPath 把媒体路径统一成绝对路径。
+//
+// storage.local.path 可以是 "."（默认）或任意相对目录，此时 LocalFile.Name()
+// 是相对路径；若原样写进 sidecar，恢复侧的路径白名单（要求绝对路径）会拒绝，
+// 导致 sidecar 常驻、每次启动重试、永远恢复不了。header.FilePath 保持原样：
+// 它是逻辑录像路径，用于匹配 record_streams / 对象键。
+func absoluteMediaPath(mediaPath string) string {
+	if mediaPath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(mediaPath)
+	if err != nil {
+		return mediaPath
+	}
+	return filepath.Clean(abs)
+}
+
 // localMediaPath 返回 storage.File 当前数据所在的本地路径。
 // 对象存储后端在本地暂存文件（s3writer_*.tmp），sidecar 与它同目录。
 // 不新增 storage.File 接口：LocalFd 已由 RangeInserter 暴露。
@@ -315,8 +332,8 @@ func (t *writeTrailerTask) syncIndexMediaPath(originalMediaPath string) {
 	if t.indexPath == "" {
 		return
 	}
-	newMediaPath := localMediaPath(t.file)
-	if newMediaPath == "" || newMediaPath == originalMediaPath {
+	newMediaPath := absoluteMediaPath(localMediaPath(t.file))
+	if newMediaPath == "" || newMediaPath == absoluteMediaPath(originalMediaPath) {
 		return
 	}
 	if err := appendIndexRename(t.indexPath, newMediaPath); err != nil {
@@ -991,7 +1008,8 @@ func (r *Recorder) indexHeader(mediaPath string) IndexHeader {
 	h := IndexHeader{
 		Version:    1,
 		StreamPath: r.Event.StreamPath,
-		MediaPath:  mediaPath,
+		// MediaPath 必须是绝对路径：恢复侧的路径 guard 只接受绝对路径。
+		MediaPath:  absoluteMediaPath(mediaPath),
 		TargetName: filepath.Base(r.Event.FilePath),
 		FilePath:   r.Event.FilePath,
 		StartTime:  r.Event.StartTime,
@@ -1063,7 +1081,7 @@ func (r *Recorder) ensureIndex() error {
 	if !GetIndexConfig().Enable || r.index != nil || r.muxer == nil || r.muxer.isFragment() {
 		return nil
 	}
-	mediaPath := localMediaPath(r.file)
+	mediaPath := absoluteMediaPath(localMediaPath(r.file))
 	if mediaPath == "" {
 		return nil
 	}
@@ -1079,6 +1097,8 @@ func (r *Recorder) ensureIndex() error {
 	r.indexSamples = 0
 	r.indexTrackCount = len(r.muxer.Tracks)
 	r.indexWarned = false
+	// 进程级活跃登记：恢复扫描据此跳过仍在录制的文件（先于 mtime 判据）。
+	RegisterActiveIndex(path, mediaPath)
 	r.Info("index sidecar created", "indexPath", path, "tracks", len(h.Tracks))
 	return nil
 }
@@ -1217,6 +1237,8 @@ func (r *Recorder) logIndexError(err error) {
 }
 
 func (r *Recorder) resetIndex() {
+	// commitIndex/closeIndex 都经这里收尾：注销活跃登记，恢复扫描才能接管。
+	UnregisterActiveIndex(r.indexPath, r.indexMediaPath)
 	r.index = nil
 	r.indexPath = ""
 	r.indexMediaPath = ""

@@ -168,9 +168,27 @@ func recoveryMediaAllowed(allowed []string, sidecar, recorded string) bool {
 	return true
 }
 
+// absoluteRecoveryTarget 把历史 sidecar 里可能记录的相对路径转成绝对路径。
+//
+// 旧版本把 storage.local 的相对 LocalFile.Name() 原样写进 header.MediaPath；
+// 白名单校验要求绝对路径，若不先转换，这类 sidecar 会永远被判越界。相对
+// 路径按进程当前工作目录解析——这也正是录制时 LocalFile.Name() 的语义。
+// 新写入的 sidecar 已是绝对路径，此函数对它们无副作用。
+func absoluteRecoveryTarget(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
 // canonicalRecoveryTarget 规范化一个可能尚不存在的路径：已存在时拒绝符号链接
 // 并解析全部链接；不存在时解析父目录（父目录必须存在）。
 func canonicalRecoveryTarget(path string) (string, bool) {
+	path = absoluteRecoveryTarget(path)
 	if path == "" || !filepath.IsAbs(path) {
 		return "", false
 	}
@@ -214,9 +232,11 @@ func newRecoveryPathGuard(dirs []string, sidecar string) (*recoveryPathGuard, er
 	return &recoveryPathGuard{allowed: allowed}, nil
 }
 
-// allowExisting 校验一个已存在路径。返回原路径（保持日志/结果里的路径稳定），
-// 合法性以解析后的真实路径为准。
+// allowExisting 校验一个已存在路径。相对路径先按 CWD 绝对化（兼容旧 sidecar）；
+// 返回绝对路径（保证 C1 的 source==output 比较与日志路径稳定），合法性以
+// 解析后的真实路径为准。
 func (g *recoveryPathGuard) allowExisting(path, what string) (string, error) {
+	path = absoluteRecoveryTarget(path)
 	if path == "" || !filepath.IsAbs(path) {
 		return "", fmt.Errorf("%w: %s must be an absolute path", errRecoveryPathDenied, what)
 	}
@@ -240,6 +260,7 @@ func (g *recoveryPathGuard) allowExisting(path, what string) (string, error) {
 // allowOutput 校验一个待写入路径：父目录必须存在且在白名单内，
 // 目标已存在时不得是符号链接。
 func (g *recoveryPathGuard) allowOutput(path, what string) (string, error) {
+	path = absoluteRecoveryTarget(path)
 	if path == "" {
 		return "", nil
 	}

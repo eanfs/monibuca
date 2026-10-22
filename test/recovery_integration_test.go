@@ -153,8 +153,9 @@ func TestRecoveryAfterKill(t *testing.T) {
 	first.stop()
 	t.Logf("child killed; media=%d bytes sidecar=%d bytes", statSize(t, mediaPath), statSize(t, sidecar))
 
-	// 恢复任务会跳过 mtime 新于 minage（默认/下限 5s）的「活跃」文件，等待超过阈值。
-	time.Sleep(6 * time.Second)
+	// 恢复任务会跳过 mtime 新于 minage 的文件。生产默认 5m（spec），测试配置
+	// 显式调成 6s 以免等待；下限仍是 max(5s, 2×flushinterval)=5s。
+	time.Sleep(7 * time.Second)
 
 	// ---- 段 3：重启 server，等待启动恢复自动完成 ----
 	// 重启同样走端口重试：kill 后旧端口可能处于 TIME_WAIT，或被其他进程抢占。
@@ -309,6 +310,7 @@ mp4:
       flushinterval: 1s
     recovery:
       onstart: true
+      minage: 6s
       dirs:
         - %s
 rtmp:

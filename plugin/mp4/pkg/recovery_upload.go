@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5"
 	"m7s.live/v5/pkg/storage"
@@ -41,8 +42,9 @@ type RecoveryStorageResolver func(storageType string) (storage.Storage, error)
 type RecoveryUploadOptions struct {
 	// Resolver 为空时遍历 m7s.Servers 调用 GetStorageForType。
 	Resolver RecoveryStorageResolver
-	// DB 用于 pending 登记与幂等查询。为空时上传失败不会登记 pending，
-	// 调用方必须保留 sidecar 与产物。
+	// DB 用于 pending 登记、幂等查询与恢复成功后的 record_streams 回写。
+	// 为空时上传失败不会登记 pending，也不会回写 DB；调用方仍须保留 sidecar
+	// 与产物（上传失败分支）。
 	DB *gorm.DB
 	// Logger 为空时使用 slog.Default()。
 	Logger *slog.Logger
@@ -113,8 +115,12 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		return fmt.Errorf("%w: header=%q resolved=%q", ErrRecoveryStorageMismatch, storageType, resolved)
 	}
 
-	// 本地存储没有上传动作：恢复产物已在最终路径，删除 sidecar 即完成。
+	// 本地存储没有上传动作：恢复产物已在最终路径，回写 record_streams
+	// 后删除 sidecar 即完成。DB 失败时保留 sidecar，下次恢复会重试回写。
 	if storageType == string(storage.StorageTypeLocal) {
+		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records); err != nil {
+			return fmt.Errorf("mp4: update record_streams for recovered local file %s: %w", upload.OutputPath, err)
+		}
 		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
 			logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
 		}
@@ -140,6 +146,12 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		release()
 		logger.Info("recovery upload already registered; skipping duplicate",
 			"objectKey", objectKey, "output", upload.OutputPath)
+		// 上一次恢复可能已入队但尚未回写（进程在两者之间被杀）。这里补写一次；
+		// 失败只告警——上传已登记，sidecar 不能再留着阻塞后续扫描。
+		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records); err != nil {
+			logger.Warn("update record_streams after recovery failed",
+				"err", err, "objectKey", objectKey, "output", upload.OutputPath)
+		}
 		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
 			logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
 		}
@@ -174,6 +186,11 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		filePath:   objectKey,
 		streamPath: upload.Header.StreamPath,
 		db:         opts.DB,
+		// 上传成功后才回写 record_streams，与正常录制路径语义一致：
+		// 文件可播放/已持久化前不留下“已完成”的 DB 记录。
+		dbWrite: func(task.IJob) error {
+			return updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records)
+		},
 		// 产物移交给 storage.File 的动作放到任务内部执行：任务若未能启动，
 		// 源的拥有权仍在恢复任务，不会出现“文件已被接管却没人上传”的悬空状态。
 		prepare:   func() error { return finalizer.FinalizeFromTemp(upload.OutputPath) },

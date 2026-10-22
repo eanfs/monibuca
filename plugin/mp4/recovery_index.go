@@ -60,7 +60,10 @@ type IndexRecoveryTask struct {
 	// MinAge 是「仍在写入」判定阈值：sidecar/媒体 mtime 新于该值时跳过，
 	// 避免把活跃录像的 sidecar 改名、媒体文件覆盖。生效值无条件夹紧为
 	// max(MinAge, 5s, 2×索引落盘间隔)；显式传负数表示关闭该保护
-	// （仅测试/特殊场景）。
+	// （仅测试/特殊场景）。配置默认 5m（spec 值）。
+	//
+	// mtime 只是「跨进程」的兜底：本进程内的活跃 recorder 由 pkg 的
+	// activeIndexRegistry 权威判定，先于新鲜度闸门生效。
 	MinAge time.Duration
 	// RunOnStart 控制任务注册后是否立即跑一次。
 	RunOnStart bool
@@ -108,8 +111,9 @@ func (t *IndexRecoveryTask) currentRunID() string {
 
 const (
 	defaultRecoveryConcurrency = 2
-	// defaultRecoveryMinAge 是「仍在写入」判定阈值的下限。索引默认每秒落盘，
-	// 2× 落盘间隔通常已足够区分活跃录像；取 5s 作为下限避免误判。
+	// defaultRecoveryMinAge 是「仍在写入」判定阈值的**下限**（floor），不是配置
+	// 默认值。索引默认每秒落盘，2× 落盘间隔通常已足够区分活跃录像；取 5s 作为
+	// 下限避免误判。配置默认值是 5m（spec），见 MP4Plugin.RecordConfig.Recovery。
 	defaultRecoveryMinAge = 5 * time.Second
 )
 
@@ -186,9 +190,9 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 //   - 负值：显式关闭保护（仅测试/特殊场景）；
 //   - 其余：max(配置值, 5s, 2×索引落盘间隔) 无条件夹紧。
 //
-// 夹紧必须无条件生效：配置默认值 5s 并非 0，若只在「未配置」时夹紧，
+// 夹紧必须无条件生效：配置默认值 5m 并非 0，若只在「未配置」时夹紧，
 // 运维把 record.index.flushinterval 调到 >2.5s 后，活跃 sidecar 的最大
-// 落盘滞后会超过 5s，活跃保护被削弱。
+// 落盘滞后会超过 5s 下限，活跃保护被削弱。
 func (t *IndexRecoveryTask) effectiveMinAge() time.Duration {
 	if t.MinAge < 0 {
 		return t.MinAge
@@ -592,6 +596,14 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 // recoverSidecarFile 定稿单个 sidecar。任何返回错误的分支都保留可重试状态，
 // 除非错误被明确判定为永久性（索引损坏/无可用样本 → .failed）。
 func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome, RecoveryItem, error) {
+	// 进程内活跃 recorder 是权威判据：mtime 可能因拉流重连退避/低帧率而变旧，
+	// 单靠新鲜度会把活跃录制判死并覆盖其媒体。必须在任何 rename/读取之前拦截。
+	if t.isActiveRecording(sidecar) {
+		t.Info("skip recovery of active recording (process registry)",
+			"sidecar", sidecar, "media", mediaPathFromSidecar(sidecar))
+		return recoverySkipped, RecoveryItem{}, nil
+	}
+
 	// 实际读写的路径由索引内容决定，必须独立于请求参数再做一次白名单校验，
 	// 否则白名单内的 sidecar 可以把读写引到白名单之外（含符号链接逃逸）。
 	// guard 同时确认 sidecar 自身不是符号链接。
@@ -616,6 +628,14 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome,
 		}
 		t.Warn("read index failed, will retry on next run", "err", err, "sidecar", sidecar)
 		return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
+	}
+
+	// header 里的媒体路径同样可能属于活跃 recorder（历史 sidecar 的 sidecar
+	// 路径未被登记，但 recorder 登记的是媒体路径）。再查一次，避免漏判。
+	if mp4pkg.IsActiveRecordingPath(index.MediaPath) {
+		t.Info("skip recovery of active recording (media registry)",
+			"sidecar", sidecar, "media", index.MediaPath)
+		return recoverySkipped, RecoveryItem{}, nil
 	}
 
 	recorded := index.MediaPath
@@ -921,6 +941,11 @@ func isMP4Path(path string) bool {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// isActiveRecording 报告 sidecar 或其推导出的媒体路径是否被本进程活跃 recorder 持有。
+func (t *IndexRecoveryTask) isActiveRecording(sidecar string) bool {
+	return mp4pkg.IsActiveRecordingPath(sidecar, mediaPathFromSidecar(sidecar))
 }
 
 // isFreshlyWritten 判断给定文件中最新的 mtime 是否新于 MinAge 阈值。
