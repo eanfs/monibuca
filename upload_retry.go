@@ -130,6 +130,7 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 
 	u.Info("retrying upload",
 		"id", ut.ID,
+		"streamPath", ut.StreamPath,
 		"file", ut.ObjectKey,
 		"objectKey", ut.ObjectKey,
 		"size", ut.FileSize,
@@ -139,15 +140,18 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 	// 执行上传
 	err := UploadLocalFile(ctx, st, ut.LocalPath, ut.ObjectKey, metadata)
 	if err != nil {
-		u.Warn("retry upload failed",
+		// 与队列首次失败（record.go 的 upload failed）保持同一检索契约：
+		// Error 级 + error + streamPath。现场按 Error 检索不能漏掉补传失败。
+		u.Error("retry upload failed",
 			"id", ut.ID,
+			"streamPath", ut.StreamPath,
 			"file", ut.ObjectKey,
 			"objectKey", ut.ObjectKey,
 			"size", ut.FileSize,
 			"retryCount", ut.RetryCount+1,
 			"errorClass", storage.UploadErrorClass(err),
 			"nextRetryAt", NextUploadRetryAt(ut.RetryCount+1),
-			"err", err)
+			"error", err)
 		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.RetryCount, err)
 		// 补传次数耗尽:不再被 QueryPendingUploads 命中,告警通知运维介入
 		if ut.RetryCount+1 >= ut.MaxRetries {
@@ -160,6 +164,7 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 
 	u.Info("retry upload succeeded",
 		"id", ut.ID,
+		"streamPath", ut.StreamPath,
 		"file", ut.ObjectKey,
 		"objectKey", ut.ObjectKey,
 		"size", ut.FileSize,

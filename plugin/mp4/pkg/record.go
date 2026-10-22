@@ -615,13 +615,22 @@ func (t *writeTrailerTask) recordedSize() int64 {
 // （streamPath/file/durationMs/size/samples/tracks/elapsedMs），勿随意改名。
 func (t *writeTrailerTask) logRecordStop(size int64) {
 	tracks, samples := 0, 0
+	samplesSource := "samplelist"
 	if t.muxer != nil {
+		// fragment 模式每个轨道只保留尚未写出的当前一帧，累计量由 muxer 计数，
+		// 否则无论录多久 samples 都只有轨道数（1–2），会被误判为没录到数据。
+		if t.muxer.isFragment() {
+			samplesSource = "fragment"
+			samples = int(t.muxer.fragmentSamples)
+		}
 		for id := uint32(1); id < t.muxer.nextTrackId; id++ {
 			track := t.muxer.Tracks[id]
 			if track == nil {
 				continue
 			}
 			tracks++
+			// progressive: Samplelist 即全部样本；
+			// fragment: Samplelist 是尚未刷出的缓冲帧，计入总量。
 			samples += len(track.Samplelist)
 		}
 	}
@@ -637,6 +646,7 @@ func (t *writeTrailerTask) logRecordStop(size int64) {
 		"durationMs", t.durationMs,
 		"size", size,
 		"samples", samples,
+		"samplesSource", samplesSource,
 		"tracks", tracks,
 		"elapsedMs", elapsedMs)
 }

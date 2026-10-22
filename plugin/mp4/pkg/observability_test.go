@@ -176,11 +176,55 @@ func TestRecordStopLogFields(t *testing.T) {
 	if got := requireIntAttr(t, entry, "samples"); got != 5 {
 		t.Fatalf("samples = %d, want 5", got)
 	}
+	requireStringAttr(t, entry, "samplesSource", "samplelist")
 	if got := requireIntAttr(t, entry, "tracks"); got != 2 {
 		t.Fatalf("tracks = %d, want 2", got)
 	}
 	if got := requireIntAttr(t, entry, "elapsedMs"); got < 1500 {
 		t.Fatalf("elapsedMs = %d, want >= 1500", got)
+	}
+}
+
+// fMP4(fragment) 模式下 Samplelist 只保留尚未写出的当前一帧，
+// record stopped 必须报告累计样本数，而不是恒等于轨道数的假值。
+func TestRecordStopLogFragmentSamplesAccumulated(t *testing.T) {
+	h := &captureHandler{}
+	muxer := NewMuxer(FLAG_FRAGMENT)
+	video := muxer.AddTrack(box.MP4_CODEC_H264)
+	audio := muxer.AddTrack(box.MP4_CODEC_AAC)
+
+	const videoFrames = 120
+	const audioFrames = 117
+	for i := 0; i < videoFrames; i++ {
+		muxer.CreateFlagment(video, box.Sample{Timestamp: uint32(i * 40), KeyFrame: i == 0})
+	}
+	for i := 0; i < audioFrames; i++ {
+		muxer.CreateFlagment(audio, box.Sample{Timestamp: uint32(i * 41)})
+	}
+
+	// CreateFlagment 每次写出的是上一帧，两个轨道各还有 1 帧缓冲在 Samplelist。
+	if len(video.Samplelist) != 1 || len(audio.Samplelist) != 1 {
+		t.Fatalf("fragment Samplelist should retain one buffered sample each, got video=%d audio=%d",
+			len(video.Samplelist), len(audio.Samplelist))
+	}
+
+	trailer := &writeTrailerTask{
+		muxer:      muxer,
+		streamPath: "live/cam1",
+		filePath:   "records/live/cam1/rec.mp4",
+		durationMs: 4800,
+	}
+	trailer.Logger = slog.New(h)
+
+	trailer.logRecordStop(123456)
+
+	entry := h.mustFind(t, "record stopped", slog.LevelInfo)
+	if got := requireIntAttr(t, entry, "samples"); got != videoFrames+audioFrames {
+		t.Fatalf("samples = %d, want %d (accumulated, not track count)", got, videoFrames+audioFrames)
+	}
+	requireStringAttr(t, entry, "samplesSource", "fragment")
+	if got := requireIntAttr(t, entry, "tracks"); got != 2 {
+		t.Fatalf("tracks = %d, want 2", got)
 	}
 }
 

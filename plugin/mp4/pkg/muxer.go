@@ -35,6 +35,10 @@ type (
 		StreamPath   string    // Added to store the stream path
 		Metadata     *Metadata // 添加元数据支持
 		moovWritten  bool      // FMP4：moov 是否已写入（须在首个 moof 之前）
+		// fragmentSamples 累计 fMP4 模式下已经产出 moof/mdat 的 sample 数。
+		// fragment 模式的 Samplelist 只保留尚未写出的当前一帧（见 CreateFlagment），
+		// 因此不能再用 len(Samplelist) 统计录制总量。
+		fragmentSamples uint64
 		// fmp4：开片 moov 写入后记录可回写时长的文件偏移；0 表示不可用
 		mvhdDurationOffset int64
 		mehdDurationOffset int64
@@ -152,6 +156,7 @@ func (m *Muxer) CreateFlagment(t *Track, sample Sample) (moof IBox, mdat IBox) {
 			KeyFrame: lastSample.KeyFrame,
 		})
 		t.Samplelist[0] = sample
+		m.fragmentSamples++
 	} else {
 		t.Samplelist = append(t.Samplelist, sample)
 	}
