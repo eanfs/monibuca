@@ -851,10 +851,10 @@ func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
 		}
 	case RecordGateQueued:
 		// 插件已保存录制参数，取得名额后会自行启动；此处只做可观测记录。
-		p.Info("onpub recording queued by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+		p.Info("auto recording queued by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
 	default:
 		// 不得静默丢弃：记录完整参数，便于人工通过 API 补录。
-		p.Error("onpub recording refused by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+		p.Error("auto recording refused by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
 	}
 }
 

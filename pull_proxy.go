@@ -273,7 +273,10 @@ func (p *Publisher) processPullProxyOnStart() {
 		if prevStatus == PullProxyStatusOnline || prevStatus == PullProxyStatusPulling {
 			pullProxy.ChangeStatus(PullProxyStatusPulling)
 			if mp4Plugin, ok := s.Plugins.Get("MP4"); ok && p.PullProxyConfig.FilePath != "" {
-				mp4Plugin.Record(p, p.PullProxyConfig.Record, nil)
+				// 与 onpub 自动录像走同一条准入路径（并发限流 + gate），
+				// 不得直接调用 Record 绕过限流器：Admit 由核心启动录制，
+				// Queued 由 mp4 插件排队后启动，Refused 记 Error 且不启动。
+				mp4Plugin.recordOnPublish(p, p.PullProxyConfig.Record)
 			}
 		}
 	}

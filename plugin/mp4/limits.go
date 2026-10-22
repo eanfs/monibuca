@@ -28,6 +28,9 @@ var (
 	ErrRecordLimitQueueFull = errors.New("recording limit wait queue is full")
 	// ErrRecordLimitTimeout 表示在排队超时时间内没有等到名额。
 	ErrRecordLimitTimeout = errors.New("timed out waiting for a free recording slot")
+	// ErrRecordLimiterStale 表示 waiter 属于另一个 RecordLimiter 实例（例如插件重启后
+	// 换了一个 limiter）。此时必须当作已取消处理，绝不能在新 limiter 上释放名额。
+	ErrRecordLimiterStale = errors.New("recording limiter changed while waiting for a slot")
 )
 
 // disabledRecordLimiter 在插件 Start 之前（或 max=0）使用，保证调用方无需判空。
@@ -45,7 +48,15 @@ type RecordLimiter struct {
 
 	mu      sync.Mutex
 	active  int
-	waiters []chan struct{}
+	waiters []*recordWaiter
+}
+
+// recordWaiter 记录一个排队位置及其所属 limiter。携带 limiter 是为了让 Wait
+// 能识别“来自另一个 limiter 代次”的 waiter：插件重启会新建 limiter，旧 waiter
+// 在新 limiter 中并不存在，不能把 removeWaiter 的 false 误解为“名额已交接”。
+type recordWaiter struct {
+	ch      chan struct{}
+	limiter *RecordLimiter
 }
 
 // NewRecordLimiter 创建 limiter。max<=0 表示不限制。
@@ -97,9 +108,9 @@ func (l *RecordLimiter) Acquire(ctx context.Context) error {
 }
 
 // Reserve 非阻塞地尝试取得名额（waiter==nil）或预留一个等待位置。
-// 队列已满时返回 ok=false。返回的 waiter 必须交给 Wait 处理；
+// 队列已满时返回 ok=false。返回的 waiter 必须交给**同一个 limiter** 的 Wait 处理；
 // 调用方若不再等待（例如任务被取消），仍应调用 Wait 以正确回收位置。
-func (l *RecordLimiter) Reserve() (waiter <-chan struct{}, ok bool) {
+func (l *RecordLimiter) Reserve() (waiter *recordWaiter, ok bool) {
 	if !l.Enabled() {
 		return nil, true
 	}
@@ -113,16 +124,20 @@ func (l *RecordLimiter) Reserve() (waiter <-chan struct{}, ok bool) {
 	if len(l.waiters) >= l.queueCapacity {
 		return nil, false
 	}
-	ch := make(chan struct{}, 1)
-	l.waiters = append(l.waiters, ch)
-	return ch, true
+	w := &recordWaiter{ch: make(chan struct{}, 1), limiter: l}
+	l.waiters = append(l.waiters, w)
+	return w, true
 }
 
 // Wait 等待预留的位置被 Release 交接。waiter==nil 表示 Reserve 已直接取得名额，
-// 立即返回 nil。
-func (l *RecordLimiter) Wait(ctx context.Context, waiter <-chan struct{}) error {
+// 立即返回 nil。waiter 不是由本 limiter 预留的（插件重启换了一代 limiter）时
+// 返回 ErrRecordLimiterStale，调用方不得在新 limiter 上释放名额。
+func (l *RecordLimiter) Wait(ctx context.Context, waiter *recordWaiter) error {
 	if waiter == nil {
 		return nil
+	}
+	if waiter.limiter != l {
+		return ErrRecordLimiterStale
 	}
 	if !l.Enabled() {
 		return nil
@@ -133,7 +148,7 @@ func (l *RecordLimiter) Wait(ctx context.Context, waiter <-chan struct{}) error 
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
 	select {
-	case <-waiter:
+	case <-waiter.ch:
 		return nil
 	case <-ctx.Done():
 		// 与 Release 竞争：若位置仍可移除，说明没人把名额交给我们；否则
@@ -160,10 +175,10 @@ func (l *RecordLimiter) Release() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for len(l.waiters) > 0 {
-		ch := l.waiters[0]
+		w := l.waiters[0]
 		l.waiters = l.waiters[1:]
 		select {
-		case ch <- struct{}{}:
+		case w.ch <- struct{}{}:
 			return // 名额交接给等待者，active 保持 1
 		default:
 			// 等待者已超时但尚未从队列摘除，跳过它继续找下一个。
@@ -174,11 +189,11 @@ func (l *RecordLimiter) Release() {
 	}
 }
 
-func (l *RecordLimiter) removeWaiter(waiter <-chan struct{}) (removed bool) {
+func (l *RecordLimiter) removeWaiter(waiter *recordWaiter) (removed bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, ch := range l.waiters {
-		if ch == waiter {
+	for i, w := range l.waiters {
+		if w == waiter {
 			l.waiters = append(l.waiters[:i], l.waiters[i+1:]...)
 			return true
 		}
@@ -223,8 +238,9 @@ func recordLimitRefusalError(err error) error {
 	}
 }
 
-// GateRecord 实现 m7s.IRecordGatePlugin，为自动录像（onpub / pull_on_start）
-// 提供并发保护。该回调运行在发布路径上，禁止阻塞：
+// GateRecord 实现 m7s.IRecordGatePlugin，为自动录像提供并发保护。onpub 与
+// pull_on_start 两条路径都经由 m7s.Plugin.recordOnPublish 调用本方法（不存在
+// 绕过 gate 直接 Record 的入口）。该回调运行在发布路径上，禁止阻塞：
 //   - 有空闲名额：立即准入，release 交给录制任务 dispose 时调用；
 //   - 名额已满但等待队列有位置：把录制参数保存到 pendingAutoRecordTask，
 //     由任务系统在队首等待名额后再启动录制（不丢参数、不静默停录）；
@@ -248,10 +264,11 @@ func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) (release 
 		return func() { once.Do(l.Release) }, m7s.RecordGateAdmit
 	}
 	todo := &pendingAutoRecordTask{
-		plugin: p,
-		pub:    pub,
-		conf:   conf,
-		waiter: waiter,
+		plugin:  p,
+		pub:     pub,
+		conf:    conf,
+		limiter: l, // 绑定 Reserve 时的 limiter；Go() 不得重新读取插件当前 limiter
+		waiter:  waiter,
 	}
 	// 每个待录任务必须有唯一 key，否则 AddTask 会因键冲突拒绝后一个任务。
 	todo.key = fmt.Sprintf("onpub-record:%p", todo)
@@ -263,28 +280,33 @@ func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) (release 
 	return nil, m7s.RecordGateQueued
 }
 
-// pendingAutoRecordTask 保存一次被推迟的自动录制参数，在排队取得名额后启动录制。
-// 使用 Go()（独立 goroutine，不阻塞父事件循环）等待名额。
+// pendingAutoRecordTask 保存一次被推迟的自动录像参数，在排队取得名额后启动录制。
+// 使用 Go()（独立 goroutine，不阻塞父事件循环）等待名额。limiter 与 waiter 都
+// 固定为 Reserve 时的代次，避免插件重启后误用新 limiter。
 type pendingAutoRecordTask struct {
 	task.Task
 	plugin *MP4Plugin
 	pub    *m7s.Publisher
 	conf   config.Record
-	waiter <-chan struct{}
-	key    string
+	// limiter 是 Reserve 时的那个实例。插件重启会换一代 limiter，Go() 若重新
+	// 读取 plugin.getRecordLimiter()，会把旧 waiter 交给新 limiter，从而在
+	// 错误的实例上释放名额（过准入），因此必须固定在这里。
+	limiter *RecordLimiter
+	waiter  *recordWaiter
+	key     string
 }
 
 func (t *pendingAutoRecordTask) GetKey() string { return t.key }
 
 func (t *pendingAutoRecordTask) Go() error {
-	l := t.plugin.getRecordLimiter()
-	if !l.Enabled() {
-		// 插件在排队期间被重新配置为不限制：直接启动。
+	l := t.limiter
+	if l == nil || !l.Enabled() {
+		// 防御性分支：正常流程中排队任务一定绑定已启用的 limiter。
 		t.startRecording(func() {})
 		return task.ErrTaskComplete
 	}
 	if err := l.Wait(t, t.waiter); err != nil {
-		t.Error("onpub recording refused by recording concurrency limit",
+		t.Error("auto recording refused by recording concurrency limit",
 			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath, "error", err)
 		return task.ErrTaskComplete
 	}
@@ -292,7 +314,7 @@ func (t *pendingAutoRecordTask) Go() error {
 	release := func() { once.Do(l.Release) }
 	if t.pub.GetTask().IsStopped() {
 		release()
-		t.Info("queued onpub recording skipped: publisher already stopped",
+		t.Info("queued auto recording skipped: publisher already stopped",
 			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath)
 		return task.ErrTaskComplete
 	}
@@ -305,10 +327,10 @@ func (t *pendingAutoRecordTask) startRecording(release func()) {
 	job := t.plugin.RecordWithDispose(t.pub, t.conf, nil, release)
 	if err := job.WaitStarted(); err != nil {
 		release()
-		t.Error("queued onpub recording failed to start",
+		t.Error("queued auto recording failed to start",
 			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath, "error", err)
 		return
 	}
-	t.Info("queued onpub recording started",
+	t.Info("queued auto recording started",
 		"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath, "taskPtr", uint64(job.GetTaskPointer()))
 }
