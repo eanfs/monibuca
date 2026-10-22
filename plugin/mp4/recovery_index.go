@@ -76,6 +76,10 @@ type IndexRecoveryTask struct {
 
 	plugin *MP4Plugin
 
+	// observer 是可选的单文件结果观察者（恢复 API 的进度与最近结果）。
+	// 必须在任务启动前设置；回调可能来自并发 worker，实现必须线程安全。
+	observer func(file string, outcome string, err error, samples int, truncated bool)
+
 	// runMu 串行化整个扫描：启动扫描与 API 手动触发不能同时处理同一文件。
 	runMu sync.Mutex
 }
@@ -213,6 +217,17 @@ const (
 	recoveryRecovered
 	recoverySkipped
 )
+
+func (o recoveryOutcome) String() string {
+	switch o {
+	case recoveryRecovered:
+		return "recovered"
+	case recoverySkipped:
+		return "skipped"
+	default:
+		return "failed"
+	}
+}
 
 type recoveryCollector struct {
 	mu    sync.Mutex
@@ -524,6 +539,9 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 		file = mediaPathFromSidecar(sidecar)
 	}
 	elapsedMs := elapsed.Milliseconds()
+	if t.observer != nil {
+		t.observer(file, outcome.String(), err, len(item.Records), item.Truncated)
+	}
 	switch outcome {
 	case recoveryRecovered:
 		t.Info("recovery result",

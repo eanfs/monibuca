@@ -1,0 +1,250 @@
+package plugin_mp4
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	task "github.com/eanfs/gotask"
+)
+
+// 恢复 API 的运行状态机：运行登记/幂等判定、进度观测、历史淘汰。
+// 所有可变字段由 recoveryAPIState.mu 保护；RecoveryStats 由 Task 5 产出。
+
+// recoveryRunState 是一次手动恢复运行的状态。字段由 recoveryAPIState.mu 保护。
+type recoveryRunState struct {
+	id         string
+	key        string
+	status     string
+	dirs       []string
+	file       string
+	startedAt  time.Time
+	finishedAt time.Time
+	stats      RecoveryStats
+	err        string
+}
+
+// recoveryAPIState 保存运行历史与最近恢复结果。零值可直接使用。
+type recoveryAPIState struct {
+	mu      sync.Mutex
+	runs    map[string]*recoveryRunState
+	order   []string
+	current *recoveryRunState
+	recent  []recoveryRecentEntry
+	seq     uint64
+}
+
+// recoveryAPIJob 在任务系统中执行一次 API 触发的手动恢复。
+type recoveryAPIJob struct {
+	task.Task
+	owner *IndexRecoveryTask
+	state *recoveryAPIState
+	run   *recoveryRunState
+}
+
+func (t *recoveryAPIJob) Go() error {
+	stats, runErr := t.owner.runRequest(t.run.dirs, t.run.file)
+	t.state.finishRun(t.run, stats, runErr)
+	return nil
+}
+
+// runRequest 串行执行一次手动恢复。dirs 为空表示使用配置/默认目录；
+// file 非空表示只处理单个 sidecar（优先于 dirs）。
+// 新鲜度（record.recovery.minage）与活跃录制保护由 recoverSidecar 内部的
+// isFreshlyWritten 统一裁决，手动触发不会绕过。
+func (t *IndexRecoveryTask) runRequest(dirs []string, file string) (RecoveryStats, error) {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	if file != "" {
+		stats := RecoveryStats{Scanned: 1}
+		outcome, _, err := t.recoverSidecar(file)
+		stats.recordOutcome(file, outcome, err)
+		return t.finish(stats)
+	}
+	return t.finish(t.runRecovery(dirs, true))
+}
+
+func (p *MP4Plugin) recoveryStateStore() *recoveryAPIState {
+	return &p.recoveryState
+}
+
+// observeRecovery 是 IndexRecoveryTask.observer 的实现。
+func (p *MP4Plugin) observeRecovery(file, outcome string, err error, samples int, truncated bool) {
+	p.recoveryStateStore().observe(file, outcome, err, samples, truncated)
+}
+
+func (s *recoveryAPIState) ensureRunsLocked() {
+	if s.runs == nil {
+		s.runs = make(map[string]*recoveryRunState)
+	}
+}
+
+// startRun 登记一次运行。返回 (id, deduplicated, conflict, error)。
+//   - 相同目标已在运行 → 返回同一 id，deduplicated=true（HTTP 200）；
+//   - 不同目标正在运行 → conflict=true，id 为在途运行 id（HTTP 409）。
+func (s *recoveryAPIState) startRun(owner *IndexRecoveryTask, dirs []string, file string) (string, bool, bool, error) {
+	key := recoveryRunKey(dirs, file)
+
+	s.mu.Lock()
+	s.ensureRunsLocked()
+	if s.current != nil && s.current.status == recoveryRunRunning {
+		id := s.current.id
+		if s.current.key == key {
+			s.mu.Unlock()
+			return id, true, false, nil
+		}
+		s.mu.Unlock()
+		return id, false, true, nil
+	}
+
+	s.seq++
+	id := fmt.Sprintf("rec-%d-%d", time.Now().UnixNano(), s.seq)
+	run := &recoveryRunState{
+		id:        id,
+		key:       key,
+		status:    recoveryRunRunning,
+		dirs:      append([]string(nil), dirs...),
+		file:      file,
+		startedAt: time.Now(),
+	}
+	s.runs[id] = run
+	s.order = append(s.order, id)
+	s.current = run
+	s.evictLocked()
+	s.mu.Unlock()
+
+	child := owner.AddTask(&recoveryAPIJob{owner: owner, state: s, run: run}, owner.Logger)
+	if err := child.WaitStarted(); err != nil {
+		s.mu.Lock()
+		run.status = recoveryRunFailed
+		run.err = err.Error()
+		run.finishedAt = time.Now()
+		if s.current == run {
+			s.current = nil
+		}
+		s.mu.Unlock()
+		return id, false, false, fmt.Errorf("start recovery run: %w", err)
+	}
+	return id, false, false, nil
+}
+
+// finishRun 记录运行最终结果并释放 in-flight 标记。
+func (s *recoveryAPIState) finishRun(run *recoveryRunState, stats RecoveryStats, runErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run.stats = stats
+	run.finishedAt = time.Now()
+	run.status = recoveryRunCompleted
+	if runErr != nil {
+		run.err = runErr.Error()
+		if stats.Scanned == 0 && stats.Recovered+stats.Failed+stats.Skipped == 0 {
+			run.status = recoveryRunFailed
+		}
+	}
+	if s.current == run {
+		s.current = nil
+	}
+}
+
+func (s *recoveryAPIState) evictLocked() {
+	if len(s.order) <= recoveryRunHistoryLimit {
+		return
+	}
+	drop := len(s.order) - recoveryRunHistoryLimit
+	for _, id := range s.order[:drop] {
+		run, ok := s.runs[id]
+		if !ok || run.status == recoveryRunRunning {
+			continue
+		}
+		delete(s.runs, id)
+	}
+	s.order = append([]string(nil), s.order[drop:]...)
+}
+
+func (s *recoveryAPIState) getRun(id string) (*recoveryRunState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	return run, ok
+}
+
+// observe 接收恢复任务的单文件结果回调：写入最近结果并推进在途运行的进度。
+// 回调可能来自并发 worker，必须线程安全。
+func (s *recoveryAPIState) observe(file, outcome string, err error, samples int, truncated bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if outcome == "recovered" {
+		s.recent = append(s.recent, recoveryRecentEntry{
+			File:      file,
+			At:        time.Now(),
+			Samples:   samples,
+			Truncated: truncated,
+		})
+		if len(s.recent) > recoveryRecentHistoryLimit {
+			s.recent = append([]recoveryRecentEntry(nil), s.recent[len(s.recent)-recoveryRecentHistoryLimit:]...)
+		}
+	}
+	if run := s.current; run != nil && run.status == recoveryRunRunning {
+		switch outcome {
+		case "recovered":
+			run.stats.Recovered++
+		case "skipped":
+			run.stats.Skipped++
+		default:
+			run.stats.Failed++
+			if err != nil {
+				run.stats.Errors = append(run.stats.Errors, fmt.Errorf("%s: %w", file, err))
+			}
+		}
+	}
+}
+
+func (s *recoveryAPIState) recentSnapshot(limit int) []recoveryRecentEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.recent) {
+		limit = len(s.recent)
+	}
+	out := make([]recoveryRecentEntry, limit)
+	copy(out, s.recent[len(s.recent)-limit:])
+	return out
+}
+
+func (s *recoveryAPIState) runView(run *recoveryRunState) recoveryRunView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	view := recoveryRunView{
+		Code:      0,
+		ID:        run.id,
+		Status:    run.status,
+		StartedAt: run.startedAt,
+		Progress:  newRecoveryStatsView(run.stats),
+		Error:     run.err,
+		Target: recoveryRunTargetView{
+			Dirs: append([]string(nil), run.dirs...),
+			File: run.file,
+		},
+	}
+	if !run.finishedAt.IsZero() {
+		finished := run.finishedAt
+		view.FinishedAt = &finished
+		result := newRecoveryStatsView(run.stats)
+		view.Result = &result
+	}
+	return view
+}
+
+// recoveryRunKey 用于幂等判定：同一目标目录/文件视为同一请求。
+func recoveryRunKey(dirs []string, file string) string {
+	if file != "" {
+		return "file:" + file
+	}
+	if len(dirs) == 0 {
+		return "dir:<default>"
+	}
+	normalized := append([]string(nil), dirs...)
+	sort.Strings(normalized)
+	return "dir:" + strings.Join(normalized, "\x00")
+}

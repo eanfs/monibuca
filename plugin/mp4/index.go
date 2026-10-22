@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"m7s.live/v5"
@@ -41,6 +42,12 @@ type MP4Plugin struct {
 			Dirs        []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
 		} `desc:"录像崩溃恢复配置"`
 	} `yaml:"record" desc:"录像配置"`
+
+	// recoveryTask 供 /api/recovery/* 手动触发与状态查询；Start 时存入。
+	// 用 atomic 是因为 HTTP handler 可能先于/并发于插件启动被调用。
+	recoveryTask atomic.Pointer[IndexRecoveryTask]
+	// recoveryState 是恢复 API 的运行时状态（运行历史/最近恢复结果）。
+	recoveryState recoveryAPIState
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
@@ -79,6 +86,9 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 		"/snap/{streamPath...}":               p.snapHandel,
 		"/api/upload/exhausted":               p.handleListExhaustedUploads,
 		"/api/upload/retry":                   p.handleRetryUpload,
+		"/api/recovery/list":                  p.handleRecoveryList,
+		"/api/recovery/run":                   p.handleRecoveryRun,
+		"/api/recovery/status/{id}":           p.handleRecoveryStatus,
 	}
 }
 
@@ -112,23 +122,27 @@ func (p *MP4Plugin) Start() (err error) {
 	// 恢复任务合并了旧 RecordRecoveryTask：启动扫描先补 DB 记录（AutoRecovery），
 	// 再定稿 sidecar。索引定稿不依赖 DB，因此即使 DB 未启用也会运行。
 	// onstart=false 只关闭索引扫描；AutoRecovery 的 DB 补录仍在任务 Start 中执行。
-	if p.RecordConfig.Recovery.OnStart || (p.AutoRecovery && p.DB != nil) {
-		recoveryTask := &IndexRecoveryTask{
-			DB:            p.DB,
-			plugin:        p,
-			Dirs:          p.RecordConfig.Recovery.Dirs,
-			Concurrency:   p.RecordConfig.Recovery.Concurrency,
-			MinAge:        p.RecordConfig.Recovery.MinAge,
-			RunOnStart:    p.RecordConfig.Recovery.OnStart,
-			RunDBBackfill: p.AutoRecovery && p.DB != nil,
-		}
-		// 按 sidecar 记录的存储类型解析上传后端：用本 server 的 registry 且
-		// 绝不回落到当前活跃存储（S3 不可用时也不写 local）。
-		if server := p.Server; server != nil {
-			recoveryTask.ResolveUploadStorage = server.GetStorageForType
-		}
-		p.AddTask(recoveryTask)
+	//
+	// 任务始终注册：/api/recovery/run 需要在关闭启动扫描时仍能手动触发，
+	// 同时保留运行状态供 /api/recovery/status 查询。空闲的 Work 无额外开销。
+	recoveryTask := &IndexRecoveryTask{
+		DB:            p.DB,
+		plugin:        p,
+		Dirs:          p.RecordConfig.Recovery.Dirs,
+		Concurrency:   p.RecordConfig.Recovery.Concurrency,
+		MinAge:        p.RecordConfig.Recovery.MinAge,
+		RunOnStart:    p.RecordConfig.Recovery.OnStart,
+		RunDBBackfill: p.AutoRecovery && p.DB != nil,
 	}
+	// 按 sidecar 记录的存储类型解析上传后端：用本 server 的 registry 且
+	// 绝不回落到当前活跃存储（S3 不可用时也不写 local）。
+	if server := p.Server; server != nil {
+		recoveryTask.ResolveUploadStorage = server.GetStorageForType
+	}
+	// observer 必须在任务启动前设置（之后只读）。
+	recoveryTask.observer = p.observeRecovery
+	p.recoveryTask.Store(recoveryTask)
+	p.AddTask(recoveryTask)
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {
 	// 		p.SendToThirdPartyAPI(exception)
