@@ -21,15 +21,16 @@
 ## 目标
 
 1. 进程被 SIGKILL / OOM / 崩溃后，重启时自动把残留半成品恢复成**可播放的普通 MP4**（progressive MP4，不是 fMP4），并补传、补数据库记录。
-2. 同一路流重新开始录制时，能**接上**之前的半成品继续写，最终形成一个可播文件；前后数据都在，中间断档可接受。
-3. 上传失败、录制起止、恢复过程都留下可查询的日志与状态。
-4. 降低“进程死”的发生概率：GB28181 并发 map 崩溃修复、失败后不要用重启风暴压垮上游（NVR）与自身内存。
-5. 交付方式：直接使用最新版本（main 分支）构建的镜像，不为 v5.3.0 打补丁。
+2. 上传失败、录制起止、恢复过程都留下可查询的日志与状态。
+3. 降低“进程死”的发生概率：GB28181 并发 map 崩溃修复、失败后不要用重启风暴压垮上游（NVR）与自身内存。
+4. 交付方式：直接使用最新版本（main 分支）构建的镜像，不为 v5.3.0 打补丁。
 
 ## 非目标
 
-- 不做 fMP4 录制（用户明确要求 MP4）。fMP4 天然崩溃安全，但不在本次范围。
-- 不承诺零丢失。异常杀进程是低频事件，接受“最多丢最后一小段”和“中间断档”。
+- **不做自动续录（接上）**。2026-10-22 已确认：上游 its-server 每次发起录制都用新文件名、且不提供任务 ID，而同一 `streamPath` 允许并发多个录制；在此前提下“哪个残留该被哪个新任务接着写”没有可靠答案，猜错会把不同任务的录像混进同一文件。崩溃恢复的目标改为“每段残留各自恢复成独立可播文件”。
+- 不改变“同一 streamPath 可并发多录制（不同 fileName/filePath）”的现有能力。
+- 不做 fMP4 录制（用户明确要求 MP4）。
+- 不承诺零丢失。异常杀进程是低频事件，接受“最多丢最后一小段”。
 - 不为“最后几秒”引入每帧 fsync、双写、预写日志等高频开销。
 - 不自动处理已存在的 85 GB 无索引历史 tmp（提供离线工具，人工触发）。
 - 不重做存储启动恢复/降级策略（已有 2026-08-27 设计）。
@@ -42,25 +43,27 @@
 | 决策 | 内容 |
 |---|---|
 | 格式 | 必须是普通 MP4（progressive），不是 fMP4 |
-| 丢失容忍 | 尽可能少丢；不强制零丢失；断档可接受 |
+| 丢失容忍 | 尽可能少丢；不强制零丢失 |
 | 恢复形态 | 前后数据都在、能播即可；不要求时间戳连续 |
+| 续录 | **不做**（见非目标；保留同 streamPath 多录制能力） |
 | 触发方式 | 重启后自动 + 提供接口手动触发 |
 | 交付 | 直接换最新版本镜像，不 backport |
 
 我的判断（可在评审时推翻）：
 
-- 崩溃恢复的**权威来源是录制时落盘的索引**，而不是从裸 mdat 反向猜帧边界。mdat 内是裸帧数据（`plugin/mp4/pkg/muxer.go` `WriteSample`：直接写 sample 数据，长度只记录在内存 stsz 表），反向重建需要解析码流、精度差、无法支持续写。
-- 索引采用**伴随文件（sidecar）**，而不是周期性 moov 快照。moov 快照每次都要重算偏移、体积大；sidecar 顺序追加，崩溃后重放即可精确重建。
+- 崩溃恢复的**权威来源是录制时落盘的索引**，而不是从裸 mdat 反向猜帧边界。mdat 内是裸帧数据（`plugin/mp4/pkg/muxer.go` `WriteSample`：直接写 sample 数据，长度只记录在内存 stsz 表），反向重建必须解析码流；H.264/H.265 尚可，**AAC raw 帧没有 ADTS 头，基本无法分帧**，音频轨大概率救不回。
+- 因此索引采用**伴随文件（sidecar）**，而不是把索引写进文件头预留区。预留区方案每 N 秒要重写整份 moov（216 路会放大成百 MB/s），且长录制 moov 增长会撑爆预留区。
+- sidecar 可以精简：只保留 init（ftyp+stsd）与每帧的 `offset/size/dts/keyframe`，不带 CRC，1 秒 flush 一次；25 fps 单轨约 50 KB/分钟。
 
 ## 现状盘点（main 分支）
 
 | 能力 | 现状 | 本次动作 |
 |---|---|---|
+| 同 streamPath 多录制 | 已支持：`StartRecord` 按 `(streamPath, filePath, fileName)` 去重（`plugin/mp4/api.go:713-727`） | 保持不变 |
 | GB28181 并发 map 崩溃 | `ensureCollectionMutex()` 已在 `registerhandler.go:216`、`device.go:452`、`device.go:1020` 补上 | 验证插件级 `plugin.channels` 是否同样受保护；补测试 |
 | 上传队列/重试/pending | `UploadQueueTask` 与 trailer 队列已拆分；`pkg/storage/upload_manager.go` 有并发与水位；`retry.go` 有永久错误分类；`finalize.go` 有 `TempFileFinalizer` | 复用，不重写 |
 | 正常停止时的 moov/trailer | `writeTrailerTask`（`plugin/mp4/pkg/record.go`） | 复用 |
 | 崩溃后接管 | **无** | 新增 sidecar + 恢复任务 |
-| 续录 | **无** | 新增 |
 | 无 moov 文件修复 | **无**（只有正常路径 `PrepareFrontMoov`） | 新增（基于 sidecar 重建） |
 | 录制起止日志 | 无 | 新增 |
 | 上传失败日志 | 零星，未形成状态 | 补齐 + 可查询 |
@@ -71,15 +74,14 @@
 
 **位置与命名**：与录制媒体文件同目录，`<media>.m7sidx`。S3 场景媒体是 `tempDir` 下的 `s3writer_*.tmp`，sidecar 与其同目录；local 场景媒体直接落在目标目录。
 
-**格式**：二进制 append-only。
+**格式**：二进制 append-only，精简版。
 
 ```
 [Header]  magic "M7SIDX1" (7B) | headerLen uint32 | headerJSON (UTF-8)
-[Record]  type uint8 | flags uint8 | trackID uint16 | size uint32 |
-          offset uint64 | dts uint32 | duration uint32 | cts uint32 |
-          crc32 uint32        // 共 32 字节，固定长度
+[Record]  flags uint8 | trackID uint16 | size uint32 | offset uint64 |
+          dts uint32 | duration uint32        // 固定 23 字节
 [Record]  ...
-[Commit]  type=0xFF | 结束时间 | 总时长 | 样本总数 | crc32
+[Commit]  type=0xFF | endTime | 总时长 | 样本总数
 ```
 
 headerJSON 至少包含：
@@ -90,96 +92,88 @@ headerJSON 至少包含：
   "streamPath": "19216817/1921682163-...-main",
   "mediaPath": "/tmp/s3writer_94740.tmp",
   "targetName": "rec-1921682163-1792310482792.mp4",
+  "storageKey": "<含 prefix 的完整对象键>",
+  "filePath": "<record_streams.file_path>",
   "storageType": "s3",
   "startTime": "2026-10-17T08:32:12.5+08:00",
-  "resumeOf": "",
   "tracks": [
-    {"id": 1, "fourcc": "avc1", "timescale": 1000, "stsd": "<base64>"}
+    {"id": 1, "fourcc": "avc1", "width": 1920, "height": 1080,
+     "sampleRate": 0, "channels": 0, "stsd": "<base64>"}
   ]
 }
 ```
 
-`tracks[].stsd` 存 codec 描述（avcC/hvcC 等），恢复时无需等新码流即可构造 moov。
+**写入时机**：先写媒体数据、后追加索引记录，保证索引不超前于“已提交给存储层”的数据。用 4 KB `bufio.Writer`，每 1 秒或缓冲满时 flush。
 
-**写入时机**：每次 `Track.AddSampleEntry` 之后追加一条 Record（媒体数据先写、索引后写，保证索引不超前于数据）。用 4 KB `bufio.Writer`，每 200 ms 或缓冲满时 flush。正常停止时写 Commit、fsync，然后删除 sidecar。
+**一致性规则**：恢复以 sidecar 为准，但同时以实际文件长度兜底——逐条读记录，遇到损坏记录或 `offset + size > fileSize` 立即停止，媒体截断到最后一条有效记录末尾。**不延长文件**。
 
-**一致性规则**：恢复时以 sidecar 为准。逐条读记录并校验 crc；遇到第一条损坏/不完整记录即停止。媒体文件截断到 `最后一条有效记录.offset + size`，保证 moov 与 mdat 一致。
-
-**开销**：每条 32 B。按 25 fps 单轨计，1 小时约 2.9 MB；实际流多为 2 轨，仍可忽略。
+**开销**：每帧 23 B。25 fps 单轨 1 小时约 2 MB，可忽略。
 
 ### 2. 崩溃后自动恢复
 
-新增 `RecordIndexRecoveryTask`（`task.TickTask` 或启动时一次性任务，挂在 MP4 插件），在存储初始化完成之后运行：
+新增 `RecordIndexRecoveryTask`（独立 `task.Work`，便于限流与观测），在存储初始化完成之后运行：
 
-1. 扫描目录：录制 `tempDir`、`pending_uploads`、以及配置的额外目录（默认 `/tmp`），查找 `*.m7sidx`。
-2. 对每个 sidecar：读 header → 校验媒体文件存在 → 重放 record 重建 `Muxer` 的 sample 表 → 截断媒体尾部 → `PrepareFrontMoov()` 生成 moov-first MP4。
-3. 更新 `record_streams`：`end_time`、`duration`（取最后一条 dts+duration）、`file_path`。若记录不存在则新建。
+1. 扫描目录：录制 `tempDir`、`pending_uploads`、以及配置的额外目录，查找 `*.m7sidx`。
+2. 对每个 sidecar：读 header → 校验媒体文件存在 → 重放 record 重建 `Muxer` 的 sample 表 → 按上节规则截断 → `PrepareFrontMoov()` 生成 moov-first MP4。
+3. 更新 `record_streams`：`end_time`、`duration`（取最后一条 dts+duration）、`file_path`。记录不存在则新建。
 4. 投递到既有 `UploadQueueTask` 上传；成功清理媒体与 sidecar；失败进入 `pending_uploads` 并登记重试（复用现有 `upload_manager`/DB `upload_tasks`）。
-5. 幂等：恢复开始即把 sidecar 重命名为 `.m7sidx.recovering`，处理完写 `.m7sidx.done` 或删除；重复启动不会二次处理同一文件。
-6. 并发与限速：默认并发 2 个恢复任务、可配置；避免启动时与录制抢 IO。
+5. 幂等：处理前把 sidecar 重命名为 `.m7sidx.recovering`；完成后写 `.m7sidx.done` 或删除；下次启动遇到 `.recovering` 重试（恢复必须可重复执行）。
+6. 原子性：恢复一律“写新文件 + 原子 rename”，不原地修改。
+7. 并发与限速：默认并发 2、可配置；避免启动时与录制抢 IO。
 
-**失败处理**：任一文件恢复失败不阻塞其余文件；失败列表写入日志并在 API 中可查。
+**失败处理**：任一文件失败不阻塞其余文件；失败列表写日志并可在 API 查询。
 
-### 3. 续录（接上）
+**与既有 `RecordRecoveryTask` 的关系**：`plugin/mp4/index.go:89` 的现有任务负责“扫目录补 DB 记录”，两者合并为一个任务：先补 DB，再做索引定稿，避免两套并行。
 
-录制开始时（`Recorder.createStream` 之前）做一次“未完成录制”匹配：
+### 3. 为什么不做续录
 
-- 条件：`mp4.record.resume` 开启；同 `streamPath`；同 storage key；存在未 Commit 的 sidecar；媒体文件存在。
-- 命中后：
-  1. 重放 sidecar 恢复 `Muxer`（tracks、sample 表、`CurrentOffset`、mdat 占位状态）；
-  2. 以 append 方式打开媒体文件，seek 到末尾；
-  3. 新 sample 的 `Timestamp` 从“上次最后 dts + wallclock 断档时长”继续累加（断档由播放器表现为跳变/黑屏，可接受）；
-  4. 继续写媒体并追加 sidecar；
-  5. 停止时统一回填 mdat size（`reWriteMdatSize`）并生成 moov，走原有 trailer/上传链路。
-- 未命中则按现状新建文件。
-- 竞态：同一 `streamPath` 的续录加进程内互斥，抢不到锁就新建文件；跨进程（多副本）不在本次范围（现场单副本）。
+- 上游 its-server 每次发起录制都用新文件名（`rec-<时间戳>.mp4`），不提供任务 ID，且不做续录。
+- monibuca 侧同一 `streamPath` 允许并发多个录制（`api.go:713-727` 的去重键是 `(streamPath, filePath, fileName)`），重启后也可能并发拉起多个任务。
+- 因此“残留文件 ↔ 新任务”无法可靠配对；按 mtime 或文件名时间戳猜测，会把不同任务的录像混进一个文件，破坏“不丢数据”的初衷。
+- 结论：每段残留单独恢复为可播文件；若将来需要真正的续录，前提是先给录制引入任务 ID（需要上游配合）。
 
-**注意**：若 sidecar 或媒体文件已被恢复任务处理（`.recovering`/`.done`），续录不命中，按新文件处理，避免与恢复任务互相踩踏。
+**对现有能力的承诺**：本设计不改变“同 streamPath 多录制”的 API 语义与去重逻辑。
 
 ### 4. 历史无索引 tmp 的离线抢救
 
-提供独立入口（CLI 子命令或 `POST /mp4/api/recovery/raw`），对没有 sidecar 的 `s3writer_*.tmp` 做 best-effort 恢复：
+提供独立入口（CLI 子命令，HTTP 作为可选辅助），对没有 sidecar 的 `s3writer_*.tmp` 做 best-effort 恢复：
 
 - 解析 mdat 内码流（H.264/H.265 NALU 扫描），重建最小可用索引；
-- 生成可播 MP4；失败则输出诊断（无关键帧、码流无法识别等）；
-- 批量处理支持目录参数、并发、dry-run；
-- 结果写入报告文件，供现场逐批核对。
+- 生成可播 MP4；失败则输出诊断（无关键帧、码流无法识别、音频不可分帧等）；
+- 支持目录参数、并发、dry-run；结果写报告文件，供现场逐批核对。
 
-**明确不保证成功率**，也不进入启动自动流程。现场剩余 85 GB 用该工具处理，处理完再决定是否删除。
+**明确不保证成功率**（音频轨通常无法恢复），也不进入启动自动流程。现场剩余 85 GB 用该工具处理，处理完再决定是否删除。
 
 ### 5. 可观测性
 
-**日志（必须）**，统一用结构化 key-value：
+**日志（必须）**，统一结构化 key-value：
 
 | 事件 | 级别 | 关键字段 |
 |---|---|---|
-| 录制开始 | Info | `streamPath`、`file`、`type`、`storageType`、`codec`、`resume` |
+| 录制开始 | Info | `streamPath`、`file`、`type`、`storageType`、`codec` |
 | 录制结束 | Info | `streamPath`、`file`、`durationMs`、`size`、`samples`、`tracks`、`elapsedMs` |
 | 索引写入异常 | Error | `streamPath`、`file`、`error`、`recordsWritten` |
 | 上传入队/成功/失败 | Info/Error | `file`、`size`、`retryCount`、`errorClass`（permanent/transient）、`nextRetryAt` |
 | pending 水位 | Warn | `count`、`bytes`、`limit` |
 | 恢复扫描/单个结果 | Info/Error | `scanned`、`recovered`、`failed`、`file`、`elapsedMs` |
-| 续录命中/放弃 | Info/Warn | `streamPath`、`file`、`gapMs`、`reason` |
 
 **API（必须）**：
 
 - `GET /mp4/api/recovery/list`：未完成索引、恢复中、恢复失败、最近恢复记录（分页）。
 - `POST /mp4/api/recovery/run`：手动触发扫描/恢复，可指定目录或单文件，返回任务 id。
 - `GET /mp4/api/recovery/status/{id}`：进度与结果。
-- 复用/扩展现有 `upload_admin.go` 的 pending 查询接口，返回待传数量、字节、失败原因分布。
+- 复用/扩展 `upload_admin.go` 的 pending 查询接口。
 
-**指标（可选）**：录制中数量、sidecar 写入失败计数、pending 文件数/字节、恢复成功/失败计数。若加，走现有 metrics 通道。
+**指标（可选）**：录制中数量、索引写入失败计数、pending 文件数/字节、恢复成功/失败计数。
 
 ### 6. 根因与稳定性
 
-**GB28181 并发 map**：`addOrUpdateChannel` 里访问的是 `d.plugin.channels`（插件级集合），而 `ensureCollectionMutex` 只初始化了 `d.channels`/`d.catalogReqs`。需要确认插件级集合的锁初始化路径（`MP4/GB28181 插件 Start` 时创建），并用 `-race` + 并发 Catalog 压测验证。若缺失，按同样方式补齐。
+**GB28181 并发 map**：`addOrUpdateChannel` 访问的是 `d.plugin.channels`（插件级集合），而 `ensureCollectionMutex` 只初始化了 `d.channels`/`d.catalogReqs`。需要确认插件级集合的锁初始化路径，并用 `-race` + 并发 Catalog 压测验证；缺失则补齐。
 
 **OOM**：现场 `mem_limit: 14g`，216 路并发录制时 RSS 13.98 GB 被杀。两条腿：
 
-1. 部署侧（必须）：建议限额提升到 24–32 GB；`pull_on_start` 任务分批拉起（避免重启后 3611 条同时启动）。
-2. 代码侧（可配置软保护）：给录制链路加“最大并发录制数”和“内存预算”，超限时拒绝新录制并记 Error 日志（含 streamPath、当前并发、估算内存），而不是让内核杀进程。默认值保守，允许关闭。
-
-**录制任务拉起**：结合部署侧，限制同一时刻新开录制数（令牌/队列），避免 NVR 503/EOF 与本地内存同时被打爆。
+1. 部署侧（必须）：限额提升到 24–32 GB；`pull_on_start` 任务分批拉起（现场有 3611 条）。
+2. 代码侧（可配置软保护）：最大并发录制数/内存预算，超限时**入有界等待队列**（默认容量 = 并发上限 × 4），排队超时（默认 30s）才拒绝，API 返回 503、onpub 记 Error 并保留待录参数；不静默停录，也不让内核杀进程。
 
 ### 7. 配置项（新增，均有默认值）
 
@@ -188,74 +182,62 @@ mp4:
   record:
     index:
       enable: true            # 写伴随索引（崩溃恢复的前提）
-      flushinterval: 200ms    # 索引落盘节流
-      dirs: []                # 恢复扫描目录，空则用 tempDir + pending_uploads + /tmp
-    resume:
-      enable: true            # 同流续录
+      flushinterval: 1s
+      dirs: []                # 恢复扫描目录，空则用 tempDir + pending_uploads
     recovery:
-      onstart: true           # 启动自动恢复
+      onstart: true
       concurrency: 2
-      maxgap: 0s              # 断档超过该值不续录（0=不限）
   limits:
     maxconcurrentrecordings: 0  # 0=不限
     maxmemorymb: 0              # 0=不限
+storage:
+  s3:
+    tempdir: /tmp               # 本次补上真实实现（此前配置字段被忽略）
 ```
 
 ### 8. 与既有设计的关系
 
-- 存储启动/降级/readiness：沿用 `2026-08-27-storage-recovery-design.md`，本次不改；恢复任务在其之后运行，确保上传目标已确定。
-- `upload_manager` 的 pending 水位：本次只复用与补日志，不改变语义。
+- 存储启动/降级/readiness：沿用 `2026-08-27-storage-recovery-design.md`；恢复任务在其之后运行，确保上传目标已确定。
+- `upload_manager` 的 pending 水位：复用与补日志，不改变语义。
 - FLV/HLS 录制的同类问题：本次不覆盖，仅 MP4。
 
 ## 验收标准
 
-1. **崩溃恢复**：模拟 216 路录制（可用压测脚本降规模到 20 路 × 循环）进行中 `kill -9` 进程 → 重启 → 全部带 idx 的残留文件自动恢复为 `ffprobe` 可读的 MP4，`record_streams` 的 `end_time`/`duration` 正确，上传成功或进入 pending。
-2. **续录**：录制中途 kill → 重启 → 同 `streamPath` 继续录制 → 停止后得到一个可播文件，`ffprobe` 显示前后两段都有数据、中间有断档。
+1. **崩溃恢复**：录制进行中 `kill -9` 进程 → 重启 → 带 idx 的残留文件全部自动恢复为 `ffprobe` 可读的 MP4，`record_streams` 的 `end_time`/`duration` 正确，上传成功或进入 pending。
+2. **同 streamPath 多录制**：同一路流传不同 `fileName` 并发两个录制，两个文件互不干扰、各自恢复、各自上传；`StartRecord` 去重语义不变。
 3. **无索引历史文件**：用离线工具处理现场 85 GB 样例，输出成功率报告；失败文件给出明确原因。
-4. **可观测性**：录制开始/结束、上传失败、pending 水位、恢复结果均有日志；三个恢复 API 可返回真实状态。
-5. **稳定性**：GB28181 并发 Catalog 压测 `-race` 无 fatal；录制并发超限时拒绝并记日志，不触发 OOM。
-6. **回归**：`go test ./plugin/mp4/... ./pkg/storage/... -race` 通过；正常启停、正常上传路径行为不变。
-7. **线上验证**：在 201 用最新镜像 + 修正后的配置（旧 IP、限额）跑一轮真实录制，确认无 `create storage failed`、无 fatal、日志齐全。
+4. **可观测性**：录制开始/结束、上传失败、pending 水位、恢复结果均有日志；三个恢复 API 返回真实状态。
+5. **稳定性**：GB28181 并发 Catalog 压测 `-race` 无 fatal；录制并发超限时排队/拒绝并记日志，不触发 OOM。
+6. **恢复自身的鲁棒性**：恢复过程中再次 `kill -9`，下次启动能重试并最终完成，不产生半修改文件。
+7. **回归**：`go test ./plugin/mp4/... ./pkg/storage/... -race` 通过；正常启停、正常上传路径行为不变。
+8. **线上验证**：在 201 用最新镜像 + 修正后的配置（旧 IP、限额）跑一轮真实录制，确认无 `create storage failed`、无 fatal、日志齐全。
 
 ## 风险与取舍
 
 | 风险 | 说明 | 取舍 |
 |---|---|---|
-| sidecar 额外 IO | 每帧 32 B，buffered | 可忽略；崩溃最多丢最后 200 ms 的索引（对应几帧数据） |
-| 索引与数据不一致 | 崩溃时媒体多写、索引未落 | 以索引为准截断媒体尾部，宁可少几帧 |
-| 续录时间戳断档 | 播放器会看到跳变 | 用户已接受；不做复杂 gap 修复 |
-| sidecar 丢失/损坏 | 磁盘错误、人为删除 | 退化为离线抢救工具，尽力而为 |
-| 恢复占用启动 IO | 216 个文件同时恢复 | 默认并发 2、可配置；后续可加时间窗 |
+| sidecar 额外 IO | 每帧 23 B，1 秒 flush | 可忽略；崩溃最多丢最后 1 秒索引（对应少量尾部帧） |
+| 索引与数据不一致 | 崩溃时媒体多写、索引未落 | 以文件实际长度为准截断，宁可少几帧 |
+| 无法续录 | 现场模式下“接上”不可实现 | 用户已确认选 A；每段独立可播 |
+| 旧 85 GB 只能部分恢复 | 音频轨通常救不回 | 离线工具 + 报告，不承诺成功率 |
+| 恢复占用启动 IO | 216 个文件同时恢复 | 默认并发 2、可配置 |
 | OOM 仍可能发生 | 代码软保护 + 部署限额 | 双管齐下，不承诺绝对不发生 |
+| 恢复期间再次崩溃 | 方案要求幂等 | 写新文件 + 原子 rename，可重跑 |
+
+## 复核补充决定（builder check 后，2026-10-22）
+
+1. **sidecar 删除时机：提交式，而不是正常停止即删。** 正常停止只写 Commit 并保留 sidecar；一直保留到“上传成功”或“已成功登记 pending”之后才删除。`FinalizeFromTemp` 改变媒体路径时追加 `RENAME` 记录（新 `mediaPath`），恢复时以最后一条为准。避免 trailer 重写/上传窗口内再被杀造成二次丢失。
+2. **临时目录与换镜像。** 现场 compose 的 `./monibuca/tmp:/tmp` 是 bind mount，换镜像不丢数据；但 S3 目前写 `os.TempDir()`（`pkg/storage/s3.go:519`），示例配置里的 `tempDir` **代码中并不存在**。本次实现 `storage.s3.tempdir`，默认 `/tmp`，sidecar 与媒体同目录；部署说明写明换镜像前确认宿主 tmp 数据。
+3. **索引可能超前于媒体（1 MiB 用户态缓冲）。** 恢复以实际文件长度为准，遇 `offset+size > fileSize` 停止并截断；**不**每 1 秒强制 flush 媒体缓冲（216 路代价不可接受），代价是丢弃尾部少量帧。
+4. **header 字段。** 同时保存 `targetName`（basename）、`storageKey`（含 prefix 的完整对象键，上传用）、`filePath`（DB 匹配用）。恢复上传用 header 的 `storageType`；若当前配置已不包含该类型，转 pending 并告警，不静默改类型。
+5. **恢复原子性。** 写新文件 + 原子 rename；`.recovering` 下次启动重试（幂等）；磁盘峰值需单文件 2 倍空间。
+6. **API 安全边界。** 扫描目录必须在白名单（`recovery.dirs`）；HTTP 接口要求管理员权限；手动触发跳过 mtime 小于 `recovery.minage`（默认 5m）的文件与活跃录制；现场优先 CLI。
+7. **超限语义：排队而不是直接丢。** 有界等待队列，排队超时才拒绝；不静默停录。
+8. **恢复任务与现有 `RecordRecoveryTask` 合并**，先补 DB 再索引定稿。
 
 ## 留给实现阶段的决定
 
 1. sidecar 放 `tempDir` 还是独立的 `sidecar/` 子目录（影响清理脚本与扫描逻辑）。
-2. 恢复任务的挂载点：MP4 插件 Start 后一次性任务，还是独立 `task.Work`（建议后者，便于限流与观测）。
-3. 续录的时间戳补偿实现：直接用 wallclock 差值，还是写入 edit list 标记 gap（建议前者，简单）。
-4. 离线抢救工具的解析实现深度：只支持 H.264/H.265 Annex-B，还是也覆盖 AVCC。
-5. OOM 软保护的具体阈值模型：按“流数 × 分辨率 × 码率”估算，还是按进程 `runtime.ReadMemStats` 动态判断（建议先做固定并发上限，简单可预测）。
-
-## 复核补充决定（builder check 后，2026-10-22）
-
-以下 10 项是对独立复核提出的问题的决定，均为**我的判断**，评审时可整体推翻；第 11 项待用户确认。
-
-1. **恢复与续录的优先级：续录优先。** 启动后恢复任务先进入宽限窗口 `recovery.graceperiod`（默认 60s）。期间任何录制器认领（同 `streamPath`、sidecar 未 Commit）则把该文件标记 `.claimed`，恢复任务跳过；宽限到期仍无人认领才定稿恢复。现有 `RecordRecoveryTask`（`plugin/mp4/index.go:89`，扫目录补 DB 记录）与新的索引恢复合并为同一个任务：先补 DB，再做索引定稿，避免两套并行。
-2. **sidecar 删除时机：提交式，而不是正常停止即删。** 正常停止只写 Commit 记录并保留 sidecar；sidecar 一直保留到“上传成功”或“已成功登记 pending”之后才删除。`FinalizeFromTemp` 改变媒体路径时，向 sidecar 追加一条 `RENAME` 记录（新 `mediaPath`），恢复时以最后一条 RENAME 为准。这样在 trailer 重写、上传窗口内再次被杀，也不会第二次丢数据。
-3. **续录匹配与 DB 语义。** 匹配键为 `streamPath` + `storageType` + 未 Commit + 未 claimed，**目标文件名不参与匹配**（上游每次都传新名字，参与匹配则“接上”永不命中）。命中后续录沿用旧文件与旧 `file_path`，延长旧 `record_streams`（更新 EndTime/Duration），不新建记录；新任务名写入 sidecar header 的 `aliases` 供排查。同一 `streamPath` 存在多条未完成时取 mtime 最新一条，其余走恢复定稿。存储层需新增“绑定已有文件并 append”的能力（不能复用 `CreateFile` 的 O_TRUNC）。
-4. **临时目录与换镜像。** 现场 compose 中 `./monibuca/tmp:/tmp` 是 bind mount，替换镜像不会丢 tmp。但 S3 目前写 `os.TempDir()`（`pkg/storage/s3.go:519`），示例配置里的 `tempDir` **在代码中并不存在**（配置误导）。本次实现 `storage.s3.tempdir`，默认 `/tmp`，sidecar 与媒体同目录；部署说明写明“换镜像前确认宿主 tmp 数据存在”。
-5. **索引可能超前于媒体（1 MiB 用户态缓冲）。** 恢复算法改为以实际文件长度为准：读记录时若 `offset + size > fileSize` 立即停止，媒体截断到最后一条有效记录末尾。**不**每 200 ms 强制 flush 媒体缓冲（216 路 × 1 MiB 的 IO 代价不可接受），代价是丢弃“已进索引但仍在用户态缓冲”的尾部帧，属于可接受范围。
-6. **续录的编解码兼容校验。** 续录前比对新流的 fourcc、宽高、采样率、声道数；不一致则定稿旧文件并新建，记 Warn，放弃原因枚举为 `codec_changed` / `resolution_changed` / `audio_changed`。
-7. **header 字段。** 同时保存 `targetName`（basename）、`storageKey`（含 prefix 的完整对象键，上传用）、`filePath`（DB 匹配用）。恢复上传用 header 里的 `storageType`；若当前配置已不包含该类型，转 pending 并告警，不静默改类型。
-8. **恢复自身的原子性。** 恢复一律“写新文件 + 原子 rename”，不原地修改；`.recovering` 状态在下次启动重试（恢复必须幂等，可重复执行）。磁盘峰值需单文件 2 倍空间，恢复并发默认 2；验收增加“恢复过程中再 kill”用例。
-9. **API 安全边界。** 扫描目录必须在白名单内（`recovery.dirs`，默认录制目录 + pending + tempdir）；HTTP 接口要求管理员权限（复用现有鉴权），手动触发跳过 mtime 小于 `recovery.minage`（默认 5m）的文件和有活跃录制器的文件；现场优先用 CLI，HTTP 作为辅助。
-10. **超限语义：排队而不是直接丢。** 录制并发软限流采用有界等待队列（默认容量 = 并发上限 × 4）；槽位满时入队，排队超时（默认 30s）才拒绝，API 返回 503，onpub 记 Error 并保留待录参数以便下次拉起。排队只保留参数不占内存，避免重启风暴后“静默停录”和内存二次爆掉。
-
-11. **【已确认】续录的合并边界：只在 monibuca 侧续，忽略新文件名。** 用户确认：its-server 每次发起录制都用新文件名，且 its-server 侧不做续录。因此 monibuca 按 `streamPath` 续写旧文件，不要求文件名一致，也不要求上游配合。对外语义：
-    - 物理文件与对象键保持**旧**的 `file_path`/`storageKey`（不搬家，保证下载与上传一致）；
-    - `record_streams` 延长旧记录（更新 EndTime/Duration），`file_name` 更新为**当前任务**的名字（平台按最新名字可查到），历史名字写入 sidecar header 的 `aliases`；
-    - 若同一 `streamPath` 有多条未完成 sidecar，按 mtime 取最新一条续写，其余走恢复定稿；
-    - this-server 无需任何改动。
-
-12. **未 Commit 但文件已被上传/已登记 pending 的 sidecar**：以 sidecar 尾部是否出现 `COMMIT` 记录为准；出现即视为已定稿，恢复与续录都跳过。
-
+2. 恢复任务的具体挂载点与限流实现（建议独立 `task.Work`）。
+3. 离线抢救工具的解析深度：只支持 H.264/H.265 Annex-B，还是也覆盖 AVCC；音频如何处理。
+4. OOM 软保护的阈值模型：固定并发上限（建议，简单可预测）还是按 `runtime.ReadMemStats` 动态判断。
