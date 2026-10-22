@@ -52,8 +52,9 @@ type IndexRecoveryTask struct {
 	// Concurrency 是单文件定稿的并发上限；<=0 时使用默认 2。
 	Concurrency int
 	// MinAge 是「仍在写入」判定阈值：sidecar/媒体 mtime 新于该值时跳过，
-	// 避免把活跃录像的 sidecar 改名、媒体文件覆盖。<=0 时取默认值（至少 5s，
-	// 且不小于 2× 索引落盘间隔）；显式传负数表示关闭该保护（仅测试/特殊场景）。
+	// 避免把活跃录像的 sidecar 改名、媒体文件覆盖。生效值无条件夹紧为
+	// max(MinAge, 5s, 2×索引落盘间隔)；显式传负数表示关闭该保护
+	// （仅测试/特殊场景）。
 	MinAge time.Duration
 	// RunOnStart 控制任务注册后是否立即跑一次。
 	RunOnStart bool
@@ -73,7 +74,7 @@ type IndexRecoveryTask struct {
 
 const (
 	defaultRecoveryConcurrency = 2
-	// defaultRecoveryMinAge 是「仍在写入」的默认判定阈值。索引默认每秒落盘，
+	// defaultRecoveryMinAge 是「仍在写入」判定阈值的下限。索引默认每秒落盘，
 	// 2× 落盘间隔通常已足够区分活跃录像；取 5s 作为下限避免误判。
 	defaultRecoveryMinAge = 5 * time.Second
 )
@@ -147,17 +148,26 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 	return defaultRecoveryConcurrency
 }
 
-// effectiveMinAge 返回「仍在写入」判定阈值。未配置时为 max(5s, 2×落盘间隔)；
-// 负值表示显式关闭保护。
+// effectiveMinAge 返回「仍在写入」判定阈值，语义为：
+//   - 负值：显式关闭保护（仅测试/特殊场景）；
+//   - 其余：max(配置值, 5s, 2×索引落盘间隔) 无条件夹紧。
+//
+// 夹紧必须无条件生效：配置默认值 5s 并非 0，若只在「未配置」时夹紧，
+// 运维把 record.index.flushinterval 调到 >2.5s 后，活跃 sidecar 的最大
+// 落盘滞后会超过 5s，活跃保护被削弱。
 func (t *IndexRecoveryTask) effectiveMinAge() time.Duration {
-	if t.MinAge != 0 {
+	if t.MinAge < 0 {
 		return t.MinAge
 	}
-	d := 2 * mp4pkg.GetIndexConfig().FlushInterval
-	if d < defaultRecoveryMinAge {
-		d = defaultRecoveryMinAge
+	minAge := t.MinAge
+	floor := 2 * mp4pkg.GetIndexConfig().FlushInterval
+	if floor < defaultRecoveryMinAge {
+		floor = defaultRecoveryMinAge
 	}
-	return d
+	if minAge < floor {
+		minAge = floor
+	}
+	return minAge
 }
 
 func (t *IndexRecoveryTask) taskStarted() bool {
@@ -541,6 +551,20 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 	item.MediaPath = source
 	item.OutputPath = output
 
+	// C2：跳过仍在写入的文件。活跃 recorder 的 sidecar 同样未提交、与崩溃残留
+	// 不可区分；若此时 markRecovering 并重建，会 rename 走活跃 sidecar、
+	// 覆盖活跃媒体文件。mtime 新鲜即视为活跃，计入 Skipped。
+	//
+	// 这道闸门必须先于 C1：本地实时录制的 trailer INSERT_RANGE / moov 前移
+	// 窗口内文件已有顶层 moov 但仍在被写，此时 C1 会误判「已收尾」并提前
+	// 入队、删掉活跃 sidecar（Task 6 落地后还会上传半成品）。先做新鲜度判定
+	// 才能同时保护两条分支。
+	if fresh, age := t.isFreshlyWritten(source, sidecar); fresh {
+		t.Info("skip recovery of file still being written",
+			"sidecar", sidecar, "media", source, "age", age, "minAge", t.effectiveMinAge())
+		return recoverySkipped, item, nil
+	}
+
 	// C1：本地录制的源与输出是同一路径。若文件已有顶层 moov，说明要么已正常
 	// 收尾、要么上一次恢复的产物已 rename 到位（进程在入队/清理之间被杀）。
 	// 此时绝不能再次 RestoreFromIndex：索引 Offset 是原坐标系，而产物已
@@ -553,15 +577,6 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 		}
 		t.removeSidecar(sidecar)
 		t.Info("recovery output already contains moov, skipping rebuild", "sidecar", sidecar, "output", output)
-		return recoverySkipped, item, nil
-	}
-
-	// C2：跳过仍在写入的文件。活跃 recorder 的 sidecar 同样未提交、与崩溃残留
-	// 不可区分；若此时 markRecovering 并重建，会 rename 走活跃 sidecar、
-	// 覆盖活跃媒体文件。mtime 新鲜即视为活跃，计入 Skipped。
-	if fresh, age := t.isFreshlyWritten(source, sidecar); fresh {
-		t.Info("skip recovery of file still being written",
-			"sidecar", sidecar, "media", source, "age", age, "minAge", t.effectiveMinAge())
 		return recoverySkipped, item, nil
 	}
 

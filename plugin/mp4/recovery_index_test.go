@@ -69,6 +69,29 @@ func writeRecoverySidecar(t *testing.T, sidecar string, header mp4pkg.IndexHeade
 	}
 }
 
+// writeCompletedLocalMP4 造一个已有顶层 moov 的本地 mp4（ftyp|moov|mdat）。
+// hasTopLevelMoov 只扫描 box 头，因此不需要 moov 内容可被完整解析。
+func writeCompletedLocalMP4(t *testing.T, path string, payload []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	writeBox := func(typ string, body []byte) {
+		size := 8 + len(body)
+		if err := binary.Write(&buf, binary.BigEndian, uint32(size)); err != nil {
+			t.Fatalf("write box size: %v", err)
+		}
+		buf.WriteString(typ)
+		buf.Write(body)
+	}
+	writeBox("ftyp", []byte("isom"))
+	writeBox("moov", nil)
+	writeBox("mdat", payload)
+	data := buf.Bytes()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write completed local mp4: %v", err)
+	}
+	return data
+}
+
 // ageRecoveryFiles 把文件 mtime 调到过去，模拟“崩溃残留”而非“仍在录制”。
 // 恢复任务默认跳过 mtime 新鲜（< record.recovery.minage）的文件。
 func ageRecoveryFiles(t *testing.T, paths ...string) {
@@ -499,6 +522,39 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	}
 }
 
+// Important 2：minage 配置默认值是 5s（非 0），因此夹紧必须无条件生效：
+// flushinterval=10s 时，任何非负 minage 的生效值都不得低于 2×flushinterval=20s，
+// 也不得低于 5s 下限。否则运维调大 flushinterval 后活跃保护会被削弱。
+func TestIndexRecoveryTaskEffectiveMinAgeClamps(t *testing.T) {
+	prev := mp4pkg.GetIndexConfig()
+	t.Cleanup(func() { mp4pkg.SetIndexConfig(prev) })
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{Enable: true, FlushInterval: 10 * time.Second})
+
+	for _, configured := range []time.Duration{0, time.Second, 5 * time.Second} {
+		got := (&IndexRecoveryTask{MinAge: configured}).effectiveMinAge()
+		if got < 20*time.Second {
+			t.Fatalf("minage=%v -> effective %v, want >= 20s (2x flushinterval)", configured, got)
+		}
+		if got < defaultRecoveryMinAge {
+			t.Fatalf("minage=%v -> effective %v, want >= %v floor", configured, got, defaultRecoveryMinAge)
+		}
+	}
+	// 更大的显式值不被压小。
+	if got := (&IndexRecoveryTask{MinAge: time.Minute}).effectiveMinAge(); got != time.Minute {
+		t.Fatalf("explicit minage 1m -> effective %v, want 1m", got)
+	}
+	// 负值仍表示关闭保护。
+	if got := (&IndexRecoveryTask{MinAge: -time.Second}).effectiveMinAge(); got >= 0 {
+		t.Fatalf("negative minage should disable protection, got %v", got)
+	}
+
+	// flushinterval 小于 2.5s 时回落到 5s 下限。
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{Enable: true, FlushInterval: time.Second})
+	if got := (&IndexRecoveryTask{}).effectiveMinAge(); got != defaultRecoveryMinAge {
+		t.Fatalf("flushinterval=1s -> effective %v, want %v", got, defaultRecoveryMinAge)
+	}
+}
+
 // 显式配置的目录不存在时必须报错（供 API 提示），但不能阻塞或 panic。
 func TestIndexRecoveryTaskMissingConfiguredDir(t *testing.T) {
 	recovery := &IndexRecoveryTask{
@@ -558,6 +614,9 @@ func TestIndexRecoveryTaskSecondRunKeepsRecoveredLocalFile(t *testing.T) {
 	}
 
 	// 第二次运行：产物已含 moov，必须只入队 + 清理 sidecar，绝不重建。
+	// 先老化产物 mtime：第一次恢复刚写出的文件在 minage 内属于「可能仍在写」，
+	// 会被新鲜度闸门跳过（真实重启场景通常已超过 minage）。
+	ageRecoveryFiles(t, mediaPath)
 	fail = false
 	stats, err := recovery.RunOnce([]string{dir})
 	if err != nil {
@@ -618,6 +677,94 @@ func TestIndexRecoveryTaskSkipsFreshlyWrittenSidecar(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(dir, "s3writer_active.mp4")); !os.IsNotExist(err) {
 		t.Fatal("fresh file must not produce an output mp4")
+	}
+}
+
+// Important 1：C1（本地文件已有顶层 moov）不得绕过新鲜度闸门。
+// recorder 的 trailer INSERT_RANGE / moov 前移窗口内，文件已有 moov 但仍在写；
+// 此时必须跳过且保留 sidecar，不得提前入队/移交半成品。老化后才走 C1 分支。
+func TestIndexRecoveryTaskFreshLocalMoovIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath := filepath.Join(dir, "live_fresh.mp4")
+	original := writeCompletedLocalMP4(t, mediaPath, []byte{0xDE, 0xAD, 0xBE, 0xEF})
+
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	header := mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/fresh",
+		MediaPath:   mediaPath,
+		FilePath:    "live/fresh.mp4",
+		TargetName:  "fresh.mp4",
+		StorageType: "local",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240,
+			STSD: recoveryTestSTSD(t),
+		}},
+	}
+	writeRecoverySidecar(t, sidecar, header, []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: 16, Offset: 24, DTS: 0, Duration: 40},
+	})
+	// 故意不老化：媒体与 sidecar 都是「刚刚写入」。
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{
+		MinAge:        time.Minute,
+		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
+	}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Scanned != 1 || stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want scanned=1 skipped=1", stats)
+	}
+	if enqueued != 0 {
+		t.Fatalf("fresh local file with moov must not be enqueued, got %d", enqueued)
+	}
+	if _, err = os.Stat(sidecar); err != nil {
+		t.Fatalf("active sidecar must be kept: %v", err)
+	}
+	if _, err = os.Stat(sidecar + recoveringSuffix); !os.IsNotExist(err) {
+		t.Fatal("active sidecar must not be renamed to .recovering")
+	}
+	got, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media: %v", err)
+	}
+	if !bytes.Equal(original, got) {
+		t.Fatal("fresh media must not be modified")
+	}
+
+	// 老化后：C1 生效，仅入队 + 清 sidecar，绝不重建。
+	ageRecoveryFiles(t, mediaPath, sidecar)
+	stats, err = recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("aged stats = %+v, want skipped=1", stats)
+	}
+	if enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1 after aging", enqueued)
+	}
+	if _, err = os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatal("sidecar should be removed after C1 handoff")
+	}
+	got, err = os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media after aging: %v", err)
+	}
+	if !bytes.Equal(original, got) {
+		t.Fatal("C1 branch must not rebuild/overwrite local file")
+	}
+
+	// 幂等：sidecar 已清理，再跑为 no-op。
+	stats, err = recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("third RunOnce: %v", err)
+	}
+	if stats.Scanned != 0 || stats.Skipped != 0 || enqueued != 1 {
+		t.Fatalf("third run stats = %+v enqueued=%d, want no-op", stats, enqueued)
 	}
 }
 
