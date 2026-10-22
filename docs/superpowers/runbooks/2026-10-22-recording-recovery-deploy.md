@@ -72,8 +72,11 @@ docker stop xde-monibuca
 ```
 
 ```bash
-BK=/home/project/xde-xd/media-docker-compose/backup-$(date +%Y%m%d-%H%M); mkdir -p "$BK"
+BK=/home/project/xde-xd/media-docker-compose/backup-$(date +%Y%m%d-%H%M); mkdir -p "$BK"; echo "$BK" > /home/project/xde-xd/media-docker-compose/.last-backup; echo "BK=$BK"
 ```
+
+> 备份路径写入 `.last-backup`，第 7 节回滚**只读这个文件**。**禁止**使用
+> `backup-*` 通配：维护窗口内多次备份时通配会展开成多行，破坏 `sed`/`cp`。
 
 ```bash
 cd /home/project/xde-xd/media-docker-compose && cp -a monibuca/config.yaml docker-compose-xde-monibuca.yml "$BK"/
@@ -101,6 +104,22 @@ OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' xde-monibuca); OLD_IMAGE_ID=$(
 
 现场配置仍指向旧 IP（`192.168.1.5`）。**不修正就换镜像 = 恢复全部进 pending。**
 
+### 2.0 先按容器网络模式确定 endpoint
+
+容器内 `127.0.0.1` 指向**容器自身**，只有 `host` 网络模式下才等于宿主。先读取
+第 1.1 节记录过的 NetworkMode，再决定 endpoint：
+
+```bash
+NETMODE=$(docker inspect -f '{{.HostConfig.NetworkMode}}' xde-monibuca); echo "network mode: $NETMODE"
+```
+
+- 输出 `host`：`<S3_ENDPOINT>` 用 `127.0.0.1:9000`（MinIO 在宿主本机时）。
+- 输出 `bridge` / 自定义 compose 网络：`127.0.0.1` **不可用**，必须用宿主 LAN IP
+  （现场 `172.16.12.201:9000`）；若 MinIO 与 monibuca 在同一个 compose 网络，
+  也可用服务名（如 `minio:9000`）。
+
+后面统一写 `<S3_ENDPOINT>`，执行时替换成上述判定结果。
+
 编辑宿主上的 `monibuca/config.yaml`（容器内通常是 `/etc/monibuca/config.yaml`，
 以第 1.1 节 mount 为准）：
 
@@ -108,7 +127,7 @@ OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' xde-monibuca); OLD_IMAGE_ID=$(
 global:
   storage:
     s3:
-      endpoint: "127.0.0.1:9000"   # 本机 MinIO；或 "storage.xiding.tech"
+      endpoint: "<S3_ENDPOINT>"    # 见 2.0：host 网络用 127.0.0.1:9000；否则宿主 IP/服务名
       useSSL: false                # storage.xiding.tech 时改为 true
       forcePathStyle: true         # MinIO 必须
       bucket: "<BUCKET>"
@@ -145,8 +164,10 @@ mp4:
 
 ### 2.1 验证 MinIO 可达 + bucket 可写
 
-在宿主执行（`mc` 未安装时先装；AK/SK 用环境变量或 `mc alias set` 交互输入，
-**不要写进命令行参数**）：
+**宿主 curl 只证明宿主到 MinIO 通，不能证明容器内可达**，两步都要做。`mc` 未安装
+时先装。
+
+第一步，宿主侧健康检查：
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/minio/health/live
@@ -154,20 +175,39 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/minio/health/liv
 
 期望 `200`。
 
+第二步，配置 `mc`。**AK/SK 绝不写进命令行参数或历史**：用 600 权限文件 +
+`MC_HOST_<alias>` 环境变量，`mc` 会自动读取。
+
 ```bash
-mc alias set <ALIAS> http://127.0.0.1:9000 <S3_ACCESS_KEY> <S3_SECRET_KEY>
+ALIAS=m7s; [ -f /root/.m7s-mc.env ] || install -m 600 /dev/null /root/.m7s-mc.env; chmod 600 /root/.m7s-mc.env; vi /root/.m7s-mc.env
+```
+
+在 `vi` 里写入一行（不经过 shell 历史）：
+
+```
+MC_HOST_m7s=http://<S3_ACCESS_KEY>:<S3_SECRET_KEY>@<S3_ENDPOINT>
+```
+
+（AK/SK 含特殊字符时做 URL 编码；使用 `storage.xiding.tech` 时把 `http` 改成
+`https`，并同步把配置里的 `useSSL` 设为 `true`。）
+
+```bash
+ALIAS=m7s; . /root/.m7s-mc.env && mc ls "$ALIAS/<BUCKET>/" >/dev/null && echo "bucket readable"
 ```
 
 ```bash
-mc ls <ALIAS>/<BUCKET>/ >/dev/null && echo "bucket readable"
+ALIAS=m7s; . /root/.m7s-mc.env && echo preflight-$(date +%s) | mc pipe "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc stat "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt" && mc rm "$ALIAS/<BUCKET>/<PREFIX>/_preflight/check.txt"
 ```
+
+第三步，容器网络侧验证。此时容器可能仍处于停机状态（§1.2），用同一网络临时起
+一个 curl 容器（站点无法拉取镜像时，跳过本步，改为 §4.1 的 `docker exec` 检查）：
 
 ```bash
-echo preflight-$(date +%s) | mc pipe <ALIAS>/<BUCKET>/<PREFIX>/_preflight/check.txt && mc stat <ALIAS>/<BUCKET>/<PREFIX>/_preflight/check.txt && mc rm <ALIAS>/<BUCKET>/<PREFIX>/_preflight/check.txt
+NETMODE=$(docker inspect -f '{{.HostConfig.NetworkMode}}' xde-monibuca); docker run --rm --network "$NETMODE" curlimages/curl:8.10.1 -fsS "http://<S3_ENDPOINT>/minio/health/live" && echo "container-network reachable"
 ```
 
-三条都成功才继续。若使用 `storage.xiding.tech`，把地址与 `useSSL` 配成对应值后
-重复以上检查。
+三条都成功才继续。`host` 模式下 `<S3_ENDPOINT>` 就是 `127.0.0.1:9000`；其他模式
+若这里失败，说明 2.0 的 endpoint 选错，必须先改对再换镜像。
 
 ---
 
@@ -202,11 +242,18 @@ sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "UPDATE pull_p
 2）换镜像并启动（第 4 节）。此时不会盲目拉起全部设备；拉流代理仍会创建并用
 `checkinterval` 探活，状态变为 Online，但不会自动 Pull。
 
-3）基础验证通过后，分批打开。**单行脚本**（`jq` 取当前仍关闭的 ID，每批 300，
-每批间隔 30 秒；API 会立即对 Online 设备发起 Pull）：
+3）基础验证通过后，分批打开。先准备鉴权头（`admin.enablelogin: true` 时必需；
+token 从 600 权限文件读入，不写进命令行）：
 
 ```bash
-curl -s http://127.0.0.1:8080/api/proxy/pull/list | jq -r '.data[] | select(.pullOnStart == false) | .ID' | head -300 | while read id; do curl -s -X POST -H 'Content-Type: application/json' -d "{\"ID\":$id,\"pullOnStart\":true}" http://127.0.0.1:8080/api/proxy/pull/update >/dev/null; done; sleep 30
+ADMIN_TOKEN=$(cat /root/.m7s-admin-token 2>/dev/null); AUTH=(); [ -n "$ADMIN_TOKEN" ] && AUTH=(-H "Authorization: Bearer $ADMIN_TOKEN"); echo "auth headers: ${#AUTH[@]}"
+```
+
+**单行脚本**（`jq` 取当前仍关闭的 ID，每批 300，每批间隔 30 秒；API 会立即对
+Online 设备发起 Pull）：
+
+```bash
+curl -s "${AUTH[@]}" http://127.0.0.1:8080/api/proxy/pull/list | jq -r '.data[] | select(.pullOnStart == false) | .ID' | head -300 | while read id; do curl -s "${AUTH[@]}" -X POST -H 'Content-Type: application/json' -d "{\"ID\":$id,\"pullOnStart\":true}" http://127.0.0.1:8080/api/proxy/pull/update >/dev/null; done; sleep 30
 ```
 
 每批之间观察：
@@ -216,8 +263,7 @@ docker stats --no-stream xde-monibuca; docker logs --since 2m xde-monibuca 2>&1 
 ```
 
 RSS 接近 `mem_limit` 的 80%、或 `record started` 增速异常时，停止下一批并排查。
-若开启 `admin.enablelogin`，所有 API 调用都要加
-`-H 'Authorization: Bearer <ADMIN_TOKEN>'`。
+若开启 `admin.enablelogin`，所有 API 调用都要带上面的 `"${AUTH[@]}"`。
 
 4）全部批次完成后确认：
 
@@ -260,6 +306,13 @@ docker logs -f --since 10m xde-monibuca 2>&1 | grep -E "create storage failed|S3
 - 结束后一条 `index recovery completed scanned=N recovered=... failed=...`；
 - 新录制出现 `record started`，字段含 `streamPath/file/type/storageType/codec`。
 
+容器内 endpoint 必须可达（宿主 curl 通过不代表容器内通过；此命令失败说明
+2.0 的 endpoint 选错，立即回滚，不要等录制上传失败）：
+
+```bash
+docker exec xde-monibuca sh -c 'wget -qO- "http://<S3_ENDPOINT>/minio/health/live" >/dev/null 2>&1 || curl -fsS "http://<S3_ENDPOINT>/minio/health/live" >/dev/null' && echo container-endpoint-ok
+```
+
 存储状态接口必须是 200 且非降级：
 
 ```bash
@@ -276,10 +329,26 @@ curl -s http://127.0.0.1:8080/api/storage/status | jq
 
 ## 5. 验证恢复链路
 
+> `admin.enablelogin: true` 时，`/mp4/api/recovery/*` 与 `/mp4/api/upload/*` 强制
+> `Authorization: Bearer <ADMIN_TOKEN>` 且账号必须是 DB admin 角色；不加会 401，
+> 非 admin 会 403。token 先写进 600 权限文件（`vi` 编辑，不进命令行历史），
+> 本节所有 curl 统一用 `"${AUTH[@]}"`。
+
+```bash
+[ -f /root/.m7s-admin-token ] || install -m 600 /dev/null /root/.m7s-admin-token; chmod 600 /root/.m7s-admin-token; vi /root/.m7s-admin-token
+```
+
+```bash
+ADMIN_TOKEN=$(cat /root/.m7s-admin-token); AUTH=(); [ -n "$ADMIN_TOKEN" ] && AUTH=(-H "Authorization: Bearer $ADMIN_TOKEN"); echo "auth headers: ${#AUTH[@]}"
+```
+
+`auth headers: 0` 表示未配置 token（登录关闭时正常）；若登录已开启则必须为 `2`，
+否则下面会 401。
+
 ### 5.1 恢复清单 API
 
 ```bash
-curl -s 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50' | jq
+curl -s "${AUTH[@]}" 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50' | jq
 ```
 
 重点字段：
@@ -295,14 +364,14 @@ curl -s 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50' | jq
 `pending_uploads`、录像输出目录）：
 
 ```bash
-curl -s -X POST -H 'Content-Type: application/json' -d '{"dir":"/tmp"}' http://127.0.0.1:8080/mp4/api/recovery/run | jq
+curl -s "${AUTH[@]}" -X POST -H 'Content-Type: application/json' -d '{"dir":"/tmp"}' http://127.0.0.1:8080/mp4/api/recovery/run | jq
 ```
 
 返回 `202` + `id`；不同目标同时运行返回 `409`，相同目标重复触发返回 `200` +
 同一 `id`（幂等）。查询进度：
 
 ```bash
-curl -s http://127.0.0.1:8080/mp4/api/recovery/status/<ID> | jq
+curl -s "${AUTH[@]}" "http://127.0.0.1:8080/mp4/api/recovery/status/<ID>" | jq
 ```
 
 ### 5.2 对象抽查（`mc stat`）
@@ -313,10 +382,15 @@ curl -s http://127.0.0.1:8080/mp4/api/recovery/status/<ID> | jq
 sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "SELECT id,stream_path,file_path,storage_type,end_time,duration FROM record_streams ORDER BY id DESC LIMIT 20;"
 ```
 
-再抽查 S3 对象（键 = `pathPrefix` + `file_path`，以后端实际规则为准）：
+再抽查 S3 对象（键 = `pathPrefix` + `file_path`，以后端实际规则为准）。先加载
+2.1 建立的 mc 凭证环境：
 
 ```bash
-mc stat <ALIAS>/<BUCKET>/<PREFIX>/<OBJECT_KEY>
+ALIAS=m7s; . /root/.m7s-mc.env
+```
+
+```bash
+mc stat "$ALIAS/<BUCKET>/<PREFIX>/<OBJECT_KEY>"
 ```
 
 必须满足：
@@ -329,7 +403,7 @@ mc stat <ALIAS>/<BUCKET>/<PREFIX>/<OBJECT_KEY>
 下载抽样校验（任一对象）：
 
 ```bash
-mc cp <ALIAS>/<BUCKET>/<PREFIX>/<OBJECT_KEY> /tmp/verify.mp4 && ffprobe -v error -show_entries format=duration:stream=codec_name -of json /tmp/verify.mp4
+mc cp "$ALIAS/<BUCKET>/<PREFIX>/<OBJECT_KEY>" /tmp/verify.mp4 && ffprobe -v error -show_entries format=duration:stream=codec_name -of json /tmp/verify.mp4
 ```
 
 期望 `duration > 0` 且有 h264/h265 轨道。
@@ -341,7 +415,7 @@ docker exec xde-monibuca sh -c 'ls -1 /monibuca/pending_uploads 2>/dev/null | wc
 ```
 
 ```bash
-curl -s http://127.0.0.1:8080/mp4/api/upload/exhausted | jq
+curl -s "${AUTH[@]}" http://127.0.0.1:8080/mp4/api/upload/exhausted | jq
 ```
 
 `pending_uploads` 增长说明 S3 仍不可用或凭证错误：按日志 `upload failed` 的
@@ -355,6 +429,23 @@ curl -s http://127.0.0.1:8080/mp4/api/upload/exhausted | jq
 
 这 216 个文件没有 sidecar，只能从裸 mdat 反向重建。**不进入启动自动流程**，
 因为音频（AAC raw）通常无法分帧，产物可能只有视频轨；逐文件 best-effort。
+
+> **必须停容器后执行。** `tmp/` 同时是 `storage.s3.tempdir`，容器正在录制的新
+> 媒体就是 `s3writer_*.tmp`。边录边 `mv` 会把活跃文件搬走，导致新录制与上传
+> 损坏。本节所有筛选都按「mtime 早于上线时间 **且** 无 `.m7sidx` sidecar」双重
+> 判定；不满足的文件一律不动。
+
+### 6.0 停止容器（前置门禁）
+
+```bash
+docker stop xde-monibuca
+```
+
+```bash
+docker inspect -f '{{.State.Status}}' xde-monibuca
+```
+
+必须输出 `exited`。不是 `exited` 就停下排查，**不要**继续后面的 `mv`。
 
 ### 6.1 准备工具
 
@@ -379,15 +470,35 @@ grep -c '^\[ok\]' /tmp/recover-dryrun-*.log; grep '^\[fail\]' /tmp/recover-dryru
 ```
 
 审阅报告：`[fail]` 的确定性原因（无关键帧 / 码流无法识别 / 布局不符）应记录并
-反馈；`warn:` 说明音频缺失或时间戳为估算值。**dry-run 不写任何文件。**
+反馈；`warn:` 说明音频缺失或时间戳为估算值。**dry-run 不写任何文件。** 报告里若
+出现上线后新录制（带 `.m7sidx`）的文件，它们不会进入下一节的实跑批次。
 
 ### 6.3 分批实跑
 
-不要一次跑 85 GB。按 50 个文件一批，同文件系统 `mv` 是元数据操作，不复制数据：
+不要一次跑 85 GB。按 50 个文件一批，同文件系统 `mv` 是元数据操作，不复制数据。
+先固化上线时间作为 `CUTOFF`（取容器最后一次启动时刻），并统计候选数：
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && mkdir -p tmp/salvage-batch-01 && find tmp -maxdepth 1 -name 's3writer_*.tmp' | head -50 | xargs -I{} mv {} tmp/salvage-batch-01/
+cd /home/project/xde-xd/media-docker-compose/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && echo "cutoff=$CUTOFF" && find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print | wc -l
 ```
+
+候选数应远小于 `tmp` 文件总数；若候选里出现刚录的文件，说明 `CUTOFF` 不对，先
+人工核对 `ls -l` 的 mtime，**不要**继续。
+
+搬移只接受「早于 CUTOFF 且无 sidecar」的文件，逐个 `mv` 并检查退出码：
+
+```bash
+cd /home/project/xde-xd/media-docker-compose/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && mkdir -p tmp/salvage-batch-01 && n=0 && failed=0 && while IFS= read -r -d '' f; do if [ -e "$f.m7sidx" ]; then echo "SKIP sidecar: $f"; continue; fi; if [ "$n" -ge 50 ]; then break; fi; mv -- "$f" tmp/salvage-batch-01/ || { echo "ABORT mv failed: $f"; failed=1; break; }; n=$((n+1)); done < <(find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print0); echo "moved=$n failed=$failed"; [ "$failed" -eq 0 ]
+```
+
+最后一条命令退出码非 0 就停止本批（不要把剩下的文件继续搬）。每批搬完再确认
+批次目录里没有带 sidecar 的文件：
+
+```bash
+ls -1 tmp/salvage-batch-01/*.m7sidx 2>/dev/null | wc -l
+```
+
+期望 `0`。
 
 ```bash
 cd /home/project/xde-xd/media-docker-compose/monibuca && ./m7s-recover -dir ./tmp/salvage-batch-01 -concurrency 2 > /tmp/recover-batch-01.log 2>&1; tail -3 /tmp/recover-batch-01.log
@@ -404,24 +515,52 @@ ffprobe -v error -show_entries format=duration:stream=codec_name -of json tmp/sa
 
 ### 6.4 上传与清理
 
-恢复成功的产物先上传并核对，**再**删除源 tmp：
+恢复成功的产物先上传并逐个核对，**再**删除源 tmp。先加载 2.1 建立的 mc 凭证，
+再逐个 `mc cp`；**任何一个失败就中止本批**（不生成 `.upload-ok` 标记，下一步会
+整体拒删）：
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && find tmp/salvage-batch-01 -name '*.recovered.mp4' -exec mc cp {} <ALIAS>/<BUCKET>/<PREFIX>/recovered/ \;
+ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch-01/.upload-ok; up=0; fail=0; for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; if mc cp "$f" "$ALIAS/<BUCKET>/<PREFIX>/recovered/"; then up=$((up+1)); else echo "ABORT upload failed: $f"; fail=1; break; fi; done; if [ "$fail" -eq 0 ]; then touch tmp/salvage-batch-01/.upload-ok; fi; echo "uploaded=$up fail=$fail"; [ "$fail" -eq 0 ]
+```
+
+确认远端对象齐全（数量 + 逐个 `mc stat`）：
+
+```bash
+ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && echo "local=$(ls -1 tmp/salvage-batch-01/*.recovered.mp4 2>/dev/null | wc -l) remote=$(mc ls "$ALIAS/<BUCKET>/<PREFIX>/recovered/" | wc -l)" && stat_fail=0 && for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$(basename "$f")" >/dev/null || { echo "ABORT stat failed: $f"; stat_fail=1; break; }; done; if [ "$stat_fail" -eq 0 ]; then echo "stat pass"; else echo "stat FAILED: fix upload before deleting anything"; fi; [ "$stat_fail" -eq 0 ]
+```
+
+抽样下载 + `ffprobe`（第 6.3 节已跑过本地产物；此处再验远端副本）：
+
+```bash
+ALIAS=m7s; . /root/.m7s-mc.env; mc cp "$ALIAS/<BUCKET>/<PREFIX>/recovered/<SAMPLE>.mp4" /tmp/verify-salvage.mp4 && ffprobe -v error -show_entries format=duration:stream=codec_name -of json /tmp/verify-salvage.mp4
+```
+
+最后逐文件删除源 tmp。**只删「同名 `.recovered.mp4` 存在且远端 `mc stat` 成功」
+的源文件**；`[fail]` 未产出 `.recovered.mp4` 的文件是唯一副本，必须保留。
+上传步骤未完成（无 `.upload-ok`）时整体拒删：
+
+```bash
+ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca; if [ ! -f tmp/salvage-batch-01/.upload-ok ]; then echo "ABORT: upload step incomplete, nothing deleted"; else deleted=0; kept=0; for src in tmp/salvage-batch-01/s3writer_*.tmp; do [ -e "$src" ] || continue; rec="$src.recovered.mp4"; obj=$(basename "$rec"); if [ ! -s "$rec" ]; then echo "KEEP not-recovered: $src"; kept=$((kept+1)); continue; fi; if mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$obj" >/dev/null 2>&1; then rm -f -- "$src" && { echo "DELETED: $src"; deleted=$((deleted+1)); }; else echo "KEEP stat-failed: $src"; kept=$((kept+1)); fi; done; echo "deleted=$deleted kept=$kept"; fi
+```
+
+> 源 tmp 是唯一副本。**禁止**用 `rm -f tmp/salvage-batch-01/s3writer_*.tmp` 这类
+> 通配删除；上面的循环是唯一允许的删除方式。成功批次也建议先保留 7 天再清空
+> `salvage-batch-*` 目录。
+
+### 6.5 恢复容器
+
+抢救批次之间必须保持容器停止；全部批次结束后再启动：
+
+```bash
+docker start xde-monibuca
 ```
 
 ```bash
-mc ls <ALIAS>/<BUCKET>/<PREFIX>/recovered/ | head; mc stat <ALIAS>/<BUCKET>/<PREFIX>/recovered/<SAMPLE>.mp4
+docker inspect -f '{{.State.Status}}' xde-monibuca
 ```
 
-抽样下载 + `ffprobe` 通过后，删除该批源文件与已上传产物，保留日志与 dry-run 报告：
-
-```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch-01/s3writer_*.tmp && ls -1 tmp/salvage-batch-01 | wc -l
-```
-
-> 源 tmp 是唯一副本。**任何删除都必须在 `mc stat` + `ffprobe` 双重确认之后**；
-> 建议先保留 7 天再清空 `salvage-batch-*` 目录。
+期望 `running`；随后按第 4.1 节重新确认 `container-endpoint-ok` 与
+`/api/storage/status`。
 
 ---
 
@@ -436,12 +575,25 @@ cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch
 
 ### 7.2 回滚镜像
 
+先加载第 1.2 节固化的备份路径（**不要**用 `backup-*` 通配：多次备份时会展开成
+多行，破坏 `sed`/`cp`）：
+
 ```bash
-cd /home/project/xde-xd/media-docker-compose && sed -i "s|intetech/monibuca:.*|$(cat backup-*/rollback-image.txt | awk '{print $1}')|" docker-compose-xde-monibuca.yml && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
+BK=$(cat /home/project/xde-xd/media-docker-compose/.last-backup); test -d "$BK" || { echo "ABORT: missing backup path in .last-backup"; }; echo "BK=$BK"
+```
+
+```bash
+OLD_IMAGE=$(awk '{print $1}' "$BK/rollback-image.txt"); test -n "$OLD_IMAGE" || { echo "ABORT: rollback-image.txt empty"; }; echo "rollback image: $OLD_IMAGE"
+```
+
+两条都必须打印出非空路径/镜像名；否则停止回滚。确认后执行：
+
+```bash
+cd /home/project/xde-xd/media-docker-compose && BK=$(cat .last-backup) && test -d "$BK" && OLD_IMAGE=$(awk '{print $1}' "$BK/rollback-image.txt") && test -n "$OLD_IMAGE" && sed -i "s|intetech/monibuca:.*|$OLD_IMAGE|" docker-compose-xde-monibuca.yml && grep -n 'image:.*monibuca' docker-compose-xde-monibuca.yml && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
 ```
 
 或直接把第 4 节生成的 `docker-compose-xde-monibuca.yml.pre-*` 还原后
-`docker compose up -d --force-recreate`。
+`docker compose up -d --force-recreate`（同样先 `grep -n` 确认只命中一行）。
 
 ### 7.3 回滚配置
 
@@ -450,7 +602,7 @@ cd /home/project/xde-xd/media-docker-compose && sed -i "s|intetech/monibuca:.*|$
 - `gb28181.mediaip/sipip` 是环境修正，同样保留；
 - 若新版本配置项导致旧镜像启动失败（未知字段一般被忽略，但先还原备份更稳）：
   ```bash
-  cp backup-*/config.yaml monibuca/config.yaml
+  cd /home/project/xde-xd/media-docker-compose && BK=$(cat .last-backup) && test -f "$BK/config.yaml" && cp -a "$BK/config.yaml" monibuca/config.yaml && echo "restored $BK/config.yaml"
   ```
   还原后重新应用第 2 节的 endpoint / gb28181 修正。
 - 若已执行第 3.2 节的 `pull_on_start=0`，回滚前恢复：
@@ -516,12 +668,18 @@ docker exec xde-monibuca sh -c 'ls -la /monibuca/fatal 2>/dev/null; for f in /mo
 
 ### 8.4 存储与恢复
 
+先重建鉴权头（与第 5 节相同；`admin.enablelogin: true` 时 recovery API 必需）：
+
+```bash
+ADMIN_TOKEN=$(cat /root/.m7s-admin-token 2>/dev/null); AUTH=(); [ -n "$ADMIN_TOKEN" ] && AUTH=(-H "Authorization: Bearer $ADMIN_TOKEN"); echo "auth headers: ${#AUTH[@]}"
+```
+
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/storage/status
 ```
 
 ```bash
-curl -s 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50' | jq '{counts, truncated}'
+curl -s "${AUTH[@]}" 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50' | jq '{counts, truncated}'
 ```
 
 `counts.failed` 必须为 0 或有明确原因；`counts.recovering` 不应长时间不降；

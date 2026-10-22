@@ -36,6 +36,9 @@ import (
 const (
 	recoveryChildEnv  = "M7S_RECOVERY_CHILD"
 	recoveryConfigEnv = "M7S_RECOVERY_CHILD_CONFIG"
+
+	beforeKillLog   = "child-before-kill.log"
+	afterRestartLog = "child-after-restart.log"
 )
 
 // ansiEscape 匹配 console-slog 输出的颜色控制序列。
@@ -71,46 +74,28 @@ func TestRecoveryAfterKill(t *testing.T) {
 	if err := os.MkdirAll(recordDir, 0o755); err != nil {
 		t.Fatalf("create record dir: %v", err)
 	}
-	httpPort := freePort(t)
-	grpcPort := freePort(t)
-	rtmpPort := freePort(t)
-
-	cfgPath := filepath.Join(root, "config.yaml")
-	cfg := fmt.Sprintf(`global:
-  http:
-    listenaddr: 127.0.0.1:%d
-  tcp:
-    listenaddr: 127.0.0.1:%d
-  loglevel: info
-  storage:
-    local:
-      path: %s
-mp4:
-  enable: true
-  record:
-    index:
-      enable: true
-      flushinterval: 1s
-    recovery:
-      onstart: true
-      dirs:
-        - %s
-rtmp:
-  enable: true
-  tcp:
-    listenaddr: 127.0.0.1:%d
-`, httpPort, grpcPort, yamlQuote(storageBase), yamlQuote(recordDir), rtmpPort)
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
 
 	mediaPath := filepath.Join(recordDir, "crash.mp4")
 	sidecar := mediaPath + mp4pkg.IndexExtension
 
+	// 失败时 dump 子进程日志：端口绑定失败、配置错误等只会在子进程日志里留痕，
+	// 否则调用方只能看到某个 waitFor 超时。
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, name := range []string{beforeKillLog, afterRestartLog} {
+			plain := readChildLog(root, name)
+			if plain == "" {
+				continue
+			}
+			t.Logf("=== %s (tail) ===\n%s", name, tail(plain, 8000))
+		}
+	})
+
 	// ---- 段 1：启动 server，推流并开录 ----
-	child1 := startRecoveryChild(t, root, cfgPath, "child-before-kill.log")
-	waitTCP(t, httpPort, 30*time.Second, "server http port")
-	waitTCP(t, rtmpPort, 30*time.Second, "server rtmp port")
+	first := startRecoveryServer(t, root, storageBase, recordDir, beforeKillLog)
+	httpPort, rtmpPort := first.httpPort, first.rtmpPort
 
 	ffmpeg := startFFmpeg(t, root, source, rtmpPort)
 
@@ -165,18 +150,15 @@ rtmp:
 
 	// ---- 段 2：SIGKILL 子进程，模拟掉电/崩溃 ----
 	killProcess(t, ffmpeg)
-	if err := child1.Process.Kill(); err != nil {
-		t.Fatalf("kill child: %v", err)
-	}
-	_ = child1.Wait()
+	first.stop()
 	t.Logf("child killed; media=%d bytes sidecar=%d bytes", statSize(t, mediaPath), statSize(t, sidecar))
 
 	// 恢复任务会跳过 mtime 新于 minage（默认/下限 5s）的「活跃」文件，等待超过阈值。
 	time.Sleep(6 * time.Second)
 
 	// ---- 段 3：重启 server，等待启动恢复自动完成 ----
-	startRecoveryChild(t, root, cfgPath, "child-after-restart.log")
-	waitTCP(t, httpPort, 30*time.Second, "restarted server http port")
+	// 重启同样走端口重试：kill 后旧端口可能处于 TIME_WAIT，或被其他进程抢占。
+	startRecoveryServer(t, root, storageBase, recordDir, afterRestartLog)
 
 	waitFor(t, 90*time.Second, 500*time.Millisecond, "automatic recovery", func() error {
 		for _, leftover := range []string{sidecar, sidecar + ".recovering"} {
@@ -260,8 +242,114 @@ func hasTopLevelBox(path, typ string) bool {
 	return false
 }
 
+// recoveryServer 是一个以 helper 模式运行的 server 子进程。
+//
+// done 在 cmd.Wait 返回后关闭，exitErr 随即可读（close 建立 happens-before），
+// 因此启动期间可以非阻塞地发现「子进程已退出」，而不是干等端口超时。
+type recoveryServer struct {
+	child    *exec.Cmd
+	cfgPath  string
+	httpPort int
+	grpcPort int
+	rtmpPort int
+	done     chan struct{}
+	exitErr  error
+}
+
+// startRecoveryServer 启动子进程并等待 http/rtmp 端口就绪。
+//
+// freePort 先监听 :0 再立即 Close，与子进程真正 bind 之间存在 TOCTOU 窗口：
+// 端口可能被其他进程抢走，或两次 freePort 撞在同一端口。启动失败时换一组端口
+// 重试，最终失败时把子进程日志带回错误信息。
+func startRecoveryServer(t *testing.T, root, storageBase, recordDir, logName string) *recoveryServer {
+	t.Helper()
+	const attempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		s := &recoveryServer{
+			cfgPath:  filepath.Join(root, strings.TrimSuffix(logName, ".log")+".yaml"),
+			httpPort: freePort(t),
+			grpcPort: freePort(t),
+			rtmpPort: freePort(t),
+		}
+		cfg := recoveryConfigYAML(storageBase, recordDir, s.httpPort, s.grpcPort, s.rtmpPort)
+		if err := os.WriteFile(s.cfgPath, []byte(cfg), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		startRecoveryChild(t, root, s, logName)
+		if err := waitServerPorts(s, 20*time.Second); err != nil {
+			lastErr = err
+			s.stop()
+			t.Logf("start attempt %d/%d failed (http=%d grpc=%d rtmp=%d): %v\nchild log tail:\n%s",
+				attempt, attempts, s.httpPort, s.grpcPort, s.rtmpPort, err, tail(readChildLog(root, logName), 4000))
+			continue
+		}
+		return s
+	}
+	t.Fatalf("server did not start after %d attempts: %v\nchild log tail:\n%s",
+		attempts, lastErr, tail(readChildLog(root, logName), 8000))
+	return nil
+}
+
+func recoveryConfigYAML(storageBase, recordDir string, httpPort, grpcPort, rtmpPort int) string {
+	return fmt.Sprintf(`global:
+  http:
+    listenaddr: 127.0.0.1:%d
+  tcp:
+    listenaddr: 127.0.0.1:%d
+  loglevel: info
+  storage:
+    local:
+      path: %s
+mp4:
+  enable: true
+  record:
+    index:
+      enable: true
+      flushinterval: 1s
+    recovery:
+      onstart: true
+      dirs:
+        - %s
+rtmp:
+  enable: true
+  tcp:
+    listenaddr: 127.0.0.1:%d
+`, httpPort, grpcPort, yamlQuote(storageBase), yamlQuote(recordDir), rtmpPort)
+}
+
+// waitServerPorts 轮询 http/rtmp 端口；子进程中途退出时立即返回原因。
+func waitServerPorts(s *recoveryServer, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ports := []int{s.httpPort, s.rtmpPort}
+	for {
+		select {
+		case <-s.done:
+			return fmt.Errorf("child exited during startup: %v", s.exitErr)
+		default:
+		}
+		ready := 0
+		for _, port := range ports {
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 300*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				ready++
+			}
+		}
+		if ready == len(ports) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("ports not ready after %s (http=%d rtmp=%d, ready=%d/%d)",
+				timeout, s.httpPort, s.rtmpPort, ready, len(ports))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // startRecoveryChild 以 helper 模式重新执行测试二进制，启动真实 server。
-func startRecoveryChild(t *testing.T, dir, cfgPath, logName string) *exec.Cmd {
+func startRecoveryChild(t *testing.T, dir string, s *recoveryServer, logName string) {
+	cfgPath := s.cfgPath
 	t.Helper()
 	bin, err := filepath.Abs(os.Args[0])
 	if err != nil {
@@ -280,11 +368,32 @@ func startRecoveryChild(t *testing.T, dir, cfgPath, logName string) *exec.Cmd {
 		logFile.Close()
 		t.Fatalf("start child: %v", err)
 	}
-	t.Cleanup(func() {
-		killProcess(t, cmd)
+	s.child = cmd
+	s.done = make(chan struct{})
+	go func() {
+		s.exitErr = cmd.Wait()
 		logFile.Close()
-	})
-	return cmd
+		close(s.done)
+	}()
+	t.Cleanup(s.stop)
+}
+
+// stop 终止子进程并等待 Wait 完成；可重复调用（done 关闭后立即返回）。
+func (s *recoveryServer) stop() {
+	if s == nil || s.child == nil || s.child.Process == nil {
+		return
+	}
+	_ = s.child.Process.Kill()
+	<-s.done
+}
+
+// readChildLog 读取子进程日志并剥离 ANSI 颜色；文件不存在时返回空串。
+func readChildLog(dir, name string) string {
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return ""
+	}
+	return ansiEscape.ReplaceAllString(string(data), "")
 }
 
 func startFFmpeg(t *testing.T, dir, source string, rtmpPort int) *exec.Cmd {
@@ -344,19 +453,6 @@ func freePort(t *testing.T) int {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
-}
-
-func waitTCP(t *testing.T, port int, timeout time.Duration, what string) {
-	t.Helper()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	waitFor(t, timeout, 100*time.Millisecond, what, func() error {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err != nil {
-			return err
-		}
-		_ = conn.Close()
-		return nil
-	})
 }
 
 func waitFor(t *testing.T, timeout, interval time.Duration, what string, fn func() error) {
