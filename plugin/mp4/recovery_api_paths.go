@@ -62,9 +62,17 @@ func parseRecoveryRunRequest(r *http.Request) (recoveryRunRequest, error) {
 	return req, nil
 }
 
+// errRecoveryPathDenied 表示路径解析后落在恢复白名单之外（含符号链接逃逸）。
+// 调用方据此返回 403，且绝不触碰目标文件。
+var errRecoveryPathDenied = errors.New("recovery path outside recovery allow-list")
+
 // validateRunTarget 校验请求目标是否在白名单内。
 // 返回非零 HTTP status 表示拒绝（403 = 越界/符号链接逃逸，400 = 不存在/类型错误）。
 // file 为媒体文件时会解析出对应 sidecar；找不到 sidecar 返回 400。
+//
+// 安全性：请求路径只是入口，恢复过程真正读写的路径来自索引 header 的
+// MediaPath。因此在放行前还要读取索引头，校验 MediaPath 与产物路径同样落在
+// 白名单（或其所在目录）内，避免“合法 sidecar 指向白名单外媒体”的覆盖/删除。
 func (t *IndexRecoveryTask) validateRunTarget(dir, file string) (dirs []string, sidecar string, status int, message string) {
 	allowed, _ := t.resolveDirs(nil)
 	allowed = canonicalExistingDirs(allowed)
@@ -96,9 +104,14 @@ func (t *IndexRecoveryTask) validateRunTarget(dir, file string) (dirs []string, 
 		if err != nil {
 			return nil, "", http.StatusBadRequest, "invalid file"
 		}
-		info, err := os.Stat(abs)
+		info, err := os.Lstat(abs)
 		if err != nil || info.IsDir() {
 			return nil, "", http.StatusBadRequest, "file not found"
+		}
+		// 符号链接一律拒绝：EvalSymlinks 只解析路径，无法区分“用户直接给了
+		// 一个指向白名单外的链接”与链接目标本身。
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, "", http.StatusForbidden, "file outside recovery allow-list: symlink not allowed"
 		}
 		canon, err := filepath.EvalSymlinks(abs)
 		if err != nil {
@@ -107,15 +120,153 @@ func (t *IndexRecoveryTask) validateRunTarget(dir, file string) (dirs []string, 
 		if !pathWithinAny(allowed, canon) {
 			return nil, "", http.StatusForbidden, "file outside recovery allow-list"
 		}
-		resolved, ok := resolveRecoverySidecar(canon)
-		if !ok {
-			return nil, "", http.StatusBadRequest, "no pending recovery index for file (failed indexes are not retried)"
+		resolved, status, message := resolveRecoverySidecar(canon, allowed)
+		if status != 0 {
+			return nil, "", status, message
+		}
+		if status, message := validateRecoveryIndexTargets(allowed, resolved); status != 0 {
+			return nil, "", status, message
 		}
 		return nil, resolved, 0, ""
 	}
 
 	// 未指定目标：使用配置/默认目录。
 	return nil, "", 0, ""
+}
+
+// validateRecoveryIndexTargets 读取索引头并校验其记录的媒体路径/产物路径。
+// 索引不可读时不在这里拒绝（保持既有语义：由运行结果报告失败），
+// 但真正执行时仍会再做一次路径校验。
+func validateRecoveryIndexTargets(allowed []string, sidecar string) (status int, message string) {
+	header, err := mp4pkg.ReadIndexHeader(sidecar)
+	if err != nil {
+		return 0, ""
+	}
+	recorded := header.MediaPath
+	if recorded == "" {
+		recorded = mediaPathFromSidecar(sidecar)
+	}
+	if !recoveryMediaAllowed(allowed, sidecar, recorded) {
+		return http.StatusForbidden, "recovery target outside recovery allow-list"
+	}
+	return 0, ""
+}
+
+// recoveryMediaAllowed 判断索引记录的媒体/产物路径是否可接受。
+// 白名单为恢复目录 + sidecar 所在目录（sidecar 本身已通过白名单校验）。
+func recoveryMediaAllowed(allowed []string, sidecar, recorded string) bool {
+	dirs := append(append([]string(nil), allowed...), filepath.Dir(sidecar))
+	canonMedia, ok := canonicalRecoveryTarget(recorded)
+	if !ok || !pathWithinAny(dirs, canonMedia) {
+		return false
+	}
+	output := recoveryOutputPath(recorded)
+	canonOutput, ok := canonicalRecoveryTarget(output)
+	if !ok || !pathWithinAny(dirs, canonOutput) {
+		return false
+	}
+	return true
+}
+
+// canonicalRecoveryTarget 规范化一个可能尚不存在的路径：已存在时拒绝符号链接
+// 并解析全部链接；不存在时解析父目录（父目录必须存在）。
+func canonicalRecoveryTarget(path string) (string, bool) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", false
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+			return "", false
+		}
+		canon, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", false
+		}
+		return canon, true
+	}
+	canonDir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(canonDir, filepath.Base(path)), true
+}
+
+// recoveryPathGuard 校验恢复过程中实际读写的路径（sidecar/媒体/产物）。
+// 白名单 = 恢复目录 + sidecar 所在目录；符号链接一律拒绝。
+type recoveryPathGuard struct {
+	allowed []string
+}
+
+func newRecoveryPathGuard(dirs []string, sidecar string) (*recoveryPathGuard, error) {
+	allowed := canonicalExistingDirs(dirs)
+	info, err := os.Lstat(sidecar)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: sidecar %s is a symlink", errRecoveryPathDenied, sidecar)
+	}
+	canonSidecar, err := filepath.EvalSymlinks(sidecar)
+	if err != nil {
+		return nil, err
+	}
+	allowed = append(allowed, filepath.Dir(canonSidecar))
+	return &recoveryPathGuard{allowed: allowed}, nil
+}
+
+// allowExisting 校验一个已存在路径。返回原路径（保持日志/结果里的路径稳定），
+// 合法性以解析后的真实路径为准。
+func (g *recoveryPathGuard) allowExisting(path, what string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%w: %s must be an absolute path", errRecoveryPathDenied, what)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %s %s is a symlink", errRecoveryPathDenied, what, path)
+	}
+	canon, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if !pathWithinAny(g.allowed, canon) {
+		return "", fmt.Errorf("%w: %s %s", errRecoveryPathDenied, what, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+// allowOutput 校验一个待写入路径：父目录必须存在且在白名单内，
+// 目标已存在时不得是符号链接。
+func (g *recoveryPathGuard) allowOutput(path, what string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%w: %s must be an absolute path", errRecoveryPathDenied, what)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %s %s is a symlink", errRecoveryPathDenied, what, path)
+	}
+	canonDir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	if !pathWithinAny(g.allowed, canonDir) {
+		return "", fmt.Errorf("%w: %s %s", errRecoveryPathDenied, what, path)
+	}
+	canon := filepath.Join(canonDir, filepath.Base(path))
+	if info, err := os.Lstat(canon); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %s %s is a symlink", errRecoveryPathDenied, what, path)
+	}
+	// 返回原路径：写入仍经由原路径（其祖先链接已解析校验），保持结果路径稳定。
+	return filepath.Clean(path), nil
+}
+
+func (t *IndexRecoveryTask) newRecoveryPathGuard(sidecar string) (*recoveryPathGuard, error) {
+	dirs, _ := t.resolveDirs(nil)
+	return newRecoveryPathGuard(dirs, sidecar)
 }
 
 // canonicalExistingDirs 对白名单目录做绝对路径 + 符号链接解析。
@@ -158,21 +309,50 @@ func pathWithin(base, target string) bool {
 
 // resolveRecoverySidecar 把用户给出的文件解析为可处理的 sidecar。
 // 接受 sidecar 本身（.m7sidx/.m7sidx.recovering），或媒体文件（自动补后缀）。
-func resolveRecoverySidecar(path string) (string, bool) {
+//
+// 返回非零 status 表示拒绝：403 = 候选是符号链接或解析后越界，
+// 400 = 没有待恢复索引（.failed 不重试）。
+// 候选路径必须重新规范化：仅 fileExists 无法发现“白名单内的链接指向外部”。
+func resolveRecoverySidecar(path string, allowed []string) (sidecar string, status int, message string) {
+	canonical := func(candidate string) (string, int, string) {
+		canon, ok := canonicalRecoveryFile(candidate, allowed)
+		if !ok {
+			return "", http.StatusForbidden, "file outside recovery allow-list: symlink not allowed"
+		}
+		return canon, 0, ""
+	}
 	switch {
-	case strings.HasSuffix(path, mp4pkg.IndexExtension+recoveringSuffix):
-		return path, true
-	case strings.HasSuffix(path, mp4pkg.IndexExtension):
-		return path, true
+	case strings.HasSuffix(path, mp4pkg.IndexExtension+recoveringSuffix),
+		strings.HasSuffix(path, mp4pkg.IndexExtension):
+		return canonical(path)
 	case strings.HasSuffix(path, mp4pkg.IndexExtension+failedSuffix):
-		return "", false
+		return "", http.StatusBadRequest, "no pending recovery index for file (failed indexes are not retried)"
 	}
 	for _, suffix := range []string{mp4pkg.IndexExtension + recoveringSuffix, mp4pkg.IndexExtension} {
-		if candidate := path + suffix; fileExists(candidate) {
-			return candidate, true
+		candidate := path + suffix
+		if _, err := os.Lstat(candidate); err != nil {
+			continue
 		}
+		return canonical(candidate)
 	}
-	return "", false
+	return "", http.StatusBadRequest, "no pending recovery index for file (failed indexes are not retried)"
+}
+
+// canonicalRecoveryFile 校验并规范化一个已存在的文件路径：
+// 符号链接一律拒绝（Lstat），解析祖先符号链接后必须仍在白名单内。
+func canonicalRecoveryFile(path string, allowed []string) (string, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	canon, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	if !pathWithinAny(allowed, canon) {
+		return "", false
+	}
+	return canon, true
 }
 
 // ---------------------------------------------------------------- 目录扫描

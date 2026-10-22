@@ -326,32 +326,51 @@ func ReadIndex(path string) (*IndexFile, error) {
 	return readIndexFrom(f)
 }
 
-func readIndexFrom(r io.Reader) (*IndexFile, error) {
+// ReadIndexHeader 只读取并解析索引头部，不加载样本记录。
+// 用于在真正恢复前校验 header.MediaPath 等元数据（完整索引可能有数百万条记录）。
+func ReadIndexHeader(path string) (IndexHeader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return IndexHeader{}, err
+	}
+	defer f.Close()
+	return readIndexHeader(f)
+}
+
+func readIndexHeader(r io.Reader) (IndexHeader, error) {
 	prefix := make([]byte, indexPrefixSize)
 	if _, err := io.ReadFull(r, prefix); err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			// 头都没写完：崩溃残留。确定性损坏，不会自行变完整。
-			return nil, fmt.Errorf("%w: read index header: %w", ErrIndexCorrupt, err)
+			return IndexHeader{}, fmt.Errorf("%w: read index header: %w", ErrIndexCorrupt, err)
 		}
-		return nil, fmt.Errorf("mp4: read index header: %w", err)
+		return IndexHeader{}, fmt.Errorf("mp4: read index header: %w", err)
 	}
 	if string(prefix[:len(IndexMagic)]) != IndexMagic {
-		return nil, fmt.Errorf("%w: %w", ErrIndexCorrupt, ErrIndexBadMagic)
+		return IndexHeader{}, fmt.Errorf("%w: %w", ErrIndexCorrupt, ErrIndexBadMagic)
 	}
 	headerLen := binary.BigEndian.Uint32(prefix[len(IndexMagic):])
 	if headerLen > maxIndexHeaderSize {
-		return nil, fmt.Errorf("%w: index header too large: %d", ErrIndexCorrupt, headerLen)
+		return IndexHeader{}, fmt.Errorf("%w: index header too large: %d", ErrIndexCorrupt, headerLen)
 	}
 	js := make([]byte, headerLen)
 	if _, err := io.ReadFull(r, js); err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return nil, fmt.Errorf("%w: truncated index header: %w", ErrIndexCorrupt, err)
+			return IndexHeader{}, fmt.Errorf("%w: truncated index header: %w", ErrIndexCorrupt, err)
 		}
-		return nil, fmt.Errorf("mp4: truncated index header: %w", err)
+		return IndexHeader{}, fmt.Errorf("mp4: truncated index header: %w", err)
 	}
 	var h IndexHeader
 	if err := json.Unmarshal(js, &h); err != nil {
-		return nil, fmt.Errorf("%w: invalid index header: %w", ErrIndexCorrupt, err)
+		return IndexHeader{}, fmt.Errorf("%w: invalid index header: %w", ErrIndexCorrupt, err)
+	}
+	return h, nil
+}
+
+func readIndexFrom(r io.Reader) (*IndexFile, error) {
+	h, err := readIndexHeader(r)
+	if err != nil {
+		return nil, err
 	}
 	idx := &IndexFile{Header: h, MediaPath: h.MediaPath}
 

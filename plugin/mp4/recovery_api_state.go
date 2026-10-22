@@ -45,7 +45,7 @@ type recoveryAPIJob struct {
 }
 
 func (t *recoveryAPIJob) Go() error {
-	stats, runErr := t.owner.runRequest(t.run.dirs, t.run.file)
+	stats, runErr := t.owner.runRequest(t.run.id, t.run.dirs, t.run.file)
 	t.state.finishRun(t.run, stats, runErr)
 	return nil
 }
@@ -54,9 +54,14 @@ func (t *recoveryAPIJob) Go() error {
 // file 非空表示只处理单个 sidecar（优先于 dirs）。
 // 新鲜度（record.recovery.minage）与活跃录制保护由 recoverSidecar 内部的
 // isFreshlyWritten 统一裁决，手动触发不会绕过。
-func (t *IndexRecoveryTask) runRequest(dirs []string, file string) (RecoveryStats, error) {
+//
+// runID 只在取得 runMu（即真正开始执行）后发布给 observer：run 登记后可能
+// 长时间阻塞在在途的启动扫描后面，期间扫描的逐文件结果绝不能被计入它。
+func (t *IndexRecoveryTask) runRequest(runID string, dirs []string, file string) (RecoveryStats, error) {
 	t.runMu.Lock()
 	defer t.runMu.Unlock()
+	t.setExecutingRunID(runID)
+	defer t.setExecutingRunID("")
 	if file != "" {
 		stats := RecoveryStats{Scanned: 1}
 		outcome, _, err := t.recoverSidecar(file)
@@ -71,8 +76,8 @@ func (p *MP4Plugin) recoveryStateStore() *recoveryAPIState {
 }
 
 // observeRecovery 是 IndexRecoveryTask.observer 的实现。
-func (p *MP4Plugin) observeRecovery(file, outcome string, err error, samples int, truncated bool) {
-	p.recoveryStateStore().observe(file, outcome, err, samples, truncated)
+func (p *MP4Plugin) observeRecovery(runID, file, outcome string, err error, samples int, truncated bool) {
+	p.recoveryStateStore().observe(runID, file, outcome, err, samples, truncated)
 }
 
 func (s *recoveryAPIState) ensureRunsLocked() {
@@ -170,9 +175,12 @@ func (s *recoveryAPIState) getRun(id string) (*recoveryRunState, bool) {
 	return run, ok
 }
 
-// observe 接收恢复任务的单文件结果回调：写入最近结果并推进在途运行的进度。
+// observe 接收恢复任务的单文件结果回调：写入最近结果并推进对应运行的进度。
 // 回调可能来自并发 worker，必须线程安全。
-func (s *recoveryAPIState) observe(file, outcome string, err error, samples int, truncated bool) {
+//
+// 进度只累计到 runID 匹配且真正在执行的运行；启动扫描（runID 为空）以及
+// 尚在排队（未取得 runMu）的手动 run 都不会被污染。
+func (s *recoveryAPIState) observe(runID, file, outcome string, err error, samples int, truncated bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if outcome == "recovered" {
@@ -186,17 +194,22 @@ func (s *recoveryAPIState) observe(file, outcome string, err error, samples int,
 			s.recent = append([]recoveryRecentEntry(nil), s.recent[len(s.recent)-recoveryRecentHistoryLimit:]...)
 		}
 	}
-	if run := s.current; run != nil && run.status == recoveryRunRunning {
-		switch outcome {
-		case "recovered":
-			run.stats.Recovered++
-		case "skipped":
-			run.stats.Skipped++
-		default:
-			run.stats.Failed++
-			if err != nil {
-				run.stats.Errors = append(run.stats.Errors, fmt.Errorf("%s: %w", file, err))
-			}
+	if runID == "" {
+		return
+	}
+	run, ok := s.runs[runID]
+	if !ok || run.status != recoveryRunRunning {
+		return
+	}
+	switch outcome {
+	case "recovered":
+		run.stats.Recovered++
+	case "skipped":
+		run.stats.Skipped++
+	default:
+		run.stats.Failed++
+		if err != nil {
+			run.stats.Errors = append(run.stats.Errors, fmt.Errorf("%s: %w", file, err))
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	task "github.com/eanfs/gotask"
@@ -78,10 +79,31 @@ type IndexRecoveryTask struct {
 
 	// observer 是可选的单文件结果观察者（恢复 API 的进度与最近结果）。
 	// 必须在任务启动前设置；回调可能来自并发 worker，实现必须线程安全。
-	observer func(file string, outcome string, err error, samples int, truncated bool)
+	// runID 标识本次结果归属的手动运行；启动扫描为空，避免把扫描的逐文件
+	// 结果计入排队中的手动 run。
+	observer func(runID, file string, outcome string, err error, samples int, truncated bool)
 
 	// runMu 串行化整个扫描：启动扫描与 API 手动触发不能同时处理同一文件。
 	runMu sync.Mutex
+
+	// executingRunID 是当前真正在执行的手动 run（已取得 runMu）。启动扫描为空。
+	executingRunID atomic.Pointer[string]
+}
+
+// setExecutingRunID 标记/清除当前执行中的手动 run。
+func (t *IndexRecoveryTask) setExecutingRunID(id string) {
+	if id == "" {
+		t.executingRunID.Store(nil)
+		return
+	}
+	t.executingRunID.Store(&id)
+}
+
+func (t *IndexRecoveryTask) currentRunID() string {
+	if id := t.executingRunID.Load(); id != nil {
+		return *id
+	}
+	return ""
 }
 
 const (
@@ -540,7 +562,7 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 	}
 	elapsedMs := elapsed.Milliseconds()
 	if t.observer != nil {
-		t.observer(file, outcome.String(), err, len(item.Records), item.Truncated)
+		t.observer(t.currentRunID(), file, outcome.String(), err, len(item.Records), item.Truncated)
 	}
 	switch outcome {
 	case recoveryRecovered:
@@ -570,6 +592,13 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 // recoverSidecarFile 定稿单个 sidecar。任何返回错误的分支都保留可重试状态，
 // 除非错误被明确判定为永久性（索引损坏/无可用样本 → .failed）。
 func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome, RecoveryItem, error) {
+	// 实际读写的路径由索引内容决定，必须独立于请求参数再做一次白名单校验，
+	// 否则白名单内的 sidecar 可以把读写引到白名单之外（含符号链接逃逸）。
+	// guard 同时确认 sidecar 自身不是符号链接。
+	guard, err := t.newRecoveryPathGuard(sidecar)
+	if err != nil {
+		return recoveryFailed, RecoveryItem{MediaPath: mediaPathFromSidecar(sidecar)}, err
+	}
 	index, err := mp4pkg.ReadIndex(sidecar)
 	if err != nil {
 		// 活跃录制中的 sidecar 刚创建时可能短暂不可读。先看 mtime：
@@ -594,15 +623,26 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome,
 		recorded = mediaPathFromSidecar(sidecar)
 	}
 	source, found := locateRecoveryMedia(recorded, sidecar)
-	output := recoveryOutputPath(recorded)
 
 	item := RecoveryItem{
 		Header:      index.Header,
 		Records:     index.Records,
-		MediaPath:   source,
-		OutputPath:  output,
 		SidecarPath: sidecar,
 	}
+
+	// 校验 locateRecoveryMedia 的结果：候选只做过 fileExists，可能是指向
+	// 白名单外的符号链接。拒绝时必须保持目标文件原样（后续不再 rename/remove）。
+	if found {
+		if source, err = guard.allowExisting(source, "recovery media"); err != nil {
+			return recoveryFailed, item, err
+		}
+	}
+	output, err := guard.allowOutput(recoveryOutputPath(recorded), "recovery output")
+	if err != nil {
+		return recoveryFailed, item, err
+	}
+	item.MediaPath = source
+	item.OutputPath = output
 
 	if !found {
 		// 崩溃窗口：产物已 rename，但源暂存文件已删除、sidecar 尚未清理。
@@ -620,9 +660,6 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome,
 			"sidecar", sidecar, "media", recorded)
 		return recoveryFailed, item, fmt.Errorf("media file not found: %s", recorded)
 	}
-
-	item.MediaPath = source
-	item.OutputPath = output
 
 	// C2：跳过仍在写入的文件。活跃 recorder 的 sidecar 同样未提交、与崩溃残留
 	// 不可区分；若此时 markRecovering 并重建，会 rename 走活跃 sidecar、

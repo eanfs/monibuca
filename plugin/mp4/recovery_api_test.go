@@ -3,6 +3,7 @@ package plugin_mp4
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	task "github.com/eanfs/gotask"
 	m7s "m7s.live/v5"
+	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 )
 
 // newRecoveryAPITestPlugin 组装一个未启动的插件 + 恢复任务，用于 handler 单元测试。
@@ -207,10 +209,11 @@ type recoveryRunResponse struct {
 }
 
 type recoveryStatusResponse struct {
-	Code   int    `json:"code"`
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Result *struct {
+	Code     int               `json:"code"`
+	ID       string            `json:"id"`
+	Status   string            `json:"status"`
+	Progress recoveryStatsView `json:"progress"`
+	Result   *struct {
 		Scanned   int      `json:"scanned"`
 		Recovered int      `json:"recovered"`
 		Failed    int      `json:"failed"`
@@ -383,5 +386,235 @@ func TestRecoveryRunDeduplicatesInFlight(t *testing.T) {
 	rec = doRecoveryRequest(t, p2.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("conflict status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// waitRecoveryRun 轮询 status 直到运行结束。
+func waitRecoveryRun(t *testing.T, p *MP4Plugin, id string) recoveryStatusResponse {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		srec := doRecoveryRequest(t, p.handleRecoveryStatus, http.MethodGet,
+			"/api/recovery/status/"+id, nil, map[string]string{"id": id})
+		if srec.Code != http.StatusOK {
+			t.Fatalf("status code = %d, body = %s", srec.Code, srec.Body.String())
+		}
+		var status recoveryStatusResponse
+		if err := json.Unmarshal(srec.Body.Bytes(), &status); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		if status.Status != recoveryRunRunning {
+			return status
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovery run did not finish in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// I1：sidecar 合法但索引 header.mediaPath 指向白名单外时，必须在触发前
+// 拒绝（403），且白名单外的目标文件不得被覆盖/删除。
+func TestRecoveryRunRejectsIndexMediaPathOutsideAllowList(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+
+	media, payloadStart := writeHalfWrittenRecording(t, outside, "valuable.tmp", []byte{0x11, 0x22, 0x33, 0x44})
+	ageRecoveryFiles(t, media)
+	original, err := os.ReadFile(media)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	sidecar := filepath.Join(allowed, "evil.tmp"+mp4pkg.IndexExtension)
+	writeRecoverySidecar(t, sidecar, mp4pkg.IndexHeader{
+		Version:     1,
+		MediaPath:   media,
+		StorageType: "local",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}, []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: 4, Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+	})
+	ageRecoveryFiles(t, sidecar)
+
+	p, recovery := newRecoveryAPITestPlugin(t, allowed)
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"file": sidecar})
+	rec := doRecoveryRequest(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(media); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("target outside allow-list was modified: err=%v", err)
+	}
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Fatalf("sidecar must be left untouched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "valuable.mp4")); !os.IsNotExist(err) {
+		t.Fatal("no output may be written outside the allow-list")
+	}
+}
+
+// I1：白名单内的 sidecar 若是符号链接（指向白名单外），一律拒绝。
+func TestRecoveryRunRejectsSymlinkedSidecar(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+	media, sidecar, _ := buildRecoveryFixture(t, outside, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03})
+
+	link := filepath.Join(allowed, "link.mp4"+mp4pkg.IndexExtension)
+	if err := os.Symlink(sidecar, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	original, err := os.ReadFile(media)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	p, recovery := newRecoveryAPITestPlugin(t, allowed)
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"file": link})
+	rec := doRecoveryRequest(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(media); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("media outside allow-list was modified: err=%v", err)
+	}
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Fatalf("sidecar outside allow-list must be untouched: %v", err)
+	}
+}
+
+// I1：索引记录的媒体路径本身是白名单内指向外部的符号链接时同样拒绝。
+func TestRecoveryRunRejectsMediaSymlinkEscape(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+
+	target, _ := writeHalfWrittenRecording(t, outside, "valuable.tmp", []byte{0x01, 0x02, 0x03, 0x04})
+	ageRecoveryFiles(t, target)
+	original, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	link := filepath.Join(allowed, "media.mp4")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	sidecar := filepath.Join(allowed, "media.mp4"+mp4pkg.IndexExtension)
+	writeRecoverySidecar(t, sidecar, mp4pkg.IndexHeader{
+		Version: 1, MediaPath: link, StorageType: "local",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}, []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: 4, Offset: 0, DTS: 0, Duration: 40},
+	})
+	ageRecoveryFiles(t, sidecar)
+
+	p, recovery := newRecoveryAPITestPlugin(t, allowed)
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"file": sidecar})
+	rec := doRecoveryRequest(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("symlink target was modified: err=%v", err)
+	}
+}
+
+// 合法路径不受影响：白名单内的 sidecar 且 mediaPath 在同一目录时必须能恢复。
+func TestRecoveryRunFileWithinAllowListRecovers(t *testing.T) {
+	dir := t.TempDir()
+	_, sidecar, _ := buildRecoveryFixture(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03})
+
+	p, recovery := newRecoveryAPITestPlugin(t, dir)
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"file": sidecar})
+	rec := doRecoveryRequest(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var run recoveryRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+
+	status := waitRecoveryRun(t, p, run.ID)
+	if status.Status != recoveryRunCompleted {
+		t.Fatalf("status = %q, error = %q", status.Status, status.Error)
+	}
+	if status.Result == nil || status.Result.Recovered != 1 {
+		t.Fatalf("result = %+v", status.Result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.mp4")); err != nil {
+		t.Fatalf("recovered output missing: %v", err)
+	}
+}
+
+// I2：启动扫描在途（持有 runMu）时触发的手动 run，不得把扫描的逐文件
+// 结果累计进自己的 progress；结束后以真实统计整体覆盖。
+func TestRecoveryRunProgressIgnoresInFlightStartupScan(t *testing.T) {
+	dir := t.TempDir()
+	p, recovery := newRecoveryAPITestPlugin(t, dir)
+	startRecoveryAPITestTask(t, recovery)
+
+	// 模拟启动扫描：持有 runMu 直到测试主动释放。
+	recovery.runMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			recovery.runMu.Unlock()
+		}
+	}()
+
+	body, _ := json.Marshal(map[string]string{"dir": dir})
+	rec := doRecoveryRequest(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run", body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var run recoveryRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+
+	// 启动扫描的逐文件结果（runID 为空）。
+	for i := 0; i < 3; i++ {
+		p.observeRecovery("", filepath.Join(dir, fmt.Sprintf("scan-%d.mp4", i)), "recovered", nil, 10, false)
+	}
+
+	srec := doRecoveryRequest(t, p.handleRecoveryStatus, http.MethodGet,
+		"/api/recovery/status/"+run.ID, nil, map[string]string{"id": run.ID})
+	var status recoveryStatusResponse
+	if err := json.Unmarshal(srec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Status != recoveryRunRunning {
+		t.Fatalf("status = %q, want running", status.Status)
+	}
+	if status.Progress.Recovered != 0 || status.Progress.Processed != 0 {
+		t.Fatalf("progress polluted by in-flight startup scan: %+v", status.Progress)
+	}
+
+	recovery.runMu.Unlock()
+	locked = false
+
+	status = waitRecoveryRun(t, p, run.ID)
+	if status.Status != recoveryRunCompleted {
+		t.Fatalf("status = %q, error = %q", status.Status, status.Error)
+	}
+	if status.Result == nil || status.Result.Scanned != 0 || status.Result.Recovered != 0 {
+		t.Fatalf("result must reflect the manual run only: %+v", status.Result)
 	}
 }
