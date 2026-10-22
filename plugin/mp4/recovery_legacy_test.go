@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
@@ -350,4 +351,184 @@ func TestParseH264VUITiming(t *testing.T) {
 	if _, ok := legacyH264VUIFPS([]byte{0x67, 0x42, 0x00, 0x1e}); ok {
 		t.Errorf("expected failure on truncated SPS")
 	}
+}
+
+// zeroTimeScaleSPS 把真实 SPS 中 VUI 的 time_scale 置 0，模拟半成品被截断的
+// SPS。time_scale 位于 RBSP bit 109..140（非字节对齐）。
+func zeroTimeScaleSPS(t *testing.T) []byte {
+	t.Helper()
+	sps, _ := legacyTestParamSets(t)
+	out := append([]byte(nil), sps...)
+	out[14] &^= 0x07 // RBSP byte 13 低 3 位
+	out[15] = 0
+	out[16] = 0
+	out[17] = 0
+	out[18] &^= 0xF8 // RBSP byte 17 高 5 位
+	return out
+}
+
+// I1：time_scale=0 的 SPS 不能让 fps 变成 0。必须带 warning 回退 25 fps，
+// stts 的 sample_delta 合法（40 ms），DTS 递增而非全 0。
+func TestRebuildFromMDATZeroTimeScaleFallsBackTo25FPS(t *testing.T) {
+	sps := zeroTimeScaleSPS(t)
+	_, pps := legacyTestParamSets(t)
+	if fps, ok := legacyH264VUIFPS(sps); ok {
+		t.Fatalf("VUI parser accepted time_scale=0 (fps=%v, want no usable rate)", fps)
+	}
+	payload := bytes.Join([][]byte{
+		avccBytes(sps, pps, []byte{0x65, 0x88, 0x84, 0x00, 0x01}),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x02}),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x03}),
+	}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.DurationMs != 120 {
+		t.Errorf("DurationMs = %d, want 120 (3 frames @ 25 fps)", res.DurationMs)
+	}
+	if len(res.Warnings) == 0 {
+		t.Errorf("fps fallback must carry a warning")
+	}
+
+	_, _, moov := parseLegacyOutput(t, outPath)
+	stts := moov.Tracks[0].MDIA.MINF.STBL.STTS
+	if stts == nil || len(stts.Entries) == 0 {
+		t.Fatalf("stts = %+v, want at least one entry", stts)
+	}
+	if stts.Entries[0].SampleDelta != 40 {
+		t.Errorf("stts sample_delta = %d, want 40 (25 fps)", stts.Entries[0].SampleDelta)
+	}
+	samples := moov.Tracks[0].ParseSamples()
+	if len(samples) != 3 {
+		t.Fatalf("samples = %d, want 3", len(samples))
+	}
+	if samples[1].Timestamp != 40 || samples[2].Timestamp != 80 {
+		t.Errorf("DTS = %d,%d,%d, want 0,40,80",
+			samples[0].Timestamp, samples[1].Timestamp, samples[2].Timestamp)
+	}
+}
+
+// I2：首个落盘样本可能是裸音频帧（音视频两条订阅）。codec 探测必须像扫描器
+// 一样重同步，而不是硬要求载荷第 48 字节就是合法 NAL。
+func TestRebuildFromMDATDetectsCodecAfterLeadingAudio(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	audio := bytes.Repeat([]byte{0xD5}, 320) // 裸 G.711A 帧，不是 AVCC 长度前缀
+	payload := bytes.Join([][]byte{
+		audio,
+		avccBytes(sps, pps, []byte{0x65, 0x88, 0x84, 0x00, 0x01}),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x02}),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x03}),
+	}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT with leading audio: %v", err)
+	}
+	if res.VideoFrames != 3 {
+		t.Errorf("VideoFrames = %d, want 3", res.VideoFrames)
+	}
+	_, _, moov := parseLegacyOutput(t, outPath)
+	entry, ok := moov.Tracks[0].MDIA.MINF.STBL.STSD.Entries[0].(*box.VisualSampleEntry)
+	if !ok {
+		t.Fatalf("video entry = %T", moov.Tracks[0].MDIA.MINF.STBL.STSD.Entries[0])
+	}
+	if entry.ExtraData == nil || entry.ExtraData.Type() != box.TypeAVCC {
+		t.Errorf("codec not detected as H.264 (extra data = %v)", entry.ExtraData)
+	}
+	if entry.Width != 1920 || entry.Height != 1080 {
+		t.Errorf("dimensions = %dx%d, want 1920x1080", entry.Width, entry.Height)
+	}
+}
+
+// I3：畸形载荷（每 5 字节一个 AU）不能让元数据无界增长。超过 sanity 上限
+// 必须返回明确错误，而不是继续 append 直到 OOM。
+func TestRebuildFromMDATRejectsExcessiveAUs(t *testing.T) {
+	// 00 00 00 01 41 = 1 字节的 H.264 VCL NAL（type 1），每次都会产生 1 个 AU。
+	pattern := []byte{0x00, 0x00, 0x00, 0x01, 0x41}
+	payload := bytes.Repeat(pattern, legacyMaxAUs+2)
+	mediaPath := halfWrittenTmp(t, payload)
+
+	_, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected explicit error for %d+ AUs", legacyMaxAUs)
+	}
+	if !strings.Contains(err.Error(), "access units") {
+		t.Errorf("error = %v, want access-unit sanity limit", err)
+	}
+}
+
+// I4：变长空洞（300/320 混合，gcd=20）不是定长 G.711，必须降级为仅视频
+// 并显式告警，绝不能凭猜测建音轨。
+func TestRebuildFromMDATRejectsVariableLengthAudio(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	payload := bytes.Join([][]byte{
+		avccBytes(sps, pps, []byte{0x65, 0x88, 0x84, 0x00, 0x01}),
+		bytes.Repeat([]byte{0xD5}, 300),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x02}),
+		bytes.Repeat([]byte{0xD5}, 320),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x03}),
+	}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.AudioRecovered || res.AudioFrames != 0 || res.AudioCodec != "" {
+		t.Errorf("audio = recovered:%v frames:%d codec:%q, want video-only",
+			res.AudioRecovered, res.AudioFrames, res.AudioCodec)
+	}
+	if !legacyWarningsContain(res.Warnings, "gcd=20") {
+		t.Errorf("warnings = %v, want gcd=20 rejection", res.Warnings)
+	}
+	_, _, moov := parseLegacyOutput(t, outPath)
+	if len(moov.Tracks) != 1 {
+		t.Errorf("tracks = %d, want 1 (video only)", len(moov.Tracks))
+	}
+}
+
+// I4：VideoOnly=true 即使空洞完全符合 G.711 也必须放弃音频。
+func TestRebuildFromMDATVideoOnlySkipsAudio(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	silence := bytes.Repeat([]byte{0xD5}, 320)
+	payload := bytes.Join([][]byte{
+		avccBytes(sps, pps, []byte{0x65, 0x88, 0x84, 0x00, 0x01}),
+		silence,
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x02}),
+		silence,
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x03}),
+	}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, VideoOnly: true, OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.AudioRecovered || res.AudioFrames != 0 {
+		t.Errorf("audio = recovered:%v frames:%d, want skipped", res.AudioRecovered, res.AudioFrames)
+	}
+	if !legacyWarningsContain(res.Warnings, "video-only") {
+		t.Errorf("warnings = %v, want video-only notice", res.Warnings)
+	}
+	_, _, moov := parseLegacyOutput(t, outPath)
+	if len(moov.Tracks) != 1 {
+		t.Errorf("tracks = %d, want 1", len(moov.Tracks))
+	}
+}
+
+func legacyWarningsContain(warnings []string, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
 }

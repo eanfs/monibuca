@@ -28,6 +28,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	h264parser "github.com/deepch/vdk/codec/h264parser"
 	h265parser "github.com/deepch/vdk/codec/h265parser"
@@ -42,6 +43,18 @@ const (
 
 	legacyMaxNALSize      = 8 << 20 // 单个 NAL 的上限（扫描重同步阈值，与 spike 探针一致）
 	legacyMaxParamSetSize = 1 << 20
+
+	// codec 探测允许跳过的前导非 AVCC 字节数。音视频是两条独立订阅，
+	// 首个落盘样本完全可能是音频帧；损坏的半成品也可能带前导噪声。
+	legacyCodecProbeWindow int64 = 1 << 20
+
+	// 畸形载荷的 sanity 上限：每 5 字节输入就能造出 1 个 AU（如 00 00 00 01 41），
+	// 无限 append 会让元数据涨到 GB 级。1M 帧 @25fps ≈ 11 小时，远超单个 tmp 的
+	// 合理长度；超限直接报错，绝不静默 OOM。
+	legacyMaxAUs   = 1 << 20
+	legacyMaxHoles = 1 << 20
+	// 单个 AU 内的 NAL 数上限（恶意 slice 组会让一个 AU 无界增长）。
+	legacyMaxNALsPerAU = 1 << 16
 
 	// 音频启发式恢复的限制。G.711 8 kHz 的常见帧长是 160 B(20 ms) 或 320 B(40 ms)。
 	legacyAudioMinFrame = 160
@@ -280,32 +293,51 @@ func legacyValidateHeader(f *os.File) error {
 	return nil
 }
 
-// legacyDetectCodec 用第一个 NAL 判定 H.264/H.265。H.264 的类型上限是 23，
-// 因此 HEVC 的 VPS（首字节 0x40）不会被误判成 H.264。
+// legacyDetectCodec 在载荷头部窗口内用与扫描器相同的重同步规则找第一个合法
+// NAL 再判定 codec。不能硬要求第 48 字节就是 NAL：录制器按回调到达顺序落盘，
+// 音视频是两条独立订阅，首个样本可能是音频帧；损坏文件也可能带前导噪声。
+// H.264 的类型上限是 23，因此 HEVC 的 VPS（首字节 0x40）不会被误判成 H.264。
 func legacyDetectCodec(f *os.File, fileSize int64) (legacyCodec, error) {
-	var lens [4]byte
-	if _, err := f.ReadAt(lens[:], legacyPayloadOffset); err != nil {
-		return 0, fmt.Errorf("mp4 legacy recovery: read first NAL length: %w", err)
+	if fileSize <= legacyPayloadOffset {
+		return 0, errors.New("mp4 legacy recovery: payload is empty")
 	}
-	n := int64(binary.BigEndian.Uint32(lens[:]))
-	if n <= 0 || n > legacyMaxNALSize || legacyPayloadOffset+4+n > fileSize {
-		return 0, errors.New("mp4 legacy recovery: payload does not start with an AVCC length-prefixed NAL")
+	end := legacyPayloadOffset + legacyCodecProbeWindow
+	if end > fileSize {
+		end = fileSize
 	}
-	var head [2]byte
-	read := n
-	if read > 2 {
-		read = 2
+	br := bufio.NewReaderSize(
+		io.NewSectionReader(f, legacyPayloadOffset, end-legacyPayloadOffset), 64<<10)
+
+	for pos := legacyPayloadOffset; pos+4 <= end; pos++ {
+		lens, err := br.Peek(4)
+		if err != nil {
+			break
+		}
+		n := int64(binary.BigEndian.Uint32(lens))
+		if n <= 0 || n > legacyMaxNALSize || pos+4+n > fileSize {
+			_, _ = br.Discard(1)
+			continue
+		}
+		for _, codec := range [...]legacyCodec{legacyCodecH264, legacyCodecH265} {
+			headLen := 1
+			if codec == legacyCodecH265 {
+				headLen = 2
+			}
+			if n < int64(headLen) {
+				continue
+			}
+			head, err := br.Peek(4 + headLen)
+			if err != nil {
+				continue
+			}
+			if _, ok := legacyNALType(codec, head[4:]); ok {
+				return codec, nil
+			}
+		}
+		_, _ = br.Discard(1)
 	}
-	if _, err := f.ReadAt(head[:read], legacyPayloadOffset+4); err != nil {
-		return 0, fmt.Errorf("mp4 legacy recovery: read first NAL header: %w", err)
-	}
-	if _, ok := legacyNALType(legacyCodecH264, head[:read]); ok {
-		return legacyCodecH264, nil
-	}
-	if _, ok := legacyNALType(legacyCodecH265, head[:read]); ok {
-		return legacyCodecH265, nil
-	}
-	return 0, errors.New("mp4 legacy recovery: cannot detect codec (neither H.264 nor H.265 AVCC)")
+	return 0, errors.New("mp4 legacy recovery: cannot detect codec " +
+		"(no H.264/H.265 AVCC NAL in the payload head)")
 }
 
 func legacyNALType(codec legacyCodec, head []byte) (int, bool) {
@@ -336,11 +368,16 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 	pos := legacyPayloadOffset
 	var holeStart int64 = -1
 
-	closeHole := func(end int64) {
+	closeHole := func(end int64) error {
 		if holeStart >= 0 && end > holeStart {
+			if len(s.holes) >= legacyMaxHoles {
+				return fmt.Errorf("mp4 legacy recovery: payload contains more than %d "+
+					"non-AVCC gaps; refusing to continue (malformed input)", legacyMaxHoles)
+			}
 			s.holes = append(s.holes, legacyHole{off: holeStart, size: end - holeStart})
 		}
 		holeStart = -1
+		return nil
 	}
 
 	for {
@@ -350,7 +387,9 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 			if holeStart < 0 && pos < fileSize {
 				holeStart = pos
 			}
-			closeHole(fileSize)
+			if err := closeHole(fileSize); err != nil {
+				return nil, err
+			}
 			break
 		}
 		n := int64(binary.BigEndian.Uint32(lens))
@@ -374,25 +413,33 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 				holeStart = pos
 			}
 			if _, err := br.Discard(1); err != nil {
-				closeHole(fileSize)
+				if err := closeHole(fileSize); err != nil {
+					return nil, err
+				}
 				break
 			}
 			pos++
 			continue
 		}
 
-		closeHole(pos)
+		if err := closeHole(pos); err != nil {
+			return nil, err
+		}
 		nal := legacyNAL{off: pos + 4, size: n}
 		if err := s.captureParamSet(f, typ, nal); err != nil {
 			return nil, err
 		}
-		g.add(nal, typ)
+		if err := g.add(nal, typ); err != nil {
+			return nil, err
+		}
 		if _, err := br.Discard(int(4 + n)); err != nil {
 			return nil, fmt.Errorf("mp4 legacy recovery: read NAL at %d: %w", pos, err)
 		}
 		pos += 4 + n
 	}
-	g.finish()
+	if err := g.finish(); err != nil {
+		return nil, err
+	}
 	if len(s.holes) > 0 && len(s.aus) > 0 {
 		s.warnings = append(s.warnings,
 			fmt.Sprintf("payload contained %d non-AVCC gaps (audio/resync/noise); "+
@@ -450,7 +497,7 @@ type legacyGrouper struct {
 	fallbackWarned bool
 }
 
-func (g *legacyGrouper) add(nal legacyNAL, typ int) {
+func (g *legacyGrouper) add(nal legacyNAL, typ int) error {
 	boundary := false
 	isVCL := false
 	keyFrame := false
@@ -505,7 +552,9 @@ func (g *legacyGrouper) add(nal legacyNAL, typ int) {
 	}
 
 	if boundary {
-		g.flush()
+		if err := g.flush(); err != nil {
+			return err
+		}
 	}
 	// keyFrame 与 hasVCL 必须在本 NAL 成为新 AU 的首个成员之后再设置，
 	// 否则 flush 会把这帧的关键帧标记/状态一起清掉。
@@ -515,20 +564,30 @@ func (g *legacyGrouper) add(nal legacyNAL, typ int) {
 		}
 		g.hasVCL = true
 	}
+	if len(g.cur.nals) >= legacyMaxNALsPerAU {
+		return fmt.Errorf("mp4 legacy recovery: access unit contains more than %d NALs; "+
+			"refusing to continue (malformed input)", legacyMaxNALsPerAU)
+	}
 	g.cur.nals = append(g.cur.nals, nal)
 	g.cur.size += 4 + nal.size
+	return nil
 }
 
-func (g *legacyGrouper) flush() {
+func (g *legacyGrouper) flush() error {
 	if g.hasVCL && len(g.cur.nals) > 0 {
+		if len(g.scan.aus) >= legacyMaxAUs {
+			return fmt.Errorf("mp4 legacy recovery: payload contains more than %d "+
+				"access units; refusing to continue (malformed input)", legacyMaxAUs)
+		}
 		g.scan.aus = append(g.scan.aus, g.cur)
 	}
 	g.cur = legacyAU{}
 	g.hasVCL = false
+	return nil
 }
 
-func (g *legacyGrouper) finish() {
-	g.flush()
+func (g *legacyGrouper) finish() error {
+	return g.flush()
 }
 
 func legacyH264FirstMB(f *os.File, nal legacyNAL) (uint64, bool) {
@@ -639,22 +698,45 @@ func legacyAudioFourCC(codec string) string {
 // legacyResolveFPS 依次使用调用方指定值、SPS VUI 精确帧率、解析器整数帧率、
 // 默认 25 fps。fractional fps 必须来自 time_scale/(2*num_units_in_tick)，
 // 不能直接用整数 FPS（29.97 会被截成 29）。
+//
+// 每一级都必须落在 [1, 240]：半成品 SPS 可能被截断成 time_scale=0，
+// 原样使用会让 DTS 变成 NaN/+Inf、stts 的 sample_delta=0，进程不报错却
+// 写出坏文件。不合格则告警并回退 25 fps。
 func legacyResolveFPS(s *legacyScan, requested float64, parserFPS int) (float64, string) {
 	if requested > 0 {
-		if requested < 1 || requested > 240 {
-			return legacyDefaultFPS, fmt.Sprintf("requested fps %g is out of range; using %.0f", requested, legacyDefaultFPS)
+		if !legacyValidFPS(requested) {
+			return legacyDefaultFPS, fmt.Sprintf(
+				"requested fps %g is out of range (1-240); using %.0f", requested, legacyDefaultFPS)
 		}
 		return requested, ""
 	}
+	var warnings []string
 	if s.codec == legacyCodecH264 {
 		if fps, ok := legacyH264VUIFPS(s.sps); ok {
-			return fps, fmt.Sprintf("video timestamps estimated from SPS VUI frame rate %.6g fps", fps)
+			if legacyValidFPS(fps) {
+				return fps, fmt.Sprintf("video timestamps estimated from SPS VUI frame rate %.6g fps", fps)
+			}
+			warnings = append(warnings, fmt.Sprintf(
+				"SPS VUI frame rate %g is out of range (1-240)", fps))
 		}
 	}
 	if parserFPS > 0 {
-		return float64(parserFPS), fmt.Sprintf("video timestamps estimated from SPS integer frame rate %d fps", parserFPS)
+		fps := float64(parserFPS)
+		if legacyValidFPS(fps) {
+			warnings = append(warnings, fmt.Sprintf(
+				"video timestamps estimated from SPS integer frame rate %d fps", parserFPS))
+			return fps, strings.Join(warnings, "; ")
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"SPS integer frame rate %d is out of range (1-240)", parserFPS))
 	}
-	return legacyDefaultFPS, fmt.Sprintf("no frame rate in SPS; assuming %.0f fps", legacyDefaultFPS)
+	warnings = append(warnings, fmt.Sprintf(
+		"no usable frame rate in SPS; assuming %.0f fps", legacyDefaultFPS))
+	return legacyDefaultFPS, strings.Join(warnings, "; ")
+}
+
+func legacyValidFPS(fps float64) bool {
+	return !math.IsNaN(fps) && !math.IsInf(fps, 0) && fps >= 1 && fps <= 240
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,7 +1137,7 @@ func legacyH264VUIFPS(sps []byte) (float64, bool) {
 		return 0, false
 	}
 	timeScale, ok := r.bits(32)
-	if !ok || numUnits == 0 {
+	if !ok || numUnits == 0 || timeScale == 0 {
 		return 0, false
 	}
 	return float64(timeScale) / float64(numUnits) / 2.0, true
