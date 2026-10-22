@@ -26,6 +26,20 @@ type MP4Plugin struct {
 	AutoRecovery         bool          `default:"false" desc:"是否自动恢复"`
 	ExceptionPostUrl     string        `desc:"第三方异常上报地址"`
 	EventRecordFilePath  string        `desc:"事件录像存放地址"`
+
+	// RecordConfig 是录像相关配置（yaml: mp4.record）。
+	// 字段不能命名为 Record：会遮蔽 Plugin.Record() 方法。
+	RecordConfig struct {
+		Index struct {
+			Enable        bool          `default:"true" desc:"是否写伴随索引（崩溃恢复的前提）"`
+			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
+		} `desc:"录像伴随索引配置"`
+		Recovery struct {
+			OnStart     bool     `default:"true" desc:"启动时是否自动扫描并定稿残留录像"`
+			Concurrency int      `default:"2" desc:"恢复定稿并发上限"`
+			Dirs        []string `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+		} `desc:"录像崩溃恢复配置"`
+	} `yaml:"record" desc:"录像配置"`
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
@@ -68,6 +82,12 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 }
 
 func (p *MP4Plugin) Start() (err error) {
+	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{
+		Enable:        p.RecordConfig.Index.Enable,
+		FlushInterval: p.RecordConfig.Index.FlushInterval,
+	})
+
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
 		if err != nil {
@@ -86,12 +106,20 @@ func (p *MP4Plugin) Start() (err error) {
 			storageTask.plugin = p
 			p.AddTask(&storageTask)
 		}
-		if p.AutoRecovery {
-			var recoveryTask RecordRecoveryTask
-			recoveryTask.DB = p.DB
-			recoveryTask.plugin = p
-			p.AddTask(&recoveryTask)
+	}
+
+	// 恢复任务合并了旧 RecordRecoveryTask：启动扫描先补 DB 记录（AutoRecovery），
+	// 再定稿 sidecar。索引定稿不依赖 DB，因此即使 DB 未启用也会运行。
+	if p.RecordConfig.Recovery.OnStart || (p.AutoRecovery && p.DB != nil) {
+		recoveryTask := &IndexRecoveryTask{
+			DB:            p.DB,
+			plugin:        p,
+			Dirs:          p.RecordConfig.Recovery.Dirs,
+			Concurrency:   p.RecordConfig.Recovery.Concurrency,
+			RunOnStart:    p.RecordConfig.Recovery.OnStart,
+			RunDBBackfill: p.AutoRecovery && p.DB != nil,
 		}
+		p.AddTask(recoveryTask)
 	}
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {

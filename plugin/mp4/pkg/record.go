@@ -896,13 +896,17 @@ func openIndexAppend(path string) (*IndexWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &IndexWriter{f: f, buf: bufio.NewWriterSize(f, indexWriteBufferSize)}, nil
+	return &IndexWriter{
+		f:             f,
+		buf:           bufio.NewWriterSize(f, indexWriteBufferSize),
+		flushInterval: GetIndexConfig().FlushInterval,
+	}, nil
 }
 
 // ensureIndex 为当前媒体文件创建 sidecar。本地路径未知（自定义 storage.File
 // 未实现 RangeInserter）时静默跳过。
 func (r *Recorder) ensureIndex() error {
-	if r.index != nil || r.muxer == nil || r.muxer.isFragment() {
+	if !GetIndexConfig().Enable || r.index != nil || r.muxer == nil || r.muxer.isFragment() {
 		return nil
 	}
 	mediaPath := localMediaPath(r.file)
@@ -1014,6 +1018,9 @@ func (r *Recorder) writeSample(track *Track, sample box.Sample) error {
 }
 
 func (r *Recorder) appendIndexRecord(track *Track, sample box.Sample, offset int64) {
+	if !GetIndexConfig().Enable {
+		return
+	}
 	if r.index == nil {
 		// 已有 sidecar 但写句柄不可用（如重建后重开失败）：绝不能重建截断它，
 		// 否则历史记录会静默丢失。
