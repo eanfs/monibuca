@@ -13,6 +13,7 @@ import (
 
 	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
+	"m7s.live/v5/pkg/storage"
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 	"m7s.live/v5/plugin/mp4/pkg/box"
 )
@@ -108,6 +109,13 @@ func ageRecoveryFiles(t *testing.T, paths ...string) {
 // 默认把 mtime 老化，避免被“仍在写入”保护跳过。
 func buildRecoveryFixture(t *testing.T, dir, name string, payload []byte) (mediaPath, sidecar string, records []mp4pkg.IndexRecord) {
 	t.Helper()
+	return buildRecoveryFixtureWithStorage(t, dir, name, payload, "s3")
+}
+
+// buildRecoveryFixtureWithStorage 与 buildRecoveryFixture 相同，但可指定
+// sidecar 中记录的存储类型（local/s3/...）。
+func buildRecoveryFixtureWithStorage(t *testing.T, dir, name string, payload []byte, storageType string) (mediaPath, sidecar string, records []mp4pkg.IndexRecord) {
+	t.Helper()
 	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, name, payload)
 	split := len(payload) / 2
 	if split == 0 {
@@ -123,7 +131,7 @@ func buildRecoveryFixture(t *testing.T, dir, name string, payload []byte) (media
 		MediaPath:   mediaPath,
 		FilePath:    "live/test/rec.mp4",
 		TargetName:  "rec.mp4",
-		StorageType: "s3",
+		StorageType: storageType,
 		Tracks: []mp4pkg.IndexTrack{{
 			ID: 1, FourCC: "avc1", Width: 320, Height: 240,
 			STSD: recoveryTestSTSD(t),
@@ -819,18 +827,26 @@ func TestIndexRecoveryTaskRetriesAfterTransientMediaLoss(t *testing.T) {
 	}
 }
 
-// I3：Task 6 落地前的占位实现无法确认真实入队，必须返回可判定错误，
-// 恢复任务据此保留唯一的源文件（不得删除未上传的 .tmp）。
+// I3：上传后端无法解析（如 S3 未配置/未就绪）时必须返回可判定错误，
+// 恢复任务据此保留唯一的源文件（不得删除未上传的 .tmp），也绝不降级 local。
 func TestIndexRecoveryTaskKeepsSourceWhenEnqueueUnverified(t *testing.T) {
 	dir := t.TempDir()
 	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "s3writer_unverified.tmp", []byte{0x11, 0x22, 0x33, 0x44})
 	output := filepath.Join(dir, "s3writer_unverified.mp4")
 
-	if err := mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{MediaPath: mediaPath, OutputPath: output}); !errors.Is(err, mp4pkg.ErrRecoveryUploadUnavailable) {
-		t.Fatalf("placeholder enqueue error = %v, want ErrRecoveryUploadUnavailable", err)
+	if err := mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{MediaPath: mediaPath, OutputPath: output}); err == nil {
+		t.Fatal("unresolvable storage must not report a verified enqueue")
 	}
 
-	recovery := &IndexRecoveryTask{} // 默认走 pkg 占位上传
+	resolveErr := errors.New("s3 not ready")
+	recovery := &IndexRecoveryTask{
+		ResolveUploadStorage: func(storageType string) (storage.Storage, error) {
+			if storageType != "s3" {
+				t.Fatalf("resolved storage type = %q, want s3 (never local)", storageType)
+			}
+			return nil, resolveErr
+		},
+	}
 	stats, err := recovery.RunOnce([]string{dir})
 	if err == nil {
 		t.Fatal("unverified enqueue should surface as a run error")

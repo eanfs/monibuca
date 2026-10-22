@@ -529,9 +529,30 @@ type finalizeUploadTask struct {
 	onFail     func(cause error)
 	// indexPath 是伴随索引路径；只有上传成功分支才删除它。
 	indexPath string
+	// prepare 在上传前执行。恢复上传用它把已恢复的产物移交给 storage.File；
+	// 正常录制路径为 nil（文件在录制期间已写入）。
+	prepare func() error
+	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
+	onDone func()
 }
 
 func (u *finalizeUploadTask) Go() (err error) {
+	if u.onDone != nil {
+		defer u.onDone()
+	}
+	if u.prepare != nil {
+		if err = u.prepare(); err != nil {
+			u.Error("prepare upload failed", "err", err,
+				"filePath", u.filePath, "streamPath", u.streamPath)
+			// FinalizeFromTemp 失败时源文件仍归调用方；不调用 Close（实现内部
+			// 句柄已不可用，Close 可能对空句柄上传）。交给 onFail 处理补传。
+			u.file = nil
+			if u.onFail != nil {
+				u.onFail(err)
+			}
+			return
+		}
+	}
 	if err = u.file.Close(); err != nil {
 		u.Error("upload failed after retries", "err", err,
 			"filePath", u.filePath, "streamPath", u.streamPath)

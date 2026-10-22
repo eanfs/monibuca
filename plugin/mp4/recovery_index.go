@@ -35,6 +35,9 @@ type RecoveryItem struct {
 	Records    []mp4pkg.IndexRecord
 	MediaPath  string
 	OutputPath string
+	// SidecarPath 是本次恢复的伴随索引（可能是 .m7sidx 或 .recovering）。
+	// 只有产物上传成功或 pending 登记成功后才允许删除。
+	SidecarPath string
 }
 
 // IndexRecoveryTask 启动时扫描残留伴随索引并定稿为可播放 MP4。
@@ -65,6 +68,9 @@ type IndexRecoveryTask struct {
 	Backfill func() (RecoveryStats, error)
 	// EnqueueUpload 可注入，用于测试或 Task 6 自定义移交；nil 时走 pkg 上传队列。
 	EnqueueUpload func(RecoveryItem) error
+	// ResolveUploadStorage 可注入上传后端解析（测试用）；nil 时由 pkg 按
+	// m7s.Servers 调用 GetStorageForType。
+	ResolveUploadStorage mp4pkg.RecoveryStorageResolver
 
 	plugin *MP4Plugin
 
@@ -525,10 +531,11 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 	output := recoveryOutputPath(recorded)
 
 	item := RecoveryItem{
-		Header:     index.Header,
-		Records:    index.Records,
-		MediaPath:  source,
-		OutputPath: output,
+		Header:      index.Header,
+		Records:     index.Records,
+		MediaPath:   source,
+		OutputPath:  output,
+		SidecarPath: sidecar,
 	}
 
 	if !found {
@@ -537,7 +544,7 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 			if err := t.enqueue(item); err != nil {
 				return recoveryFailed, item, err
 			}
-			t.removeSidecar(sidecar)
+			t.afterEnqueueSidecar(sidecar)
 			t.Info("recovery output already in place", "sidecar", sidecar, "output", output)
 			return recoveryRecovered, item, nil
 		}
@@ -575,7 +582,7 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 		if err := t.enqueue(item); err != nil {
 			return recoveryFailed, item, err
 		}
-		t.removeSidecar(sidecar)
+		t.afterEnqueueSidecar(sidecar)
 		t.Info("recovery output already contains moov, skipping rebuild", "sidecar", sidecar, "output", output)
 		return recoverySkipped, item, nil
 	}
@@ -586,7 +593,7 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 		if err := t.enqueue(item); err != nil {
 			return recoveryFailed, item, err
 		}
-		t.removeSidecar(sidecar)
+		t.afterEnqueueSidecar(sidecar)
 		return recoverySkipped, item, nil
 	}
 
@@ -594,6 +601,8 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 	if err != nil {
 		return recoveryFailed, item, err
 	}
+	// 入队时 sidecar 已改名为 .recovering：上传任务成功后按该路径提交式删除。
+	item.SidecarPath = marker
 
 	info, err := os.Stat(source)
 	if err != nil {
@@ -631,7 +640,7 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 			t.Warn("remove recovered source temp failed", "err", rmErr, "source", source)
 		}
 	}
-	t.removeSidecar(marker)
+	t.afterEnqueueSidecar(marker)
 	t.Info("recovered recording from index",
 		"sidecar", sidecar,
 		"output", output,
@@ -644,12 +653,27 @@ func (t *IndexRecoveryTask) enqueue(item RecoveryItem) error {
 	if t.EnqueueUpload != nil {
 		return t.EnqueueUpload(item)
 	}
-	return mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{
-		Header:     item.Header,
-		Records:    item.Records,
-		MediaPath:  item.MediaPath,
-		OutputPath: item.OutputPath,
+	return mp4pkg.EnqueueRecoveryUploadWithOptions(mp4pkg.RecoveryUpload{
+		Header:      item.Header,
+		Records:     item.Records,
+		MediaPath:   item.MediaPath,
+		OutputPath:  item.OutputPath,
+		SidecarPath: item.SidecarPath,
+	}, mp4pkg.RecoveryUploadOptions{
+		Resolver: t.ResolveUploadStorage,
+		DB:       t.DB,
+		Logger:   t.Logger,
 	})
+}
+
+// afterEnqueueSidecar 处理「入队成功」后的 sidecar。
+//
+// 默认上传队列接管 sidecar 生命周期：上传成功或 pending 登记成功后才删除。
+// 注入的 EnqueueUpload（测试/定制）没有该语义，保持原有「入队即清理」行为。
+func (t *IndexRecoveryTask) afterEnqueueSidecar(sidecar string) {
+	if t.EnqueueUpload != nil {
+		t.removeSidecar(sidecar)
+	}
 }
 
 func (t *IndexRecoveryTask) markRecovering(sidecar string) (string, error) {

@@ -122,6 +122,11 @@ func (p *MP4Plugin) Start() (err error) {
 			RunOnStart:    p.RecordConfig.Recovery.OnStart,
 			RunDBBackfill: p.AutoRecovery && p.DB != nil,
 		}
+		// 按 sidecar 记录的存储类型解析上传后端：用本 server 的 registry 且
+		// 绝不回落到当前活跃存储（S3 不可用时也不写 local）。
+		if server := p.Server; server != nil {
+			recoveryTask.ResolveUploadStorage = server.GetStorageForType
+		}
 		p.AddTask(recoveryTask)
 	}
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
