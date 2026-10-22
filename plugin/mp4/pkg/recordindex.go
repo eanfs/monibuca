@@ -36,7 +36,10 @@ import (
 //	type 2 = rename: payload = 新的媒体路径(UTF-8)
 //
 // 未知 type 的扩展记录按 payloadLen 跳过(向前兼容)。payloadLen 超过上限视为
-// 损坏，读取在該处停止。
+// 损坏，读取在该处停止。整帧全零同样视为损坏尾部——崩溃、掉电、预分配和
+// S3 中转拷贝都可能留下零填充，全零帧不是合法样本(track ID 0 也不是合法轨道)。
+// 除这些结构性判据外，帧内容损坏无法在无校验和的情况下检测，调用方仍需按
+// trackID/size 兜底。
 const (
 	// IndexExtension 是伴随索引文件的扩展名。
 	IndexExtension = ".m7sidx"
@@ -290,7 +293,7 @@ func RemoveIndex(path string) error {
 
 // ReadIndex 读取索引文件。只校验格式，不感知媒体文件长度：
 // 调用方应自行在 offset+size 超过媒体大小时停止使用记录。
-// 尾部被截断或损坏时返回已读出的部分，不报错。
+// 尾部被截断、零填充或结构损坏(如 track ID 为 0)时返回已读出的部分，不报错。
 func ReadIndex(path string) (*IndexFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -331,8 +334,19 @@ func readIndexFrom(r io.Reader) (*IndexFile, error) {
 			}
 			return idx, err
 		}
+		// 零填充尾不是样本：把它当作损坏尾部停止，与截断同一契约。
+		// 必须放在扩展记录分派之前——全零帧的 type 也是 0，不能被当成扩展。
+		if isZeroIndexFrame(frame[:]) {
+			return idx, nil
+		}
 		if frame[0] != indexFlagExtension {
-			idx.Records = append(idx.Records, decodeIndexRecord(frame[:]))
+			r := decodeIndexRecord(frame[:])
+			// track ID 0 不是合法轨道，遇到即说明该帧内容已损坏。其余内容
+			// 损坏无校验和可查，调用方仍需按 trackID/size 兜底。
+			if r.TrackID == 0 {
+				return idx, nil
+			}
+			idx.Records = append(idx.Records, r)
 			continue
 		}
 		extType := binary.BigEndian.Uint16(frame[1:3])
@@ -357,6 +371,16 @@ func readIndexFrom(r io.Reader) (*IndexFile, error) {
 			idx.Header.MediaPath = idx.MediaPath
 		}
 	}
+}
+
+// isZeroIndexFrame 报告整帧是否全为 0，用于识别零填充尾。
+func isZeroIndexFrame(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeIndexRecord(b []byte, r IndexRecord) {

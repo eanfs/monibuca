@@ -143,6 +143,71 @@ func TestIndexTruncatedTail(t *testing.T) {
 	}
 }
 
+// 崩溃/掉电/预分配/S3 中转拷贝都可能留下零填充尾。23 个 0x00 恰好凑满一条
+// 记录，但解码结果是 {trackID:0,size:0,offset:0} 的幽灵样本，必须拒绝：
+// 读取应在零填充处停止，返回此前的记录且不报错(与截断同一契约)。
+func TestIndexZeroFilledTail(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.tmp.m7sidx")
+	w, err := CreateIndex(p, IndexHeader{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := IndexRecord{Flags: 1, TrackID: 1, Size: 100, Offset: 48, DTS: 0, Duration: 40}
+	if err := w.Append(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := IndexRecord{TrackID: 1, Size: 100, Offset: 148, DTS: 40, Duration: 40}
+	var secondFrame [IndexRecordSize]byte
+	encodeIndexRecord(secondFrame[:], second)
+
+	build := func(name string, tail ...[]byte) string {
+		out := append([]byte(nil), data...)
+		for _, b := range tail {
+			out = append(out, b...)
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// 有效记录 + 23 个 0x00 + 另一条有效记录：必须停在零填充处。
+	zero := make([]byte, IndexRecordSize)
+	f, err := ReadIndex(build("zero.m7sidx", zero, secondFrame[:]))
+	if err != nil {
+		t.Fatalf("zero-filled tail should not error: %v", err)
+	}
+	if len(f.Records) != 1 || f.Records[0] != first {
+		t.Fatalf("records = %+v, want exactly the first record", f.Records)
+	}
+	for _, r := range f.Records {
+		if r.TrackID == 0 || r.Offset == 0 {
+			t.Fatalf("ghost record leaked: %+v", r)
+		}
+	}
+
+	// track ID 0 同样不是合法轨道：即使 size/offset 非零也应停止。
+	var badTrack [IndexRecordSize]byte
+	encodeIndexRecord(badTrack[:], IndexRecord{Size: 100, Offset: 148, DTS: 40, Duration: 40})
+	f, err = ReadIndex(build("track0.m7sidx", badTrack[:], secondFrame[:]))
+	if err != nil {
+		t.Fatalf("track ID 0 should not error: %v", err)
+	}
+	if len(f.Records) != 1 || f.Records[0] != first {
+		t.Fatalf("records = %+v, want exactly the first record", f.Records)
+	}
+}
+
 // ReadIndex 只负责格式，不感知媒体长度；越界记录原样返回，由调用方截断。
 func TestIndexReadDoesNotCheckMediaBounds(t *testing.T) {
 	dir := t.TempDir()
