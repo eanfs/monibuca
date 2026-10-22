@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,6 +13,12 @@ import (
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/storage"
 )
+
+// recoverySourceMetadata 构造 pending 行里记录的源产物标记（JSON）。
+func recoverySourceMetadata(sourcePath string) string {
+	b, _ := json.Marshal(map[string]string{recoveryUploadSourceMetadataKey: sourcePath})
+	return string(b)
+}
 
 // fakeRecoveryStorage 是 storage.Storage 的最小实现，避免测试依赖真实 S3。
 type fakeRecoveryStorage struct {
@@ -366,6 +373,9 @@ func TestEnqueueRecoveryUploadDuplicateEnqueueIsIdempotent(t *testing.T) {
 			StorageType: "s3",
 			Status:      m7s.UploadStatusFailed,
 			MaxRetries:  10,
+			// 真实的 pending 登记会把源产物路径写进 metadata：文件移入
+			// pending 后 LocalPath 改变，只能靠源标记识别同一产物。
+			MetadataJSON: recoverySourceMetadata(fixture.output),
 		}).Error; err != nil {
 			t.Fatalf("seed upload task: %v", err)
 		}
@@ -428,6 +438,78 @@ func TestEnqueueRecoveryUploadStaleSuccessRowDoesNotBlockNewRecording(t *testing
 	}
 	if _, err := os.Stat(fixture.output); !os.IsNotExist(err) {
 		t.Fatalf("new recovered file should be uploaded and removed: %v", err)
+	}
+}
+
+// 固定 fileName + 分片会让不同录像复用同一对象键。分片 A 上传失败落入
+// pending 后，分片 B 是另一份产物：必须照常上传，不能被 A 的 pending 行
+// 误判为“已登记”而跳过（否则 B 的 sidecar 被删、mp4 留在磁盘永不补传）。
+func TestEnqueueRecoveryUploadSeparatesArtifactsSharingObjectKey(t *testing.T) {
+	db := newPendingTestDB(t)
+	pendingDir := t.TempDir()
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+
+	fragmentA := newRecoveryUploadFixture(t, "s3")
+	fragmentB := newRecoveryUploadFixture(t, "s3")
+	// 同一路录制的两个分片：对象键相同，本地产物路径不同。
+	fragmentB.header.FilePath = fragmentA.header.FilePath
+	fragmentB.header.StorageKey = fragmentA.header.StorageKey
+	if fragmentA.output == fragmentB.output {
+		t.Fatal("test setup: fragments must have distinct local artifacts")
+	}
+
+	backendA := &fakeRecoveryStorage{key: "s3", file: &fakeRecoveryFile{closeErr: errors.New("upload failed")}}
+	if err := EnqueueRecoveryUploadWithOptions(fragmentA.upload(), RecoveryUploadOptions{
+		DB:       db,
+		Resolver: func(string) (storage.Storage, error) { return backendA, nil },
+		enqueue: func(task *finalizeUploadTask, _ *slog.Logger) error {
+			_ = task.Go()
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("enqueue fragment A: %v", err)
+	}
+	if _, err := os.Stat(fragmentA.output); !os.IsNotExist(err) {
+		t.Fatalf("fragment A should be moved into pending: %v", err)
+	}
+	var pendingRows []m7s.UploadTask
+	if err := db.Find(&pendingRows).Error; err != nil {
+		t.Fatalf("load pending rows: %v", err)
+	}
+	if len(pendingRows) != 1 {
+		t.Fatalf("pending rows = %d, want 1", len(pendingRows))
+	}
+	if got := recoverySourcePath(pendingRows[0]); got != fragmentA.output {
+		t.Fatalf("pending row source marker = %q, want %q", got, fragmentA.output)
+	}
+	// 模拟补传调度尚未处理：A 的 pending 文件仍在（旧判重逻辑的触发条件）。
+	if _, err := os.Stat(pendingRows[0].LocalPath); err != nil {
+		t.Fatalf("fragment A pending file must still exist: %v", err)
+	}
+
+	backendB := &fakeRecoveryStorage{key: "s3"}
+	queued := 0
+	if err := EnqueueRecoveryUploadWithOptions(fragmentB.upload(), RecoveryUploadOptions{
+		DB:       db,
+		Resolver: func(string) (storage.Storage, error) { return backendB, nil },
+		enqueue: func(task *finalizeUploadTask, _ *slog.Logger) error {
+			queued++
+			return task.Go()
+		},
+	}); err != nil {
+		t.Fatalf("enqueue fragment B: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued tasks = %d, want 1 for the second artifact sharing the object key", queued)
+	}
+	if backendB.file == nil || backendB.file.finalizedSrc != fragmentB.output {
+		t.Fatalf("fragment B was not handed to the upload backend: %+v", backendB.file)
+	}
+	if _, err := os.Stat(fragmentB.output); !os.IsNotExist(err) {
+		t.Fatalf("fragment B should be uploaded and removed: %v", err)
+	}
+	if _, err := os.Stat(fragmentB.sidecar); !os.IsNotExist(err) {
+		t.Fatalf("fragment B sidecar should be removed after its own upload: %v", err)
 	}
 }
 

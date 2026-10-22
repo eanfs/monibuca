@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -60,6 +61,11 @@ var recoveryUploadsInFlight sync.Map
 
 // recoveryIndexRecoveringSuffix 与 plugin/mp4 的 recoveringSuffix 保持一致。
 const recoveryIndexRecoveringSuffix = ".recovering"
+
+// recoveryUploadSourceMetadataKey 把「本次恢复产物」的路径写进 pending 行
+// metadata。pending 登记会把文件移进 pending 目录、LocalPath 随之改变，
+// 因此崩溃重入时必须靠这个源标记识别出「仍是同一份产物」。
+const recoveryUploadSourceMetadataKey = "recovery-source-path"
 
 // EnqueueRecoveryUpload 使用生产默认依赖（全局 server + 包级上传队列）移交
 // 恢复产物。失败返回真实错误，调用方据此保留源文件与 sidecar。
@@ -159,7 +165,10 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		return fmt.Errorf("mp4: recovery upload backend %s does not support TempFileFinalizer", storageType)
 	}
 
-	metadata := map[string]string{"video-size-bytes": strconv.FormatInt(info.Size(), 10)}
+	metadata := map[string]string{
+		"video-size-bytes":              strconv.FormatInt(info.Size(), 10),
+		recoveryUploadSourceMetadataKey: upload.OutputPath,
+	}
 	uploadTask := &finalizeUploadTask{
 		file:       file,
 		filePath:   objectKey,
@@ -264,23 +273,29 @@ func recoveryObjectKey(header IndexHeader) string {
 	return strings.TrimSpace(header.StorageKey)
 }
 
-// recoveryUploadRegistered 判断 upload_tasks 是否已经接管了同一个产物。
+// recoveryUploadRegistered 判断 upload_tasks 是否已经接管了「本次产物」。
 //
-// 不能只看 object_key：对象键可能因固定 fileName 被后续录像复用，而
-// upload_tasks 行不会删除——只看键会把新录像误判为“已上传”而永久跳过。
-// 因此只在以下两种情况视为重复：
-//   - 行里的本地文件仍然存在（pending 尚未处理，补传队列会接手）；
-//   - 行的本地路径与本次产物路径完全相同（同一文件的崩溃窗口重入）。
+// 判重必须绑定产物而不是对象键：固定 fileName + fragment>0 时每个分片复用
+// 同一对象键，但本地产物路径各不相同。若只看 object_key（或只看“该键下有行
+// 且本地文件存在”），分片 A 的 pending 行会把分片 B 误判为已登记，导致 B
+// 被跳过、sidecar 被删、B 的 .mp4 留在磁盘却永不补传。
 //
-// 上传成功的行其本地文件已被 MarkUploadSuccess 删除，因此不会挡住后续
-// 复用同名的全新录像。
+// 因此只有以下两种情况视为重复：
+//   - 行的本地路径与本次产物路径完全相同（同一文件的崩溃窗口重入）；
+//   - 行 metadata 里记录的源产物路径与本次产物路径相同（该产物上传失败后
+//     已被移入 pending 目录，LocalPath 变了，但仍是同一份产物）。
+//
+// 上传成功的行其本地文件已被 MarkUploadSuccess 删除，也不再指向本次产物，
+// 因此不会挡住后续复用同名的全新录像。
 func recoveryUploadRegistered(db *gorm.DB, objectKey, localPath string) bool {
-	if db == nil || (objectKey == "" && localPath == "") {
+	// 没有产物路径就无法把“已登记”绑定到具体产物；宁可重复上传（对象覆盖，
+	// 幂等）也不能误删另一份录像的 sidecar。
+	if db == nil || localPath == "" {
 		return false
 	}
 	query := db.Model(&m7s.UploadTask{})
 	if objectKey != "" {
-		query = query.Where("object_key = ?", objectKey)
+		query = query.Where("object_key = ? OR local_path = ?", objectKey, localPath)
 	} else {
 		query = query.Where("local_path = ?", localPath)
 	}
@@ -289,17 +304,27 @@ func recoveryUploadRegistered(db *gorm.DB, objectKey, localPath string) bool {
 		return false
 	}
 	for _, task := range tasks {
-		if localPath != "" && task.LocalPath == localPath {
+		if task.LocalPath == localPath {
 			return true
 		}
-		if task.LocalPath == "" {
-			continue
-		}
-		if _, err := os.Stat(task.LocalPath); err == nil {
+		if recoverySourcePath(task) == localPath {
 			return true
 		}
 	}
 	return false
+}
+
+// recoverySourcePath 读取 pending 行里记录的源产物路径。
+// 旧版本登记的行没有该标记，返回空串（不会被误认成任意产物）。
+func recoverySourcePath(task m7s.UploadTask) string {
+	if task.MetadataJSON == "" {
+		return ""
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(task.MetadataJSON), &metadata); err != nil {
+		return ""
+	}
+	return metadata[recoveryUploadSourceMetadataKey]
 }
 
 // recoveryPendingConfirmed 确认 pending 登记真的落库。
