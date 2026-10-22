@@ -1,9 +1,8 @@
 package mp4
 
 import (
+	"errors"
 	"log/slog"
-
-	task "github.com/eanfs/gotask"
 )
 
 // RecoveryUpload 是恢复产物移交给上传队列的契约。
@@ -18,30 +17,24 @@ type RecoveryUpload struct {
 	OutputPath string
 }
 
-// recoveryUploadTask 在独立上传队列中执行恢复产物的最终持久化。
+// ErrRecoveryUploadUnavailable 表示恢复上传尚未实现（Task 6）。
 //
-// Task 6 将在这里实现存储解析（GetStorageForType(header.StorageType)）与
-// pending 登记语义。Task 5 只负责把文件成功移交给队列；在此之前恢复任务
-// 不得删除源暂存文件。
-type recoveryUploadTask struct {
-	task.Task
-	upload RecoveryUpload
-}
+// 恢复任务把「已入队」当作删除源暂存文件的前提。Task 6 落地前无法确认
+// 产物真的会被上传，因此占位实现必须返回可判定的错误，让调用方保留源文件
+// 与 .recovering 标记，下次 RunOnce 继续重试；绝不能静默返回 nil，
+// 否则唯一的源文件会被删除而产物从未上传。
+var ErrRecoveryUploadUnavailable = errors.New("mp4: recovery upload not implemented yet")
 
-func (u *recoveryUploadTask) Go() error {
-	// Task 6 的落点：解析目标存储、复用 finalizeUploadTask 的上传/入库路径。
-	// 当前仅确认移交，便于恢复任务在端到端测试中观察与幂等重放。
-	u.Info("recovery output handed to upload queue",
-		"file", u.upload.OutputPath,
-		"source", u.upload.MediaPath,
-		"streamPath", u.upload.Header.StreamPath,
-		"storageType", u.upload.Header.StorageType)
-	return nil
-}
-
-// EnqueueRecoveryUpload 把恢复产物追加到现有上传队列 uploadQueueTask。
-// 返回 nil 表示已成功入队（异步执行）；调用方此后才可清理源暂存文件与 sidecar。
+// EnqueueRecoveryUpload 是 Task 6 完成前的占位移交实现。
+//
+// Task 6 需在此实现：按 Header.StorageType 解析目标存储（GetStorageForType）、
+// 复用 finalizeUploadTask 的上传/入库路径、登记 pending 语义，并在成功入队
+// （或上传成功）后返回 nil。返回 nil 之前调用方不会删除源暂存文件。
 func EnqueueRecoveryUpload(upload RecoveryUpload) error {
-	uploadQueueTask.AddTask(&recoveryUploadTask{upload: upload}, slog.Default())
-	return nil
+	slog.Default().Warn("recovery upload unavailable; keeping recovered source for retry",
+		"file", upload.OutputPath,
+		"source", upload.MediaPath,
+		"streamPath", upload.Header.StreamPath,
+		"storageType", upload.Header.StorageType)
+	return ErrRecoveryUploadUnavailable
 }

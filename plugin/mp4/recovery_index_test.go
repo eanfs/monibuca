@@ -69,7 +69,20 @@ func writeRecoverySidecar(t *testing.T, sidecar string, header mp4pkg.IndexHeade
 	}
 }
 
+// ageRecoveryFiles 把文件 mtime 调到过去，模拟“崩溃残留”而非“仍在录制”。
+// 恢复任务默认跳过 mtime 新鲜（< record.recovery.minage）的文件。
+func ageRecoveryFiles(t *testing.T, paths ...string) {
+	t.Helper()
+	old := time.Now().Add(-10 * time.Minute)
+	for _, path := range paths {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("age %s: %v", path, err)
+		}
+	}
+}
+
 // buildRecoveryFixture 造一个“半成品媒体 + sidecar”的完整现场。
+// 默认把 mtime 老化，避免被“仍在写入”保护跳过。
 func buildRecoveryFixture(t *testing.T, dir, name string, payload []byte) (mediaPath, sidecar string, records []mp4pkg.IndexRecord) {
 	t.Helper()
 	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, name, payload)
@@ -95,6 +108,7 @@ func buildRecoveryFixture(t *testing.T, dir, name string, payload []byte) (media
 	}
 	sidecar = mediaPath + mp4pkg.IndexExtension
 	writeRecoverySidecar(t, sidecar, header, records)
+	ageRecoveryFiles(t, mediaPath, sidecar)
 	return mediaPath, sidecar, records
 }
 
@@ -338,6 +352,7 @@ func TestIndexRecoveryTaskMarksUnrecoverableFailed(t *testing.T) {
 		// 唯一记录越界 → ErrNoUsableSamples。
 		{TrackID: 1, Size: 8, Offset: uint64(payloadStart) + uint64(len(payload)) + 100, DTS: 0, Duration: 40},
 	})
+	ageRecoveryFiles(t, mediaPath, sidecar)
 
 	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error { return nil }}
 	stats, err := recovery.RunOnce([]string{dir})
@@ -448,6 +463,9 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	if !plugin.RecordConfig.Recovery.OnStart {
 		t.Fatal("record.recovery.onstart must default to true")
 	}
+	if plugin.RecordConfig.Recovery.MinAge != 5*time.Second {
+		t.Fatalf("record.recovery.minage = %v, want 5s", plugin.RecordConfig.Recovery.MinAge)
+	}
 	if plugin.RecordConfig.Recovery.Concurrency != 2 {
 		t.Fatalf("record.recovery.concurrency = %d, want 2", plugin.RecordConfig.Recovery.Concurrency)
 	}
@@ -459,6 +477,7 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 		},
 		"recovery": map[string]any{
 			"onstart":     false,
+			"minage":      "30s",
 			"concurrency": 5,
 			"dirs":        []any{"/tmp/recovery-a"},
 		},
@@ -471,6 +490,9 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	}
 	if plugin.RecordConfig.Recovery.OnStart || plugin.RecordConfig.Recovery.Concurrency != 5 {
 		t.Fatalf("recovery override = %+v", plugin.RecordConfig.Recovery)
+	}
+	if plugin.RecordConfig.Recovery.MinAge != 30*time.Second {
+		t.Fatalf("recovery minage override = %v, want 30s", plugin.RecordConfig.Recovery.MinAge)
 	}
 	if len(plugin.RecordConfig.Recovery.Dirs) != 1 || plugin.RecordConfig.Recovery.Dirs[0] != "/tmp/recovery-a" {
 		t.Fatalf("recovery dirs = %v", plugin.RecordConfig.Recovery.Dirs)
@@ -500,5 +522,211 @@ func TestIndexRecoveryTaskMissingConfiguredDir(t *testing.T) {
 	}
 	if stats.Scanned != 0 || len(stats.Errors) == 0 {
 		t.Fatalf("stats = %+v, want scanned=0 with errors", stats)
+	}
+}
+
+// C1：本地场景 source == output。第一次恢复 rename 覆盖源文件后若入队失败，
+// 第二次 RunOnce 不得再用旧坐标系的索引重建（会把 moov 字节当载荷，
+// 写出结构合法但内容全错的 mp4，覆盖上一次正确产物）。
+func TestIndexRecoveryTaskSecondRunKeepsRecoveredLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "live.mp4", []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02})
+	if output := recoveryOutputPath(mediaPath); output != mediaPath {
+		t.Fatalf("local output path = %s, want source %s", output, mediaPath)
+	}
+
+	fail := true
+	enqueued := 0
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error {
+		if fail {
+			return errors.New("queue unavailable")
+		}
+		enqueued++
+		return nil
+	}}
+
+	if _, err := recovery.RunOnce([]string{dir}); err == nil {
+		t.Fatal("first RunOnce should fail when enqueue fails")
+	}
+	first, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read recovered local file: %v", err)
+	}
+	assertRecoveredPlayable(t, mediaPath, 2)
+	if _, err = os.Stat(sidecar + recoveringSuffix); err != nil {
+		t.Fatalf("recovering marker must survive enqueue failure: %v", err)
+	}
+
+	// 第二次运行：产物已含 moov，必须只入队 + 清理 sidecar，绝不重建。
+	fail = false
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("second run stats = %+v, want skipped=1", stats)
+	}
+	second, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read local file after second run: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("second RunOnce corrupted recovered file: %d bytes -> %d bytes", len(first), len(second))
+	}
+	assertRecoveredPlayable(t, mediaPath, 2)
+	if enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1", enqueued)
+	}
+	if _, err = os.Stat(sidecar + recoveringSuffix); !os.IsNotExist(err) {
+		t.Fatalf("recovering marker should be removed after successful enqueue")
+	}
+}
+
+// C2：活跃录制中的 sidecar/媒体 mtime 新鲜，RunOnce 必须跳过，
+// 不得改名 sidecar、不得覆盖/产出媒体文件。
+func TestIndexRecoveryTaskSkipsFreshlyWrittenSidecar(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "s3writer_active.tmp", []byte{0x01, 0x02, 0x03, 0x04})
+	now := time.Now()
+	if err := os.Chtimes(mediaPath, now, now); err != nil {
+		t.Fatalf("touch media: %v", err)
+	}
+	if err := os.Chtimes(sidecar, now, now); err != nil {
+		t.Fatalf("touch sidecar: %v", err)
+	}
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{
+		MinAge:        time.Minute,
+		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
+	}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Scanned != 1 || stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want scanned=1 skipped=1", stats)
+	}
+	if enqueued != 0 {
+		t.Fatalf("fresh file must not be enqueued, got %d", enqueued)
+	}
+	if _, err = os.Stat(sidecar); err != nil {
+		t.Fatalf("active sidecar must be left untouched: %v", err)
+	}
+	if _, err = os.Stat(sidecar + recoveringSuffix); !os.IsNotExist(err) {
+		t.Fatal("active sidecar must not be renamed to .recovering")
+	}
+	if _, err = os.Stat(filepath.Join(dir, "s3writer_active.mp4")); !os.IsNotExist(err) {
+		t.Fatal("fresh file must not produce an output mp4")
+	}
+}
+
+// I2：媒体暂时缺失属于可重试错误，sidecar 不得被永久标记为 .failed；
+// 媒体恢复后下一次 RunOnce 能正常定稿。
+func TestIndexRecoveryTaskRetriesAfterTransientMediaLoss(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "live_transient.mp4", []byte{0x0A, 0x0B, 0x0C, 0x0D})
+	original, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media: %v", err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatalf("stat media: %v", err)
+	}
+	if err = os.Remove(mediaPath); err != nil {
+		t.Fatalf("remove media: %v", err)
+	}
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{
+		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
+	}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("transient media loss should be reported for this run")
+	}
+	if stats.Failed != 1 || stats.Recovered != 0 {
+		t.Fatalf("stats = %+v, want failed=1", stats)
+	}
+	if _, err = os.Stat(sidecar); err != nil {
+		t.Fatalf("sidecar must be kept for retry: %v", err)
+	}
+	if _, err = os.Stat(sidecar + failedSuffix); !os.IsNotExist(err) {
+		t.Fatal("transient IO/missing error must not mark .failed")
+	}
+
+	if err = os.WriteFile(mediaPath, original, info.Mode().Perm()); err != nil {
+		t.Fatalf("restore media: %v", err)
+	}
+	ageRecoveryFiles(t, mediaPath)
+	stats, err = recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("retry RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 || stats.Failed != 0 {
+		t.Fatalf("retry stats = %+v, want recovered=1", stats)
+	}
+	if enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1", enqueued)
+	}
+}
+
+// I3：Task 6 落地前的占位实现无法确认真实入队，必须返回可判定错误，
+// 恢复任务据此保留唯一的源文件（不得删除未上传的 .tmp）。
+func TestIndexRecoveryTaskKeepsSourceWhenEnqueueUnverified(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "s3writer_unverified.tmp", []byte{0x11, 0x22, 0x33, 0x44})
+	output := filepath.Join(dir, "s3writer_unverified.mp4")
+
+	if err := mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{MediaPath: mediaPath, OutputPath: output}); !errors.Is(err, mp4pkg.ErrRecoveryUploadUnavailable) {
+		t.Fatalf("placeholder enqueue error = %v, want ErrRecoveryUploadUnavailable", err)
+	}
+
+	recovery := &IndexRecoveryTask{} // 默认走 pkg 占位上传
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("unverified enqueue should surface as a run error")
+	}
+	if stats.Failed != 1 {
+		t.Fatalf("stats = %+v, want failed=1", stats)
+	}
+	if _, statErr := os.Stat(mediaPath); statErr != nil {
+		t.Fatalf("source tmp must be retained when enqueue is unverifiable: %v", statErr)
+	}
+	if _, statErr := os.Stat(sidecar + recoveringSuffix); statErr != nil {
+		t.Fatalf("recovering marker must be retained when enqueue is unverifiable: %v", statErr)
+	}
+	if _, statErr := os.Stat(output); statErr != nil {
+		t.Fatalf("recovered output should be in place: %v", statErr)
+	}
+}
+
+// I1：record.recovery.onstart=false 只关闭索引扫描，不能静默关闭旧
+// AutoRecovery 的 DB 补录。
+func TestIndexRecoveryTaskRunsDBBackfillWhenOnStartDisabled(t *testing.T) {
+	var root task.RootManager[uint32, *task.Work]
+	root.Init()
+	// 同 TestIndexRecoveryTaskConcurrentRunOnce：不 root.Stop，规避 gotask 竞态。
+
+	called := make(chan struct{}, 1)
+	recovery := &IndexRecoveryTask{
+		RunOnStart:    false,
+		RunDBBackfill: true,
+		Backfill: func() (RecoveryStats, error) {
+			select {
+			case called <- struct{}{}:
+			default:
+			}
+			return RecoveryStats{}, nil
+		},
+	}
+	if err := root.AddTask(recovery).WaitStarted(); err != nil {
+		t.Fatalf("start recovery task: %v", err)
+	}
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DB backfill did not run when record.recovery.onstart=false")
 	}
 }

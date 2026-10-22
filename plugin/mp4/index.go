@@ -35,9 +35,10 @@ type MP4Plugin struct {
 			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
 		} `desc:"录像伴随索引配置"`
 		Recovery struct {
-			OnStart     bool     `default:"true" desc:"启动时是否自动扫描并定稿残留录像"`
-			Concurrency int      `default:"2" desc:"恢复定稿并发上限"`
-			Dirs        []string `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+			OnStart     bool          `default:"true" desc:"启动时是否自动扫描并定稿残留录像（不影响 AutoRecovery 的 DB 补录）"`
+			MinAge      time.Duration `default:"5s" desc:"sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；负数关闭保护"`
+			Concurrency int           `default:"2" desc:"恢复定稿并发上限"`
+			Dirs        []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
 		} `desc:"录像崩溃恢复配置"`
 	} `yaml:"record" desc:"录像配置"`
 }
@@ -110,12 +111,14 @@ func (p *MP4Plugin) Start() (err error) {
 
 	// 恢复任务合并了旧 RecordRecoveryTask：启动扫描先补 DB 记录（AutoRecovery），
 	// 再定稿 sidecar。索引定稿不依赖 DB，因此即使 DB 未启用也会运行。
+	// onstart=false 只关闭索引扫描；AutoRecovery 的 DB 补录仍在任务 Start 中执行。
 	if p.RecordConfig.Recovery.OnStart || (p.AutoRecovery && p.DB != nil) {
 		recoveryTask := &IndexRecoveryTask{
 			DB:            p.DB,
 			plugin:        p,
 			Dirs:          p.RecordConfig.Recovery.Dirs,
 			Concurrency:   p.RecordConfig.Recovery.Concurrency,
+			MinAge:        p.RecordConfig.Recovery.MinAge,
 			RunOnStart:    p.RecordConfig.Recovery.OnStart,
 			RunDBBackfill: p.AutoRecovery && p.DB != nil,
 		}

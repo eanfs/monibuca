@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
@@ -50,10 +51,17 @@ type IndexRecoveryTask struct {
 	Dirs []string
 	// Concurrency 是单文件定稿的并发上限；<=0 时使用默认 2。
 	Concurrency int
+	// MinAge 是「仍在写入」判定阈值：sidecar/媒体 mtime 新于该值时跳过，
+	// 避免把活跃录像的 sidecar 改名、媒体文件覆盖。<=0 时取默认值（至少 5s，
+	// 且不小于 2× 索引落盘间隔）；显式传负数表示关闭该保护（仅测试/特殊场景）。
+	MinAge time.Duration
 	// RunOnStart 控制任务注册后是否立即跑一次。
 	RunOnStart bool
-	// RunDBBackfill 对应旧的 AutoRecovery：在索引定稿前补录 DB 记录。
+	// RunDBBackfill 对应旧的 AutoRecovery：补录 DB 记录。它与索引定稿解耦：
+	// RunOnStart=false 只关闭索引扫描，DB 补录仍然执行。
 	RunDBBackfill bool
+	// Backfill 可注入 DB 补录实现（测试/定制）；nil 时使用 RecordRecoveryTask。
+	Backfill func() (RecoveryStats, error)
 	// EnqueueUpload 可注入，用于测试或 Task 6 自定义移交；nil 时走 pkg 上传队列。
 	EnqueueUpload func(RecoveryItem) error
 
@@ -63,23 +71,40 @@ type IndexRecoveryTask struct {
 	runMu sync.Mutex
 }
 
-const defaultRecoveryConcurrency = 2
+const (
+	defaultRecoveryConcurrency = 2
+	// defaultRecoveryMinAge 是「仍在写入」的默认判定阈值。索引默认每秒落盘，
+	// 2× 落盘间隔通常已足够区分活跃录像；取 5s 作为下限避免误判。
+	defaultRecoveryMinAge = 5 * time.Second
+)
 
 func (t *IndexRecoveryTask) Start() error {
 	t.Info("index recovery task started",
 		"concurrency", t.effectiveConcurrency(),
+		"minAge", t.effectiveMinAge(),
 		"runOnStart", t.RunOnStart,
+		"runDBBackfill", t.RunDBBackfill,
 		"dirs", t.Dirs)
-	if !t.RunOnStart {
-		return nil
-	}
 	// 不能在 Start 里等待子任务（会阻塞事件循环）。run task 在自己的
 	// goroutine 中执行，完成后自行记录日志。
-	t.AddTask(&recoveryRunTask{
-		owner: t,
-		stats: &RecoveryStats{},
-		done:  make(chan struct{}),
-	}, t.Logger)
+	switch {
+	case t.RunOnStart:
+		t.AddTask(&recoveryRunTask{
+			owner: t,
+			stats: &RecoveryStats{},
+			done:  make(chan struct{}),
+		}, t.Logger)
+	case t.RunDBBackfill:
+		// I1：DB 补录与索引定稿解耦。onstart=false 只关闭索引扫描，
+		// 旧 AutoRecovery 的 DB 补录必须照常执行，否则会静默失效。
+		t.Warn("index recovery disabled by record.recovery.onstart=false; running DB backfill only")
+		t.AddTask(&recoveryRunTask{
+			owner:        t,
+			stats:        &RecoveryStats{},
+			done:         make(chan struct{}),
+			backfillOnly: true,
+		}, t.Logger)
+	}
 	return nil
 }
 
@@ -122,6 +147,19 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 	return defaultRecoveryConcurrency
 }
 
+// effectiveMinAge 返回「仍在写入」判定阈值。未配置时为 max(5s, 2×落盘间隔)；
+// 负值表示显式关闭保护。
+func (t *IndexRecoveryTask) effectiveMinAge() time.Duration {
+	if t.MinAge != 0 {
+		return t.MinAge
+	}
+	d := 2 * mp4pkg.GetIndexConfig().FlushInterval
+	if d < defaultRecoveryMinAge {
+		d = defaultRecoveryMinAge
+	}
+	return d
+}
+
 func (t *IndexRecoveryTask) taskStarted() bool {
 	state := t.GetState()
 	return state >= task.TASK_STATE_STARTED && state < task.TASK_STATE_DISPOSING
@@ -134,12 +172,18 @@ type recoveryRunTask struct {
 	dirs  []string
 	stats *RecoveryStats
 	done  chan struct{}
+	// backfillOnly 为 true 时只跑 DB 补录（onstart=false 但 AutoRecovery 开启）。
+	backfillOnly bool
 }
 
 func (r *recoveryRunTask) Go() error {
 	defer close(r.done)
 	r.owner.runMu.Lock()
 	defer r.owner.runMu.Unlock()
+	if r.backfillOnly {
+		*r.stats = r.owner.runDBBackfill()
+		return nil
+	}
 	*r.stats = r.owner.runRecovery(r.dirs, true)
 	return nil
 }
@@ -209,16 +253,33 @@ func (w *recoveryWorkerTask) Go() error {
 	return nil
 }
 
+// runDBBackfill 执行旧 AutoRecovery 的 DB 补录。它独立于索引定稿，
+// 因此 record.recovery.onstart=false 不会静默关闭它。
+func (t *IndexRecoveryTask) runDBBackfill() RecoveryStats {
+	if !t.RunDBBackfill {
+		return RecoveryStats{}
+	}
+	if t.Backfill != nil {
+		stats, err := t.Backfill()
+		if err != nil {
+			stats.Errors = append(stats.Errors, err)
+		}
+		return stats
+	}
+	if t.DB == nil {
+		return RecoveryStats{}
+	}
+	backfill := &RecordRecoveryTask{DB: t.DB, plugin: t.plugin}
+	stats, _ := backfill.RunBackfill()
+	return stats
+}
+
 // runRecovery 是扫描主流程，调用方必须持有 runMu。
 func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoveryStats {
 	stats := RecoveryStats{}
 
 	// 1. 先跑既有 DB 补录（旧 AutoRecovery 行为），再定稿索引。
-	if t.RunDBBackfill && t.DB != nil {
-		backfill := &RecordRecoveryTask{DB: t.DB, plugin: t.plugin}
-		backfillStats, _ := backfill.RunBackfill()
-		stats.merge(backfillStats)
-	}
+	stats.merge(t.runDBBackfill())
 
 	resolved, dirErrs := t.resolveDirs(dirs)
 	stats.Errors = append(stats.Errors, dirErrs...)
@@ -429,7 +490,20 @@ func hasIndexSidecar(mediaPath string) bool {
 func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, RecoveryItem, error) {
 	index, err := mp4pkg.ReadIndex(sidecar)
 	if err != nil {
-		t.markFailed(sidecar)
+		// 活跃录制中的 sidecar 刚创建时可能短暂不可读。先看 mtime：
+		// 仍在写入的文件不判失败，留给下次 RunOnce。
+		if fresh, age := t.isFreshlyWritten(sidecar, mediaPathFromSidecar(sidecar)); fresh {
+			t.Info("skip recovery of sidecar still being written (read failed)",
+				"sidecar", sidecar, "age", age, "minAge", t.effectiveMinAge(), "err", err)
+			return recoverySkipped, RecoveryItem{}, nil
+		}
+		// 只有确定性损坏才永久落 .failed；IO/挂载点暂时不可用必须保留，
+		// 否则一次抖动就会永久放弃可恢复的录像（Task 9 无重试入口）。
+		if isPermanentIndexError(err) {
+			t.markFailed(sidecar)
+			return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
+		}
+		t.Warn("read index failed, will retry on next run", "err", err, "sidecar", sidecar)
 		return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
 	}
 
@@ -457,12 +531,39 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 			t.Info("recovery output already in place", "sidecar", sidecar, "output", output)
 			return recoveryRecovered, item, nil
 		}
-		t.markFailed(sidecar)
+		// 媒体文件暂时不可见（挂载点抖动/尚未落盘）不是永久失败：
+		// 保留 sidecar，下次 RunOnce 再试。
+		t.Warn("recovery media not found, will retry on next run",
+			"sidecar", sidecar, "media", recorded)
 		return recoveryFailed, item, fmt.Errorf("media file not found: %s", recorded)
 	}
 
 	item.MediaPath = source
 	item.OutputPath = output
+
+	// C1：本地录制的源与输出是同一路径。若文件已有顶层 moov，说明要么已正常
+	// 收尾、要么上一次恢复的产物已 rename 到位（进程在入队/清理之间被杀）。
+	// 此时绝不能再次 RestoreFromIndex：索引 Offset 是原坐标系，而产物已
+	// moov-first、载荷整体后移，旧偏移仍在文件范围内，不会触发
+	// ErrIndexTruncated —— 会把 moov 字节当载荷，写出结构合法但内容全错的
+	// mp4 并覆盖正确产物。直接入队 + 清 sidecar 即可。
+	if source == output && isMP4Path(source) && hasTopLevelMoov(source) {
+		if err := t.enqueue(item); err != nil {
+			return recoveryFailed, item, err
+		}
+		t.removeSidecar(sidecar)
+		t.Info("recovery output already contains moov, skipping rebuild", "sidecar", sidecar, "output", output)
+		return recoverySkipped, item, nil
+	}
+
+	// C2：跳过仍在写入的文件。活跃 recorder 的 sidecar 同样未提交、与崩溃残留
+	// 不可区分；若此时 markRecovering 并重建，会 rename 走活跃 sidecar、
+	// 覆盖活跃媒体文件。mtime 新鲜即视为活跃，计入 Skipped。
+	if fresh, age := t.isFreshlyWritten(source, sidecar); fresh {
+		t.Info("skip recovery of file still being written",
+			"sidecar", sidecar, "media", source, "age", age, "minAge", t.effectiveMinAge())
+		return recoverySkipped, item, nil
+	}
 
 	// 录制已正常收尾（committed）且本地 mp4 已有 moov：无需重建，
 	// 只需重新移交上传队列（上传失败/pending 补传场景）。
@@ -481,7 +582,8 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 
 	info, err := os.Stat(source)
 	if err != nil {
-		t.markFailed(marker)
+		// 保留 .recovering，下次重试；Stat 失败多半是 IO/挂载问题。
+		t.Warn("stat recovery media failed, will retry on next run", "err", err, "media", source)
 		return recoveryFailed, item, fmt.Errorf("stat media: %w", err)
 	}
 
@@ -682,6 +784,37 @@ func isMP4Path(path string) bool {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// isFreshlyWritten 判断给定文件中最新的 mtime 是否新于 MinAge 阈值。
+// 用于区分「仍在录制的活跃文件」与「崩溃残留」；活跃文件跳过而不是定稿。
+func (t *IndexRecoveryTask) isFreshlyWritten(paths ...string) (bool, time.Duration) {
+	minAge := t.effectiveMinAge()
+	if minAge <= 0 {
+		return false, 0
+	}
+	var newest time.Time
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	if newest.IsZero() {
+		return false, 0
+	}
+	age := time.Since(newest)
+	return age < minAge, age
+}
+
+// isPermanentIndexError 判断索引读取错误是否属于确定性损坏。
+// 解析类错误（坏魔数/非法头/头截断/JSON 失败）不会自行恢复；
+// 其余错误（权限、IO、挂载点抖动）按可重试处理。
+func isPermanentIndexError(err error) bool {
+	return errors.Is(err, mp4pkg.ErrIndexCorrupt)
 }
 
 // hasTopLevelMoov 扫描顶层 box，判断文件是否已经包含 moov。

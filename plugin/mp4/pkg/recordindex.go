@@ -65,6 +65,10 @@ var (
 	ErrIndexClosed = errors.New("mp4: index writer closed")
 	// ErrIndexBadMagic 表示文件不是本格式的索引文件。
 	ErrIndexBadMagic = errors.New("mp4: bad index magic")
+	// ErrIndexCorrupt 标记确定性的结构性损坏（坏魔数、非法头长度、头被截断、
+	// JSON 解析失败）。这类文件不会自行恢复，调用方可以永久放弃；
+	// 除此之外的读取错误（权限、挂载点暂时不可用等）应视为可重试。
+	ErrIndexCorrupt = errors.New("mp4: corrupt index file")
 )
 
 // IndexTrack 保存重建 moov 所需的单轨信息。
@@ -325,22 +329,29 @@ func ReadIndex(path string) (*IndexFile, error) {
 func readIndexFrom(r io.Reader) (*IndexFile, error) {
 	prefix := make([]byte, indexPrefixSize)
 	if _, err := io.ReadFull(r, prefix); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// 头都没写完：崩溃残留。确定性损坏，不会自行变完整。
+			return nil, fmt.Errorf("%w: read index header: %w", ErrIndexCorrupt, err)
+		}
 		return nil, fmt.Errorf("mp4: read index header: %w", err)
 	}
 	if string(prefix[:len(IndexMagic)]) != IndexMagic {
-		return nil, ErrIndexBadMagic
+		return nil, fmt.Errorf("%w: %w", ErrIndexCorrupt, ErrIndexBadMagic)
 	}
 	headerLen := binary.BigEndian.Uint32(prefix[len(IndexMagic):])
 	if headerLen > maxIndexHeaderSize {
-		return nil, fmt.Errorf("mp4: index header too large: %d", headerLen)
+		return nil, fmt.Errorf("%w: index header too large: %d", ErrIndexCorrupt, headerLen)
 	}
 	js := make([]byte, headerLen)
 	if _, err := io.ReadFull(r, js); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("%w: truncated index header: %w", ErrIndexCorrupt, err)
+		}
 		return nil, fmt.Errorf("mp4: truncated index header: %w", err)
 	}
 	var h IndexHeader
 	if err := json.Unmarshal(js, &h); err != nil {
-		return nil, fmt.Errorf("mp4: invalid index header: %w", err)
+		return nil, fmt.Errorf("%w: invalid index header: %w", ErrIndexCorrupt, err)
 	}
 	idx := &IndexFile{Header: h, MediaPath: h.MediaPath}
 
