@@ -43,6 +43,15 @@ type MP4Plugin struct {
 		} `desc:"录像崩溃恢复配置"`
 	} `yaml:"record" desc:"录像配置"`
 
+	// Limits 是录制资源软保护配置（yaml: mp4.limits）。
+	Limits struct {
+		MaxConcurrentRecordings int `default:"0" desc:"最大并发录制数，0 表示不限制。超限时请求进入有界等待队列（容量=上限×4），排队超过 30s 返回 503；自动录像(onpub/pull_on_start)排队超限时记录 Error 并保留参数。"`
+		MaxMemoryMB             int `default:"0" desc:"录制内存预算(MB)，0 表示不限制。当前版本仅解析并预留，尚未强制执行。"`
+	} `yaml:"limits" desc:"录制资源软保护配置"`
+
+	// recordLimiter 在 Start 时按 Limits 初始化；为 nil 时按不限制处理。
+	recordLimiter atomic.Pointer[RecordLimiter]
+
 	// recoveryTask 供 /api/recovery/* 手动触发与状态查询；Start 时存入。
 	// 用 atomic 是因为 HTTP handler 可能先于/并发于插件启动被调用。
 	recoveryTask atomic.Pointer[IndexRecoveryTask]
@@ -93,6 +102,14 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 }
 
 func (p *MP4Plugin) Start() (err error) {
+	// 录制并发软保护：0 表示不限制，保持既有行为（无队列、无拒绝）。
+	p.recordLimiter.Store(NewRecordLimiter(p.Limits.MaxConcurrentRecordings))
+	if p.Limits.MaxMemoryMB > 0 {
+		// 预留配置：当前版本只解析、记录，不执行内存预算判定。
+		p.Warn("limits.maxmemorymb is configured but not enforced yet",
+			"maxMemoryMB", p.Limits.MaxMemoryMB)
+	}
+
 	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
 	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{
 		Enable:        p.RecordConfig.Index.Enable,
