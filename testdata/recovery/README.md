@@ -133,11 +133,15 @@ Stream #1 audio: pcm_alaw, 8000 Hz, mono, duration 1341.04 s, 33526 frames
    - **co64 一次性预判，不要「两遍不一致就报错」**：`stco`/`co64` 条目定长（4 B / 8 B），
      样本数 `N` 在扫描结束时就已知，因此 moov 尺寸是 `N` 的确定函数。做法：
      1. 由 `N` 与样本大小表算出 `moovSize(stco)` / `moovSize(co64)`（两者差 `4*N`）；
-     2. 若 `48 + moovSize(co64) + payloadSize - 1 > 0xFFFFFFFF`，选 `co64`，否则选 `stco`；
-     3. 选定后 moov 尺寸固定，`payloadStart = 48 + moovSize`，一遍即可算出全部精确偏移，
-        不需要占位再回填，也不会因偏移越界而失败。
+     2. 若 `32(ftyp) + moovSize(co64) + 8(mdat header) + payloadSize - 1 > 0xFFFFFFFF`，
+        选 `co64`，否则选 `stco`；
+     3. 选定后 moov 尺寸固定，一遍即可算出全部精确偏移，不需要占位再回填，也不会因偏移越界而失败：
+        **`payloadStart = 32(ftyp) + moovSize + 8(mdat header) = 40 + moovSize`**
+        （输出布局是 `ftyp | moov | mdat`，mdat 头紧接 moov；**48 是输入 tmp 的载荷起点，
+        不要照搬**——输入比输出多一个 8 B 的 `free` box）。
      另外，若 `payloadSize + 8 > 0xFFFFFFFF`，mdat 头本身也要用 16 B 的 largesize 形式
-     （本仓 `reWriteMdatSize` 的 >4 GiB 分支正是这么做的），此时 `payloadStart` 再加 8 B。
+     （本仓 `reWriteMdatSize` 的 >4 GiB 分支正是这么做的），此时
+     `payloadStart = 32(ftyp) + moovSize + 8(mdat header) + 8(largesize 额外字段) = 48 + moovSize`。
      本样本 712 MB / 22 min ≈ 533 KB/s，**4 GiB ≈ 2.2 h**，长录像必然越界，必须走 `co64`；
      两遍写 moov 仍可作为自检手段，但**只有真正的格式异常才报错**（moov 尺寸自检不一致、
      NAL 长度链断裂、偏移非单调、样本数与 `stsz` 不符）；「偏移 > 4 GiB」是选择 `co64` 的依据，
