@@ -38,6 +38,8 @@ type RecoveryItem struct {
 	// SidecarPath 是本次恢复的伴随索引（可能是 .m7sidx 或 .recovering）。
 	// 只有产物上传成功或 pending 登记成功后才允许删除。
 	SidecarPath string
+	// Truncated 表示索引略微超前媒体（崩溃截断），只恢复了有效前缀。
+	Truncated bool
 }
 
 // IndexRecoveryTask 启动时扫描残留伴随索引并定稿为可播放 MP4。
@@ -292,6 +294,7 @@ func (t *IndexRecoveryTask) runDBBackfill() RecoveryStats {
 
 // runRecovery 是扫描主流程，调用方必须持有 runMu。
 func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoveryStats {
+	startedAt := time.Now()
 	stats := RecoveryStats{}
 
 	// 1. 先跑既有 DB 补录（旧 AutoRecovery 行为），再定稿索引。
@@ -328,7 +331,8 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoverySt
 		"failed", stats.Failed,
 		"skipped", stats.Skipped,
 		"bareTmp", stats.BareTmp,
-		"errors", len(stats.Errors))
+		"errors", len(stats.Errors),
+		"elapsedMs", time.Since(startedAt).Milliseconds())
 	return stats
 }
 
@@ -501,9 +505,53 @@ func hasIndexSidecar(mediaPath string) bool {
 	return false
 }
 
-// recoverSidecar 定稿单个 sidecar。任何返回错误的分支都保留可重试状态，
-// 除非错误被明确判定为永久性（索引损坏/无可用样本 → .failed）。
+// recoverSidecar 定稿单个 sidecar，并输出一条字段固定的「恢复结果」日志。
+//
+// 固定字段（file/elapsedMs，失败时额外 error）是现场日志检索契约的一部分。
+// 单文件结果统一在这里输出，避免各分支各写一条、字段互不一致。
 func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, RecoveryItem, error) {
+	startedAt := time.Now()
+	outcome, item, err := t.recoverSidecarFile(sidecar)
+	t.logRecoveryResult(sidecar, item, outcome, err, time.Since(startedAt))
+	return outcome, item, err
+}
+
+// logRecoveryResult 输出「恢复扫描」中的单个文件结果。
+func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
+	outcome recoveryOutcome, err error, elapsed time.Duration) {
+	file := item.OutputPath
+	if file == "" {
+		file = mediaPathFromSidecar(sidecar)
+	}
+	elapsedMs := elapsed.Milliseconds()
+	switch outcome {
+	case recoveryRecovered:
+		t.Info("recovery result",
+			"file", file,
+			"outcome", "recovered",
+			"elapsedMs", elapsedMs,
+			"sidecar", sidecar,
+			"samples", len(item.Records),
+			"truncated", item.Truncated)
+	case recoverySkipped:
+		t.Info("recovery result",
+			"file", file,
+			"outcome", "skipped",
+			"elapsedMs", elapsedMs,
+			"sidecar", sidecar)
+	default:
+		t.Error("recovery result",
+			"file", file,
+			"outcome", "failed",
+			"elapsedMs", elapsedMs,
+			"sidecar", sidecar,
+			"error", err)
+	}
+}
+
+// recoverSidecarFile 定稿单个 sidecar。任何返回错误的分支都保留可重试状态，
+// 除非错误被明确判定为永久性（索引损坏/无可用样本 → .failed）。
+func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome, RecoveryItem, error) {
 	index, err := mp4pkg.ReadIndex(sidecar)
 	if err != nil {
 		// 活跃录制中的 sidecar 刚创建时可能短暂不可读。先看 mtime：
@@ -623,6 +671,7 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 	}
 	// ErrIndexTruncated 表示索引略微超前媒体（S3 用户态缓冲/崩溃截断），
 	// 有效前缀已经恢复，继续产出文件。
+	item.Truncated = errors.Is(restoreErr, mp4pkg.ErrIndexTruncated)
 
 	if err = writeRecoveredMedia(muxer, source, output, info.Mode().Perm()); err != nil {
 		// 磁盘/IO 错误不是永久性的：保留 .recovering，下次启动重试。
@@ -641,11 +690,6 @@ func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, Rec
 		}
 	}
 	t.afterEnqueueSidecar(marker)
-	t.Info("recovered recording from index",
-		"sidecar", sidecar,
-		"output", output,
-		"samples", len(index.Records),
-		"truncated", errors.Is(restoreErr, mp4pkg.ErrIndexTruncated))
 	return recoveryRecovered, item, nil
 }
 
@@ -703,7 +747,6 @@ func (t *IndexRecoveryTask) markFailed(sidecar string) {
 		_ = os.Remove(plain)
 	}
 	syncParentDir(sidecar)
-	t.Warn("recording recovery failed permanently", "sidecar", failed)
 }
 
 func (t *IndexRecoveryTask) removeSidecar(sidecar string) {

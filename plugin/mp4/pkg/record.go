@@ -53,6 +53,9 @@ type writeTrailerTask struct {
 	streamPath string   // 关联流路径（用于失败追踪）
 	storageKey string   // 存储类型 key（s3/oss/cos/local）
 	db         *gorm.DB // 数据库连接（用于保存失败记录）
+	// startedAt 是本段录像开片的墙钟时间，用于「录制结束」日志的 elapsedMs。
+	// 与 durationMs（媒体时长）不同：断流/卡顿期间墙钟继续走，二者可对照排查。
+	startedAt time.Time
 	// dbWrite 在文件完整写入后执行数据库更新，为 nil 时跳过（无 DB 或测试模式）。
 	// 返回 error 表示文件已持久化成功但 record_streams 入库失败（孤儿文件）。
 	dbWrite func(tailJob task.IJob) error
@@ -110,6 +113,9 @@ func localMediaPath(f storage.File) string {
 // 全量回拷。未实现 TempFileFinalizer 的 File 回退到旧的 io.Copy 路径。
 func (t *writeTrailerTask) Run() (err error) {
 	t.Info("write trailer")
+	// 「录制结束」事件：在 trailer 改写前记录本段录像的最终统计。
+	// size 取改写前的文件长度（已写入的媒体总量），断流/失败路径同样能报出。
+	t.logRecordStop(t.recordedSize())
 
 	// 确保任何错误路径下 t.file 都被关闭
 	defer func() {
@@ -142,7 +148,7 @@ func (t *writeTrailerTask) Run() (err error) {
 				localPath = fd.Name()
 			}
 		}
-		t.handoffToUploadQueue(func(cause error) {
+		t.handoffToUploadQueue(size, func(cause error) {
 			t.recoverLocalFile(localPath, size, cause)
 		})
 		return
@@ -285,7 +291,7 @@ func (t *writeTrailerTask) Run() (err error) {
 	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
 	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
 	// 均不删除它），移入 pending 补传;无 DB / pending 满时与旧行为一致清理临时文件。
-	t.handoffToUploadQueue(func(cause error) {
+	t.handoffToUploadQueue(expectedSize, func(cause error) {
 		if t.db == nil {
 			os.Remove(tempPath) // 无 DB 部署:无补传队列可登记,按旧行为清理
 			return
@@ -507,7 +513,7 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 
 	// 持久化（对象存储=上传）移交独立上传队列,不阻塞 trailer 队列。
-	t.handoffToUploadQueue(func(cause error) {
+	t.handoffToUploadQueue(uploadSize, func(cause error) {
 		t.recoverLocalFile(localPath, uploadSize, cause)
 	})
 	t.Info("insert-range fast path done, upload handed off",
@@ -538,6 +544,11 @@ type finalizeUploadTask struct {
 	prepare func() error
 	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
 	onDone func()
+	// size 是待持久化文件的字节数，仅用于结构化日志。
+	size int64
+	// retryCount 是本任务已执行的重试次数（正常队列首次尝试为 0），
+	// 供「上传失败」日志的 retryCount 字段使用。
+	retryCount int
 }
 
 func (u *finalizeUploadTask) Go() (err error) {
@@ -546,8 +557,7 @@ func (u *finalizeUploadTask) Go() (err error) {
 	}
 	if u.prepare != nil {
 		if err = u.prepare(); err != nil {
-			u.Error("prepare upload failed", "err", err,
-				"filePath", u.filePath, "streamPath", u.streamPath)
+			u.logUploadFailure(err)
 			// FinalizeFromTemp 失败时源文件仍归调用方；不调用 Close（实现内部
 			// 句柄已不可用，Close 可能对空句柄上传）。交给 onFail 处理补传。
 			u.file = nil
@@ -558,8 +568,7 @@ func (u *finalizeUploadTask) Go() (err error) {
 		}
 	}
 	if err = u.file.Close(); err != nil {
-		u.Error("upload failed after retries", "err", err,
-			"filePath", u.filePath, "streamPath", u.streamPath)
+		u.logUploadFailure(err)
 		u.file = nil
 		if u.onFail != nil {
 			u.onFail(err)
@@ -567,6 +576,11 @@ func (u *finalizeUploadTask) Go() (err error) {
 		return
 	}
 	u.file = nil
+	u.Info("upload succeeded",
+		"file", u.filePath,
+		"size", u.size,
+		"retryCount", u.retryCount,
+		"streamPath", u.streamPath)
 	// 媒体已完整持久化，sidecar 的使命结束，此时才提交式删除。
 	// 上传失败/pending 分支绝不走到这里，索引保留供恢复使用。
 	if idxErr := removeIndexAfterUpload(u.indexPath); idxErr != nil {
@@ -585,9 +599,74 @@ func (u *finalizeUploadTask) Go() (err error) {
 	return
 }
 
+// recordedSize 返回 trailer 改写前已写入的字节数；无法取值时返回 0。
+func (t *writeTrailerTask) recordedSize() int64 {
+	if t.file == nil {
+		return 0
+	}
+	size, err := t.file.Seek(0, io.SeekEnd)
+	if err != nil || size < 0 {
+		return 0
+	}
+	return size
+}
+
+// logRecordStop 输出「录制结束」事件。字段名是现场日志检索契约的一部分
+// （streamPath/file/durationMs/size/samples/tracks/elapsedMs），勿随意改名。
+func (t *writeTrailerTask) logRecordStop(size int64) {
+	tracks, samples := 0, 0
+	if t.muxer != nil {
+		for id := uint32(1); id < t.muxer.nextTrackId; id++ {
+			track := t.muxer.Tracks[id]
+			if track == nil {
+				continue
+			}
+			tracks++
+			samples += len(track.Samplelist)
+		}
+	}
+	var elapsedMs int64
+	if !t.startedAt.IsZero() {
+		if elapsed := time.Since(t.startedAt).Milliseconds(); elapsed > 0 {
+			elapsedMs = elapsed
+		}
+	}
+	t.Info("record stopped",
+		"streamPath", t.streamPath,
+		"file", t.filePath,
+		"durationMs", t.durationMs,
+		"size", size,
+		"samples", samples,
+		"tracks", tracks,
+		"elapsedMs", elapsedMs)
+}
+
+// uploadErrorClass 是 storage.UploadErrorClass 的包内别名，供日志字段使用。
+func uploadErrorClass(err error) string {
+	return storage.UploadErrorClass(err)
+}
+
+// logUploadFailure 输出「上传失败」事件。固定字段（file/size/retryCount/
+// errorClass/nextRetryAt）供现场按日志检索；nextRetryAt 为空表示没有补传
+// 队列可登记（无 DB 部署），该文件不会被自动重试。
+func (u *finalizeUploadTask) logUploadFailure(cause error) {
+	var nextRetryAt time.Time
+	if u.db != nil {
+		nextRetryAt = m7s.NextUploadRetryAt(u.retryCount)
+	}
+	u.Error("upload failed",
+		"file", u.filePath,
+		"size", u.size,
+		"retryCount", u.retryCount,
+		"errorClass", uploadErrorClass(cause),
+		"nextRetryAt", nextRetryAt,
+		"error", cause,
+		"streamPath", u.streamPath)
+}
+
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
 // 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
-func (t *writeTrailerTask) handoffToUploadQueue(onFail func(cause error)) {
+func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
 	ft := &finalizeUploadTask{
 		file:       t.file,
 		filePath:   t.filePath,
@@ -596,9 +675,21 @@ func (t *writeTrailerTask) handoffToUploadQueue(onFail func(cause error)) {
 		dbWrite:    t.dbWrite,
 		onFail:     onFail,
 		indexPath:  t.indexPath,
+		size:       size,
 	}
 	t.file = nil // 所有权移交
+	t.logUploadEnqueued(size)
 	uploadQueueTask.AddTask(ft, t.Logger)
+}
+
+// logUploadEnqueued 输出「上传入队」事件。retryCount 固定为 0：入队即首次
+// 尝试，后续重试由补传调度负责并各自记录 retryCount。
+func (t *writeTrailerTask) logUploadEnqueued(size int64) {
+	t.Info("upload enqueued",
+		"file", t.filePath,
+		"size", size,
+		"retryCount", 0,
+		"streamPath", t.streamPath)
 }
 
 func NewRecorder(conf config.Record) m7s.IRecorder {
@@ -623,6 +714,8 @@ type Recorder struct {
 	videoTrack       *Track
 	lastProgressDB   time.Time // fmp4 上次刷新 EndTime 的墙钟，用于节流
 	progressClosedID uint      // 已交给 writeTrailer 定稿的记录 ID，禁止再被进度刷新回退
+	// recordStartedAt 是本段录像开片的墙钟时间，用于「录制结束」日志的 elapsedMs。
+	recordStartedAt time.Time
 	// lastSampleWriteTime：最后成功写入样本的帧墙钟，Dispose 收尾用它写 EndTime，避免断流读超时把区间拖长。
 	// Confirmed via 寸止: BUG-021 方案 B
 	lastSampleWriteTime time.Time
@@ -706,6 +799,7 @@ func (r *Recorder) writeTailer(end time.Time) {
 		db:         db,
 		dbWrite:    dbWrite,
 		indexPath:  indexPath,
+		startedAt:  r.recordStartedAt,
 	}, r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
 }
 
@@ -737,6 +831,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	}
 	r.lastProgressDB = time.Time{}
 	r.lastSampleWriteTime = time.Time{}
+	r.recordStartedAt = time.Now()
 	t0 := time.Now()
 	err = r.CreateStream(start, CustomFileName)
 	r.Info("createStream step1 CreateStream", "elapsed", time.Since(t0))
@@ -792,8 +887,32 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 		r.Info("createStream step4 WriteMoov", "elapsed", time.Since(t3))
 	}
 	r.Info("createStream total", "elapsed", time.Since(t0))
+	r.logRecordStart(st)
 	r.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
 	return
+}
+
+// logRecordStart 输出「录制开始」事件。固定字段（streamPath/file/type/
+// storageType/codec）是现场日志检索契约的一部分，勿随意改名。
+// codec 优先取视频编码（avc1.64001f 等），纯音频录像回退音频编码。
+func (r *Recorder) logRecordStart(st storage.Storage) {
+	storageType := r.Event.StorageType
+	if st != nil {
+		storageType = st.GetKey()
+	}
+	codecName := r.Event.VideoCodec
+	if codecName == "" {
+		codecName = r.Event.AudioCodec
+	}
+	if codecName == "" {
+		codecName = "unknown"
+	}
+	r.Info("record started",
+		"streamPath", r.Event.StreamPath,
+		"file", r.Event.FilePath,
+		"type", r.Event.Type,
+		"storageType", storageType,
+		"codec", codecName)
 }
 
 // initFragmentTracks 按 Publisher 已就绪轨预置 FMP4 Track，保证 WriteMoov 含全部轨
@@ -1073,7 +1192,18 @@ func (r *Recorder) warnIndex(err error) {
 		return
 	}
 	r.indexWarned = true
-	r.Warn("write index sidecar failed", "err", err, "indexPath", r.indexPath)
+	r.logIndexError(err)
+}
+
+// logIndexError 输出「索引写入异常」事件。固定字段（streamPath/file/
+// error/recordsWritten）供现场日志检索；indexPath 为附加定位信息。
+func (r *Recorder) logIndexError(err error) {
+	r.Error("index write failed",
+		"streamPath", r.Event.StreamPath,
+		"file", r.Event.FilePath,
+		"error", err,
+		"recordsWritten", r.indexSamples,
+		"indexPath", r.indexPath)
 }
 
 func (r *Recorder) resetIndex() {
@@ -1098,7 +1228,7 @@ func (r *Recorder) commitIndex() (indexPath string) {
 	if idx != nil {
 		r.index = nil // 防止重入时重复 Commit
 		if err := idx.Commit(r.Event.Duration, r.indexSamples); err != nil {
-			r.Warn("commit index sidecar", "err", err, "indexPath", path)
+			r.logIndexError(err)
 		}
 		if err := idx.Close(); err != nil {
 			r.Warn("close index sidecar", "err", err, "indexPath", path)

@@ -178,6 +178,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		// 源的拥有权仍在恢复任务，不会出现“文件已被接管却没人上传”的悬空状态。
 		prepare:   func() error { return finalizer.FinalizeFromTemp(upload.OutputPath) },
 		indexPath: upload.SidecarPath,
+		size:      info.Size(),
 		onDone:    release,
 		onFail: func(cause error) {
 			registerRecoveryPending(logger, opts.DB, upload, objectKey, storageType, info.Size(), metadata, cause)
@@ -192,6 +193,12 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		release()
 		return fmt.Errorf("mp4: enqueue recovery upload %s: %w", objectKey, err)
 	}
+	logger.Info("upload enqueued",
+		"file", objectKey,
+		"size", info.Size(),
+		"retryCount", 0,
+		"streamPath", upload.Header.StreamPath,
+		"recovered", true)
 	return nil
 }
 

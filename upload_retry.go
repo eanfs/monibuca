@@ -3,6 +3,7 @@ package m7s
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -39,11 +40,21 @@ func (u *UploadRetryScheduler) Tick(any) {
 		u.Info("reclaimed stale uploading tasks", "count", n)
 	}
 
-	// pending 目录水位巡检:接近上限即告警(RaiseUploadAlarm 自带去重,不会刷屏)
-	if warn, detail := storage.PendingWatermarkExceeded(); warn {
-		RaiseUploadAlarm(u.s.DB, config.AlarmDiskSpaceFull,
-			"pending dir near full", "", storage.GetPendingDir(),
-			"pending 暂存目录接近容量上限: "+detail)
+	// pending 目录水位巡检:接近上限即告警(RaiseUploadAlarm 自带去重,不会刷屏)。
+	// 日志字段固定为 count/bytes/limit,供现场按 30 天日志检索。
+	if usage, usageErr := storage.GetPendingUsage(); usageErr == nil {
+		if exceeded, limit := usage.WatermarkExceeded(); exceeded {
+			u.Warn("pending dir near full",
+				"count", usage.Count,
+				"bytes", usage.Bytes,
+				"limit", limit,
+				"sizeLimit", usage.SizeLimit,
+				"fileLimit", usage.FileLimit)
+			RaiseUploadAlarm(u.s.DB, config.AlarmDiskSpaceFull,
+				"pending dir near full", "", storage.GetPendingDir(),
+				fmt.Sprintf("pending 暂存目录接近容量上限: 已用 %d 字节/%d 文件, 上限 %d",
+					usage.Bytes, usage.Count, limit))
+		}
 	}
 
 	// 查询待重试的任务（每次最多处理 20 个，避免单次过多）
@@ -119,17 +130,23 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 
 	u.Info("retrying upload",
 		"id", ut.ID,
+		"file", ut.ObjectKey,
 		"objectKey", ut.ObjectKey,
-		"retryCount", ut.RetryCount,
-		"fileSize", ut.FileSize)
+		"size", ut.FileSize,
+		"fileSize", ut.FileSize,
+		"retryCount", ut.RetryCount)
 
 	// 执行上传
 	err := UploadLocalFile(ctx, st, ut.LocalPath, ut.ObjectKey, metadata)
 	if err != nil {
 		u.Warn("retry upload failed",
 			"id", ut.ID,
+			"file", ut.ObjectKey,
 			"objectKey", ut.ObjectKey,
+			"size", ut.FileSize,
 			"retryCount", ut.RetryCount+1,
+			"errorClass", storage.UploadErrorClass(err),
+			"nextRetryAt", NextUploadRetryAt(ut.RetryCount+1),
 			"err", err)
 		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.RetryCount, err)
 		// 补传次数耗尽:不再被 QueryPendingUploads 命中,告警通知运维介入
@@ -143,7 +160,9 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 
 	u.Info("retry upload succeeded",
 		"id", ut.ID,
+		"file", ut.ObjectKey,
 		"objectKey", ut.ObjectKey,
+		"size", ut.FileSize,
 		"retryCount", ut.RetryCount+1)
 	MarkUploadSuccess(u.s.DB, ut.ID, ut.LocalPath)
 }
