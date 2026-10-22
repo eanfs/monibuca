@@ -16,10 +16,10 @@ type LogRotatePlugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
 	Path      string `default:"./logs" desc:"日志文件存放目录"`
-	Size      uint64 `default:"1048576" desc:"日志文件大小，单位：字节"`
-	Days      int    `default:"1" desc:"日志文件保留天数"`
+	Size      uint64 `default:"20971520" desc:"日志文件大小，单位：字节"`
+	Days      int    `default:"30" desc:"日志文件保留天数"`
 	Formatter string `default:"2006-01-02T15" desc:"日志文件名格式"`
-	MaxFiles  uint64 `default:"7" desc:"最大日志文件数量"`
+	MaxFiles  uint64 `default:"750" desc:"最大日志文件数量"`
 	Level     string `default:"info" desc:"日志级别"`
 	handler   slog.Handler
 }
