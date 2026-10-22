@@ -79,6 +79,10 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 其余位当前保留，读取方只应依赖这一位。
 const indexFlagKeyFrame uint8 = 0x01
 
+// IndexFlagKeyFrame 是 indexFlagKeyFrame 的导出别名，供包外恢复路径
+// （无索引 tmp 反向重建）构造 IndexRecord 时使用。
+const IndexFlagKeyFrame = indexFlagKeyFrame
+
 // indexFilePath 返回媒体文件对应的 sidecar 路径：<media>.m7sidx。
 // 不新增 storage.File 接口，路径由录制器已知的本地媒体路径推导。
 func indexFilePath(mediaPath string) string { return mediaPath + IndexExtension }
