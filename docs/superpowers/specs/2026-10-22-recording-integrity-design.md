@@ -20,7 +20,7 @@
 
 ## 目标
 
-1. 进程被 SIGKILL / OOM / 崩溃后，重启时自动把残留半成品恢复成**可播放的普通 MP4**（progressive MP4，不是 fMP4），并补传、补数据库记录。
+1. 进程被 SIGKILL / OOM / 崩溃后，**重启时自动扫描所有残留 tmp**，恢复成**可播放的普通 MP4**（progressive MP4，不是 fMP4），**自动上传到 S3**，并补数据库记录。范围包括：本次升级前遗留的无索引历史 tmp（现场约 85 GB / 216 个文件）。
 2. 上传失败、录制起止、恢复过程都留下可查询的日志与状态。
 3. 降低“进程死”的发生概率：GB28181 并发 map 崩溃修复、失败后不要用重启风暴压垮上游（NVR）与自身内存。
 4. 交付方式：直接使用最新版本（main 分支）构建的镜像，不为 v5.3.0 打补丁。
@@ -32,7 +32,7 @@
 - 不做 fMP4 录制（用户明确要求 MP4）。
 - 不承诺零丢失。异常杀进程是低频事件，接受“最多丢最后一小段”。
 - 不为“最后几秒”引入每帧 fsync、双写、预写日志等高频开销。
-- 不自动处理已存在的 85 GB 无索引历史 tmp（提供离线工具，人工触发）。
+- 不保证无索引历史 tmp 的恢复质量：这类文件没有 sidecar，只能从裸 mdat 反向重建，**音频轨通常无法恢复**，产物可能只有视频轨。
 - 不重做存储启动恢复/降级策略（已有 2026-08-27 设计）。
 - 不改造 its-server 的录制调用协议。
 
@@ -111,15 +111,24 @@ headerJSON 至少包含：
 
 ### 2. 崩溃后自动恢复
 
-新增 `RecordIndexRecoveryTask`（独立 `task.Work`，便于限流与观测），在存储初始化完成之后运行：
+新增 `RecordIndexRecoveryTask`（独立 `task.Work`，便于限流与观测），在存储初始化完成之后自动运行。**目标：重启后把所有残留 tmp 变成可播 MP4 并上传 S3，不需要人工介入。**
 
-1. 扫描目录：录制 `tempDir`、`pending_uploads`、以及配置的额外目录，查找 `*.m7sidx`。
-2. 对每个 sidecar：读 header → 校验媒体文件存在 → 重放 record 重建 `Muxer` 的 sample 表 → 按上节规则截断 → `PrepareFrontMoov()` 生成 moov-first MP4。
-3. 更新 `record_streams`：`end_time`、`duration`（取最后一条 dts+duration）、`file_path`。记录不存在则新建。
-4. 投递到既有 `UploadQueueTask` 上传；成功清理媒体与 sidecar；失败进入 `pending_uploads` 并登记重试（复用现有 `upload_manager`/DB `upload_tasks`）。
-5. 幂等：处理前把 sidecar 重命名为 `.m7sidx.recovering`；完成后写 `.m7sidx.done` 或删除；下次启动遇到 `.recovering` 重试（恢复必须可重复执行）。
-6. 原子性：恢复一律“写新文件 + 原子 rename”，不原地修改。
-7. 并发与限速：默认并发 2、可配置；避免启动时与录制抢 IO。
+1. 扫描目录：录制 `tempDir`、`pending_uploads`、以及配置的额外目录，查找 `*.m7sidx` 与 `s3writer_*.tmp`（无 sidecar 的也算）。
+2. **A 档：有 sidecar 的文件（本次改造后的正常路径）**
+   - 读 header → 校验媒体文件存在 → 重放 record 重建 `Muxer` 的 sample 表 → 按上节规则截断 → `PrepareFrontMoov()` 生成 moov-first MP4；
+   - 音视频轨完整，时间戳来自索引。
+3. **B 档：无 sidecar 的历史 tmp（现场 85 GB）**
+   - 从裸 mdat 反向重建：扫描 H.264/H.265 NALU 边界，按关键帧/时序生成最小 stbl；
+   - 产物可播，但**音频轨通常缺失**、时间戳为估算值；
+   - 逐文件 best-effort，失败不阻塞其它文件，结果写报告。
+4. **上传 S3（两档统一）**
+   - 用 header 的 `storageType`/`storageKey`（B 档从 DB `record_streams` 或 `s3writer` 命名规则推断）解析目标后端，**不依赖当前 active storage**：`Server.GetStorageForType("s3")`；
+   - S3 未就绪时**等待并重试**（复用存储 registry / readiness），**不降级为 local**、不把恢复文件留在本地；
+   - 上传成功后才删除本地 tmp 与 sidecar；失败进入 `pending_uploads` 并登记重试（复用现有 `upload_manager` / DB `upload_tasks`）。
+5. 更新 `record_streams`：`end_time`、`duration`、`file_path`、`storage_type=s3`；记录不存在则新建。
+6. 幂等：处理前把 sidecar 重命名为 `.m7sidx.recovering`；完成后写 `.m7sidx.done` 或删除；下次启动遇到 `.recovering` 重试（恢复必须可重复执行）。
+7. 原子性：恢复一律“写新文件 + 原子 rename”，不原地修改。
+8. 并发与限速：默认并发 2、可配置；B 档解析是 CPU 密集型，默认更低并发（1）并限速；避免启动时与录制抢 IO/CPU。
 
 **失败处理**：任一文件失败不阻塞其余文件；失败列表写日志并可在 API 查询。
 
@@ -136,7 +145,7 @@ headerJSON 至少包含：
 
 ### 4. 历史无索引 tmp 的离线抢救
 
-提供独立入口（CLI 子命令，HTTP 作为可选辅助），对没有 sidecar 的 `s3writer_*.tmp` 做 best-effort 恢复：
+B 档已纳入启动自动流程（见 2.3）。同一套解析实现同时提供 CLI 子命令与 HTTP 入口，用于：单文件重试、dry-run、指定目录批量跑、以及自动流程判定失败后的排查：
 
 - 解析 mdat 内码流（H.264/H.265 NALU 扫描），重建最小可用索引；
 - 生成可播 MP4；失败则输出诊断（无关键帧、码流无法识别、音频不可分帧等）；
@@ -203,9 +212,9 @@ storage:
 
 ## 验收标准
 
-1. **崩溃恢复**：录制进行中 `kill -9` 进程 → 重启 → 带 idx 的残留文件全部自动恢复为 `ffprobe` 可读的 MP4，`record_streams` 的 `end_time`/`duration` 正确，上传成功或进入 pending。
+1. **崩溃恢复 + 自动上传 S3**：录制进行中 `kill -9` 进程 → 重启 → 无人工介入，残留文件全部恢复为 `ffprobe` 可读的 MP4，并**成功上传到 S3 目标对象键**（用 `mc stat` 验证），本地 tmp 与 sidecar 被清理；`record_streams` 的 `end_time`/`duration`/`storage_type` 正确。S3 未就绪时文件留在 pending 并在就绪后自动补传。
 2. **同 streamPath 多录制**：同一路流传不同 `fileName` 并发两个录制，两个文件互不干扰、各自恢复、各自上传；`StartRecord` 去重语义不变。
-3. **无索引历史文件**：用离线工具处理现场 85 GB 样例，输出成功率报告；失败文件给出明确原因。
+3. **无索引历史 tmp**：用现场 85 GB 中的真实样本验证 B 档反向重建：能产出可播 MP4（允许无音频），自动上传 S3，并输出成功率报告；失败文件给出明确原因。先用 1–2 个样本验证可行性，再全量执行。
 4. **可观测性**：录制开始/结束、上传失败、pending 水位、恢复结果均有日志；三个恢复 API 返回真实状态。
 5. **稳定性**：GB28181 并发 Catalog 压测 `-race` 无 fatal；录制并发超限时排队/拒绝并记日志，不触发 OOM。
 6. **恢复自身的鲁棒性**：恢复过程中再次 `kill -9`，下次启动能重试并最终完成，不产生半修改文件。
@@ -219,7 +228,8 @@ storage:
 | sidecar 额外 IO | 每帧 23 B，1 秒 flush | 可忽略；崩溃最多丢最后 1 秒索引（对应少量尾部帧） |
 | 索引与数据不一致 | 崩溃时媒体多写、索引未落 | 以文件实际长度为准截断，宁可少几帧 |
 | 无法续录 | 现场模式下“接上”不可实现 | 用户已确认选 A；每段独立可播 |
-| 旧 85 GB 只能部分恢复 | 音频轨通常救不回 | 离线工具 + 报告，不承诺成功率 |
+| 旧 85 GB 只能部分恢复 | 音频轨通常救不回，可能只有视频轨 | 自动执行 + 报告，不承诺成功率 |
+| S3 长时间不可用 | 恢复产物堆积在本地 | 进入 pending 并持续重试；告警 pending 水位 |
 | 恢复占用启动 IO | 216 个文件同时恢复 | 默认并发 2、可配置 |
 | OOM 仍可能发生 | 代码软保护 + 部署限额 | 双管齐下，不承诺绝对不发生 |
 | 恢复期间再次崩溃 | 方案要求幂等 | 写新文件 + 原子 rename，可重跑 |
