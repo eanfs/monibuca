@@ -305,6 +305,139 @@ func TestRestoreFromIndexCO64Upgrade(t *testing.T) {
 	}
 }
 
+// moov 中按 track id 查找 trak（map 迭代顺序不定，不能按下标断言）。
+func findMoovTrack(t *testing.T, moov *box.MoovBox, id uint32) *box.TrakBox {
+	t.Helper()
+	for _, tr := range moov.Tracks {
+		if tr.TKHD.TrackID == id {
+			return tr
+		}
+	}
+	return nil
+}
+
+// 索引头声明了轨道但没有任何记录：该轨不能以只有 stsd 的残缺 stbl 写进 moov，
+// 否则严格解析器会整档拒绝，连累有好样本的轨道。
+func TestRestoreFromIndexOmitsEmptyTrack(t *testing.T) {
+	sample := []byte{0xCA, 0xFE, 0xBA, 0xBE}
+	_, mediaSize, payloadStart := buildHalfWrittenMedia(t, sample)
+
+	header := IndexHeader{Tracks: []IndexTrack{
+		{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+		{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: restoreTestSTSD(t, false)},
+	}}
+	records := []IndexRecord{
+		{TrackID: 1, Size: uint32(len(sample)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		// 轨道 2 一条记录都没有。
+	}
+
+	m := NewMuxer(0)
+	if err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
+		t.Fatalf("RestoreFromIndex: %v", err)
+	}
+	var out bytes.Buffer
+	if err := m.WriteMoovOnly(&out); err != nil {
+		t.Fatalf("WriteMoovOnly: %v", err)
+	}
+	_, moov := parseRestoreOutput(t, out.Bytes())
+	if len(moov.Tracks) != 1 {
+		t.Fatalf("moov tracks = %d, want 1 (empty track must be omitted)", len(moov.Tracks))
+	}
+	trak := findMoovTrack(t, moov, 1)
+	if trak == nil {
+		t.Fatalf("track 1 missing from moov")
+	}
+	stbl := trak.MDIA.MINF.STBL
+	if stbl.STSD == nil || stbl.STSZ == nil || stbl.STTS == nil || stbl.STSC == nil || stbl.STCO == nil {
+		t.Fatalf("track 1 stbl is incomplete: %+v", stbl)
+	}
+}
+
+// 唯一一条记录越界时没有任何可用样本：必须返回显式错误，且不得进入已恢复状态，
+// 以免调用方用一个几十字节的空壳 mp4 覆盖原始 .tmp。
+func TestRestoreFromIndexNoUsableSamples(t *testing.T) {
+	payload := []byte{0x00, 0x01, 0x02, 0x03}
+	_, mediaSize, _ := buildHalfWrittenMedia(t, payload)
+
+	header := IndexHeader{Tracks: []IndexTrack{{
+		ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true),
+	}}}
+	records := []IndexRecord{
+		{TrackID: 1, Size: 8, Offset: uint64(mediaSize) + 100, DTS: 0, Duration: 40},
+	}
+
+	m := NewMuxer(0)
+	err := m.RestoreFromIndex(header, records, mediaSize)
+	if !errors.Is(err, ErrNoUsableSamples) {
+		t.Fatalf("RestoreFromIndex error = %v, want ErrNoUsableSamples", err)
+	}
+	if _, _, ok := m.RestorePayloadRange(); ok {
+		t.Fatalf("muxer must not report a restored payload after ErrNoUsableSamples")
+	}
+	if err := m.WriteMoovOnly(&bytes.Buffer{}); err == nil {
+		t.Fatalf("WriteMoovOnly must fail when there are no usable samples")
+	}
+}
+
+// rewriteIndexRecords/rebuildIndex 会按轨道分组重写记录，offset 不再单调。
+// 首个越界记录之后的合法记录（这里是整条音轨）不能被 break 连带丢弃。
+func TestRestoreFromIndexNonMonotonicKeepsLaterTracks(t *testing.T) {
+	audio0 := bytes.Repeat([]byte{0x11}, 10)
+	audio1 := bytes.Repeat([]byte{0x22}, 10)
+	payload := append(append([]byte(nil), audio0...), audio1...)
+	mediaPath, mediaSize, payloadStart := buildHalfWrittenMedia(t, payload)
+
+	header := IndexHeader{Tracks: []IndexTrack{
+		{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+		{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: restoreTestSTSD(t, false)},
+	}}
+	records := []IndexRecord{
+		// 轨道 1 分组在前，且越界。
+		{TrackID: 1, Size: 8, Offset: uint64(mediaSize) + 100, DTS: 0, Duration: 40},
+		// 轨道 2 分组在后，仍然完全合法。
+		{TrackID: 2, Size: uint32(len(audio0)), Offset: uint64(payloadStart), DTS: 0, Duration: 20},
+		{TrackID: 2, Size: uint32(len(audio1)), Offset: uint64(payloadStart) + uint64(len(audio0)), DTS: 20, Duration: 20},
+	}
+
+	m := NewMuxer(0)
+	err := m.RestoreFromIndex(header, records, mediaSize)
+	if !errors.Is(err, ErrIndexTruncated) {
+		t.Fatalf("RestoreFromIndex error = %v, want ErrIndexTruncated", err)
+	}
+	if track := m.Tracks[1]; track == nil || len(track.Samplelist) != 0 {
+		t.Fatalf("overrun track 1 should be empty, got %+v", track)
+	}
+	if track := m.Tracks[2]; track == nil || len(track.Samplelist) != 2 {
+		t.Fatalf("track 2 valid records were dropped: %+v", track)
+	}
+
+	var out bytes.Buffer
+	if err := m.WriteMoovOnly(&out); err != nil {
+		t.Fatalf("WriteMoovOnly: %v", err)
+	}
+	start, size, ok := m.RestorePayloadRange()
+	if !ok || start != payloadStart || size != mediaSize-payloadStart {
+		t.Fatalf("payload range = [%d,%d) ok=%v, want [%d,%d)", start, start+size, ok, payloadStart, mediaSize)
+	}
+	raw, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("read media: %v", err)
+	}
+	out.Write(raw[start : start+size])
+
+	_, moov := parseRestoreOutput(t, out.Bytes())
+	if len(moov.Tracks) != 1 {
+		t.Fatalf("moov tracks = %d, want 1 (empty track 1 omitted)", len(moov.Tracks))
+	}
+	trak := findMoovTrack(t, moov, 2)
+	if trak == nil {
+		t.Fatalf("track 2 missing from moov")
+	}
+	if got := trak.MDIA.MINF.STBL.STSZ.SampleCount; got != 2 {
+		t.Fatalf("track 2 stsz sample count = %d, want 2", got)
+	}
+}
+
 // 音轨恢复：stsd 原样注入、tkhd 音量、smhd 与样本表均正确。
 func TestRestoreFromIndexAudioTrack(t *testing.T) {
 	sample := bytes.Repeat([]byte{0x55}, 320)

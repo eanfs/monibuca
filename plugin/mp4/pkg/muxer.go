@@ -46,8 +46,12 @@ type (
 )
 
 // ErrIndexTruncated 表示索引记录引用了媒体文件末尾之外的字节：
-// 越界记录及其后的记录已被丢弃，但越界前的有效前缀仍可恢复。
+// 越界记录已被丢弃，但仍存在有效记录，恢复出的样本表只包含可用部分。
 var ErrIndexTruncated = errors.New("mp4: index records reference data past end of media file")
+
+// ErrNoUsableSamples 表示索引里没有任何一条记录能落到已声明轨道且在媒体文件范围内。
+// 此时恢复不可进行（不能产出只有 ftyp/moov 头的空文件），调用方必须放弃本次恢复。
+var ErrNoUsableSamples = errors.New("mp4: index contains no usable samples")
 
 func (m Muxer) isFragment() bool {
 	return (m.Flag & FLAG_FRAGMENT) != 0
@@ -268,6 +272,12 @@ func (m *Muxer) MakeMoov() IBox {
 	mvhd := CreateMovieHeaderBox(m.nextTrackId, 0)
 	children := []IBox{mvhd}
 	for _, track := range m.Tracks {
+		// 恢复路径可能遇到「索引头声明了轨道但一条记录都没有」的情况。
+		// 这种轨道无法构造出 conformant 的 stbl(缺 stts/stsc/stsz/stco)，
+		// 写进 moov 会让严格解析器整档拒绝、连累完好轨道，因此直接省略。
+		if m.restored && len(track.Samplelist) == 0 {
+			continue
+		}
 		children = append(children, m.makeTrak(track))
 		if m.maxdurtaion < track.Duration {
 			m.maxdurtaion = track.Duration
@@ -445,14 +455,19 @@ func restoreTrackFromIndex(it IndexTrack) (*Track, error) {
 // RestoreFromIndex 用伴随索引重建 muxer 的轨道与样本表，供 WriteMoovOnly
 // 写出恢复用 moov。
 //
-// mediaSize 是媒体文件的实际长度(字节)。Offset+Size 超过它的记录会被丢弃，
-// 录制按写入顺序追加，因此越界点之后的记录一并不再信任；此时返回
-// ErrIndexTruncated，但越界前的有效前缀已经恢复完成。mediaSize < 0 表示
-// 长度未知，此时不做越界检查。
+// mediaSize 是媒体文件的实际长度(字节)。Offset+Size 超过它的记录被逐条跳过；
+// 只要还存在有效记录就返回 ErrIndexTruncated，有效部分已经恢复完成。
+// mediaSize < 0 表示长度未知，此时不做越界检查。
+//
+// 越界记录必须用 continue 而不是 break：偏移单调递增这一不变量只对实时追加的
+// sidecar 索引成立；rewriteIndexRecords/rebuildIndex 会按轨道分组重写记录，
+// 重写后的 offset 序列不单调。若在首个越界记录处截断，会连带丢掉后续分组中
+// 仍然合法的记录(典型情况是整条音轨消失)。
 //
 // 恢复路径不重新解析码流：每轨 stsd 直接取自 IndexTrack.STSD，宽高/声道等
 // 结构化字段用于补全 tkhd。索引不保存 CTS，恢复出的样本 CTS 为 0。
 // 不属于任何已声明轨道的记录(损坏尾部可能出现)会被忽略。
+// 一条可用记录都没有时返回 ErrNoUsableSamples，且不会进入已恢复状态。
 //
 // 样本 Offset 保持源媒体文件的坐标系；WriteMoovOnly 会把它们平移为
 // ftyp|moov|mdat 输出布局中的绝对偏移。
@@ -487,8 +502,9 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 	truncated := false
 	for _, r := range records {
 		if mediaSize >= 0 && (r.Offset > uint64(mediaSize) || uint64(r.Size) > uint64(mediaSize)-r.Offset) {
+			// 逐条跳过(见函数注释)：重写过的索引 offset 不单调。
 			truncated = true
-			break
+			continue
 		}
 		track := m.Tracks[uint32(r.TrackID)]
 		if track == nil {
@@ -516,8 +532,8 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 		end = payloadEnd
 	}
 	if payloadStart < 0 {
-		// 没有可用样本：空载荷。
-		payloadStart = end
+		// 一条可用记录都没有：绝不能产出合法的空壳 mp4 覆盖原始文件。
+		return ErrNoUsableSamples
 	}
 	if end < payloadStart {
 		end = payloadStart
