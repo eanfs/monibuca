@@ -388,7 +388,7 @@ func TestRestoreFromIndexBuildsPlayableMoov(t *testing.T) {
 
 - [ ] **Step 3: 实现三个 handler + 目录白名单 + 管理员鉴权**
 
-白名单来自配置 `recovery.dirs`；`run` 拒绝 mtime 小于 `recovery.minage`（默认 5m）的文件和活跃录制对应文件。
+白名单来自配置 `recovery.dirs`；`run` 拒绝 mtime 小于 `recovery.minage`（默认 5m）的文件和活跃录制对应文件。注意：**该 5m 阈值只作用于手动 run**；启动自动扫描只跑一次，使用短阈值 `max(5s, 2×index.flushinterval)`，否则崩溃后秒级重启的残留（age 仅数秒）会被全部跳过且无第二次自动扫描（2026-10-22 裁决）。
 
 - [ ] **Step 4: 写失败测试——白名单外目录返回 403**
 

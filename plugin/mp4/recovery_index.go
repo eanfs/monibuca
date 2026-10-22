@@ -57,13 +57,16 @@ type IndexRecoveryTask struct {
 	Dirs []string
 	// Concurrency 是单文件定稿的并发上限；<=0 时使用默认 2。
 	Concurrency int
-	// MinAge 是「仍在写入」判定阈值：sidecar/媒体 mtime 新于该值时跳过，
-	// 避免把活跃录像的 sidecar 改名、媒体文件覆盖。生效值无条件夹紧为
-	// max(MinAge, 5s, 2×索引落盘间隔)；显式传负数表示关闭该保护
-	// （仅测试/特殊场景）。配置默认 5m（spec 值）。
+	// MinAge 是**手动恢复**（API/CLI）的「仍在写入」判定阈值：sidecar/媒体
+	// mtime 新于该值时跳过，避免把活跃录像的 sidecar 改名、媒体文件覆盖。
+	// 生效值无条件夹紧为 max(MinAge, 5s, 2×索引落盘间隔)；显式传负数表示
+	// 关闭该保护（仅测试/特殊场景）。配置默认 5m（spec 值）。
 	//
-	// mtime 只是「跨进程」的兜底：本进程内的活跃 recorder 由 pkg 的
-	// activeIndexRegistry 权威判定，先于新鲜度闸门生效。
+	// 启动自动扫描**不使用**该值，而是固定使用短阈值 startupMinAge()
+	// = max(5s, 2×索引落盘间隔)：崩溃后容器秒级重启时残留 age 只有数秒，
+	// 若沿用 5m 会被全部跳过且没有第二次自动扫描（spec §2 要求无需人工介入）。
+	// 5s 下限只用于覆盖跨进程重启瞬间仍在写的文件；本进程内的活跃 recorder
+	// 由 pkg 的 activeIndexRegistry 权威判定，先于新鲜度闸门生效。
 	MinAge time.Duration
 	// RunOnStart 控制任务注册后是否立即跑一次。
 	RunOnStart bool
@@ -120,7 +123,8 @@ const (
 func (t *IndexRecoveryTask) Start() error {
 	t.Info("index recovery task started",
 		"concurrency", t.effectiveConcurrency(),
-		"minAge", t.effectiveMinAge(),
+		"startupMinAge", t.startupMinAge(),
+		"manualMinAge", t.effectiveMinAge(),
 		"runOnStart", t.RunOnStart,
 		"runDBBackfill", t.RunDBBackfill,
 		"dirs", t.Dirs)
@@ -129,9 +133,10 @@ func (t *IndexRecoveryTask) Start() error {
 	switch {
 	case t.RunOnStart:
 		t.AddTask(&recoveryRunTask{
-			owner: t,
-			stats: &RecoveryStats{},
-			done:  make(chan struct{}),
+			owner:  t,
+			minAge: t.startupMinAge(),
+			stats:  &RecoveryStats{},
+			done:   make(chan struct{}),
 		}, t.Logger)
 	case t.RunDBBackfill:
 		// I1：DB 补录与索引定稿解耦。onstart=false 只关闭索引扫描，
@@ -154,16 +159,17 @@ func (t *IndexRecoveryTask) RunOnce(dirs []string) (RecoveryStats, error) {
 	if !t.taskStarted() {
 		t.runMu.Lock()
 		defer t.runMu.Unlock()
-		return t.finish(t.runRecovery(dirs, false))
+		return t.finish(t.runRecovery(dirs, false, t.effectiveMinAge()))
 	}
 
 	stats := RecoveryStats{}
 	done := make(chan struct{})
 	child := t.AddTask(&recoveryRunTask{
-		owner: t,
-		dirs:  dirs,
-		stats: &stats,
-		done:  done,
+		owner:  t,
+		dirs:   dirs,
+		minAge: t.effectiveMinAge(),
+		stats:  &stats,
+		done:   done,
 	}, t.Logger)
 	if err := child.WaitStarted(); err != nil {
 		return RecoveryStats{}, fmt.Errorf("start index recovery: %w", err)
@@ -186,7 +192,33 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 	return defaultRecoveryConcurrency
 }
 
-// effectiveMinAge 返回「仍在写入」判定阈值，语义为：
+// recoveryMinAgeFloor 是新鲜度阈值的下限：max(5s, 2×索引落盘间隔)。
+// 2×flushinterval 保证活跃 sidecar 的最大落盘滞后不会超过阈值；
+// 5s 用于覆盖跨进程重启瞬间仍在写入的文件。
+func recoveryMinAgeFloor() time.Duration {
+	floor := 2 * mp4pkg.GetIndexConfig().FlushInterval
+	if floor < defaultRecoveryMinAge {
+		floor = defaultRecoveryMinAge
+	}
+	return floor
+}
+
+// startupMinAge 返回**启动自动扫描**使用的新鲜度阈值。
+//
+// 启动扫描只跑一次（没有周期性重跑），必须保证崩溃后秒级重启的残留能被处理：
+// 因此不采用配置的 minage（默认 5m），固定使用短阈值
+// max(5s, 2×index.flushinterval)。显式配置负数仍表示关闭保护（测试/特殊场景）。
+//
+// 安全性：本进程内的活跃 recorder 由 pkg 的 activeIndexRegistry 权威判定，
+// 先于该阈值生效；mtime 只兜底跨进程重启的瞬间。
+func (t *IndexRecoveryTask) startupMinAge() time.Duration {
+	if t.MinAge < 0 {
+		return t.MinAge
+	}
+	return recoveryMinAgeFloor()
+}
+
+// effectiveMinAge 返回**手动恢复**（API/CLI）的「仍在写入」判定阈值，语义为：
 //   - 负值：显式关闭保护（仅测试/特殊场景）；
 //   - 其余：max(配置值, 5s, 2×索引落盘间隔) 无条件夹紧。
 //
@@ -198,11 +230,7 @@ func (t *IndexRecoveryTask) effectiveMinAge() time.Duration {
 		return t.MinAge
 	}
 	minAge := t.MinAge
-	floor := 2 * mp4pkg.GetIndexConfig().FlushInterval
-	if floor < defaultRecoveryMinAge {
-		floor = defaultRecoveryMinAge
-	}
-	if minAge < floor {
+	if floor := recoveryMinAgeFloor(); minAge < floor {
 		minAge = floor
 	}
 	return minAge
@@ -218,8 +246,11 @@ type recoveryRunTask struct {
 	task.Task
 	owner *IndexRecoveryTask
 	dirs  []string
-	stats *RecoveryStats
-	done  chan struct{}
+	// minAge 是本次运行使用的新鲜度阈值：启动扫描用 startupMinAge()，
+	// 手动运行用 effectiveMinAge()。随运行实例传递，避免并发扫描间串值。
+	minAge time.Duration
+	stats  *RecoveryStats
+	done   chan struct{}
 	// backfillOnly 为 true 时只跑 DB 补录（onstart=false 但 AutoRecovery 开启）。
 	backfillOnly bool
 }
@@ -232,7 +263,7 @@ func (r *recoveryRunTask) Go() error {
 		*r.stats = r.owner.runDBBackfill()
 		return nil
 	}
-	*r.stats = r.owner.runRecovery(r.dirs, true)
+	*r.stats = r.owner.runRecovery(r.dirs, true, r.minAge)
 	return nil
 }
 
@@ -299,6 +330,7 @@ type recoveryWorkerTask struct {
 	task.Task
 	owner     *IndexRecoveryTask
 	jobs      <-chan string
+	minAge    time.Duration
 	wg        *sync.WaitGroup
 	collector *recoveryCollector
 }
@@ -306,7 +338,7 @@ type recoveryWorkerTask struct {
 func (w *recoveryWorkerTask) Go() error {
 	defer w.wg.Done()
 	for sidecar := range w.jobs {
-		outcome, _, err := w.owner.recoverSidecar(sidecar)
+		outcome, _, err := w.owner.recoverSidecar(sidecar, w.minAge)
 		w.collector.record(sidecar, outcome, err)
 	}
 	return nil
@@ -334,7 +366,8 @@ func (t *IndexRecoveryTask) runDBBackfill() RecoveryStats {
 }
 
 // runRecovery 是扫描主流程，调用方必须持有 runMu。
-func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoveryStats {
+// minAge 是本次运行的新鲜度阈值（启动扫描/手动运行取值不同）。
+func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge time.Duration) RecoveryStats {
 	startedAt := time.Now()
 	stats := RecoveryStats{}
 
@@ -356,11 +389,11 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoverySt
 
 	if len(files) > 0 {
 		if useTasks && t.effectiveConcurrency() > 1 && len(files) > 1 {
-			concurrent := t.processWithWorkers(files)
+			concurrent := t.processWithWorkers(files, minAge)
 			stats.merge(concurrent)
 		} else {
 			for _, sidecar := range files {
-				outcome, _, err := t.recoverSidecar(sidecar)
+				outcome, _, err := t.recoverSidecar(sidecar, minAge)
 				stats.recordOutcome(sidecar, outcome, err)
 			}
 		}
@@ -377,7 +410,7 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool) RecoverySt
 	return stats
 }
 
-func (t *IndexRecoveryTask) processWithWorkers(files []string) RecoveryStats {
+func (t *IndexRecoveryTask) processWithWorkers(files []string, minAge time.Duration) RecoveryStats {
 	workers := t.effectiveConcurrency()
 	if workers > len(files) {
 		workers = len(files)
@@ -395,6 +428,7 @@ func (t *IndexRecoveryTask) processWithWorkers(files []string) RecoveryStats {
 		worker := &recoveryWorkerTask{
 			owner:     t,
 			jobs:      jobs,
+			minAge:    minAge,
 			wg:        &wg,
 			collector: collector,
 		}
@@ -550,9 +584,9 @@ func hasIndexSidecar(mediaPath string) bool {
 //
 // 固定字段（file/elapsedMs，失败时额外 error）是现场日志检索契约的一部分。
 // 单文件结果统一在这里输出，避免各分支各写一条、字段互不一致。
-func (t *IndexRecoveryTask) recoverSidecar(sidecar string) (recoveryOutcome, RecoveryItem, error) {
+func (t *IndexRecoveryTask) recoverSidecar(sidecar string, minAge time.Duration) (recoveryOutcome, RecoveryItem, error) {
 	startedAt := time.Now()
-	outcome, item, err := t.recoverSidecarFile(sidecar)
+	outcome, item, err := t.recoverSidecarFile(sidecar, minAge)
 	t.logRecoveryResult(sidecar, item, outcome, err, time.Since(startedAt))
 	return outcome, item, err
 }
@@ -595,7 +629,7 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 
 // recoverSidecarFile 定稿单个 sidecar。任何返回错误的分支都保留可重试状态，
 // 除非错误被明确判定为永久性（索引损坏/无可用样本 → .failed）。
-func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome, RecoveryItem, error) {
+func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Duration) (recoveryOutcome, RecoveryItem, error) {
 	// 进程内活跃 recorder 是权威判据：mtime 可能因拉流重连退避/低帧率而变旧，
 	// 单靠新鲜度会把活跃录制判死并覆盖其媒体。必须在任何 rename/读取之前拦截。
 	if t.isActiveRecording(sidecar) {
@@ -615,9 +649,9 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome,
 	if err != nil {
 		// 活跃录制中的 sidecar 刚创建时可能短暂不可读。先看 mtime：
 		// 仍在写入的文件不判失败，留给下次 RunOnce。
-		if fresh, age := t.isFreshlyWritten(sidecar, mediaPathFromSidecar(sidecar)); fresh {
+		if fresh, age := t.isFreshlyWritten(minAge, sidecar, mediaPathFromSidecar(sidecar)); fresh {
 			t.Info("skip recovery of sidecar still being written (read failed)",
-				"sidecar", sidecar, "age", age, "minAge", t.effectiveMinAge(), "err", err)
+				"sidecar", sidecar, "age", age, "minAge", minAge, "err", err)
 			return recoverySkipped, RecoveryItem{}, nil
 		}
 		// 只有确定性损坏才永久落 .failed；IO/挂载点暂时不可用必须保留，
@@ -689,9 +723,9 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string) (recoveryOutcome,
 	// 窗口内文件已有顶层 moov 但仍在被写，此时 C1 会误判「已收尾」并提前
 	// 入队、删掉活跃 sidecar（Task 6 落地后还会上传半成品）。先做新鲜度判定
 	// 才能同时保护两条分支。
-	if fresh, age := t.isFreshlyWritten(source, sidecar); fresh {
+	if fresh, age := t.isFreshlyWritten(minAge, source, sidecar); fresh {
 		t.Info("skip recovery of file still being written",
-			"sidecar", sidecar, "media", source, "age", age, "minAge", t.effectiveMinAge())
+			"sidecar", sidecar, "media", source, "age", age, "minAge", minAge)
 		return recoverySkipped, item, nil
 	}
 
@@ -948,10 +982,10 @@ func (t *IndexRecoveryTask) isActiveRecording(sidecar string) bool {
 	return mp4pkg.IsActiveRecordingPath(sidecar, mediaPathFromSidecar(sidecar))
 }
 
-// isFreshlyWritten 判断给定文件中最新的 mtime 是否新于 MinAge 阈值。
+// isFreshlyWritten 判断给定文件中最新的 mtime 是否新于 minAge 阈值。
+// minAge 由调用方按运行类型传入（启动扫描 startupMinAge / 手动 effectiveMinAge），
 // 用于区分「仍在录制的活跃文件」与「崩溃残留」；活跃文件跳过而不是定稿。
-func (t *IndexRecoveryTask) isFreshlyWritten(paths ...string) (bool, time.Duration) {
-	minAge := t.effectiveMinAge()
+func (t *IndexRecoveryTask) isFreshlyWritten(minAge time.Duration, paths ...string) (bool, time.Duration) {
 	if minAge <= 0 {
 		return false, 0
 	}

@@ -62,13 +62,16 @@ func (t *IndexRecoveryTask) runRequest(runID string, dirs []string, file string)
 	defer t.runMu.Unlock()
 	t.setExecutingRunID(runID)
 	defer t.setExecutingRunID("")
+	// 手动 run 使用配置的 minage（默认 5m）；启动自动扫描走短阈值，
+	// 由 recoveryRunTask.minAge 单独传入。
+	minAge := t.effectiveMinAge()
 	if file != "" {
 		stats := RecoveryStats{Scanned: 1}
-		outcome, _, err := t.recoverSidecar(file)
+		outcome, _, err := t.recoverSidecar(file, minAge)
 		stats.recordOutcome(file, outcome, err)
 		return t.finish(stats)
 	}
-	return t.finish(t.runRecovery(dirs, true))
+	return t.finish(t.runRecovery(dirs, true, minAge))
 }
 
 func (p *MP4Plugin) recoveryStateStore() *recoveryAPIState {

@@ -1013,3 +1013,91 @@ func TestIndexRecoveryTaskRunsDBBackfillWhenOnStartDisabled(t *testing.T) {
 		t.Fatal("DB backfill did not run when record.recovery.onstart=false")
 	}
 }
+
+// Finding 1 回归：默认 minage=5m + 启动扫描只跑一次时，崩溃后秒级重启的残留
+// 曾因 age<5m 被全部跳过且再无自动重跑，与 spec §2「无需人工介入」冲突。
+// 启动扫描必须使用短阈值 max(5s, 2×flushinterval)；手动 run 仍按配置值跳过。
+func TestStartupRecoveryUsesShortMinAge(t *testing.T) {
+	prev := mp4pkg.GetIndexConfig()
+	t.Cleanup(func() { mp4pkg.SetIndexConfig(prev) })
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{Enable: true, FlushInterval: time.Second})
+
+	// 默认配置下：手动阈值 = 5m，启动阈值 = 5s。
+	def := &IndexRecoveryTask{MinAge: 5 * time.Minute}
+	if got := def.startupMinAge(); got != 5*time.Second {
+		t.Fatalf("default startupMinAge = %v, want 5s", got)
+	}
+	if got := def.effectiveMinAge(); got != 5*time.Minute {
+		t.Fatalf("default effectiveMinAge = %v, want 5m", got)
+	}
+
+	// 启动阈值仍随 flushinterval 抬高，且负 minage 仍表示显式关闭保护。
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{Enable: true, FlushInterval: 10 * time.Second})
+	if got := (&IndexRecoveryTask{MinAge: 5 * time.Minute}).startupMinAge(); got != 20*time.Second {
+		t.Fatalf("startupMinAge with flushinterval=10s = %v, want 20s", got)
+	}
+	if got := (&IndexRecoveryTask{MinAge: -time.Second}).startupMinAge(); got >= 0 {
+		t.Fatalf("negative minage should disable startup protection, got %v", got)
+	}
+	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{Enable: true, FlushInterval: time.Second})
+
+	// 造「崩溃后约 10 秒重启」的残留：age 远小于默认 5m，但大于 5s 下限。
+	newRestartFixture := func(t *testing.T) (string, string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		media, sidecar, _ := buildRecoveryFixture(t, dir, "restart_fresh.tmp", []byte{0x01, 0x02, 0x03, 0x04})
+		recent := time.Now().Add(-10 * time.Second)
+		if err := os.Chtimes(media, recent, recent); err != nil {
+			t.Fatalf("touch media: %v", err)
+		}
+		if err := os.Chtimes(sidecar, recent, recent); err != nil {
+			t.Fatalf("touch sidecar: %v", err)
+		}
+		return dir, media, sidecar
+	}
+
+	// 启动扫描：同一新鲜度必须恢复（不再跳过）。
+	startupDir, startupMedia, startupSidecar := newRestartFixture(t)
+	enqueued := 0
+	startup := &IndexRecoveryTask{
+		MinAge:        5 * time.Minute, // 生产默认值
+		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
+	}
+	stats := startup.runRecovery([]string{startupDir}, false, startup.startupMinAge())
+	if stats.Recovered != 1 || stats.Skipped != 0 || stats.Failed != 0 {
+		t.Fatalf("startup stats = %+v, want recovered=1", stats)
+	}
+	if enqueued != 1 {
+		t.Fatalf("startup enqueued = %d, want 1", enqueued)
+	}
+	if _, err := os.Stat(recoveryOutputPath(startupMedia)); err != nil {
+		t.Fatalf("startup recovery output missing: %v", err)
+	}
+	if _, err := os.Stat(startupSidecar); !os.IsNotExist(err) {
+		t.Fatalf("startup recovery should consume sidecar: %v", err)
+	}
+
+	// 手动 run：同样的新鲜度必须按 5m 跳过，不得绕过配置。
+	manualDir, manualMedia, manualSidecar := newRestartFixture(t)
+	manualEnqueued := 0
+	manual := &IndexRecoveryTask{
+		MinAge:        5 * time.Minute,
+		EnqueueUpload: func(RecoveryItem) error { manualEnqueued++; return nil },
+	}
+	stats, err := manual.RunOnce([]string{manualDir})
+	if err != nil {
+		t.Fatalf("manual RunOnce: %v", err)
+	}
+	if stats.Skipped != 1 || stats.Recovered != 0 || stats.Failed != 0 {
+		t.Fatalf("manual stats = %+v, want skipped=1", stats)
+	}
+	if manualEnqueued != 0 {
+		t.Fatalf("manual run must not enqueue fresh file, got %d", manualEnqueued)
+	}
+	if _, err = os.Stat(manualMedia + recoveringSuffix); !os.IsNotExist(err) {
+		t.Fatal("manual run must not mark fresh sidecar as recovering")
+	}
+	if _, err = os.Stat(manualSidecar); err != nil {
+		t.Fatalf("manual run must leave fresh sidecar untouched: %v", err)
+	}
+}

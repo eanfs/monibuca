@@ -37,7 +37,7 @@ type MP4Plugin struct {
 		} `desc:"录像伴随索引配置"`
 		Recovery struct {
 			OnStart     bool          `default:"true" desc:"启动时是否自动扫描并定稿残留录像（不影响 AutoRecovery 的 DB 补录）"`
-			MinAge      time.Duration `default:"5m" desc:"sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；实际生效值不小于 max(5s, 2×index.flushinterval)；本进程内的活跃 recorder 无论 mtime 均跳过；负数关闭保护"`
+			MinAge      time.Duration `default:"5m" desc:"仅用于手动恢复(API/CLI)：sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；实际生效值不小于 max(5s, 2×index.flushinterval)；启动自动扫描不受该值影响，固定使用 max(5s, 2×index.flushinterval) 短阈值以保证崩溃重启后自动恢复；本进程内的活跃 recorder 无论 mtime 均跳过；负数关闭保护"`
 			Concurrency int           `default:"2" desc:"恢复定稿并发上限"`
 			Dirs        []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
 		} `desc:"录像崩溃恢复配置"`

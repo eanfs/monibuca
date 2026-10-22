@@ -113,6 +113,12 @@ headerJSON 至少包含：
 
 新增 `RecordIndexRecoveryTask`（独立 `task.Work`，便于限流与观测），在存储初始化完成之后自动运行。**目标：重启后把所有残留 tmp 变成可播 MP4 并上传 S3，不需要人工介入。**
 
+**新鲜度阈值分两条路径（2026-10-22 裁决）**：启动自动扫描只跑一次，使用短阈值
+`max(5s, 2×index.flushinterval)`（不读取 `recovery.minage`），保证进程被 `kill -9`
+后秒级重启时、残留文件 age 仅数秒仍能被恢复；5s 下限只用于覆盖跨进程重启瞬间仍在
+写入的文件。手动恢复（API/CLI）继续使用配置的 `recovery.minage`（默认 5m），避免
+人工把活跃录像误判为残留。两条路径都先经过进程级活跃 recorder 集合判定（权威）。
+
 1. 扫描目录：录制 `tempDir`、`pending_uploads`、以及配置的额外目录，查找 `*.m7sidx` 与 `s3writer_*.tmp`（无 sidecar 的也算）。
 2. **A 档：有 sidecar 的文件（本次改造后的正常路径）**
    - 读 header → 校验媒体文件存在 → 重放 record 重建 `Muxer` 的 sample 表 → 按上节规则截断 → `PrepareFrontMoov()` 生成 moov-first MP4；
@@ -204,6 +210,7 @@ mp4:
     recovery:
       onstart: true
       concurrency: 2
+      minage: 5m              # 仅手动恢复(API/CLI)使用；启动扫描固定 max(5s, 2×flushinterval)
   limits:
     maxconcurrentrecordings: 0  # 0=不限
     maxmemorymb: 0              # 0=不限
@@ -257,7 +264,7 @@ logrotate:
 3. **索引可能超前于媒体（1 MiB 用户态缓冲）。** 恢复以实际文件长度为准，遇 `offset+size > fileSize` 停止并截断；**不**每 1 秒强制 flush 媒体缓冲（216 路代价不可接受），代价是丢弃尾部少量帧。
 4. **header 字段。** 同时保存 `targetName`（basename）、`storageKey`（含 prefix 的完整对象键，上传用）、`filePath`（DB 匹配用）。恢复上传用 header 的 `storageType`；若当前配置已不包含该类型，转 pending 并告警，不静默改类型。
 5. **恢复原子性。** 写新文件 + 原子 rename；`.recovering` 下次启动重试（幂等）；磁盘峰值需单文件 2 倍空间。
-6. **API 安全边界。** 扫描目录必须在白名单（`recovery.dirs`）；HTTP 接口要求管理员权限；手动触发跳过 mtime 小于 `recovery.minage`（默认 5m）的文件与活跃录制；现场优先 CLI。
+6. **API 安全边界。** 扫描目录必须在白名单（`recovery.dirs`）；HTTP 接口要求管理员权限；手动触发跳过 mtime 小于 `recovery.minage`（默认 5m）的文件与活跃录制；现场优先 CLI。**启动自动扫描与手动触发使用不同阈值**：启动扫描只跑一次，固定用 `max(5s, 2×index.flushinterval)`（保证崩溃秒级重启后残留 age 仅数秒也能自动恢复，兑现 §2“不需要人工介入”）；手动触发才使用配置的 `minage`（默认 5m）。
 7. **超限语义：排队而不是直接丢。** 有界等待队列，排队超时才拒绝；不静默停录。
 8. **恢复任务与现有 `RecordRecoveryTask` 合并**，先补 DB 再索引定稿。
 

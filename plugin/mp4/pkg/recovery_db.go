@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"path/filepath"
@@ -76,32 +77,65 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	dbCtx, cancel := context.WithTimeout(context.Background(), recoveryDBTimeout)
 	defer cancel()
 
-	// 先用 file_path + start_time 精确定位本段录像：分片录制可能复用同一
-	// fileName，只按 file_path 会一次改到多条记录。
-	query := db.WithContext(dbCtx).Model(&m7s.RecordStream{}).Where("file_path = ?", filePath)
+	// 判存必须用 SELECT，不能用 RowsAffected：MySQL 未开 clientFoundRows 时，
+	// 对值完全相同的 UPDATE 返回 0。恢复成功写库后若 sidecar 删除失败、或进程
+	// 在两者之间被杀，下次启动会再恢复一次——查询能命中行但 UPDATE 是 no-op，
+	// 若据此退化到 Create 就会产生重复的 record_streams 行。
+	//
+	// 定位顺序：
+	//  1. file_path + start_time 精确定位本段录像（分片录制可能复用同一
+	//     fileName，只按 file_path 会一次改到多条记录）；
+	//  2. 历史 sidecar 的 start_time 与 DB 不一致时，退化为该路径下可认领的
+	//     行：尚未收尾（end_time 为空），或与本次恢复结果完全一致
+	//     （end_time + duration 相同——上次 fallback 已写入，重跑必须幂等）。
+	//     后者避免“第一次 fallback 写入后该行不再未收尾，重跑又 Create”；
+	//     已完成的历史分片 end_time 各不相同，不会被误认领；
+	//  3. 两次查询都为空才 Create。
+	var existing m7s.RecordStream
+	found := false
+
+	exact := db.WithContext(dbCtx).Where("file_path = ?", filePath)
 	if !header.StartTime.IsZero() {
-		query = query.Where("start_time = ?", header.StartTime)
+		exact = exact.Where("start_time = ?", header.StartTime)
 	} else {
 		// 无起始时间时只能定位「尚未收尾」的那一行。
-		query = query.Where("end_time IS NULL OR end_time = ?", time.Time{})
+		exact = exact.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
 	}
-	result := query.Updates(updates)
-	if result.Error != nil {
-		return result.Error
+	findErr := exact.First(&existing).Error
+	switch {
+	case findErr == nil:
+		found = true
+	case !errors.Is(findErr, gorm.ErrRecordNotFound):
+		return findErr
 	}
-	if result.RowsAffected == 0 && !header.StartTime.IsZero() {
-		// 兼容历史 sidecar：起始时间与 DB 行不一致时，退化为更新该路径下
-		// 尚未收尾（end_time 为空）的那一行，避免把已完成的分片一起改掉。
-		result = db.WithContext(dbCtx).Model(&m7s.RecordStream{}).
-			Where("file_path = ? AND (end_time IS NULL OR end_time = ?)", filePath, time.Time{}).
-			Updates(updates)
-		if result.Error != nil {
-			return result.Error
+
+	if !found && !header.StartTime.IsZero() {
+		fallback := db.WithContext(dbCtx).Where("file_path = ?", filePath)
+		if !endTime.IsZero() && duration > 0 {
+			fallback = fallback.Where(
+				"(end_time IS NULL OR end_time = ? OR (end_time = ? AND duration = ?))",
+				time.Time{}, endTime, duration)
+		} else {
+			fallback = fallback.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
+		}
+		fallbackErr := fallback.First(&existing).Error
+		switch {
+		case fallbackErr == nil:
+			found = true
+		case !errors.Is(fallbackErr, gorm.ErrRecordNotFound):
+			return fallbackErr
 		}
 	}
-	if result.RowsAffected > 0 {
+
+	if found {
+		// 只按主键更新命中行；即使值完全相同（MySQL RowsAffected=0）也算成功。
+		if err := db.WithContext(dbCtx).Model(&m7s.RecordStream{}).
+			Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+			return err
+		}
 		logger.Info("record_streams updated after recovery",
 			"filePath", filePath,
+			"recordId", existing.ID,
 			"duration", duration,
 			"storageType", header.StorageType)
 		return nil
