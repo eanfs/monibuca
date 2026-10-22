@@ -33,6 +33,20 @@ func recoveredRecordDuration(records []IndexRecord) uint32 {
 	return uint32(end)
 }
 
+// truncateRecordTime 把时间归一到毫秒。
+//
+// record_streams.start_time/end_time 在 MySQL 上是 DATETIME(3)（driver 默认
+// DefaultDatetimePrecision=3）：写入时 MySQL 会把纳秒截断/四舍五入到毫秒，
+// 而查询谓词绑定的字面量仍带纳秒精度，等值比较永远不成立。于是恢复重跑时
+// 精确查询落空 → 走 fallback → fallback 也落空（end_time 参数同样是纳秒）
+// → Create 出重复行。写入值与所有查询谓词必须使用同一毫秒精度。
+func truncateRecordTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.Truncate(time.Millisecond)
+}
+
 // updateRecoveredRecord 在恢复成功后回写 record_streams。
 //
 // 崩溃前开录已插入一行（end_time 空、duration=0），旧的 DB 补录（RunDBBackfill）
@@ -55,10 +69,12 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		return nil
 	}
 
+	// 入口即归一化：写入值与精确查询谓词共用同一 startTime。
+	startTime := truncateRecordTime(header.StartTime)
 	duration := recoveredRecordDuration(records)
 	endTime := time.Time{}
-	if !header.StartTime.IsZero() && duration > 0 {
-		endTime = header.StartTime.Add(time.Duration(duration) * time.Millisecond)
+	if !startTime.IsZero() && duration > 0 {
+		endTime = startTime.Add(time.Duration(duration) * time.Millisecond)
 	}
 
 	updates := map[string]any{
@@ -84,19 +100,22 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	//
 	// 定位顺序：
 	//  1. file_path + start_time 精确定位本段录像（分片录制可能复用同一
-	//     fileName，只按 file_path 会一次改到多条记录）；
-	//  2. 历史 sidecar 的 start_time 与 DB 不一致时，退化为该路径下可认领的
+	//     fileName，只按 file_path 会一次改到多条记录）；start_time 已是毫秒精度，
+	//     与列精度一致，新版本写入的行必被命中；
+	//  2. 历史行（旧版本按纳秒写入，MySQL DATETIME(3) 可能四舍五入到相邻毫秒）
+	//     用 ±1ms 窄区间再兜底一次；
+	//  3. 历史 sidecar 的 start_time 与 DB 不一致时，退化为该路径下可认领的
 	//     行：尚未收尾（end_time 为空），或与本次恢复结果完全一致
 	//     （end_time + duration 相同——上次 fallback 已写入，重跑必须幂等）。
 	//     后者避免“第一次 fallback 写入后该行不再未收尾，重跑又 Create”；
 	//     已完成的历史分片 end_time 各不相同，不会被误认领；
-	//  3. 两次查询都为空才 Create。
+	//  4. 以上都为空才 Create。
 	var existing m7s.RecordStream
 	found := false
 
 	exact := db.WithContext(dbCtx).Where("file_path = ?", filePath)
-	if !header.StartTime.IsZero() {
-		exact = exact.Where("start_time = ?", header.StartTime)
+	if !startTime.IsZero() {
+		exact = exact.Where("start_time = ?", startTime)
 	} else {
 		// 无起始时间时只能定位「尚未收尾」的那一行。
 		exact = exact.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
@@ -109,12 +128,28 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		return findErr
 	}
 
-	if !found && !header.StartTime.IsZero() {
+	if !found && !startTime.IsZero() {
+		// 历史行兜底：旧版本写入时未做精度归一化，MySQL 对 DATETIME(3) 的
+		// 舍入可让库内毫秒值与 header 截断值相差 1ms。
+		historical := db.WithContext(dbCtx).Where("file_path = ?", filePath).
+			Where("start_time BETWEEN ? AND ?",
+				startTime.Add(-time.Millisecond), startTime.Add(time.Millisecond))
+		historicalErr := historical.First(&existing).Error
+		switch {
+		case historicalErr == nil:
+			found = true
+		case !errors.Is(historicalErr, gorm.ErrRecordNotFound):
+			return historicalErr
+		}
+	}
+
+	if !found && !startTime.IsZero() {
 		fallback := db.WithContext(dbCtx).Where("file_path = ?", filePath)
 		if !endTime.IsZero() && duration > 0 {
+			// end_time 的 ±1ms 同样服务于旧版本写入的历史行。
 			fallback = fallback.Where(
-				"(end_time IS NULL OR end_time = ? OR (end_time = ? AND duration = ?))",
-				time.Time{}, endTime, duration)
+				"(end_time IS NULL OR end_time = ? OR (end_time BETWEEN ? AND ? AND duration = ?))",
+				time.Time{}, endTime.Add(-time.Millisecond), endTime.Add(time.Millisecond), duration)
 		} else {
 			fallback = fallback.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
 		}
@@ -142,7 +177,7 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	}
 
 	record := m7s.RecordStream{
-		StartTime:    header.StartTime,
+		StartTime:    startTime,
 		EndTime:      endTime,
 		Duration:     duration,
 		FileName:     filepath.Base(filePath),

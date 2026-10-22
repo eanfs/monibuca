@@ -35,8 +35,137 @@ func simulateMySQLNoopUpdate(db *gorm.DB) {
 	})
 }
 
+// simulateMySQLMillisecondDateTime 模拟 MySQL DATETIME(3) 列语义：写入时把
+// 时间截断到毫秒（查询参数保持调用方传入的原始精度）。SQLite 本身保留纳秒，
+// 若不模拟，旧实现“写入纳秒 + 查询纳秒”在测试里天然相等，无法暴露问题。
+func simulateMySQLMillisecondDateTime(db *gorm.DB) {
+	truncate := func(t time.Time) time.Time {
+		if t.IsZero() {
+			return t
+		}
+		return t.Truncate(time.Millisecond)
+	}
+	truncateRecord := func(record *m7s.RecordStream) {
+		record.StartTime = truncate(record.StartTime)
+		record.EndTime = truncate(record.EndTime)
+	}
+	db.Callback().Create().Before("gorm:create").Register("test:ms_datetime_create", func(tx *gorm.DB) {
+		switch dest := tx.Statement.Dest.(type) {
+		case *m7s.RecordStream:
+			truncateRecord(dest)
+		case *[]m7s.RecordStream:
+			for i := range *dest {
+				truncateRecord(&(*dest)[i])
+			}
+		}
+	})
+	db.Callback().Update().Before("gorm:update").Register("test:ms_datetime_update", func(tx *gorm.DB) {
+		updates, ok := tx.Statement.Dest.(map[string]any)
+		if !ok {
+			return
+		}
+		if endTime, ok := updates["end_time"].(time.Time); ok {
+			updates["end_time"] = truncate(endTime)
+		}
+	})
+}
+
 func recoveryDBTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// Finding 2 回归（MySQL DATETIME(3)）：header 的 StartTime 带纳秒，而列只存
+// 毫秒。同一产物连续恢复两次，必须只有 1 行——实现需在入口把时间归一到毫秒，
+// 让写入值与查询谓词同精度。
+func TestUpdateRecoveredRecordMySQLMillisecondPrecisionDoesNotDuplicate(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	simulateMySQLMillisecondDateTime(db)
+	logger := recoveryDBTestLogger()
+
+	filePath := "record/live/db_ms_precision.mp4"
+	// 故意保留纳秒（JSON sidecar 按纳秒保存，模拟真实 header）。
+	start := time.Now().Add(-time.Hour).Truncate(time.Millisecond).Add(456789 * time.Nanosecond)
+	header := IndexHeader{
+		StreamPath:  "live/db_ms_precision",
+		FilePath:    filePath,
+		StorageType: "s3",
+		StartTime:   start,
+	}
+	records := []IndexRecord{
+		{TrackID: 1, Size: 10, DTS: 0, Duration: 40},
+		{TrackID: 1, Size: 10, DTS: 40, Duration: 40},
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+			t.Fatalf("updateRecoveredRecord #%d: %v", i+1, err)
+		}
+	}
+
+	var rows []m7s.RecordStream
+	if err := db.Where("file_path = ?", filePath).Find(&rows).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("record_streams rows = %d, want 1 (nanosecond header must not duplicate on DATETIME(3))", len(rows))
+	}
+	if rows[0].Duration != 80 || rows[0].EndTime.IsZero() {
+		t.Fatalf("recovered record fields = %+v", rows[0])
+	}
+	if rows[0].StartTime.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Fatalf("start_time = %v, want millisecond precision", rows[0].StartTime)
+	}
+}
+
+// 历史行（旧版本未归一化写入，MySQL 四舍五入后比截断值大 1ms）且已收尾、
+// duration 与本次恢复不同——只有历史行 ±1ms 区间兜底能认领它，且重跑幂等。
+func TestUpdateRecoveredRecordHistoricalRoundedStartTimeIsClaimed(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	simulateMySQLMillisecondDateTime(db)
+	logger := recoveryDBTestLogger()
+
+	filePath := "record/live/db_legacy_rounded.mp4"
+	start := time.Now().Add(-3 * time.Hour).Truncate(time.Millisecond).Add(654321 * time.Nanosecond)
+	seedStart := start.Truncate(time.Millisecond).Add(time.Millisecond)
+	if err := db.Create(&m7s.RecordStream{
+		StartTime:   seedStart,
+		EndTime:     seedStart.Add(40 * time.Millisecond),
+		Duration:    40,
+		FilePath:    filePath,
+		StreamPath:  "live/db_legacy_rounded",
+		Type:        "mp4",
+		StorageType: "local",
+	}).Error; err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	header := IndexHeader{
+		StreamPath:  "live/db_legacy_rounded",
+		FilePath:    filePath,
+		StorageType: "s3",
+		StartTime:   start,
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 80}}
+
+	for i := 0; i < 2; i++ {
+		if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+			t.Fatalf("updateRecoveredRecord #%d: %v", i+1, err)
+		}
+	}
+
+	var rows []m7s.RecordStream
+	if err := db.Where("file_path = ?", filePath).Find(&rows).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("record_streams rows = %d, want 1 (historical rounded row must be claimed)", len(rows))
+	}
+	if rows[0].Duration != 80 {
+		t.Fatalf("duration = %d, want 80", rows[0].Duration)
+	}
+	if rows[0].StorageType != "s3" {
+		t.Fatalf("storage_type = %q, want s3", rows[0].StorageType)
+	}
 }
 
 // Finding 2 回归：同一产物连续回写两次，第二次即便 UPDATE 是 no-op
