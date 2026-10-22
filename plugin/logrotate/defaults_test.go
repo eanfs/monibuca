@@ -1,18 +1,24 @@
 package plugin_logrotate
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/alchemy/rotoslog"
 
+	"m7s.live/v5"
 	"m7s.live/v5/pkg/config"
 )
 
@@ -337,4 +343,154 @@ func (c countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	*c.n += int64(n)
 	return n, err
+}
+
+// cancelOnFirstWriteWriter cancels the request context as soon as the handler
+// writes the replayed history. API_trail blocks until the context is done, so
+// this keeps the test synchronous without racing on the buffer.
+type cancelOnFirstWriteWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	cancel     context.CancelFunc
+	cancelOnce sync.Once
+}
+
+func (w *cancelOnFirstWriteWriter) Header() http.Header { return w.header }
+func (w *cancelOnFirstWriteWriter) WriteHeader(int)     {}
+func (w *cancelOnFirstWriteWriter) Write(p []byte) (int, error) {
+	w.cancelOnce.Do(w.cancel)
+	return w.body.Write(p)
+}
+func (w *cancelOnFirstWriteWriter) Flush() {}
+
+// TestAPITrailReadsPrefixedCurrentLog pins the trail path to the configured
+// FilePrefix. With the default prefix the live file is m7s-current.log; a
+// handler that still opens the legacy current.log would replay nothing.
+func TestAPITrailReadsPrefixedCurrentLog(t *testing.T) {
+	dir := t.TempDir()
+	const marker = "PREVIOUS-LOG-LINE\n"
+	currentName := defaultFilePrefix + currentFileSuffix + logFileExt
+	if err := os.WriteFile(filepath.Join(dir, currentName), []byte(marker), 0o644); err != nil {
+		t.Fatalf("WriteFile %s: %v", currentName, err)
+	}
+	// Legacy unprefixed file must be ignored: it proves the open path follows
+	// the prefix rather than a hard-coded name.
+	if err := os.WriteFile(filepath.Join(dir, "current.log"), []byte("LEGACY-SHOULD-NOT-BE-READ\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy current.log: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &cancelOnFirstWriteWriter{header: http.Header{}, cancel: cancel}
+	r := httptest.NewRequest(http.MethodGet, "/api/logrotate/trail", nil).WithContext(ctx)
+	l := &LogRotatePlugin{Path: dir, FilePrefix: defaultFilePrefix}
+	l.Server = &m7s.Server{}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.API_trail(w, r)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("API_trail did not return after replaying the current log")
+	}
+
+	got := w.body.String()
+	if !strings.Contains(got, marker) {
+		t.Errorf("trail output %q does not contain replayed line %q", got, marker)
+	}
+	if strings.Contains(got, "LEGACY-SHOULD-NOT-BE-READ") {
+		t.Errorf("trail output %q read the legacy unprefixed current.log", got)
+	}
+}
+
+// TestAPITrailLogsMissingCurrentLog requires the open error to be recorded.
+// Silently swallowing it made the endpoint look healthy while streaming only
+// new lines, with no hint that history was unavailable.
+func TestAPITrailLogsMissingCurrentLog(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	l := &LogRotatePlugin{Path: dir, FilePrefix: defaultFilePrefix}
+	l.Server = &m7s.Server{}
+	l.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	// No file to replay: cancel up front so the handler reaches the (already
+	// done) context wait and returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest(http.MethodGet, "/api/logrotate/trail", nil).WithContext(ctx)
+	l.API_trail(httptest.NewRecorder(), r)
+
+	out := logs.String()
+	if !strings.Contains(out, "open current log for trail failed") {
+		t.Errorf("missing log open error was not logged; logs = %q", out)
+	}
+	wantPath := defaultFilePrefix + currentFileSuffix + logFileExt
+	if !strings.Contains(out, wantPath) {
+		t.Errorf("logged error does not mention %s; logs = %q", wantPath, out)
+	}
+	if _, err := l.openCurrentLog(); err == nil {
+		t.Error("openCurrentLog returned nil error for a missing file")
+	}
+}
+
+// TestPruneOldLogsEmptyPrefixDisabled pins the hardening rule: an explicitly
+// empty FilePrefix makes strings.HasPrefix(name, "") true for every entry, so
+// pruning would delete other applications' files shaped like our rotated logs
+// (e.g. 2026-10-22T20-37.log). Empty prefix must disable pruning instead.
+func TestPruneOldLogsEmptyPrefixDisabled(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	old := now.Add(-365 * 24 * time.Hour)
+	names := []string{
+		old.Format(defaultFormatter) + logFileExt, // 他方文件,恰好符合时间戳命名
+		defaultFilePrefix + old.Format(defaultFormatter) + logFileExt,
+		"other-app.log",
+	}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("Chtimes %s: %v", name, err)
+		}
+	}
+
+	removed, err := pruneOldLogs(dir, "", defaultFormatter, 30, now)
+	if err != nil {
+		t.Fatalf("pruneOldLogs(empty prefix): %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("empty prefix removed = %d, want 0", removed)
+	}
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("empty prefix: %s should be kept: %v", name, err)
+		}
+	}
+
+	// The plugin-level path must also warn that pruning is disabled for this
+	// reason, so operators can see why old files are accumulating.
+	var logs bytes.Buffer
+	p := &LogRotatePlugin{Path: dir, FilePrefix: "", Days: 30}
+	p.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	removed, err = p.pruneOldLogs(now)
+	if err != nil {
+		t.Fatalf("plugin pruneOldLogs(empty prefix): %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("plugin empty prefix removed = %d, want 0", removed)
+	}
+	if out := logs.String(); !strings.Contains(out, "empty FilePrefix") {
+		t.Errorf("expected a warning about empty FilePrefix, logs = %q", out)
+	}
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("plugin empty prefix: %s should be kept: %v", name, err)
+		}
+	}
 }

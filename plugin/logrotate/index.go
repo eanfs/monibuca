@@ -119,18 +119,26 @@ func (t *logPruneTask) prune() {
 }
 
 func (config *LogRotatePlugin) pruneOldLogs(now time.Time) (int, error) {
+	// 显式把 FilePrefix 配成空串时,HasPrefix(name, "") 恒真,会把目录内
+	// 形如 2026-10-22T20-37.log 的其它进程文件也当作本插件日志清理。
+	// 这种情况禁用清理并告警,绝不按"无前缀=全目录"处理。
+	if config.FilePrefix == "" {
+		config.Warn("log retention prune disabled: empty FilePrefix would match every file", "dir", config.Path, "days", config.Days)
+		return 0, nil
+	}
 	return pruneOldLogs(config.Path, config.FilePrefix, config.Formatter, config.Days, now)
 }
 
 // pruneOldLogs 删除 dir 下符合本插件命名、且修改时间早于 now-Days*24h 的轮转文件。
 // 语义:
 //   - days <= 0 表示禁用清理,直接返回;
+//   - prefix 为空表示无法界定本插件文件,禁用清理(保留全部文件);
 //   - 只处理普通文件,子目录/符号链接一律跳过;
 //   - 只处理 <prefix><timestamp><.log> 且 timestamp 能被 layout 解析的文件,
 //     当前写入文件(<prefix>current.log)与其它进程的文件永不删除;
 //   - 目录不存在视为无文件可清理(不报错)。
 func pruneOldLogs(dir, prefix, layout string, days int, now time.Time) (int, error) {
-	if days <= 0 || layout == "" {
+	if days <= 0 || layout == "" || prefix == "" {
 		return 0, nil
 	}
 	entries, err := os.ReadDir(dir)
