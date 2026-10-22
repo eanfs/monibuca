@@ -235,3 +235,21 @@ mp4:
 3. 续录的时间戳补偿实现：直接用 wallclock 差值，还是写入 edit list 标记 gap（建议前者，简单）。
 4. 离线抢救工具的解析实现深度：只支持 H.264/H.265 Annex-B，还是也覆盖 AVCC。
 5. OOM 软保护的具体阈值模型：按“流数 × 分辨率 × 码率”估算，还是按进程 `runtime.ReadMemStats` 动态判断（建议先做固定并发上限，简单可预测）。
+
+## 复核补充决定（builder check 后，2026-10-22）
+
+以下 10 项是对独立复核提出的问题的决定，均为**我的判断**，评审时可整体推翻；第 11 项待用户确认。
+
+1. **恢复与续录的优先级：续录优先。** 启动后恢复任务先进入宽限窗口 `recovery.graceperiod`（默认 60s）。期间任何录制器认领（同 `streamPath`、sidecar 未 Commit）则把该文件标记 `.claimed`，恢复任务跳过；宽限到期仍无人认领才定稿恢复。现有 `RecordRecoveryTask`（`plugin/mp4/index.go:89`，扫目录补 DB 记录）与新的索引恢复合并为同一个任务：先补 DB，再做索引定稿，避免两套并行。
+2. **sidecar 删除时机：提交式，而不是正常停止即删。** 正常停止只写 Commit 记录并保留 sidecar；sidecar 一直保留到“上传成功”或“已成功登记 pending”之后才删除。`FinalizeFromTemp` 改变媒体路径时，向 sidecar 追加一条 `RENAME` 记录（新 `mediaPath`），恢复时以最后一条 RENAME 为准。这样在 trailer 重写、上传窗口内再次被杀，也不会第二次丢数据。
+3. **续录匹配与 DB 语义。** 匹配键为 `streamPath` + `storageType` + 未 Commit + 未 claimed，**目标文件名不参与匹配**（上游每次都传新名字，参与匹配则“接上”永不命中）。命中后续录沿用旧文件与旧 `file_path`，延长旧 `record_streams`（更新 EndTime/Duration），不新建记录；新任务名写入 sidecar header 的 `aliases` 供排查。同一 `streamPath` 存在多条未完成时取 mtime 最新一条，其余走恢复定稿。存储层需新增“绑定已有文件并 append”的能力（不能复用 `CreateFile` 的 O_TRUNC）。
+4. **临时目录与换镜像。** 现场 compose 中 `./monibuca/tmp:/tmp` 是 bind mount，替换镜像不会丢 tmp。但 S3 目前写 `os.TempDir()`（`pkg/storage/s3.go:519`），示例配置里的 `tempDir` **在代码中并不存在**（配置误导）。本次实现 `storage.s3.tempdir`，默认 `/tmp`，sidecar 与媒体同目录；部署说明写明“换镜像前确认宿主 tmp 数据存在”。
+5. **索引可能超前于媒体（1 MiB 用户态缓冲）。** 恢复算法改为以实际文件长度为准：读记录时若 `offset + size > fileSize` 立即停止，媒体截断到最后一条有效记录末尾。**不**每 200 ms 强制 flush 媒体缓冲（216 路 × 1 MiB 的 IO 代价不可接受），代价是丢弃“已进索引但仍在用户态缓冲”的尾部帧，属于可接受范围。
+6. **续录的编解码兼容校验。** 续录前比对新流的 fourcc、宽高、采样率、声道数；不一致则定稿旧文件并新建，记 Warn，放弃原因枚举为 `codec_changed` / `resolution_changed` / `audio_changed`。
+7. **header 字段。** 同时保存 `targetName`（basename）、`storageKey`（含 prefix 的完整对象键，上传用）、`filePath`（DB 匹配用）。恢复上传用 header 里的 `storageType`；若当前配置已不包含该类型，转 pending 并告警，不静默改类型。
+8. **恢复自身的原子性。** 恢复一律“写新文件 + 原子 rename”，不原地修改；`.recovering` 状态在下次启动重试（恢复必须幂等，可重复执行）。磁盘峰值需单文件 2 倍空间，恢复并发默认 2；验收增加“恢复过程中再 kill”用例。
+9. **API 安全边界。** 扫描目录必须在白名单内（`recovery.dirs`，默认录制目录 + pending + tempdir）；HTTP 接口要求管理员权限（复用现有鉴权），手动触发跳过 mtime 小于 `recovery.minage`（默认 5m）的文件和有活跃录制器的文件；现场优先用 CLI，HTTP 作为辅助。
+10. **超限语义：排队而不是直接丢。** 录制并发软限流采用有界等待队列（默认容量 = 并发上限 × 4）；槽位满时入队，排队超时（默认 30s）才拒绝，API 返回 503，onpub 记 Error 并保留待录参数以便下次拉起。排队只保留参数不占内存，避免重启风暴后“静默停录”和内存二次爆掉。
+
+11. **【待确认】续录的合并边界。** 上游（its-server）每次发起录制都传新文件名 `rec-<时间戳>.mp4`。若按第 3 条“文件名不参与匹配”，重启后的新任务会被续写进旧文件、旧记录被延长，平台按新文件名查不到文件；若要求文件名一致才续录，则“接上”在实际调用模式下几乎不会发生。此选择改变续录是否默认生效、以及平台侧查询语义，需用户决定。
+
