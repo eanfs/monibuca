@@ -309,25 +309,18 @@ func recoveryObjectKey(header IndexHeader) string {
 // isSafeRecoveryObjectKey 判断对象键是否可安全交给存储后端：
 // 必须是相对路径，任何一段都不得是 ".."（同时覆盖 / 与 \ 分隔符），
 // 且至少要有一段有效名称（"." 之类不是合法的录像路径）。
+//
+// 与 ValidateIndexHeaderPaths 独立：即使上游漏调校验，这里也必须自己拦住。
 func isSafeRecoveryObjectKey(key string) bool {
-	if key == "" || filepath.IsAbs(key) || strings.HasPrefix(key, "/") {
+	if key == "" || filepath.IsAbs(key) ||
+		strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) ||
+		filepath.VolumeName(key) != "" {
 		return false
 	}
-	if filepath.VolumeName(key) != "" {
+	if hasTraversalSegment(key) {
 		return false
 	}
-	meaningful := false
-	for _, segment := range strings.FieldsFunc(key, func(r rune) bool { return r == '/' || r == '\\' }) {
-		switch segment {
-		case "..":
-			return false
-		case ".":
-			continue
-		default:
-			meaningful = true
-		}
-	}
-	return meaningful
+	return hasMeaningfulObjectKeySegment(key)
 }
 
 // recoveryUploadRegistered 判断 upload_tasks 是否已经接管了「本次产物」。

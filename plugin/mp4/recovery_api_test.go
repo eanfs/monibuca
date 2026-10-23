@@ -633,10 +633,10 @@ func TestRecoveryRunProgressIgnoresInFlightStartupScan(t *testing.T) {
 
 // ---------------------------------------------------------------- 信任边界（C1）
 
-// buildRecoveryFixtureWithFilePath 造一个 FilePath 由调用方指定的 sidecar，
-// 用于复现「sidecar 内容被篡改」的现场（FilePath 与 MediaPath 无绑定）。
+// buildRecoveryFixtureWithFilePath 造一个 FilePath/存储类型由调用方指定的
+// sidecar，用于复现「sidecar 内容被篡改」的现场。
 func buildRecoveryFixtureWithFilePath(t *testing.T, dir, name string, payload []byte,
-	filePath string) (mediaPath, sidecar string) {
+	filePath, storageType string) (mediaPath, sidecar string) {
 	t.Helper()
 	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, name, payload)
 	split := len(payload) / 2
@@ -654,7 +654,7 @@ func buildRecoveryFixtureWithFilePath(t *testing.T, dir, name string, payload []
 		MediaPath:   mediaPath,
 		FilePath:    filePath,
 		TargetName:  filepath.Base(filePath),
-		StorageType: "local",
+		StorageType: storageType,
 		StartTime:   time.Now().Add(-time.Hour),
 		Tracks: []mp4pkg.IndexTrack{{
 			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
@@ -762,7 +762,7 @@ func TestRecoveryRunAllowsLoopbackClient(t *testing.T) {
 // 它既会被写进 record_streams.file_path，也会被当作上传对象键。
 func TestRecoverSidecarRejectsFilePathOutsideMediaDir(t *testing.T) {
 	dir := t.TempDir()
-	media, sidecar := buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, "/etc/shadow")
+	media, sidecar := buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, "/etc/shadow", "local")
 	before, err := os.ReadFile(media)
 	if err != nil {
 		t.Fatalf("read media: %v", err)
@@ -803,7 +803,7 @@ func TestRecoverSidecarRejectsFilePathOutsideMediaDir(t *testing.T) {
 func TestRecoverSidecarAcceptsFilePathWithinMediaDir(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "rec.mp4")
-	buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, filePath)
+	buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, filePath, "local")
 
 	var enqueued []RecoveryItem
 	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
@@ -819,5 +819,68 @@ func TestRecoverSidecarAcceptsFilePathWithinMediaDir(t *testing.T) {
 	}
 	if enqueued[0].Header.FilePath != filePath {
 		t.Fatalf("header.filePath = %q, want %q", enqueued[0].Header.FilePath, filePath)
+	}
+}
+
+// 对象存储的 FilePath 是对象键：绝对路径与含 ".." 的键都必须拒绝恢复。
+// 此时 MediaPath 是本地暂存文件，对对象键做"同目录绑定"没有意义，
+// 但绝对路径/穿越会让产物覆盖任意对象键。
+func TestRecoverSidecarRejectsUnsafeObjectKey(t *testing.T) {
+	cases := []struct {
+		name     string
+		filePath string
+	}{
+		{"absolute", "/etc/shadow"},
+		{"traversal", "live/../../etc/shadow"},
+		{"backslash traversal", `live\..\..\etc\shadow`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, tc.filePath, "s3")
+
+			enqueued := 0
+			recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error {
+				enqueued++
+				return nil
+			}}
+			stats, err := recovery.RunOnce([]string{dir})
+			if err == nil {
+				t.Fatalf("object key %q must be rejected", tc.filePath)
+			}
+			if stats.Failed != 1 || stats.Recovered != 0 || enqueued != 0 {
+				t.Fatalf("stats = %+v, enqueued = %d, want failed=1 enqueued=0", stats, enqueued)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "a.mp4")); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected recovery must not produce output: %v", statErr)
+			}
+		})
+	}
+}
+
+// 对象存储的正常形态（相对对象键 + 本地暂存 MediaPath）必须照常恢复：
+// 这是恢复管线的主路径，不能被对象键校验误伤。
+func TestRecoverSidecarAcceptsObjectKey(t *testing.T) {
+	dir := t.TempDir()
+	buildRecoveryFixtureWithFilePath(t, dir, "s3writer_a.tmp",
+		[]byte{0x00, 0x01, 0x02, 0x03}, "live/test/rec.mp4", "s3")
+
+	var enqueued []RecoveryItem
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
+		enqueued = append(enqueued, item)
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("object-storage recovery must not be rejected: %v", err)
+	}
+	if stats.Recovered != 1 || len(enqueued) != 1 {
+		t.Fatalf("stats = %+v, enqueued = %d, want recovered=1 enqueued=1", stats, len(enqueued))
+	}
+	if enqueued[0].Header.FilePath != "live/test/rec.mp4" {
+		t.Fatalf("header.filePath = %q, want live/test/rec.mp4", enqueued[0].Header.FilePath)
+	}
+	if enqueued[0].Header.MediaPath == enqueued[0].Header.FilePath {
+		t.Fatalf("object-storage MediaPath must stay the local staging path: %+v", enqueued[0].Header)
 	}
 }
