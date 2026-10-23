@@ -525,6 +525,17 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 
 	// —— 此后 INSERT_RANGE 改写底层文件 ——
+	// 平移意图必须先于数据移动落盘（writeExtension 内部 Flush+Sync）：
+	// 两步之间被 kill 时，恢复侧靠这条记录 + 文件长度判定到底移位没有；
+	// 没有它就只能产出错位 MP4。写不进去宁可不做原地插入（回退全量重写，
+	// 那条路径会把 payload 复制到新文件，偏移由 rewriteIndexRecords 统一写）。
+	if e := appendIndexOffsetShift(t.indexPath, preLen, insertLen); e != nil {
+		t.Warn("insert-range skipped: cannot persist offset-shift record",
+			"err", e, "indexPath", t.indexPath)
+		t.shiftSampleOffsets(-insertLen)
+		t.muxer.MakeMoov()
+		return false, nil
+	}
 	if e := storage.InsertRange(fd, 0, insertLen); e != nil {
 		t.shiftSampleOffsets(-insertLen)
 		t.muxer.MakeMoov()
@@ -568,8 +579,13 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 
 	// INSERT_RANGE 把 mdat 后移了 insertLen，索引记录也要跟着平移。
+	// 重写成功才追加 SHIFT_DONE：中途被杀时 sidecar 仍是「旧索引 + SHIFT」，
+	// 恢复侧按文件长度把偏移 +insertLen 后重建。重写失败/回滚分支同样会走到
+	// 这里（muxer 偏移已复原），DONE 记录让恢复侧直接用新索引。
 	if idxErr := rewriteIndexRecords(t.indexPath, t.muxer, t.durationMs); idxErr != nil {
 		t.Error("rewrite index records after insert-range", "err", idxErr, "indexPath", t.indexPath)
+	} else if e := appendIndexOffsetShiftDone(t.indexPath); e != nil {
+		t.Warn("append offset-shift-done record failed", "err", e, "indexPath", t.indexPath)
 	}
 
 	// 持久化（对象存储=上传）移交独立上传队列,不阻塞 trailer 队列。
@@ -1324,18 +1340,46 @@ func (r *Recorder) closeIndex() {
 	r.resetIndex()
 }
 
-// appendIndexRename 在已 Committed 的 sidecar 末尾追加 RENAME 扩展记录。
-// 用于 FinalizeFromTemp 把媒体换成另一个本地文件（对象存储上传源）的场景。
-func appendIndexRename(indexPath, mediaPath string) error {
+// appendIndexExtension 在已 Committed 的 sidecar 末尾追加一条扩展记录并落盘。
+// indexPath 为空（本段没有 sidecar）时是 no-op。扩展记录只追加、不改历史，
+// 读取端以最后一条为准。
+func appendIndexExtension(indexPath string, write func(*IndexWriter) error) error {
+	if indexPath == "" {
+		return nil
+	}
 	w, err := openIndexAppend(indexPath)
 	if err != nil {
 		return err
 	}
-	err = w.Rename(mediaPath)
+	err = write(w)
 	if cerr := w.Close(); err == nil {
 		err = cerr
 	}
 	return err
+}
+
+// appendIndexRename 在已 Committed 的 sidecar 末尾追加 RENAME 扩展记录。
+// 用于 FinalizeFromTemp 把媒体换成另一个本地文件（对象存储上传源）的场景。
+func appendIndexRename(indexPath, mediaPath string) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.Rename(mediaPath)
+	})
+}
+
+// appendIndexOffsetShift 在 fallocate(INSERT_RANGE) 之前记录平移意图：
+// preLen 是插入前的文件长度，insertLen 是即将插入的字节数。写完即落盘，
+// 保证崩溃后恢复侧不会面对「数据已后移、索引还是旧偏移」的静默错位。
+func appendIndexOffsetShift(indexPath string, preLen, insertLen int64) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.OffsetShift(preLen, insertLen)
+	})
+}
+
+// appendIndexOffsetShiftDone 在索引按平移后的偏移重写成功后追加完成标记。
+func appendIndexOffsetShiftDone(indexPath string) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.OffsetShiftDone()
+	})
 }
 
 // removeIndexAfterUpload 是 sidecar 提交式删除的唯一入口。

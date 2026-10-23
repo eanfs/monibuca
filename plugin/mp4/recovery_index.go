@@ -853,6 +853,35 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 		return recoverySkipped, item, nil
 	}
 
+	info, err := os.Stat(source)
+	if err != nil {
+		// 保留 sidecar，下次重试；Stat 失败多半是 IO/挂载问题。
+		t.Warn("stat recovery media failed, will retry on next run", "err", err, "media", source)
+		return recoveryFailed, item, fmt.Errorf("stat media: %w", err)
+	}
+
+	// INSERT_RANGE 崩溃窗口：trailer 用 fallocate 把 mdat 后移后、索引还没按
+	// 新坐标重写时进程被杀。旧偏移仍落在文件长度内，RestoreFromIndex 不会
+	// 报 ErrIndexTruncated，会把 moov 字节当载荷写出「结构合法但内容全错」
+	// 的 MP4 并报告成功。判定必须确定性：状态不确定就拒绝恢复、保留 sidecar
+	// （不 markFailed），交给人工处理。
+	shift, shiftErr := index.ResolveOffsetShift(info.Size())
+	if shiftErr != nil {
+		t.Error("reject recovery: index offset shift state uncertain",
+			"sidecar", sidecar, "media", source, "mediaSize", info.Size(),
+			"shiftState", int(index.OffsetShift),
+			"preLen", index.ShiftPreLen, "insertLen", index.ShiftInsertLen,
+			"err", shiftErr)
+		return recoveryFailed, item, shiftErr
+	}
+	records := index.RecordsWithOffsetShift(shift)
+	if shift != 0 {
+		t.Info("applying index offset shift for interrupted INSERT_RANGE",
+			"sidecar", sidecar, "media", source, "shift", shift)
+		// 上传/入库链路必须拿到与产物一致的坐标。
+		item.Records = records
+	}
+
 	marker, err := t.markRecovering(sidecar)
 	if err != nil {
 		return recoveryFailed, item, err
@@ -860,15 +889,8 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	// 入队时 sidecar 已改名为 .recovering：上传任务成功后按该路径提交式删除。
 	item.SidecarPath = marker
 
-	info, err := os.Stat(source)
-	if err != nil {
-		// 保留 .recovering，下次重试；Stat 失败多半是 IO/挂载问题。
-		t.Warn("stat recovery media failed, will retry on next run", "err", err, "media", source)
-		return recoveryFailed, item, fmt.Errorf("stat media: %w", err)
-	}
-
 	muxer := mp4pkg.NewMuxer(0)
-	restoreErr := muxer.RestoreFromIndex(index.Header, index.Records, info.Size())
+	restoreErr := muxer.RestoreFromIndex(index.Header, records, info.Size())
 	switch {
 	case errors.Is(restoreErr, mp4pkg.ErrNoUsableSamples):
 		t.markFailed(marker)

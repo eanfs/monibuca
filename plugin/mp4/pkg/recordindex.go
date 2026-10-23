@@ -34,6 +34,9 @@ import (
 //
 //	type 1 = commit: payload = totalDuration(uint32 BE) | samples(uint64 BE)，共 12 字节
 //	type 2 = rename: payload = 新的媒体路径(UTF-8)
+//	type 3 = offset-shift: payload = preLen(int64 BE) | insertLen(int64 BE)，共 16 字节。
+//	         写在 fallocate(INSERT_RANGE) 之前，表示「若该插入已生效，索引偏移需 +insertLen」。
+//	type 4 = offset-shift-done: 无 payload，表示索引已按平移后的偏移重写完成。
 //
 // 未知 type 的扩展记录按 payloadLen 跳过(向前兼容)。payloadLen 超过上限视为
 // 损坏，读取在该处停止。整帧全零同样视为损坏尾部——崩溃、掉电、预分配和
@@ -71,11 +74,14 @@ const (
 	// size(4) + type(4) + largesize(8) + version/flags(4) + entry_count(4)。
 	minSTSDLargeBoxSize = 24
 
-	indexFlagExtension = 0xFF
-	indexExtCommit     = 1
-	indexExtRename     = 2
-	indexCommitPayload = 12
-	indexPrefixSize    = len(IndexMagic) + 4
+	indexFlagExtension      = 0xFF
+	indexExtCommit          = 1
+	indexExtRename          = 2
+	indexExtOffsetShift     = 3
+	indexExtOffsetShiftDone = 4
+	indexCommitPayload      = 12
+	indexOffsetShiftPayload = 16
+	indexPrefixSize         = len(IndexMagic) + 4
 )
 
 var (
@@ -124,6 +130,29 @@ type IndexRecord struct {
 	Duration uint32
 }
 
+// OffsetShiftState 描述 sidecar 末尾 INSERT_RANGE 平移记录的状态。
+// 录制收尾可能用 fallocate(INSERT_RANGE) 把 mdat 整体后移，索引偏移也要跟着
+// 后移；两步之间被 kill 会留下「媒体已后移、索引仍是旧偏移」的现场。SHIFT /
+// SHIFT_DONE 扩展记录让恢复侧能确定性地识别该现场（见 ResolveOffsetShift）。
+type OffsetShiftState int
+
+const (
+	// OffsetShiftNone 没有平移记录：索引偏移就是录制时的原始坐标（旧行为）。
+	OffsetShiftNone OffsetShiftState = iota
+	// OffsetShiftPending 最后一条是 SHIFT：InsertRange 是否已生效取决于媒体
+	// 文件长度，必须用 ResolveOffsetShift 判定，不能猜。
+	OffsetShiftPending
+	// OffsetShiftApplied 最后一条是 SHIFT_DONE：索引已按平移后的偏移重写。
+	OffsetShiftApplied
+	// OffsetShiftUncertain 平移记录本身不完整/非法，状态无法确定。
+	OffsetShiftUncertain
+)
+
+// ErrOffsetShiftUncertain 表示 sidecar 记录了 INSERT_RANGE 平移意图，但媒体
+// 文件长度既不是平移前也不是平移后——进程在两步之间被杀，无法确定数据落在
+// 哪个坐标系。调用方必须拒绝恢复并保留 sidecar（人工可介入）。
+var ErrOffsetShiftUncertain = errors.New("mp4: index offset shift state uncertain")
+
 // IndexFile 是 ReadIndex 的结果。Records 只包含完整读出的记录；
 // 尾部被截断时截断点之后的记录全部丢弃，Committed 保持 false。
 type IndexFile struct {
@@ -132,6 +161,58 @@ type IndexFile struct {
 	Committed bool
 	// MediaPath 是最终媒体路径：header 中的值，若存在 rename 扩展记录则被其覆盖。
 	MediaPath string
+	// OffsetShift 是 sidecar 末尾 INSERT_RANGE 平移记录的状态；多条记录时
+	// 以最后一条为准。
+	OffsetShift OffsetShiftState
+	// ShiftPreLen / ShiftInsertLen 是最后一条 SHIFT 记录携带的媒体文件长度
+	// （插入前）与插入长度。
+	ShiftPreLen    int64
+	ShiftInsertLen int64
+}
+
+// ResolveOffsetShift 根据媒体文件实际长度，确定索引记录需要的偏移平移量。
+//
+// 判定表（确定性，不确定即拒绝）：
+//
+//	最后一条是 SHIFT + size == preLen              → 0（INSERT_RANGE 未生效）
+//	最后一条是 SHIFT + size >= preLen + insertLen  → insertLen（已生效、索引未重写）
+//	最后一条是 SHIFT + 其它长度                    → ErrOffsetShiftUncertain
+//	有 SHIFT_DONE（任意长度）                      → 0（索引已按新偏移重写）
+//	无 SHIFT                                       → 0（旧行为）
+func (f *IndexFile) ResolveOffsetShift(mediaSize int64) (int64, error) {
+	switch f.OffsetShift {
+	case OffsetShiftNone, OffsetShiftApplied:
+		return 0, nil
+	case OffsetShiftPending:
+		if f.ShiftPreLen <= 0 || f.ShiftInsertLen <= 0 {
+			return 0, fmt.Errorf("%w: invalid shift record preLen=%d insertLen=%d",
+				ErrOffsetShiftUncertain, f.ShiftPreLen, f.ShiftInsertLen)
+		}
+		switch {
+		case mediaSize == f.ShiftPreLen:
+			return 0, nil
+		case mediaSize >= f.ShiftPreLen+f.ShiftInsertLen:
+			return f.ShiftInsertLen, nil
+		}
+		return 0, fmt.Errorf("%w: media size %d, preLen %d, insertLen %d",
+			ErrOffsetShiftUncertain, mediaSize, f.ShiftPreLen, f.ShiftInsertLen)
+	default:
+		return 0, fmt.Errorf("%w: malformed offset shift records", ErrOffsetShiftUncertain)
+	}
+}
+
+// RecordsWithOffsetShift 返回把所有样本记录偏移右移 shift 的新切片，调用方
+// 应把它交给 muxer 而不是就地修改 ReadIndex 的结果。shift<=0 时原样返回。
+func (f *IndexFile) RecordsWithOffsetShift(shift int64) []IndexRecord {
+	if shift <= 0 || len(f.Records) == 0 {
+		return f.Records
+	}
+	out := make([]IndexRecord, len(f.Records))
+	for i, r := range f.Records {
+		r.Offset = uint64(int64(r.Offset) + shift)
+		out[i] = r
+	}
+	return out
 }
 
 // IndexWriter 顺序追加索引记录。写入经过 4KB 缓冲，最多每秒落盘一次；
@@ -273,6 +354,28 @@ func (w *IndexWriter) Commit(totalDuration uint32, samples uint64) error {
 // 它不移动索引文件本身。
 func (w *IndexWriter) Rename(mediaPath string) error {
 	return w.writeExtension(indexExtRename, []byte(mediaPath))
+}
+
+// OffsetShift 追加一条平移意图记录：preLen 是 INSERT_RANGE 之前的文件长度，
+// insertLen 是即将在文件头插入的字节数。
+//
+// 必须在真正执行 INSERT_RANGE **之前**调用：writeExtension 会立即
+// Flush+Sync，保证崩溃后恢复侧一定能看到「本次插入可能已生效」的意图，
+// 而不是面对「数据已后移、索引还是旧偏移」的静默错位。
+func (w *IndexWriter) OffsetShift(preLen, insertLen int64) error {
+	if preLen < 0 || insertLen <= 0 {
+		return fmt.Errorf("mp4: invalid offset shift preLen=%d insertLen=%d", preLen, insertLen)
+	}
+	payload := make([]byte, indexOffsetShiftPayload)
+	binary.BigEndian.PutUint64(payload[0:8], uint64(preLen))
+	binary.BigEndian.PutUint64(payload[8:16], uint64(insertLen))
+	return w.writeExtension(indexExtOffsetShift, payload)
+}
+
+// OffsetShiftDone 追加一条「索引已按平移后的偏移重写完成」记录。
+// 必须在 rewriteIndexRecords 成功之后调用。
+func (w *IndexWriter) OffsetShiftDone() error {
+	return w.writeExtension(indexExtOffsetShiftDone, nil)
 }
 
 func (w *IndexWriter) writeExtension(extType uint16, payload []byte) error {
@@ -450,6 +553,23 @@ func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
 		case indexExtRename:
 			idx.MediaPath = string(payload)
 			idx.Header.MediaPath = idx.MediaPath
+		case indexExtOffsetShift:
+			// 多条 SHIFT 时以最后一条为准；负载长度不对属于确定性损坏，
+			// 记录状态置为 uncertain 让恢复侧拒绝，而不是当作「没有平移」。
+			if payloadLen != indexOffsetShiftPayload {
+				idx.OffsetShift = OffsetShiftUncertain
+				continue
+			}
+			idx.OffsetShift = OffsetShiftPending
+			idx.ShiftPreLen = int64(binary.BigEndian.Uint64(payload[0:8]))
+			idx.ShiftInsertLen = int64(binary.BigEndian.Uint64(payload[8:16]))
+		case indexExtOffsetShiftDone:
+			if payloadLen != 0 {
+				idx.OffsetShift = OffsetShiftUncertain
+				continue
+			}
+			idx.OffsetShift = OffsetShiftApplied
+			idx.ShiftPreLen, idx.ShiftInsertLen = 0, 0
 		}
 	}
 }
