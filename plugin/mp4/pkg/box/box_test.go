@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -296,5 +298,40 @@ func TestSTSDUnmarshalRejectsShortPayload(t *testing.T) {
 				t.Fatalf("Unmarshal(%d bytes) should error", len(buf))
 			}
 		}()
+	}
+}
+
+// remainingBytes 只对"位置有意义"的输入给出剩余量：常规文件与内存 reader 精确，
+// 管道/设备文件必须返回 false（它们的 Size() 常为 0，误用会把所有带负载的 box
+// 判成超限）。
+func TestRemainingBytes(t *testing.T) {
+	if n, ok := remainingBytes(bytes.NewReader(make([]byte, 10))); !ok || n != 10 {
+		t.Fatalf("bytes.Reader: n=%d ok=%v, want 10/true", n, ok)
+	}
+
+	path := filepath.Join(t.TempDir(), "box.bin")
+	if err := os.WriteFile(path, make([]byte, 10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Seek(4, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := remainingBytes(f); !ok || n != 6 {
+		t.Fatalf("*os.File after seek: n=%d ok=%v, want 6/true", n, ok)
+	}
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	if n, ok := remainingBytes(pr); ok {
+		t.Fatalf("pipe must not report remaining bytes, got %d", n)
 	}
 }

@@ -316,6 +316,11 @@ func remainingBytes(r io.Reader) (int64, bool) {
 		if err != nil {
 			return 0, false
 		}
+		// 管道/设备/目录的 Size() 没有"剩余字节"的含义（常为 0），误用会把所有
+		// 带负载的 box 判成超限，退回兜底上限。
+		if !info.Mode().IsRegular() {
+			return 0, false
+		}
 		cur, err := v.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return 0, false
