@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,6 +75,121 @@ func simulateMySQLMillisecondDateTime(db *gorm.DB) {
 
 func recoveryDBTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// capturedStatement 是一条被 DryRun 捕获的 SQL。
+type capturedStatement struct {
+	// SQL 是参数已内联的语句（Dialector.Explain）。
+	SQL string
+	// ZeroTimeBound 表示语句绑定了 time.Time{} 参数——正是 MySQL 无法接受的
+	// 形态。直接检查 Vars 比解析 Explain 后的文本更可靠：不同方言对零值的
+	// 渲染不同（sqlite 为 0000-00-00，gorm 的 ExplainSQL 为 0001-01-01）。
+	ZeroTimeBound bool
+}
+
+// captureRecoveryDBSQL 返回一个 DryRun 会话，并收集它实际构建的 SQL。DryRun
+// 不触碰数据库，但 gorm 仍会构建语句并调用 Logger，因此断言的就是真正会发给
+// DB 的 SQL。
+func captureRecoveryDBSQL(t *testing.T, db *gorm.DB) (*gorm.DB, func() []capturedStatement) {
+	t.Helper()
+	var mu sync.Mutex
+	var stmts []capturedStatement
+	capture := func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.SQL.Len() == 0 {
+			return
+		}
+		stmt := capturedStatement{
+			SQL: tx.Dialector.Explain(tx.Statement.SQL.String(), tx.Statement.Vars...),
+		}
+		for _, v := range tx.Statement.Vars {
+			if ts, ok := v.(time.Time); ok && ts.IsZero() {
+				stmt.ZeroTimeBound = true
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		stmts = append(stmts, stmt)
+	}
+	if err := db.Callback().Query().After("gorm:query").Register("test:capture_query_sql", capture); err != nil {
+		t.Fatalf("register query SQL capture: %v", err)
+	}
+	if err := db.Callback().Update().After("gorm:update").Register("test:capture_update_sql", capture); err != nil {
+		t.Fatalf("register update SQL capture: %v", err)
+	}
+	return db.Session(&gorm.Session{DryRun: true}), func() []capturedStatement {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]capturedStatement(nil), stmts...)
+	}
+}
+
+// assertNoZeroTime 断言语句既没有绑定零值 time.Time，也没有把零日期渲染进
+// SQL 文本。MySQL DATETIME 的合法下界是 1000-01-01，零日期在严格模式下直接
+// 报 "Incorrect datetime value"。
+func assertNoZeroTime(t *testing.T, stmt capturedStatement) {
+	t.Helper()
+	if stmt.ZeroTimeBound {
+		t.Fatalf("SQL binds a zero time.Time (MySQL DATETIME rejects it): %s", stmt.SQL)
+	}
+	for _, zeroDate := range []string{"0001-01-01", "0000-00-00"} {
+		if strings.Contains(stmt.SQL, zeroDate) {
+			t.Fatalf("SQL renders zero date %q (MySQL DATETIME rejects it): %s", zeroDate, stmt.SQL)
+		}
+	}
+}
+
+// Important 10（MySQL 兼容）：end_time 的「未收尾」谓词绝不能绑定 time.Time{}。
+// gorm 把零值时间渲染成零日期，而 MySQL DATETIME 的合法下界是 1000-01-01：
+// 严格模式直接报 "Incorrect datetime value"，非严格模式被钳成零日期 —— 两种
+// 结果都让回退查询永远认领不到开录时写入的半成品行（随后 Create 出重复记录）。
+// 谓词必须是方言无关的字符串比较。
+func TestUpdateRecoveredRecordNeverBindsZeroTime(t *testing.T) {
+	db, captured := captureRecoveryDBSQL(t, newRecoveryDBTestDB(t))
+	header := IndexHeader{
+		StreamPath:  "live/zero_time",
+		FilePath:    "record/live/zero_time.mp4",
+		StorageType: "local",
+		// StartTime 为零：只走「无起始时间 → 定位尚未收尾的行」这一条分支。
+	}
+	if err := updateRecoveredRecord(db, recoveryDBTestLogger(), header, nil, nil); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+
+	stmts := captured()
+	if len(stmts) == 0 {
+		t.Fatal("no SQL captured from updateRecoveredRecord")
+	}
+	sawUnclosed := false
+	for _, stmt := range stmts {
+		assertNoZeroTime(t, stmt)
+		if strings.Contains(stmt.SQL, "end_time IS NULL") {
+			sawUnclosed = true
+		}
+	}
+	if !sawUnclosed {
+		t.Fatalf("no query matched rows by end_time IS NULL; captured=%v", stmts)
+	}
+}
+
+// 历史行兜底谓词（未收尾 或 与本次恢复结果一致）同样不得绑定零时间：
+// 它和精确查询一样会在 MySQL 上执行，坏谓词会让 fallback 失效 → 重复行。
+func TestRecoveryFallbackPredicateNeverBindsZeroTime(t *testing.T) {
+	db, captured := captureRecoveryDBSQL(t, newRecoveryDBTestDB(t))
+	end := time.Now().Truncate(time.Millisecond)
+	if err := db.Where(unclosedOrMatchingRecordPredicate,
+		end.Add(-time.Millisecond), end.Add(time.Millisecond), uint32(40)).
+		First(&m7s.RecordStream{}).Error; err != nil {
+		t.Fatalf("dry-run fallback query: %v", err)
+	}
+
+	stmts := captured()
+	if len(stmts) != 1 {
+		t.Fatalf("captured %d statements, want 1 (%v)", len(stmts), stmts)
+	}
+	assertNoZeroTime(t, stmts[0])
+	if !strings.Contains(stmts[0].SQL, "end_time IS NULL") {
+		t.Fatalf("fallback predicate lost the IS NULL branch: %s", stmts[0].SQL)
+	}
 }
 
 // Finding 2 回归（MySQL DATETIME(3)）：header 的 StartTime 带纳秒，而列只存

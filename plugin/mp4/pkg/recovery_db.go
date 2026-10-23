@@ -163,6 +163,22 @@ func droppedTrackKinds(header IndexHeader, dropped map[uint16]bool) (audioDroppe
 	return
 }
 
+// 恢复回写的「尚未收尾」谓词。
+//
+// 绝不能绑定 time.Time{}：驱动会把零值时间渲染成零日期字符串，而 MySQL
+// DATETIME 的合法下界是 1000-01-01。严格模式下直接报 "Incorrect datetime
+// value"（整条回写失败），非严格模式被钳成零日期、谓词永不成立 —— 于是
+// fallback 认领不到开录时写入的半成品行，重跑时 Create 出重复记录。
+// 这里改用方言无关的字符串字面量比较：
+//   - IS NULL 覆盖 GORM `default:NULL` 写入的未收尾行（正常形态）；
+//   - < '1970-01-01' 覆盖历史版本把零值 time.Time 直接落库的行：sqlite 存
+//     '0001-01-01 ...'、MySQL 非严格模式钳成 '0000-00-00 ...'，两者都小于
+//     该下界；真实录像时间远晚于 1970，不会误伤。
+const (
+	unclosedRecordPredicate           = "(end_time IS NULL OR end_time < '1970-01-01')"
+	unclosedOrMatchingRecordPredicate = "(end_time IS NULL OR end_time < '1970-01-01' OR (end_time BETWEEN ? AND ? AND duration = ?))"
+)
+
 // updateRecoveredRecord 在恢复成功后回写 record_streams。
 //
 // 崩溃前开录已插入一行（end_time 空、duration=0），旧的 DB 补录（RunDBBackfill）
@@ -258,7 +274,7 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		exact = exact.Where("start_time = ?", startTime)
 	} else {
 		// 无起始时间时只能定位「尚未收尾」的那一行。
-		exact = exact.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
+		exact = exact.Where(unclosedRecordPredicate)
 	}
 	findErr := exact.First(&existing).Error
 	switch {
@@ -287,11 +303,10 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		fallback := db.WithContext(dbCtx).Where("file_path = ?", filePath)
 		if !endTime.IsZero() && duration > 0 {
 			// end_time 的 ±1ms 同样服务于旧版本写入的历史行。
-			fallback = fallback.Where(
-				"(end_time IS NULL OR end_time = ? OR (end_time BETWEEN ? AND ? AND duration = ?))",
-				time.Time{}, endTime.Add(-time.Millisecond), endTime.Add(time.Millisecond), duration)
+			fallback = fallback.Where(unclosedOrMatchingRecordPredicate,
+				endTime.Add(-time.Millisecond), endTime.Add(time.Millisecond), duration)
 		} else {
-			fallback = fallback.Where("(end_time IS NULL OR end_time = ?)", time.Time{})
+			fallback = fallback.Where(unclosedRecordPredicate)
 		}
 		fallbackErr := fallback.First(&existing).Error
 		switch {
