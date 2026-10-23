@@ -243,8 +243,20 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 		if _, err = io.ReadFull(r, tmp[:]); err != nil {
 			return
 		}
-		payload = make([]byte, binary.BigEndian.Uint64(tmp[:])-BasicBoxLen-8)
+		largeSize := binary.BigEndian.Uint64(tmp[:])
+		// largesize 至少要覆盖 size(4)+type(4)+largesize(8)；更小的值会让下面的
+		// 相减在 uint64 下回绕成 ~2^64 字节的分配。损坏/伪造文件不能借尺寸字段
+		// 决定内存占用。
+		if largeSize < BasicBoxLen+8 {
+			return nil, fmt.Errorf("box %s: invalid largesize %d", baseBox.typ.String(), largeSize)
+		}
+		payload = make([]byte, largeSize-BasicBoxLen-8)
 	} else {
+		// 声明长度至少要覆盖 8 字节 box 头；更小的值(size<8)会让 uint32 相减
+		// 回绕成 ~4.29GB 的分配。
+		if baseBox.size < BasicBoxLen {
+			return nil, fmt.Errorf("box %s: invalid size %d", baseBox.typ.String(), baseBox.size)
+		}
 		payload = make([]byte, baseBox.size-BasicBoxLen)
 	}
 	_, err = io.ReadFull(r, payload)
@@ -258,6 +270,11 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 		box, err = b.Unmarshal(payload)
 	case *FullBox:
 		header.BaseBox = baseBox
+		// FullBox 的负载至少要有 version(1)+flags(3)；payload 更短时下面两次取值
+		// 会越界 panic（典型是声明 size==8 的 stsd 之类）。
+		if len(payload) < 4 {
+			return nil, fmt.Errorf("box %s: payload %d too short for full box", baseBox.typ.String(), len(payload))
+		}
 		header.Version = payload[0]
 		header.Flags = [3]byte(payload[1:4])
 		box, err = b.Unmarshal(payload[4:])

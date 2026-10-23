@@ -423,10 +423,16 @@ func codecTypeFromFourCC(fourCC string) (MP4_CODEC_TYPE, bool) {
 
 // validateSTSDBounds 校验索引里 stsd 首个 box 的声明尺寸确实落在实际字节范围内。
 //
-// 索引是不可信输入，而 box.ReadFrom 用无符号运算算负载长度 make(size-8)：
-// 声明尺寸 < 8 会回绕成 ~4.29GB 的分配，== 8 的 FullBox 会在 payload[0] 越界
-// panic，size==1 的 largesize 形式同样会下溢。只在恢复入口拦截，不改
-// box.ReadFrom 本身(解析路径调用面太广)。
+// 索引是不可信输入。box.ReadFrom 已兜住"声明尺寸小于 box 头"的分配下溢，
+// 但它是通用解析器，不知道各 Unmarshal 需要多长的负载：stsd 恒为 FullBox，
+// 合法内容至少是
+//
+//	size(4) + type(4) + version/flags(4) + entry_count(4) = 16
+//
+// 所以 size 在 12~15 时会通过 box.ReadFrom 的 FullBox 检查，再在
+// STSDBox.Unmarshal 取 entry_count 时越界 panic（8~11 连 box.ReadFrom 都过不了）；
+// largesize(size==1) 形式还多 8 字节 largesize，下界是 24。这两个下界是 stsd
+// 语义，通用解析器给不出，只能在恢复入口校验。
 func validateSTSDBounds(it IndexTrack) error {
 	errInvalid := fmt.Errorf("mp4: restore track %d: invalid stsd bounds", it.ID)
 	n := len(it.STSD)

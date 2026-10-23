@@ -276,8 +276,13 @@ func (stsd *STSDBox) Unmarshal(buf []byte) (IBox, error) {
 	r := bytes.NewReader(buf[4:])
 	for {
 		box, err := ReadFrom(r)
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		// 子 box 损坏必须上抛：静默截断会把"解析失败"变成"stsd 只有部分 entry"，
+		// 调用方据此写出的 moov 会不可播，且无从察觉。io.EOF 才是正常结束。
+		if err != nil {
+			return nil, err
 		}
 		stsd.Entries = append(stsd.Entries, box)
 	}
