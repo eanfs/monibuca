@@ -391,11 +391,12 @@ func TestUpdateRecoveredRecordAcceptsLocalStorageKey(t *testing.T) {
 	}
 }
 
-// 攻击形态：可写恢复目录的进程投放媒体 <dir>/etc/shadow 并写
-// FilePath=/etc/shadow，试图让绝对路径进 record_streams.file_path。
-// 下载接口对绝对 file_path 直接 http.ServeFile/os.Open（api.go:151-158），
-// 一旦写入即任意文件读取，因此必须整体拒绝、一行都不建。
-func TestUpdateRecoveredRecordRejectsShadowPathEvenWhenMediaIsNamedShadow(t *testing.T) {
+// 仅以「MediaPath 尾部」形态成立（recoveryBindingMediaSuffix）且**没有既有行**时，
+// updateRecoveredRecord 必须返回成功（不阻塞上传）但不 Create，只 Warn：
+// 可写恢复目录的进程可以用「媒体文件 <dir>/etc/shadow + FilePath=/etc/shadow」
+// 自造后缀关系，而下载接口对绝对 file_path 直接 http.ServeFile/os.Open
+// （api.go:151-158），新建该行即任意文件读取。
+func TestUpdateRecoveredRecordSuffixOnlyWithoutExistingRowSkipsCreate(t *testing.T) {
 	db := newRecoveryDBTestDB(t)
 	logger := recoveryDBTestLogger()
 	dir := t.TempDir()
@@ -408,6 +409,7 @@ func TestUpdateRecoveredRecordRejectsShadowPathEvenWhenMediaIsNamedShadow(t *tes
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
+	// 返回成功：不阻塞上传（产物仍可 upload，只是不留下不可信的元数据行）。
 	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
 		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
 	}
@@ -419,5 +421,45 @@ func TestUpdateRecoveredRecordRejectsShadowPathEvenWhenMediaIsNamedShadow(t *tes
 		var rows []m7s.RecordStream
 		_ = db.Find(&rows).Error
 		t.Fatalf("record_streams rows = %d (%+v), want 0", count, rows)
+	}
+}
+
+// 正常录制在开录时已用同一个绝对 file_path 写入半成品行：后缀形态必须更新该行。
+func TestUpdateRecoveredRecordSuffixFormUpdatesExistingRow(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	dir := t.TempDir()
+	filePath := "/data/records/rec.mp4"
+	start := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	if err := db.Create(&m7s.RecordStream{
+		StartTime:   start,
+		FilePath:    filePath,
+		StreamPath:  "live/rec",
+		Type:        "mp4",
+		StorageType: "local",
+	}).Error; err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	header := IndexHeader{
+		StreamPath:  "live/rec",
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "data", "records", "rec.mp4"),
+		FilePath:    filePath,
+		StartTime:   start,
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var rows []m7s.RecordStream
+	if err := db.Where("file_path = ?", filePath).Find(&rows).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("record_streams rows = %d, want 1", len(rows))
+	}
+	if rows[0].Duration != 40 || rows[0].EndTime.IsZero() {
+		t.Fatalf("row not updated: %+v", rows[0])
 	}
 }

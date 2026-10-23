@@ -187,6 +187,29 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		return nil
 	}
 
+	// 走到这里说明按 file_path + start_time 没有找到既有行。若本次的绝对
+	// file_path 只是以「MediaPath 尾部」形态通过绑定（recoveryBindingMediaSuffix：
+	// MediaPath = <basePath> + FilePath），则不允许新建行，只 Warn。
+	//
+	// 为什么 DB 写入要额外收窄：
+	//   - 后缀关系在 sidecar 不可信时可以**被攻击者自造**——他同时控制
+	//     MediaPath 与 FilePath：先投放媒体 <恢复目录>/etc/shadow，再写
+	//     FilePath=/etc/shadow，后缀即成立。
+	//   - 而绝对 file_path 在下载侧是直接打开的：api.go:151-158 的
+	//     http.ServeFile / os.Open，GetFullPath 只用于相对路径分支（api.go:186）。
+	//     所以"新建一行 file_path=/etc/shadow"= 任意文件读取。
+	//   - 该形态只出现在「local + 绝对 record.filepath + 非空 basePath」的既有
+	//     坏配置上（下载本来就打不开），因此只更新既有行是正确取舍：
+	//     既有行由录制进程自己写入，其 file_path 必然是真实的逻辑路径。
+	if isSuffixBoundAbsoluteFilePath(header) {
+		logger.Warn("recovered record filePath only matched as a suffix of mediaPath and no existing row was found; skip creating record_streams row",
+			"filePath", filePath,
+			"mediaPath", header.MediaPath,
+			"streamPath", header.StreamPath,
+			"storageType", header.StorageType)
+		return nil
+	}
+
 	record := m7s.RecordStream{
 		StartTime:    startTime,
 		EndTime:      endTime,

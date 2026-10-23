@@ -70,20 +70,17 @@ func TestValidateIndexHeaderPaths(t *testing.T) {
 			header: IndexHeader{StorageType: "local", StorageKey: mediaPath, MediaPath: mediaPath},
 		},
 		{
-			// 已知限制（既有坏配置）：local + 绝对 record.filepath + 非 "/" 的
-			// basePath 时，MediaPath = <basePath>/<filepath> 与 DB 记录的绝对路径
-			// 不一致，这类录像在下载侧（api.go:151-155 直接打开绝对 file_path）
-			// 本就打不开，因此恢复拒绝它是正确行为，不为它放宽绑定。
-			name: "local: absolute filePath joined under the storage base is rejected",
+			// LocalStorage.CreateFile 用 filepath.Join(basePath, FilePath)：
+			// 绝对 record.filepath 会被拼到 basePath 之后，MediaPath 以 FilePath 结尾。
+			name: "local: absolute filePath joined under the storage base",
 			header: IndexHeader{
 				StorageType: "local",
 				FilePath:    absoluteRecordPath,
 				MediaPath:   filepath.Join(absoluteRecordBase, absoluteRecordPath),
 			},
-			wantErr: "rule=local-directory",
 		},
 		{
-			name: "local: absolute filePath unrelated to MediaPath",
+			name: "local: unrelated absolute filePath is not a MediaPath suffix",
 			header: IndexHeader{
 				StorageType: "local",
 				FilePath:    "/etc/shadow",
