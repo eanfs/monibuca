@@ -50,6 +50,11 @@ func TestWriteTo_SkipsNil(t *testing.T) {
 	}
 }
 
+// maxReadFromAlloc 是单次 ReadFrom 允许的分配上限。正常解析只需 KB 级
+// (box 结构体 + bytes.Reader + error)，下溢缺陷则是 4.29GB 的一次性分配，
+// 两者相差六个数量级，64KB 的阈值足以区分且不受测试框架噪声影响。
+const maxReadFromAlloc = 64 << 10
+
 // allocDelta 返回 fn 执行期间的总分配字节数。用来断言"尺寸字段再离谱也不会
 // 触发 GB 级分配"——AllocsPerRun 只数次数，数不出 4.29GB 的那一次。
 func allocDelta(fn func()) uint64 {
@@ -88,9 +93,10 @@ func TestReadFromRejectsInvalidSize(t *testing.T) {
 		{"size_seven", boxHeader(7, "free")},
 		// FullBox 负载 0 字节：version/flags 取不到。
 		{"size_eight_full_box", boxHeader(8, "stsd")},
-		// largesize(8) 连头都不够。
-		{"largesize_eight", largeBoxHeader(8, "stsd")},
+		// largesize 连 16 字节头都不够(8/15 是下界两侧)。
 		{"largesize_zero", largeBoxHeader(0, "stsd")},
+		{"largesize_eight", largeBoxHeader(8, "stsd")},
+		{"largesize_fifteen", largeBoxHeader(15, "stsd")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -105,7 +111,8 @@ func TestReadFromRejectsInvalidSize(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error, got box %+v", got)
 			}
-			if alloc > 8<<20 {
+			t.Logf("alloc=%d bytes", alloc)
+			if alloc > maxReadFromAlloc {
 				t.Fatalf("allocated %d bytes for %d input bytes", alloc, len(c.data))
 			}
 		})
@@ -132,7 +139,8 @@ func TestReadFromRejectsNestedUnderflow(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for nested size=4, got box %+v", got)
 	}
-	if alloc > 8<<20 {
+	t.Logf("alloc=%d bytes", alloc)
+	if alloc > maxReadFromAlloc {
 		t.Fatalf("allocated %d bytes for %d input bytes", alloc, len(data))
 	}
 }

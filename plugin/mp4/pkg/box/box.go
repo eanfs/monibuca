@@ -248,14 +248,16 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 		// 相减在 uint64 下回绕成 ~2^64 字节的分配。损坏/伪造文件不能借尺寸字段
 		// 决定内存占用。
 		if largeSize < BasicBoxLen+8 {
-			return nil, fmt.Errorf("box %s: invalid largesize %d", baseBox.typ.String(), largeSize)
+			return nil, fmt.Errorf("box %s: declared largesize %d smaller than header (%d)",
+				baseBox.typ.String(), largeSize, BasicBoxLen+8)
 		}
 		payload = make([]byte, largeSize-BasicBoxLen-8)
 	} else {
 		// 声明长度至少要覆盖 8 字节 box 头；更小的值(size<8)会让 uint32 相减
 		// 回绕成 ~4.29GB 的分配。
 		if baseBox.size < BasicBoxLen {
-			return nil, fmt.Errorf("box %s: invalid size %d", baseBox.typ.String(), baseBox.size)
+			return nil, fmt.Errorf("box %s: declared size %d smaller than header (%d)",
+				baseBox.typ.String(), baseBox.size, BasicBoxLen)
 		}
 		payload = make([]byte, baseBox.size-BasicBoxLen)
 	}
