@@ -67,8 +67,8 @@
 
 Run:
 ```bash
-ssh root@172.16.12.201 'ls -S /home/project/xde-xd/media-docker-compose/monibuca/tmp/s3writer_*.tmp | head -2'
-scp root@172.16.12.201:/path/to/sample1.tmp /tmp/sample1.tmp
+ssh root@<FIELD_HOST> 'ls -S <DEPLOY_DIR>/monibuca/tmp/s3writer_*.tmp | head -2'
+scp root@<FIELD_HOST>:/path/to/sample1.tmp /tmp/sample1.tmp
 ```
 Expected: 拿到 2 个 200 MB–700 MB 的 tmp。
 
@@ -489,7 +489,7 @@ func TestRestoreFromIndexBuildsPlayableMoov(t *testing.T) {
 
 - [ ] **Step 3: 写上线手册**
 
-内容：备份 tmp/db → 修正 S3 endpoint（`127.0.0.1:9000` 或 `storage.xiding.tech`）→ 提升 `mem_limit` 并分批 `pull_on_start` → 换镜像 → 观察恢复日志与 `/mp4/api/recovery/list` → 用 `mc stat` 抽查对象 → 回滚步骤。
+内容：备份 tmp/db → 修正 S3 endpoint（`127.0.0.1:9000` 或 `<INTERNAL_S3_ENDPOINT>`）→ 提升 `mem_limit` 并分批 `pull_on_start` → 换镜像 → 观察恢复日志与 `/mp4/api/recovery/list` → 用 `mc stat` 抽查对象 → 回滚步骤。
 
 - [ ] **Step 4: 跑全量受影响包测试**
 

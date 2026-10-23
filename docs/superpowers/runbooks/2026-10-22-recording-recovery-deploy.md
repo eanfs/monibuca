@@ -1,7 +1,7 @@
 # 录制崩溃恢复上线手册（2026-10-22）
 
-适用对象：现场 `172.16.12.201`，容器 `xde-monibuca`，目录
-`/home/project/xde-xd/media-docker-compose`。
+适用对象：现场 `<FIELD_HOST>`，容器 `xde-monibuca`，目录
+`<DEPLOY_DIR>`。
 
 目标：换上新镜像后，进程被 SIGKILL/OOM/崩溃时残留的 progressive MP4 能在重启后
 **自动恢复成可播放文件并上传 S3**，同时完成日志保留、GB28181 并发崩溃修复与
@@ -54,10 +54,10 @@ df -h /home/project; free -g; nproc
   `pending_uploads` 与 `m7s.db` 同理。
 - 宿主 `tmp/` 里存在现场历史残留：
   ```bash
-  ls -1 /home/project/xde-xd/media-docker-compose/monibuca/tmp/s3writer_*.tmp 2>/dev/null | wc -l
+  ls -1 <DEPLOY_DIR>/monibuca/tmp/s3writer_*.tmp 2>/dev/null | wc -l
   ```
   ```bash
-  du -sh /home/project/xde-xd/media-docker-compose/monibuca/tmp
+  du -sh <DEPLOY_DIR>/monibuca/tmp
   ```
   2026-10-22 基线约 216 个文件 / 85 GB（含无索引历史 tmp）。
 - 宿主磁盘剩余 ≥ 待恢复数据量的 2 倍（恢复是“源 + 新产物”并存，原子 rename 后
@@ -72,18 +72,18 @@ docker stop xde-monibuca
 ```
 
 ```bash
-BK=/home/project/xde-xd/media-docker-compose/backup-$(date +%Y%m%d-%H%M); mkdir -p "$BK"; echo "$BK" > /home/project/xde-xd/media-docker-compose/.last-backup; echo "BK=$BK"
+BK=<DEPLOY_DIR>/backup-$(date +%Y%m%d-%H%M); mkdir -p "$BK"; echo "$BK" > <DEPLOY_DIR>/.last-backup; echo "BK=$BK"
 ```
 
 > 备份路径写入 `.last-backup`，第 7 节回滚**只读这个文件**。**禁止**使用
 > `backup-*` 通配：维护窗口内多次备份时通配会展开成多行，破坏 `sed`/`cp`。
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose && cp -a monibuca/config.yaml docker-compose-xde-monibuca.yml "$BK"/
+cd <DEPLOY_DIR> && cp -a monibuca/config.yaml docker-compose-xde-monibuca.yml "$BK"/
 ```
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && cp -a m7s.db "$BK"/m7s.db && tar -czf "$BK/tmp.tar.gz" tmp && tar -czf "$BK/pending_uploads.tar.gz" pending_uploads
+cd <DEPLOY_DIR>/monibuca && cp -a m7s.db "$BK"/m7s.db && tar -czf "$BK/tmp.tar.gz" tmp && tar -czf "$BK/pending_uploads.tar.gz" pending_uploads
 ```
 
 > 85 GB 的 `tmp` 打包会很久。若磁盘紧张，可改为
@@ -102,7 +102,7 @@ OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' xde-monibuca); OLD_IMAGE_ID=$(
 
 ## 2. 强制配置修正（换镜像前完成）
 
-现场配置仍指向旧 IP（`192.168.1.5`）。**不修正就换镜像 = 恢复全部进 pending。**
+现场配置仍指向旧 IP（`<LEGACY_HOST_IP>`）。**不修正就换镜像 = 恢复全部进 pending。**
 
 ### 2.0 先按容器网络模式确定 endpoint
 
@@ -115,7 +115,7 @@ NETMODE=$(docker inspect -f '{{.HostConfig.NetworkMode}}' xde-monibuca); echo "n
 
 - 输出 `host`：`<S3_ENDPOINT>` 用 `127.0.0.1:9000`（MinIO 在宿主本机时）。
 - 输出 `bridge` / 自定义 compose 网络：`127.0.0.1` **不可用**，必须用宿主 LAN IP
-  （现场 `172.16.12.201:9000`）；若 MinIO 与 monibuca 在同一个 compose 网络，
+  （现场 `<FIELD_HOST>:9000`）；若 MinIO 与 monibuca 在同一个 compose 网络，
   也可用服务名（如 `minio:9000`）。
 
 后面统一写 `<S3_ENDPOINT>`，执行时替换成上述判定结果。
@@ -128,7 +128,7 @@ global:
   storage:
     s3:
       endpoint: "<S3_ENDPOINT>"    # 见 2.0：host 网络用 127.0.0.1:9000；否则宿主 IP/服务名
-      useSSL: false                # storage.xiding.tech 时改为 true
+      useSSL: false                # <INTERNAL_S3_ENDPOINT> 时改为 true
       forcePathStyle: true         # MinIO 必须
       bucket: "<BUCKET>"
       accessKeyID: "<S3_ACCESS_KEY>"
@@ -138,8 +138,8 @@ global:
       timeout: "600s"
 
 gb28181:
-  mediaip: "172.16.12.201"
-  sipip: "172.16.12.201"
+  mediaip: "<FIELD_HOST>"
+  sipip: "<FIELD_HOST>"
 ```
 
 同时确认录制仍为单文件模式（本版本恢复只支持 progressive MP4）：
@@ -192,7 +192,7 @@ ALIAS=m7s; [ -f /root/.m7s-mc.env ] || install -m 600 /dev/null /root/.m7s-mc.en
 export MC_HOST_m7s=http://<S3_ACCESS_KEY>:<S3_SECRET_KEY>@<S3_ENDPOINT>
 ```
 
-（AK/SK 含特殊字符时做 URL 编码；使用 `storage.xiding.tech` 时把 `http` 改成
+（AK/SK 含特殊字符时做 URL 编码；使用 `<INTERNAL_S3_ENDPOINT>` 时把 `http` 改成
 `https`，并同步把配置里的 `useSSL` 设为 `true`。）
 
 先自检变量确实进了子进程环境；**必须看到 `env-ok`**，否则后面的 `mc` 全部会
@@ -247,7 +247,7 @@ services:
 1）停机状态下先把数据库里的自动拉流全部关掉（务必在 1.2 备份之后）：
 
 ```bash
-sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "UPDATE pull_proxy_configs SET pull_on_start = 0; SELECT COUNT(*) FROM pull_proxy_configs WHERE pull_on_start = 1;"
+sqlite3 <DEPLOY_DIR>/monibuca/m7s.db "UPDATE pull_proxy_configs SET pull_on_start = 0; SELECT COUNT(*) FROM pull_proxy_configs WHERE pull_on_start = 1;"
 ```
 
 2）换镜像并启动（第 4 节）。此时不会盲目拉起全部设备；拉流代理仍会创建并用
@@ -279,7 +279,7 @@ RSS 接近 `mem_limit` 的 80%、或 `record started` 增速异常时，停止�
 4）全部批次完成后确认：
 
 ```bash
-sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "SELECT COUNT(*) FROM pull_proxy_configs WHERE pull_on_start = 1;"
+sqlite3 <DEPLOY_DIR>/monibuca/m7s.db "SELECT COUNT(*) FROM pull_proxy_configs WHERE pull_on_start = 1;"
 ```
 
 > 回滚时记得把 `pull_on_start` 恢复为 1（第 7 节），否则旧镜像也不会自动拉流。
@@ -289,15 +289,15 @@ sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "SELECT COUNT(
 ## 4. 切换镜像
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose && cp -a docker-compose-xde-monibuca.yml docker-compose-xde-monibuca.yml.pre-$(date +%Y%m%d-%H%M)
+cd <DEPLOY_DIR> && cp -a docker-compose-xde-monibuca.yml docker-compose-xde-monibuca.yml.pre-$(date +%Y%m%d-%H%M)
 ```
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose && sed -i 's|intetech/monibuca:.*|intetech/monibuca:<NEW_TAG>|' docker-compose-xde-monibuca.yml && grep -n 'image:.*monibuca' docker-compose-xde-monibuca.yml
+cd <DEPLOY_DIR> && sed -i 's|<CONTAINER_REGISTRY>/monibuca:.*|<CONTAINER_REGISTRY>/monibuca:<NEW_TAG>|' docker-compose-xde-monibuca.yml && grep -n 'image:.*monibuca' docker-compose-xde-monibuca.yml
 ```
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose && docker compose -f docker-compose-xde-monibuca.yml pull && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
+cd <DEPLOY_DIR> && docker compose -f docker-compose-xde-monibuca.yml pull && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
 ```
 
 `<NEW_TAG>` 使用要发版的 tag（格式 `v5.X.Y.YYMMDDHHMM`），不要用 `latest`。
@@ -390,7 +390,7 @@ curl -s "${AUTH[@]}" "http://127.0.0.1:8080/mp4/api/recovery/status/<ID>" | jq
 先从数据库拿到本次恢复的对象键：
 
 ```bash
-sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "SELECT id,stream_path,file_path,storage_type,end_time,duration FROM record_streams ORDER BY id DESC LIMIT 20;"
+sqlite3 <DEPLOY_DIR>/monibuca/m7s.db "SELECT id,stream_path,file_path,storage_type,end_time,duration FROM record_streams ORDER BY id DESC LIMIT 20;"
 ```
 
 再抽查 S3 对象（键 = `pathPrefix` + `file_path`，以后端实际规则为准）。先加载
@@ -467,13 +467,13 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o m7s-recover ./example/recover
 ```
 
 ```bash
-scp m7s-recover root@172.16.12.201:/home/project/xde-xd/media-docker-compose/monibuca/
+scp m7s-recover root@<FIELD_HOST>:<DEPLOY_DIR>/monibuca/
 ```
 
 ### 6.2 先 dry-run
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && ./m7s-recover -dir ./tmp -dry-run -concurrency 2 > /tmp/recover-dryrun-$(date +%F).log 2>&1
+cd <DEPLOY_DIR>/monibuca && ./m7s-recover -dir ./tmp -dry-run -concurrency 2 > /tmp/recover-dryrun-$(date +%F).log 2>&1
 ```
 
 ```bash
@@ -490,7 +490,7 @@ grep -c '^\[ok\]' /tmp/recover-dryrun-*.log; grep '^\[fail\]' /tmp/recover-dryru
 先固化上线时间作为 `CUTOFF`（取容器最后一次启动时刻），并统计候选数：
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && echo "cutoff=$CUTOFF" && find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print | wc -l
+cd <DEPLOY_DIR>/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && echo "cutoff=$CUTOFF" && find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print | wc -l
 ```
 
 候选数应远小于 `tmp` 文件总数；若候选里出现刚录的文件，说明 `CUTOFF` 不对，先
@@ -499,7 +499,7 @@ cd /home/project/xde-xd/media-docker-compose/monibuca && CUTOFF=$(date -d "$(doc
 搬移只接受「早于 CUTOFF 且无 sidecar」的文件，逐个 `mv` 并检查退出码：
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && mkdir -p tmp/salvage-batch-01 && n=0 && failed=0 && while IFS= read -r -d '' f; do if [ -e "$f.m7sidx" ]; then echo "SKIP sidecar: $f"; continue; fi; if [ "$n" -ge 50 ]; then break; fi; mv -- "$f" tmp/salvage-batch-01/ || { echo "ABORT mv failed: $f"; failed=1; break; }; n=$((n+1)); done < <(find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print0); echo "moved=$n failed=$failed"; [ "$failed" -eq 0 ]
+cd <DEPLOY_DIR>/monibuca && CUTOFF=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' xde-monibuca)" '+%Y-%m-%d %H:%M:%S') && mkdir -p tmp/salvage-batch-01 && n=0 && failed=0 && while IFS= read -r -d '' f; do if [ -e "$f.m7sidx" ]; then echo "SKIP sidecar: $f"; continue; fi; if [ "$n" -ge 50 ]; then break; fi; mv -- "$f" tmp/salvage-batch-01/ || { echo "ABORT mv failed: $f"; failed=1; break; }; n=$((n+1)); done < <(find tmp -maxdepth 1 -name 's3writer_*.tmp' ! -newermt "$CUTOFF" -print0); echo "moved=$n failed=$failed"; [ "$failed" -eq 0 ]
 ```
 
 最后一条命令退出码非 0 就停止本批（不要把剩下的文件继续搬）。每批搬完再确认
@@ -512,7 +512,7 @@ ls -1 tmp/salvage-batch-01/*.m7sidx 2>/dev/null | wc -l
 期望 `0`。
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose/monibuca && ./m7s-recover -dir ./tmp/salvage-batch-01 -concurrency 2 > /tmp/recover-batch-01.log 2>&1; tail -3 /tmp/recover-batch-01.log
+cd <DEPLOY_DIR>/monibuca && ./m7s-recover -dir ./tmp/salvage-batch-01 -concurrency 2 > /tmp/recover-batch-01.log 2>&1; tail -3 /tmp/recover-batch-01.log
 ```
 
 每批结束：
@@ -531,13 +531,13 @@ ffprobe -v error -show_entries format=duration:stream=codec_name -of json tmp/sa
 整体拒删）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），未上传、未生成 .upload-ok"; false; else cd /home/project/xde-xd/media-docker-compose/monibuca && rm -f tmp/salvage-batch-01/.upload-ok; up=0; fail=0; for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; if mc cp "$f" "$ALIAS/<BUCKET>/<PREFIX>/recovered/"; then up=$((up+1)); else echo "ABORT upload failed: $f"; fail=1; break; fi; done; if [ "$fail" -eq 0 ]; then touch tmp/salvage-batch-01/.upload-ok; fi; echo "uploaded=$up fail=$fail"; [ "$fail" -eq 0 ]; fi
+ALIAS=m7s; . /root/.m7s-mc.env; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），未上传、未生成 .upload-ok"; false; else cd <DEPLOY_DIR>/monibuca && rm -f tmp/salvage-batch-01/.upload-ok; up=0; fail=0; for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; if mc cp "$f" "$ALIAS/<BUCKET>/<PREFIX>/recovered/"; then up=$((up+1)); else echo "ABORT upload failed: $f"; fail=1; break; fi; done; if [ "$fail" -eq 0 ]; then touch tmp/salvage-batch-01/.upload-ok; fi; echo "uploaded=$up fail=$fail"; [ "$fail" -eq 0 ]; fi
 ```
 
 确认远端对象齐全（数量 + 逐个 `mc stat`）：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca && env | grep -q "^MC_HOST_${ALIAS}=" && echo "local=$(ls -1 tmp/salvage-batch-01/*.recovered.mp4 2>/dev/null | wc -l) remote=$(mc ls "$ALIAS/<BUCKET>/<PREFIX>/recovered/" | wc -l)" && stat_fail=0 && for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$(basename "$f")" >/dev/null || { echo "ABORT stat failed: $f"; stat_fail=1; break; }; done; if [ "$stat_fail" -eq 0 ]; then echo "stat pass"; else echo "stat FAILED: fix upload before deleting anything"; fi; [ "$stat_fail" -eq 0 ]
+ALIAS=m7s; . /root/.m7s-mc.env; cd <DEPLOY_DIR>/monibuca && env | grep -q "^MC_HOST_${ALIAS}=" && echo "local=$(ls -1 tmp/salvage-batch-01/*.recovered.mp4 2>/dev/null | wc -l) remote=$(mc ls "$ALIAS/<BUCKET>/<PREFIX>/recovered/" | wc -l)" && stat_fail=0 && for f in tmp/salvage-batch-01/*.recovered.mp4; do [ -e "$f" ] || continue; mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$(basename "$f")" >/dev/null || { echo "ABORT stat failed: $f"; stat_fail=1; break; }; done; if [ "$stat_fail" -eq 0 ]; then echo "stat pass"; else echo "stat FAILED: fix upload before deleting anything"; fi; [ "$stat_fail" -eq 0 ]
 ```
 
 抽样下载 + `ffprobe`（第 6.3 节已跑过本地产物；此处再验远端副本）：
@@ -551,7 +551,7 @@ ALIAS=m7s; . /root/.m7s-mc.env; env | grep -q "^MC_HOST_${ALIAS}=" && mc cp "$AL
 上传步骤未完成（无 `.upload-ok`）时整体拒删：
 
 ```bash
-ALIAS=m7s; . /root/.m7s-mc.env; cd /home/project/xde-xd/media-docker-compose/monibuca; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），nothing deleted"; elif [ ! -f tmp/salvage-batch-01/.upload-ok ]; then echo "ABORT: upload step incomplete, nothing deleted"; else deleted=0; kept=0; for src in tmp/salvage-batch-01/s3writer_*.tmp; do [ -e "$src" ] || continue; rec="$src.recovered.mp4"; obj=$(basename "$rec"); if [ ! -s "$rec" ]; then echo "KEEP not-recovered: $src"; kept=$((kept+1)); continue; fi; if mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$obj" >/dev/null 2>&1; then rm -f -- "$src" && { echo "DELETED: $src"; deleted=$((deleted+1)); }; else echo "KEEP stat-failed: $src"; kept=$((kept+1)); fi; done; echo "deleted=$deleted kept=$kept"; fi
+ALIAS=m7s; . /root/.m7s-mc.env; cd <DEPLOY_DIR>/monibuca; if ! env | grep -q "^MC_HOST_${ALIAS}="; then echo "ABORT: MC_HOST_${ALIAS} 未导出（/root/.m7s-mc.env 需 export），nothing deleted"; elif [ ! -f tmp/salvage-batch-01/.upload-ok ]; then echo "ABORT: upload step incomplete, nothing deleted"; else deleted=0; kept=0; for src in tmp/salvage-batch-01/s3writer_*.tmp; do [ -e "$src" ] || continue; rec="$src.recovered.mp4"; obj=$(basename "$rec"); if [ ! -s "$rec" ]; then echo "KEEP not-recovered: $src"; kept=$((kept+1)); continue; fi; if mc stat "$ALIAS/<BUCKET>/<PREFIX>/recovered/$obj" >/dev/null 2>&1; then rm -f -- "$src" && { echo "DELETED: $src"; deleted=$((deleted+1)); }; else echo "KEEP stat-failed: $src"; kept=$((kept+1)); fi; done; echo "deleted=$deleted kept=$kept"; fi
 ```
 
 > 源 tmp 是唯一副本。**禁止**用 `rm -f tmp/salvage-batch-01/s3writer_*.tmp` 这类
@@ -590,7 +590,7 @@ docker inspect -f '{{.State.Status}}' xde-monibuca
 多行，破坏 `sed`/`cp`）：
 
 ```bash
-BK=$(cat /home/project/xde-xd/media-docker-compose/.last-backup); test -d "$BK" || { echo "ABORT: missing backup path in .last-backup"; }; echo "BK=$BK"
+BK=$(cat <DEPLOY_DIR>/.last-backup); test -d "$BK" || { echo "ABORT: missing backup path in .last-backup"; }; echo "BK=$BK"
 ```
 
 ```bash
@@ -600,7 +600,7 @@ OLD_IMAGE=$(awk '{print $1}' "$BK/rollback-image.txt"); test -n "$OLD_IMAGE" || 
 两条都必须打印出非空路径/镜像名；否则停止回滚。确认后执行：
 
 ```bash
-cd /home/project/xde-xd/media-docker-compose && BK=$(cat .last-backup) && test -d "$BK" && OLD_IMAGE=$(awk '{print $1}' "$BK/rollback-image.txt") && test -n "$OLD_IMAGE" && sed -i "s|intetech/monibuca:.*|$OLD_IMAGE|" docker-compose-xde-monibuca.yml && grep -n 'image:.*monibuca' docker-compose-xde-monibuca.yml && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
+cd <DEPLOY_DIR> && BK=$(cat .last-backup) && test -d "$BK" && OLD_IMAGE=$(awk '{print $1}' "$BK/rollback-image.txt") && test -n "$OLD_IMAGE" && sed -i "s|<CONTAINER_REGISTRY>/monibuca:.*|$OLD_IMAGE|" docker-compose-xde-monibuca.yml && grep -n 'image:.*monibuca' docker-compose-xde-monibuca.yml && docker compose -f docker-compose-xde-monibuca.yml up -d --force-recreate
 ```
 
 或直接把第 4 节生成的 `docker-compose-xde-monibuca.yml.pre-*` 还原后
@@ -608,17 +608,17 @@ cd /home/project/xde-xd/media-docker-compose && BK=$(cat .last-backup) && test -
 
 ### 7.3 回滚配置
 
-- **不要**把 `storage.s3.endpoint` 还原成旧 IP `192.168.1.5`：旧地址本身是不可达
+- **不要**把 `storage.s3.endpoint` 还原成旧 IP `<LEGACY_HOST_IP>`：旧地址本身是不可达
   的历史配置，回滚镜像也需要正确的 MinIO endpoint 才能录制与上传；
 - `gb28181.mediaip/sipip` 是环境修正，同样保留；
 - 若新版本配置项导致旧镜像启动失败（未知字段一般被忽略，但先还原备份更稳）：
   ```bash
-  cd /home/project/xde-xd/media-docker-compose && BK=$(cat .last-backup) && test -f "$BK/config.yaml" && cp -a "$BK/config.yaml" monibuca/config.yaml && echo "restored $BK/config.yaml"
+  cd <DEPLOY_DIR> && BK=$(cat .last-backup) && test -f "$BK/config.yaml" && cp -a "$BK/config.yaml" monibuca/config.yaml && echo "restored $BK/config.yaml"
   ```
   还原后重新应用第 2 节的 endpoint / gb28181 修正。
 - 若已执行第 3.2 节的 `pull_on_start=0`，回滚前恢复：
   ```bash
-  sqlite3 /home/project/xde-xd/media-docker-compose/monibuca/m7s.db "UPDATE pull_proxy_configs SET pull_on_start = 1;"
+  sqlite3 <DEPLOY_DIR>/monibuca/m7s.db "UPDATE pull_proxy_configs SET pull_on_start = 1;"
   ```
 
 ### 7.4 数据安全边界

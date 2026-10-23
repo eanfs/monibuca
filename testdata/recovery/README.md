@@ -1,7 +1,7 @@
 # 半成品 MP4 反向重建可行性（Task 0 spike 结论）
 
 日期：2026-10-22
-样本来源：`172.16.12.201:/home/project/xde-xd/media-docker-compose/monibuca/tmp/s3writer_896943576.tmp`
+样本来源：`<FIELD_HOST>:<DEPLOY_DIR>/monibuca/tmp/s3writer_896943576.tmp`
 （生产机 `monibuca/tmp` 下同批还有 200+ 个同类 `.tmp`）
 
 ## 1. 结论（TL;DR）
@@ -180,8 +180,8 @@ Stream #1 audio: pcm_alaw, 8000 Hz, mono, duration 1341.04 s, 33526 frames
 既超出 git 合理体积，也不应把现场视频提交到仓库。复现方式：
 
 ```bash
-sshpass -f ~/.ssh/xd_pass ssh root@172.16.12.201 \
-  'ls -S /home/project/xde-xd/media-docker-compose/monibuca/tmp/s3writer_*.tmp | head -1'
+sshpass -f ~/.ssh/<field-key> ssh root@<FIELD_HOST> \
+  'ls -S <DEPLOY_DIR>/monibuca/tmp/s3writer_*.tmp | head -1'
 # scp 该文件到 /tmp，然后：
 ffprobe -v error /tmp/<name>.tmp     # 预期 moov atom not found
 ```

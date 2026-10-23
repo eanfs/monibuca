@@ -241,7 +241,7 @@ logrotate:
 6. **恢复自身的鲁棒性**：恢复过程中再次 `kill -9`，下次启动能重试并最终完成，不产生半修改文件。
 7. **回归**：`go test ./plugin/mp4/... ./pkg/storage/... -race` 通过；正常启停、正常上传路径行为不变。
 8. **线上验证**：在 201 用最新镜像 + 修正后的配置（旧 IP、限额）跑一轮真实录制，确认无 `create storage failed`、无 fatal、日志齐全。
-9. **上线前置条件（硬性）**：换镜像前必须先修正 S3 endpoint（现场仍是旧 IP `192.168.1.5`，应改为本机 `127.0.0.1:9000` 或 `storage.xiding.tech`）并确认 MinIO 可达、bucket 可写。否则恢复任务会全部卡在 pending，达不到“自动上传 S3”的目标。
+9. **上线前置条件（硬性）**：换镜像前必须先修正 S3 endpoint（现场仍是旧 IP `<LEGACY_HOST_IP>`，应改为本机 `127.0.0.1:9000` 或 `<INTERNAL_S3_ENDPOINT>`）并确认 MinIO 可达、bucket 可写。否则恢复任务会全部卡在 pending，达不到“自动上传 S3”的目标。
 
 ## 风险与取舍
 
