@@ -384,10 +384,16 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 	resolved, dirErrs := t.resolveDirs(dirs)
 	stats.Errors = append(stats.Errors, dirErrs...)
 
-	files, bareTmp, walkErrs := discoverSidecars(resolved)
+	files, bareTmp, truncated, walkErrs := discoverSidecars(resolved, recoveryScanEntryLimit)
 	stats.BareTmp = bareTmp
 	stats.Errors = append(stats.Errors, walkErrs...)
 	stats.Scanned += len(files)
+	if truncated {
+		// 截断必须显式暴露：运维需要知道本轮有目录没扫完（剩余 sidecar 要等
+		// 下一轮，或先缩小 record.recovery.dirs）。
+		t.Warn("recovery scan truncated at entry limit: remaining entries were not scanned",
+			"limit", recoveryScanEntryLimit, "dirs", resolved)
+	}
 
 	if bareTmp > 0 {
 		// Task 7 负责无索引 tmp 的反向重建；此处只统计，不删除、不移动。
@@ -561,15 +567,28 @@ func (t *IndexRecoveryTask) mediaTempDir() string {
 // discoverSidecars 递归收集 *.m7sidx 与 *.m7sidx.recovering。
 // 同一媒体同时存在两种标记时优先 .recovering；无 sidecar 的 s3writer_*.tmp
 // 只计数（Task 7 处理），不进入恢复队列。
-func discoverSidecars(dirs []string) (files []string, bareTmp int, errs []error) {
+//
+// limit 是**遍历条目总数**预算（含目录与普通文件），与 scanRecoveryEntries
+// 同一语义：只在命中 sidecar 时计数会让塞满普通文件的目录无视上限、每次扫描
+// 都全树递归。预算耗尽时 truncated=true，剩余目录不再访问。
+func discoverSidecars(dirs []string, limit int) (files []string, bareTmp int, truncated bool, errs []error) {
 	preferred := make(map[string]string) // base(.m7sidx) -> 实际路径
 	bare := make(map[string]bool)
+	visited := 0
 
 	for _, dir := range dirs {
+		if truncated {
+			break
+		}
 		walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				errs = append(errs, fmt.Errorf("walk %s: %w", path, err))
 				return nil
+			}
+			visited++
+			if visited > limit {
+				truncated = true
+				return filepath.SkipAll
 			}
 			if d.IsDir() {
 				return nil
@@ -601,7 +620,7 @@ func discoverSidecars(dirs []string) (files []string, bareTmp int, errs []error)
 		files = append(files, path)
 	}
 	sort.Strings(files)
-	return files, len(bare), errs
+	return files, len(bare), truncated, errs
 }
 
 func hasIndexSidecar(mediaPath string) bool {

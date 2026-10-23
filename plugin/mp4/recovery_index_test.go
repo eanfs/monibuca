@@ -235,7 +235,8 @@ func TestIndexRecoveryTaskRecoversSidecar(t *testing.T) {
 	if len(enqueued) != 1 {
 		t.Fatalf("enqueued = %d items, want 1", len(enqueued))
 	}
-	if enqueued[0].OutputPath != output || enqueued[0].Header.StreamPath != "live/test" {
+	// 产物路径来自 guard 的 canon（macOS 上 /var -> /private/var）。
+	if enqueued[0].OutputPath != canonPath(t, output) || enqueued[0].Header.StreamPath != "live/test" {
 		t.Fatalf("enqueued item = %+v", enqueued[0])
 	}
 

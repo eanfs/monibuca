@@ -29,8 +29,9 @@ import (
 const (
 	recoveryListDefaultPageSize = 50
 	recoveryListMaxPageSize     = 200
-	// recoveryListScanLimit 是单次 list 扫描的条目硬上限，超出时 truncated=true。
-	recoveryListScanLimit = 10000
+	// recoveryScanEntryLimit 是单次目录扫描的**遍历条目**硬上限（含目录与
+	// 普通文件），list 与恢复扫描共用；超出时报告 truncated=true。
+	recoveryScanEntryLimit = 10000
 	// recoveryRunHistoryLimit 保留的最近运行记录数（超出淘汰最旧的已完成运行）。
 	recoveryRunHistoryLimit = 100
 	// recoveryRecentHistoryLimit 保留的最近恢复结果数。
@@ -158,7 +159,12 @@ func (p *MP4Plugin) handleRecoveryList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dirs, dirErrs := recovery.resolveDirs(nil)
-	entries, truncated, scanErrs := scanRecoveryEntries(dirs, recoveryListScanLimit)
+	entries, truncated, scanErrs := scanRecoveryEntries(dirs, recoveryScanEntryLimit)
+	if truncated {
+		// 截断必须可观测：客户端看到 truncated=true 时还应知道是哪个上限。
+		p.Warn("recovery list scan truncated at entry limit",
+			"limit", recoveryScanEntryLimit, "dirs", dirs)
+	}
 
 	view := recoveryListView{Code: 0, Page: page, Size: size, Truncated: truncated}
 	view.Data.Pending = []recoveryListEntry{}
@@ -285,9 +291,15 @@ func (p *MP4Plugin) handleRecoveryStatus(w http.ResponseWriter, r *http.Request)
 // requireAdmin 在开启 admin 登录时要求 Bearer token 且用户角色为 admin。
 // 仓库没有面向插件 HTTP handler 的 admin 中间件：pkg/auth.Middleware 只校验
 // token 不校验角色，而 JWTClaims 不携带角色，因此这里额外查询 DB。
-// 未开启登录（EnableLogin=false）或插件未绑定 Server 时按既有端点惯例放行。
+//
+// 未开启登录（EnableLogin=false）时放行（与既有端点惯例一致）；插件未绑定
+// Server 时**拒绝**：无法读取登录配置、也无法查角色，放行等于 fail-open。
 func (p *MP4Plugin) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if p.Server == nil || !p.Server.ServerConfig.Admin.EnableLogin {
+	if p.Server == nil {
+		http.Error(w, "admin check unavailable: plugin not bound to a server", http.StatusForbidden)
+		return false
+	}
+	if !p.Server.ServerConfig.Admin.EnableLogin {
 		return true
 	}
 	authHeader := r.Header.Get("Authorization")

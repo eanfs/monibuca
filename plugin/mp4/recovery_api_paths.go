@@ -233,8 +233,9 @@ func newRecoveryPathGuard(dirs []string, sidecar string) (*recoveryPathGuard, er
 }
 
 // allowExisting 校验一个已存在路径。相对路径先按 CWD 绝对化（兼容旧 sidecar）；
-// 返回绝对路径（保证 C1 的 source==output 比较与日志路径稳定），合法性以
-// 解析后的真实路径为准。
+// 返回**解析符号链接后的真实路径**（canon）：调用方用它去 rename/覆盖/删除，
+// 返回原路径会把「检查的路径」与「实际操作的路径」重新分开，留下符号链接
+// TOCTOU 窗口。canon 也让 C1 的 source==output 比较在同一坐标系下成立。
 func (g *recoveryPathGuard) allowExisting(path, what string) (string, error) {
 	path = absoluteRecoveryTarget(path)
 	if path == "" || !filepath.IsAbs(path) {
@@ -254,11 +255,14 @@ func (g *recoveryPathGuard) allowExisting(path, what string) (string, error) {
 	if !pathWithinAny(g.allowed, canon) {
 		return "", fmt.Errorf("%w: %s %s", errRecoveryPathDenied, what, path)
 	}
-	return filepath.Clean(path), nil
+	return canon, nil
 }
 
 // allowOutput 校验一个待写入路径：父目录必须存在且在白名单内，
 // 目标已存在时不得是符号链接。
+//
+// 返回父目录解析后的 canon + 原文件名：写入方拿到的路径不含任何待解析的
+// 符号链接，避免「校验用 A、写入用 B」。
 func (g *recoveryPathGuard) allowOutput(path, what string) (string, error) {
 	path = absoluteRecoveryTarget(path)
 	if path == "" {
@@ -281,8 +285,7 @@ func (g *recoveryPathGuard) allowOutput(path, what string) (string, error) {
 	if info, err := os.Lstat(canon); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("%w: %s %s is a symlink", errRecoveryPathDenied, what, path)
 	}
-	// 返回原路径：写入仍经由原路径（其祖先链接已解析校验），保持结果路径稳定。
-	return filepath.Clean(path), nil
+	return canon, nil
 }
 
 func (t *IndexRecoveryTask) newRecoveryPathGuard(sidecar string) (*recoveryPathGuard, error) {
@@ -379,21 +382,31 @@ func canonicalRecoveryFile(path string, allowed []string) (string, bool) {
 // ---------------------------------------------------------------- 目录扫描
 
 // scanRecoveryEntries 有界扫描恢复目录，收集 sidecar 状态。
-// 达到 limit 后停止（truncated=true），绝不把无界目录读入内存。
+//
+// limit 是**遍历条目总数**预算（含目录与普通文件），不是 sidecar 数量：
+// 上限的目的是限制遍历代价。只在命中 sidecar 时计数的话，一个塞满普通文件的
+// 目录可以无视上限、每次都全树递归。
+//
+// 预算耗尽后停止（truncated=true），绝不把无界目录读入内存。
 func scanRecoveryEntries(dirs []string, limit int) (entries []recoveryListEntry, truncated bool, errs []error) {
 	seen := make(map[string]bool)
+	visited := 0
 	for _, dir := range dirs {
+		if truncated {
+			break
+		}
 		walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				errs = append(errs, fmt.Errorf("walk %s: %w", path, err))
 				return nil
 			}
-			if d.IsDir() {
-				return nil
-			}
-			if len(entries) >= limit {
+			visited++
+			if visited > limit {
 				truncated = true
 				return fs.SkipAll
+			}
+			if d.IsDir() {
+				return nil
 			}
 			category, ok := recoveryCategoryForName(d.Name())
 			if !ok || seen[path] {

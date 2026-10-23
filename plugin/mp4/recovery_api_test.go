@@ -23,6 +23,9 @@ import (
 func newRecoveryAPITestPlugin(t *testing.T, dirs ...string) (*MP4Plugin, *IndexRecoveryTask) {
 	t.Helper()
 	p := &MP4Plugin{}
+	// requireAdmin 对未绑定 Server 的插件 fail-closed，测试插件必须显式绑定
+	// 一个未开启登录的 Server（EnableLogin=false 时放行）。
+	p.Server = &m7s.Server{}
 	recovery := &IndexRecoveryTask{Dirs: dirs, plugin: p}
 	recovery.observer = p.observeRecovery
 	p.recoveryTask.Store(recovery)
@@ -299,7 +302,8 @@ func TestRecoveryRunSuccessAndStatus(t *testing.T) {
 	}
 	found := false
 	for _, entry := range list.Data.Recent {
-		if entry.File == filepath.Join(dir, "a.mp4") {
+		// 恢复产物路径来自 guard，已解析符号链接（macOS 上 /var -> /private/var）。
+		if entry.File == canonPath(t, filepath.Join(dir, "a.mp4")) {
 			found = true
 		}
 	}
@@ -981,6 +985,9 @@ func TestRecoverSidecarUsesActualMediaPathForBinding(t *testing.T) {
 	})
 	ageRecoveryFiles(t, mediaPath, sidecar)
 
+	// 源 tmp 恢复后会被删除，期望值必须提前按目录 canon 计算。
+	wantMedia := filepath.Join(canonPath(t, dir), "a.tmp")
+
 	var enqueued []RecoveryItem
 	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
 		enqueued = append(enqueued, item)
@@ -993,7 +1000,7 @@ func TestRecoverSidecarUsesActualMediaPathForBinding(t *testing.T) {
 	if stats.Recovered != 1 || len(enqueued) != 1 {
 		t.Fatalf("stats = %+v, enqueued = %d, want recovered=1 enqueued=1", stats, len(enqueued))
 	}
-	if got := enqueued[0].Header.MediaPath; got != mediaPath {
-		t.Fatalf("downstream header.mediaPath = %q, want the actual media path %q", got, mediaPath)
+	if got := enqueued[0].Header.MediaPath; got != wantMedia {
+		t.Fatalf("downstream header.mediaPath = %q, want the actual media path %q", got, wantMedia)
 	}
 }

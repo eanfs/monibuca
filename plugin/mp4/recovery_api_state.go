@@ -1,6 +1,7 @@
 package plugin_mp4
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -36,6 +37,10 @@ type recoveryAPIState struct {
 	seq     uint64
 }
 
+// errRecoveryTaskStopped 用于 owner 已停止但 StopReason 为空（无 cause）的兜底，
+// 避免把 nil 拼进错误链。
+var errRecoveryTaskStopped = errors.New("recovery task stopped")
+
 // recoveryAPIJob 在任务系统中执行一次 API 触发的手动恢复。
 type recoveryAPIJob struct {
 	task.Task
@@ -48,6 +53,37 @@ func (t *recoveryAPIJob) Go() error {
 	stats, runErr := t.owner.runRequest(t.run.id, t.run.dirs, t.run.file)
 	t.state.finishRun(t.run, stats, runErr)
 	return nil
+}
+
+// recoveryStartWatcher 是短命任务：在后台等待本次 run 的子任务真正启动。
+//
+// 为什么不在 handler 里等：gotask 的 util.Promise 只有阻塞 Await()，没有
+// context 感知的等待；事件循环被阻塞（或任务长期排队）时 WaitStarted 可能
+// 永不返回，HTTP 连接会一直挂住。watcher 把等待搬进任务系统：启动失败时
+// 回填 run 状态并记 Error，调用方通过 GET /status/{id} 观察。
+//
+// 注意：如需注册 OnStart 必须在 AddTask **之前**（本仓已知陷阱）；本实现
+// 用 Go()，不依赖 OnStart。
+type recoveryStartWatcher struct {
+	task.Task
+	// waitStarted 等待本次 run 的子任务启动。生产路径传 child.WaitStarted；
+	// 抽成字段只为测试注入启动失败。
+	waitStarted func() error
+	state       *recoveryAPIState
+	run         *recoveryRunState
+	key         string
+}
+
+func (w *recoveryStartWatcher) GetKey() string { return w.key }
+
+func (w *recoveryStartWatcher) Go() error {
+	// 等待的是本次 run 自己的子任务，属于该 run 的启动生命周期，
+	// 不是在 handler 或无关任务里直接驱动别的 task。
+	if err := w.waitStarted(); err != nil {
+		w.state.failStart(w.run, err)
+		w.Error("recovery run failed to start", "runId", w.run.id, "error", err)
+	}
+	return task.ErrTaskComplete
 }
 
 // runRequest 串行执行一次手动恢复。dirs 为空表示使用配置/默认目录；
@@ -92,6 +128,10 @@ func (s *recoveryAPIState) ensureRunsLocked() {
 // startRun 登记一次运行。返回 (id, deduplicated, conflict, error)。
 //   - 相同目标已在运行 → 返回同一 id，deduplicated=true（HTTP 200）；
 //   - 不同目标正在运行 → conflict=true，id 为在途运行 id（HTTP 409）。
+//
+// 登记成功后立即返回，不在调用方（HTTP handler）里等待任务启动：启动结果由
+// recoveryStartWatcher 在后台回填。只有 owner 在登记瞬间已停止（两个 AddTask
+// 都被拒、watcher 也永远不会启动）时才同步返回错误。
 func (s *recoveryAPIState) startRun(owner *IndexRecoveryTask, dirs []string, file string) (string, bool, bool, error) {
 	key := recoveryRunKey(dirs, file)
 
@@ -124,18 +164,43 @@ func (s *recoveryAPIState) startRun(owner *IndexRecoveryTask, dirs []string, fil
 	s.mu.Unlock()
 
 	child := owner.AddTask(&recoveryAPIJob{owner: owner, state: s, run: run}, owner.Logger)
-	if err := child.WaitStarted(); err != nil {
-		s.mu.Lock()
-		run.status = recoveryRunFailed
-		run.err = err.Error()
-		run.finishedAt = time.Now()
-		if s.current == run {
-			s.current = nil
+	watcher := &recoveryStartWatcher{waitStarted: child.WaitStarted, state: s, run: run}
+	// watcher 必须有唯一 key：默认 key 是任务 ID，这里用自身指针，语义明确且
+	// 不会与同批其它 watcher 冲突。
+	watcher.key = fmt.Sprintf("recovery-start-watch:%p", watcher)
+	owner.AddTask(watcher, owner.Logger)
+
+	// 两个 AddTask 都只是入队，不会阻塞；若 owner 在登记瞬间已停止，两次
+	// AddTask 都会被立即拒绝，watcher 永远不会运行、没人能回填状态。
+	// 这是唯一的同步失败路径（正常运行时 owner 只在进程退出时停止）。
+	if owner.IsStopped() {
+		reason := owner.StopReason()
+		if reason == nil {
+			reason = errRecoveryTaskStopped
 		}
-		s.mu.Unlock()
-		return id, false, false, fmt.Errorf("start recovery run: %w", err)
+		s.failStart(run, reason)
+		return id, false, false, fmt.Errorf("start recovery run: %w", reason)
 	}
 	return id, false, false, nil
+}
+
+// failStart 记录「任务未能启动」的最终状态。
+//
+// 与 finishRun 分开：启动失败时恢复流程从未执行，没有任何逐文件结果，
+// 不能与「执行后失败」共用同一判定（finishRun 还会覆盖 stats）。
+// 若运行已被 finishRun 收尾则保持原样。
+func (s *recoveryAPIState) failStart(run *recoveryRunState, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if run.status != recoveryRunRunning {
+		return
+	}
+	run.status = recoveryRunFailed
+	run.err = fmt.Sprintf("start recovery run: %v", err)
+	run.finishedAt = time.Now()
+	if s.current == run {
+		s.current = nil
+	}
 }
 
 // finishRun 记录运行最终结果并释放 in-flight 标记。
