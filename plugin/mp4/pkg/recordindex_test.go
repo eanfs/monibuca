@@ -453,3 +453,11 @@ func TestIndexRecordLimitCountsSamplesOnly(t *testing.T) {
 		t.Fatalf("over-limit index must discard records, got %+v", f)
 	}
 }
+
+// 记录上限是产品口径的一部分(双轨 ≈ 43 记录/秒 → 约 3.4 天)，改动必须是有意为之：
+// 调低会让长单文件录制被判永久失败，调高则重新打开 OOM 面。
+func TestMaxIndexRecordsValue(t *testing.T) {
+	if maxIndexRecords != 20_000_000 {
+		t.Fatalf("maxIndexRecords = %d, want 20000000", maxIndexRecords)
+	}
+}

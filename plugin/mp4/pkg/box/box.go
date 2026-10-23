@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"unsafe"
 
@@ -234,6 +235,10 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 	baseBox.typ = BoxType(tmp[4:])
 	t, exists := registry[baseBox.typ.Uint32I()]
 	if !exists {
+		// 未知类型按声明长度丢弃。这是已知取舍：size<8 时 uint32 相减会得到
+		// ~4.29GB，CopyN 会请求一次 4.29GB 的"丢弃读取"——它不分配内存，对
+		// *os.File 只是空读到结尾，因此这里有意不加校验，避免误伤带未知尾部
+		// box(含 size==0 的合法"延伸到文件尾"写法)的历史行为。
 		io.CopyN(io.Discard, r, int64(baseBox.size-BasicBoxLen))
 		return &baseBox, nil
 	}
@@ -251,7 +256,12 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 			return nil, fmt.Errorf("box %s: declared largesize %d smaller than header (%d)",
 				baseBox.typ.String(), largeSize, BasicBoxLen+8)
 		}
-		payload = make([]byte, largeSize-BasicBoxLen-8)
+		payloadLen := largeSize - BasicBoxLen - 8
+		if err = checkDeclaredPayload(baseBox.typ, payloadLen, r); err != nil {
+			return nil, err
+		}
+		// payloadLen 已校验过不超过剩余量/兜底上限，转 int 不会溢出或为负。
+		payload = make([]byte, payloadLen)
 	} else {
 		// 声明长度至少要覆盖 8 字节 box 头；更小的值(size<8)会让 uint32 相减
 		// 回绕成 ~4.29GB 的分配。
@@ -259,7 +269,11 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 			return nil, fmt.Errorf("box %s: declared size %d smaller than header (%d)",
 				baseBox.typ.String(), baseBox.size, BasicBoxLen)
 		}
-		payload = make([]byte, baseBox.size-BasicBoxLen)
+		payloadLen := uint64(baseBox.size - BasicBoxLen)
+		if err = checkDeclaredPayload(baseBox.typ, payloadLen, r); err != nil {
+			return nil, err
+		}
+		payload = make([]byte, payloadLen)
 	}
 	_, err = io.ReadFull(r, payload)
 	if err != nil {
@@ -285,6 +299,53 @@ func ReadFrom(r io.Reader) (box IBox, err error) {
 		return box, nil
 	}
 	return
+}
+
+// remainingBytes 尽量返回 r 中尚未读取的字节数；第二个返回值为 false 表示无法判断。
+// bytes.Reader/strings.Reader/SectionReader 的 Len() 与 *os.File 的 Size()-Seek()
+// 都能精确给出。
+func remainingBytes(r io.Reader) (int64, bool) {
+	switch v := r.(type) {
+	case interface{ Len() int }:
+		return int64(v.Len()), true
+	case interface {
+		Stat() (os.FileInfo, error)
+		Seek(offset int64, whence int) (int64, error)
+	}:
+		info, err := v.Stat()
+		if err != nil {
+			return 0, false
+		}
+		cur, err := v.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, false
+		}
+		if cur >= info.Size() {
+			return 0, true
+		}
+		return info.Size() - cur, true
+	}
+	return 0, false
+}
+
+// checkDeclaredPayload 在分配负载缓冲区前校验声明长度，确保"文件里的尺寸字段
+// 不能决定内存分配"：
+//   - 能拿到剩余字节时，声明超过剩余量直接报错。错误包装 io.ErrUnexpectedEOF，
+//     语义仍是"文件被截断"——进行中的录制读到半个 box 时调用方照旧优雅收尾；
+//   - 拿不到剩余量时退回绝对上限 maxBoxPayload，只防 panic/OOM，不是业务限制。
+func checkDeclaredPayload(typ BoxType, payloadLen uint64, r io.Reader) error {
+	if remaining, ok := remainingBytes(r); ok {
+		if payloadLen > uint64(remaining) {
+			return fmt.Errorf("box %s: declared payload %d exceeds %d bytes remaining: %w",
+				typ.String(), payloadLen, remaining, io.ErrUnexpectedEOF)
+		}
+		return nil
+	}
+	if payloadLen > maxBoxPayload {
+		return fmt.Errorf("box %s: declared payload %d exceeds limit %d",
+			typ.String(), payloadLen, uint64(maxBoxPayload))
+	}
+	return nil
 }
 
 func (b BoxType) String() string {
@@ -313,6 +374,11 @@ func RegisterBox[T any](typ ...BoxType) {
 const (
 	BasicBoxLen = 8  // size(4) + type(4)
 	FullBoxLen  = 12 // BasicBoxLen + version(1) + flags(3)
+
+	// maxBoxPayload 是"拿不到 reader 剩余字节"时的兜底上限，只用于防 panic/OOM，
+	// 不是业务限制：mdat 等 box 可以有合法的超大尺寸，那类调用方的 reader
+	// (*os.File / bytes.Reader) 能精确给出剩余量，走的是精确校验分支。
+	maxBoxPayload = 1 << 30
 )
 
 func f(s string) BoxType {

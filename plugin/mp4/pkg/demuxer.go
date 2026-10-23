@@ -195,8 +195,10 @@ func (d *Demuxer) Demux() (err error) {
 	for {
 		b, err = box.ReadFrom(d.reader)
 		if err != nil {
-			// 进行中 fmp4：文件末尾可能截断在半个 box，已解析样本仍可用
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// 进行中 fmp4：文件末尾可能截断在半个 box，已解析样本仍可用。
+			// 用 errors.Is：box 层对"声明长度超过剩余字节"的拒绝包装了
+			// io.ErrUnexpectedEOF，语义同样是截断。
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			if d.IsFragment {

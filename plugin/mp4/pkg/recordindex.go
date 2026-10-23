@@ -54,7 +54,12 @@ const (
 	maxIndexPayloadSize  = 1 << 20
 	// maxIndexRecords 限制单次读取载入内存的样本记录条数(23 字节/条)。
 	// 索引内容是不可信输入：不设上限时，一个伪造的 10GB sidecar 会把记录
-	// 全部读进内存(约 14GB)导致 OOM。20M 条 ≈ 20fps 连续录制 11 天的样本量。
+	// 全部读进内存(约 14GB)导致 OOM。
+	//
+	// 容量口径：单轨 20fps ≈ 11 天；双轨(视频 25fps + AAC) ≈ 43 记录/秒 ≈ 3.4 天，
+	// 相当于 20M / 43 / 86400。分片录制会按片重建索引，不受此限约束；但
+	// fragment:0 的长期单文件一旦越限，读取会被判 ErrIndexCorrupt → 恢复侧按
+	// 永久失败落 .failed，不会自动恢复，故该值需与"最长单文件录制时长"对齐。
 	maxIndexRecords = 20_000_000
 
 	// minSTSDBoxSize 是恢复路径接受的最小 stsd box 声明尺寸。stsd 是 FullBox，

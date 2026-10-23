@@ -573,3 +573,33 @@ func TestRestoreTrackAcceptsValidSTSD(t *testing.T) {
 		t.Fatal("audio track not flagged as audio")
 	}
 }
+
+// 恢复入口的 stsd 上界必须有测试钉住：只有下界检查时，size==len+1 这类
+// "多声明 1 字节"仍会放行到 box 层（那里靠剩余量兜底，但恢复入口不该依赖它）。
+func TestValidateSTSDBoundsRejectsOverrun(t *testing.T) {
+	// 常规形式：16 字节合法；声明 17 > 实际 16 必须拒绝。
+	regular := func(declared uint32) []byte {
+		b := append([]byte{0, 0, 0, 0, 's', 't', 's', 'd'}, make([]byte, 8)...)
+		binary.BigEndian.PutUint32(b[:4], declared)
+		return b
+	}
+	if err := validateSTSDBounds(IndexTrack{ID: 1, STSD: regular(16)}); err != nil {
+		t.Fatalf("size == len should pass: %v", err)
+	}
+	if err := validateSTSDBounds(IndexTrack{ID: 1, STSD: regular(17)}); err == nil {
+		t.Fatal("size == len+1 must be rejected")
+	}
+
+	// largesize 形式：24 字节合法；声明 25 > 实际 24 必须拒绝。
+	large := func(declared uint64) []byte {
+		b := append([]byte{0, 0, 0, 1, 's', 't', 's', 'd'}, make([]byte, 16)...)
+		binary.BigEndian.PutUint64(b[8:16], declared)
+		return b
+	}
+	if err := validateSTSDBounds(IndexTrack{ID: 1, STSD: large(24)}); err != nil {
+		t.Fatalf("largesize == len should pass: %v", err)
+	}
+	if err := validateSTSDBounds(IndexTrack{ID: 1, STSD: large(25)}); err == nil {
+		t.Fatal("largesize == len+1 must be rejected")
+	}
+}

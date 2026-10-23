@@ -3,6 +3,8 @@ package box
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"runtime"
 	"testing"
 )
@@ -183,5 +185,116 @@ func TestReadFromAcceptsValidSTSD(t *testing.T) {
 	}
 	if len(stsd.Entries) != 1 || stsd.Entries[0].Type() != TypeAVC1 {
 		t.Fatalf("entries = %+v, want one avc1", stsd.Entries)
+	}
+}
+
+// 把 reader 的"剩余字节"能力藏起来，模拟既没有 Len() 也没有 Stat()/Seek()
+// 的调用方，走 maxBoxPayload 兜底分支。
+type opaqueReader struct{ r io.Reader }
+
+func (o opaqueReader) Read(p []byte) (int, error) { return o.r.Read(p) }
+
+// 只封了下溢还不够：超大声明尺寸同样能 OOM/panic。伪造 32 字节 STSD，
+// 外层尺寸合法、子 box 声明一个天文数字——必须在分配前拒绝。
+func TestReadFromRejectsOversizedDeclared(t *testing.T) {
+	// 外层 size = 头(8) + version/flags(4) + entry_count(4) + child。
+	buildSTSD := func(child []byte) []byte {
+		data := make([]byte, 0, 16+len(child))
+		data = append(data, boxHeader(uint32(16+len(child)), "stsd")...)
+		data = append(data, 0, 0, 0, 0) // version/flags
+		data = append(data, 0, 0, 0, 1) // entry_count
+		return append(data, child...)
+	}
+	cases := []struct {
+		name  string
+		child []byte
+	}{
+		// largesize=2^64-1：减 16 后转 int 为负，makeslice panic。
+		{"nested_largesize_max", largeBoxHeader(^uint64(0), "free")},
+		// 常规 size=0xFFFFFFF0：make(size-8) ≈ 4.29GB 零化分配。
+		{"nested_size_max_uint32", boxHeader(0xFFFFFFF0, "free")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			data := buildSTSD(c.child)
+			// 外层必须自洽（声明尺寸 == 实际长度），否则被外层校验拦下，
+			// 测不到子 box 分支。
+			if declared := int(binary.BigEndian.Uint32(data[:4])); declared != len(data) {
+				t.Fatalf("test fixture declared %d, actual %d", declared, len(data))
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("ReadFrom panicked: %v", r)
+				}
+			}()
+			var got IBox
+			var err error
+			alloc := allocDelta(func() { got, err = ReadFrom(bytes.NewReader(data)) })
+			if err == nil {
+				t.Fatalf("expected error, got box %+v", got)
+			}
+			// 声明超过剩余字节按"截断"上报，调用方(demuxer)才能优雅收尾。
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("error = %v, want wrapped io.ErrUnexpectedEOF", err)
+			}
+			t.Logf("err=%v alloc=%d bytes", err, alloc)
+			if alloc > maxReadFromAlloc {
+				t.Fatalf("allocated %d bytes for %d input bytes", alloc, len(data))
+			}
+		})
+	}
+}
+
+// 合法的大 box（reader 能给出剩余量）必须照常解析：精确校验不能退化成
+// "不允许超过某个小固定值"。
+func TestReadFromAcceptsLargeBox(t *testing.T) {
+	payload := make([]byte, 2<<20) // 2MB
+	payload[0], payload[len(payload)-1] = 0xAB, 0xCD
+	data := append(boxHeader(uint32(BasicBoxLen+len(payload)), "mdat"), payload...)
+
+	parsed, err := ReadFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+	mdat, ok := parsed.(*MediaDataBox)
+	if !ok {
+		t.Fatalf("parsed as %T, want *MediaDataBox", parsed)
+	}
+	if len(mdat.Data) != len(payload) || mdat.Data[0] != 0xAB || mdat.Data[len(mdat.Data)-1] != 0xCD {
+		t.Fatalf("payload not read verbatim: len=%d", len(mdat.Data))
+	}
+}
+
+// 拿不到剩余量时走 maxBoxPayload 兜底：超限拒绝，未超限照常解析。
+func TestReadFromUnknownReaderUsesCap(t *testing.T) {
+	huge := boxHeader(maxBoxPayload+BasicBoxLen+1, "free")
+	if _, err := ReadFrom(opaqueReader{bytes.NewReader(huge)}); err == nil {
+		t.Fatal("declared payload above maxBoxPayload must be rejected")
+	}
+
+	small := append(boxHeader(16, "free"), make([]byte, 8)...)
+	parsed, err := ReadFrom(opaqueReader{bytes.NewReader(small)})
+	if err != nil {
+		t.Fatalf("small box through opaque reader: %v", err)
+	}
+	if parsed == nil || parsed.Type().String() != "free" {
+		t.Fatalf("parsed = %+v, want free box", parsed)
+	}
+}
+
+// demuxer 路径不经过恢复入口的 16 下界：stsd 负载不足 4 字节时，
+// Unmarshal 取 entry_count 会越界 panic，必须在入口返回错误。
+func TestSTSDUnmarshalRejectsShortPayload(t *testing.T) {
+	for _, buf := range [][]byte{nil, {}, {0, 0, 0}} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("Unmarshal(%d bytes) panicked: %v", len(buf), r)
+				}
+			}()
+			if _, err := (&STSDBox{}).Unmarshal(buf); err == nil {
+				t.Fatalf("Unmarshal(%d bytes) should error", len(buf))
+			}
+		}()
 	}
 }

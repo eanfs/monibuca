@@ -3,6 +3,7 @@ package box
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -272,6 +273,11 @@ func CreateSTSDBox(entries ...IBox) *STSDBox {
 }
 
 func (stsd *STSDBox) Unmarshal(buf []byte) (IBox, error) {
+	// 至少要能读完 entry_count(4 字节)；更短的负载走 box.ReadFrom 的 demuxer 路径
+	// 时不会被恢复入口的 16 下界拦下，必须在这里返回错误而不是越界 panic。
+	if len(buf) < 4 {
+		return nil, fmt.Errorf("box stsd: payload %d too short for entry count", len(buf))
+	}
 	stsd.Entries = make([]IBox, 0, binary.BigEndian.Uint32(buf))
 	r := bytes.NewReader(buf[4:])
 	for {
