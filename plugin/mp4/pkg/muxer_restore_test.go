@@ -481,3 +481,95 @@ func TestRestoreFromIndexAudioTrack(t *testing.T) {
 		t.Fatalf("stsz sample count = %d, want 1", stbl.STSZ.SampleCount)
 	}
 }
+
+// 索引里的 STSD 是不可信输入：伪造的 box 声明尺寸会让 box.ReadFrom 用无符号
+// 运算算负载长度(size-8)，size<8 时回绕成 ~4.29GB 的分配(OOM)，size==8 的
+// FullBox 会在 payload[0] 越界 panic。恢复入口必须在交给 box 解析前拦下，
+// 且任何输入都不得 panic。size==1 的 largesize 形式同样会下溢。
+func TestRestoreTrackRejectsInvalidSTSD(t *testing.T) {
+	endian32 := func(v uint32) []byte {
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], v)
+		return b[:]
+	}
+	endian64 := func(v uint64) []byte {
+		var b [8]byte
+		binary.BigEndian.PutUint64(b[:], v)
+		return b[:]
+	}
+	stsdHead := func(size uint32) []byte {
+		return append(endian32(size), []byte("stsd")...)
+	}
+	largeHead := func(size uint64) []byte {
+		return append(append(endian32(1), []byte("stsd")...), endian64(size)...)
+	}
+	// fullPayload 是 stsd 头部之后的合法负载：version/flags(4) + entry_count(4)。
+	fullPayload := func() []byte { return []byte{0, 0, 0, 0, 0, 0, 0, 0} }
+
+	cases := []struct {
+		name string
+		stsd []byte
+	}{
+		{"empty", nil},
+		{"short_header", []byte{0, 0, 0, 16, 's', 't', 's'}},
+		{"size_zero", stsdHead(0)},
+		{"size_four", stsdHead(4)},
+		// size==8 是 FullBox：payload 为空，box.ReadFrom 里 payload[0] 越界。
+		{"size_eight_fullbox", stsdHead(8)},
+		// size==12 只够 version/flags，entry_count 仍缺 4 字节。
+		{"size_twelve_missing_entry_count", append(stsdHead(12), fullPayload()...)},
+		{"size_gt_len", stsdHead(0x100)},
+		{"size_max_uint32", stsdHead(0xFFFFFFFF)},
+		// size==1 是 largesize 形式，8 字节尺寸小于 16 会让 make 下溢。
+		{"largesize_zero", largeHead(0)},
+		{"largesize_eight", largeHead(8)},
+		{"largesize_sixteen_empty_payload", largeHead(16)},
+		{"largesize_gt_len", append(largeHead(0x100), fullPayload()...)},
+		// largesize 本身被截断，读不满 8 字节。
+		{"largesize_truncated", []byte{0, 0, 0, 1, 's', 't', 's', 'd', 0, 0}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("restoreTrackFromIndex panicked: %v", r)
+				}
+			}()
+			it := IndexTrack{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: c.stsd}
+			track, err := restoreTrackFromIndex(it)
+			if err == nil {
+				t.Fatalf("expected error, got track %+v", track)
+			}
+			if track != nil {
+				t.Fatalf("track returned alongside error: %+v", track)
+			}
+		})
+	}
+}
+
+// 合法 STSD 必须仍能恢复：边界校验不能误伤录制路径写出的真实索引。
+func TestRestoreTrackAcceptsValidSTSD(t *testing.T) {
+	video := restoreTestSTSD(t, true)
+	track, err := restoreTrackFromIndex(IndexTrack{
+		ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: video,
+	})
+	if err != nil {
+		t.Fatalf("valid video stsd rejected: %v", err)
+	}
+	if track.STSD == nil || len(track.STSD.Entries) != 1 || track.STSD.Entries[0].Type() != box.TypeAVC1 {
+		t.Fatalf("stsd not injected verbatim: %+v", track.STSD)
+	}
+	if track.restoreWidth != 320 || track.restoreHeight != 240 {
+		t.Fatalf("dimensions = %dx%d, want 320x240", track.restoreWidth, track.restoreHeight)
+	}
+
+	audio := restoreTestSTSD(t, false)
+	track, err = restoreTrackFromIndex(IndexTrack{ID: 2, FourCC: "alaw", STSD: audio})
+	if err != nil {
+		t.Fatalf("valid audio stsd rejected: %v", err)
+	}
+	if !track.restoreAudio {
+		t.Fatal("audio track not flagged as audio")
+	}
+}

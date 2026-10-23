@@ -421,6 +421,34 @@ func codecTypeFromFourCC(fourCC string) (MP4_CODEC_TYPE, bool) {
 	return 0, false
 }
 
+// validateSTSDBounds 校验索引里 stsd 首个 box 的声明尺寸确实落在实际字节范围内。
+//
+// 索引是不可信输入，而 box.ReadFrom 用无符号运算算负载长度 make(size-8)：
+// 声明尺寸 < 8 会回绕成 ~4.29GB 的分配，== 8 的 FullBox 会在 payload[0] 越界
+// panic，size==1 的 largesize 形式同样会下溢。只在恢复入口拦截，不改
+// box.ReadFrom 本身(解析路径调用面太广)。
+func validateSTSDBounds(it IndexTrack) error {
+	errInvalid := fmt.Errorf("mp4: restore track %d: invalid stsd bounds", it.ID)
+	n := len(it.STSD)
+	// 至少要读完 box 头(8) + version/flags(4) + entry_count(4)。
+	if n < minSTSDBoxSize {
+		return errInvalid
+	}
+	size := binary.BigEndian.Uint32(it.STSD[0:4])
+	if size == 1 {
+		// largesize 形式：尺寸字段是头之后的 8 字节，且必须覆盖整个 24 字节头。
+		large := binary.BigEndian.Uint64(it.STSD[8:16])
+		if large < minSTSDLargeBoxSize || large > uint64(n) {
+			return errInvalid
+		}
+		return nil
+	}
+	if size < minSTSDBoxSize || uint64(size) > uint64(n) {
+		return errInvalid
+	}
+	return nil
+}
+
 // restoreTrackFromIndex 用索引里的结构化字段建一条没有 ICodecCtx 的 Track。
 // stsd 直接注入，避免重新解析码流；宽高/声道由 IndexTrack 补全。
 func restoreTrackFromIndex(it IndexTrack) (*Track, error) {
@@ -430,6 +458,9 @@ func restoreTrackFromIndex(it IndexTrack) (*Track, error) {
 	}
 	if len(it.STSD) == 0 {
 		return nil, fmt.Errorf("mp4: restore track %d: missing stsd", it.ID)
+	}
+	if err := validateSTSDBounds(it); err != nil {
+		return nil, err
 	}
 	parsed, err := ReadFrom(bytes.NewReader(it.STSD))
 	if err != nil {

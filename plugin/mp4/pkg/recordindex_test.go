@@ -3,8 +3,11 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -350,5 +353,103 @@ func TestIndexBadHeader(t *testing.T) {
 	}
 	if _, err := ReadIndex(badLen); err == nil {
 		t.Fatal("oversized header length should error")
+	}
+}
+
+// repeatedIndexReader 依次产出 header 前缀和 repeats 条相同的 sample 记录帧。
+// 逐帧复用同一块 buffer，不预分配记录数组：验证"记录数上限"要跑到百万级，
+// 用真实文件或切片会让单测吃掉几百 MB 内存。
+type repeatedIndexReader struct {
+	prefix  []byte
+	frame   []byte
+	repeats int
+	pend    []byte
+}
+
+func (r *repeatedIndexReader) Read(p []byte) (int, error) {
+	for len(r.pend) == 0 {
+		switch {
+		case r.prefix != nil:
+			r.pend, r.prefix = r.prefix, nil
+		case r.repeats > 0:
+			r.repeats--
+			r.pend = r.frame
+		default:
+			return 0, io.EOF
+		}
+	}
+	n := copy(p, r.pend)
+	r.pend = r.pend[n:]
+	return n, nil
+}
+
+// 索引内容是不可信输入(任何能写扫描目录的进程都能伪造)：不设记录数上限时，
+// 一个伪造的 10GB sidecar 会把全部记录读进内存(约 14GB)，进程直接 OOM。
+// 超限按确定性损坏处理，并且丢弃已读记录——返回部分记录会让调用方把
+// "读了一半的恢复"当成成功，写出缺样本的 moov。
+func TestIndexRejectsTooManyRecords(t *testing.T) {
+	prefix, err := encodeIndexHeader(IndexHeader{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame [IndexRecordSize]byte
+	encodeIndexRecord(frame[:], IndexRecord{Flags: 1, TrackID: 1, Size: 100, Offset: 48, DTS: 0, Duration: 40})
+	newReader := func(records int) *repeatedIndexReader {
+		return &repeatedIndexReader{prefix: append([]byte(nil), prefix...), frame: frame[:], repeats: records}
+	}
+
+	const limit = 3
+
+	// 上限 + 1 条：报 ErrIndexCorrupt，且不返回任何记录(已读部分必须丢弃)。
+	f, err := readIndexFromLimit(newReader(limit+1), limit)
+	if !errors.Is(err, ErrIndexCorrupt) {
+		t.Fatalf("error = %v, want ErrIndexCorrupt", err)
+	}
+	if f != nil {
+		t.Fatalf("over-limit index must discard records, got %+v", f)
+	}
+	if want := "index exceeds 3 records"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to mention %q", err, want)
+	}
+
+	// 恰好等于上限：仍然正常返回，上限只拦"超过"。
+	f, err = readIndexFromLimit(newReader(limit), limit)
+	if err != nil {
+		t.Fatalf("at limit: %v", err)
+	}
+	if f == nil || len(f.Records) != limit {
+		t.Fatalf("records = %+v, want %d records", f, limit)
+	}
+}
+
+// 上限必须覆盖扩展记录之后的样本：扩展记录不占配额，但样本累计到上限
+// 也必须停下，否则可以用 commit/rename 记录把伪造索引无限拉长。
+func TestIndexRecordLimitCountsSamplesOnly(t *testing.T) {
+	prefix, err := encodeIndexHeader(IndexHeader{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample [IndexRecordSize]byte
+	encodeIndexRecord(sample[:], IndexRecord{Flags: 1, TrackID: 1, Size: 100, Offset: 48, DTS: 0, Duration: 40})
+
+	ext := make([]byte, IndexRecordSize+indexCommitPayload)
+	ext[0] = indexFlagExtension
+	binary.BigEndian.PutUint16(ext[1:3], indexExtCommit)
+	binary.BigEndian.PutUint32(ext[3:7], indexCommitPayload)
+
+	// 样本、扩展、样本、扩展、样本、扩展、样本：4 个样本，上限 3。
+	stream := append([]byte(nil), prefix...)
+	for i := 0; i < 4; i++ {
+		stream = append(stream, sample[:]...)
+		if i < 3 {
+			stream = append(stream, ext...)
+		}
+	}
+	f, err := readIndexFromLimit(bytes.NewReader(stream), 3)
+	if !errors.Is(err, ErrIndexCorrupt) {
+		t.Fatalf("error = %v, want ErrIndexCorrupt", err)
+	}
+	if f != nil {
+		t.Fatalf("over-limit index must discard records, got %+v", f)
 	}
 }

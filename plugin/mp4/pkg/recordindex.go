@@ -52,6 +52,19 @@ const (
 	indexWriteBufferSize = 4096
 	maxIndexHeaderSize   = 4 << 20
 	maxIndexPayloadSize  = 1 << 20
+	// maxIndexRecords 限制单次读取载入内存的样本记录条数(23 字节/条)。
+	// 索引内容是不可信输入：不设上限时，一个伪造的 10GB sidecar 会把记录
+	// 全部读进内存(约 14GB)导致 OOM。20M 条 ≈ 20fps 连续录制 11 天的样本量。
+	maxIndexRecords = 20_000_000
+
+	// minSTSDBoxSize 是恢复路径接受的最小 stsd box 声明尺寸。stsd 是 FullBox，
+	// 合法负载至少是 version/flags(4) + entry_count(4)，加上 8 字节 box 头即 16。
+	// 声明尺寸更小时 box.ReadFrom 会对空 payload 取 payload[0] 或 entry_count 而
+	// panic；小于 8 则会让 make(size-8) 的无符号运算下溢成 ~4.29GB 的分配。
+	minSTSDBoxSize = 16
+	// minSTSDLargeBoxSize 是 largesize(size==1) 形式的最小声明尺寸：
+	// size(4) + type(4) + largesize(8) + version/flags(4) + entry_count(4)。
+	minSTSDLargeBoxSize = 24
 
 	indexFlagExtension = 0xFF
 	indexExtCommit     = 1
@@ -317,6 +330,8 @@ func RemoveIndex(path string) error {
 // ReadIndex 读取索引文件。只校验格式，不感知媒体文件长度：
 // 调用方应自行在 offset+size 超过媒体大小时停止使用记录。
 // 尾部被截断、零填充或结构损坏(如 track ID 为 0)时返回已读出的部分，不报错。
+// 样本记录数超过 maxIndexRecords 时视为确定性损坏：返回 ErrIndexCorrupt 并
+// 丢弃全部记录，避免伪造的超大索引决定进程内存占用。
 func ReadIndex(path string) (*IndexFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -368,6 +383,13 @@ func readIndexHeader(r io.Reader) (IndexHeader, error) {
 }
 
 func readIndexFrom(r io.Reader) (*IndexFile, error) {
+	return readIndexFromLimit(r, maxIndexRecords)
+}
+
+// readIndexFromLimit 是 readIndexFrom 的实现，maxRecords 是样本记录数上限。
+// 上限做成参数只为让单测用小值覆盖该分支：真正跑满上限要分配数百 MB 的记录
+// 数组，不适合放进常规单测。
+func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
 	h, err := readIndexHeader(r)
 	if err != nil {
 		return nil, err
@@ -394,6 +416,11 @@ func readIndexFrom(r io.Reader) (*IndexFile, error) {
 			// 损坏无校验和可查，调用方仍需按 trackID/size 兜底。
 			if r.TrackID == 0 {
 				return idx, nil
+			}
+			// 超限是不可接受的：宁可丢弃整个索引，也不能把"读了一半"当成功
+			// 返回——调用方会据此写出缺样本的 moov，比不恢复更危险。
+			if len(idx.Records) >= maxRecords {
+				return nil, fmt.Errorf("%w: index exceeds %d records", ErrIndexCorrupt, maxRecords)
 			}
 			idx.Records = append(idx.Records, r)
 			continue
