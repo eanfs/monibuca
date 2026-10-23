@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 	"m7s.live/v5"
+	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
 // newRecoveryDBTestDB 建一个文件 sqlite 并迁移 record_streams。
@@ -747,4 +749,88 @@ func TestRecoveredTrackCodecTagFallsBackToFourCC(t *testing.T) {
 	if got := recoveredTrackCodecTag(IndexTrack{ID: 1, FourCC: "hvc1"}); got != "hvc1" {
 		t.Fatalf("tag = %q, want FourCC fallback hvc1", got)
 	}
+}
+
+// serializeSTSD 把 stsd box 序列化成索引头里保存的字节。
+func serializeSTSD(t *testing.T, stsd box.IBox) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if _, err := box.WriteTo(&buf, stsd); err != nil {
+		t.Fatalf("serialize stsd: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// aacSTSD 造 mp4a + esds 的 stsd。record 是 MPEG-4 AudioSpecificConfig。
+func aacSTSD(t *testing.T, record []byte) []byte {
+	t.Helper()
+	entry := box.CreateAudioSampleEntry(box.TypeMP4A, 2, 16, 44100,
+		box.CreateESDSBox(1, box.MP4_CODEC_AAC, record))
+	return serializeSTSD(t, box.CreateSTSDBox(entry))
+}
+
+// hvcSTSD 造 hvc1 + hvcC 的 stsd；hvcC 是原始配置记录字节。
+func hvcSTSD(t *testing.T, hvcC []byte) []byte {
+	t.Helper()
+	entry := box.CreateVisualSampleEntry(box.TypeHVC1, 320, 240,
+		box.CreateDataBox(box.TypeHVCC, hvcC))
+	return serializeSTSD(t, box.CreateSTSDBox(entry))
+}
+
+// validHvcCRecord 造 vdk h265parser 能接受的最小 hvcC：profile=1、
+// compatibility=6、level=120（对齐 H265Ctx.String() 的读取位置）。
+func validHvcCRecord() []byte {
+	rec := make([]byte, 32)
+	rec[0] = 1   // configurationVersion
+	rec[1] = 1   // general_profile_idc
+	rec[2] = 6   // compatibility
+	rec[3] = 120 // general_level_idc
+	return rec
+}
+
+// requireCodecTag 断言推导结果，同时把"解析不可信 stsd 时 panic"变成测试失败
+// 而不是进程崩溃。
+func requireCodecTag(t *testing.T, track IndexTrack, want string) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("recoveredTrackCodecTag panicked on stsd: %v (want fallback %q)", r, want)
+		}
+	}()
+	if got := recoveredTrackCodecTag(track); got != want {
+		t.Fatalf("tag = %q, want %q", got, want)
+	}
+}
+
+// AAC 分支：esds → mp4a.40.<objectType>，与录制路径 ICodecCtx.String() 同口径。
+func TestRecoveredTrackCodecTagAAC(t *testing.T) {
+	requireCodecTag(t, IndexTrack{ID: 2, FourCC: "mp4a", STSD: aacSTSD(t, []byte{0x12, 0x10})}, "mp4a.40.2")
+}
+
+// H.265 分支：hvcC → hvc1.<profile>.<compat>.L<level>.00。
+func TestRecoveredTrackCodecTagH265(t *testing.T) {
+	requireCodecTag(t, IndexTrack{ID: 1, FourCC: "hvc1", STSD: hvcSTSD(t, validHvcCRecord())}, "hvc1.1.6.L120.00")
+}
+
+// 索引是不可信输入：esds/hvcC 的语义解析器在截断负载上会 panic
+// （gomedia BitStream / vdk h265parser 的越界）。恢复回写绝不能把畸形 codec
+// 记录升级成进程/task 级失败，必须降级为 FourCC。
+func TestRecoveredTrackCodecTagMalformedPayloadsFallBack(t *testing.T) {
+	// esds payload(after version/flags) 只有 1 字节：DecodeESDescriptor 的
+	// BitStream 在空数据上取位会 panic。
+	shortESDS := box.CreateDataBox(box.TypeESDS, []byte{0, 0, 0, 0, 0x80})
+	audioEntry := box.CreateAudioSampleEntry(box.TypeMP4A, 2, 16, 44100, shortESDS)
+	shortESDSSDST := serializeSTSD(t, box.CreateSTSDBox(audioEntry))
+	requireCodecTag(t, IndexTrack{ID: 2, FourCC: "mp4a", STSD: shortESDSSDST}, "mp4a")
+
+	// hvcC 30/31 字节：vdk Unmarshal 只检查 len < n+1 就连续 n++ 两次再取
+	// b[n]，30 字节时索引 b[31] 越界 panic。
+	for _, n := range []int{30, 31} {
+		requireCodecTag(t, IndexTrack{ID: 1, FourCC: "hvc1", STSD: hvcSTSD(t, make([]byte, n))}, "hvc1")
+	}
+
+	// 截断的 esds 描述符链（tag 0x03 之后没有内容）。
+	truncatedESDS := box.CreateDataBox(box.TypeESDS, []byte{0, 0, 0, 0, 0x03, 0x01, 0x00})
+	truncatedEntry := box.CreateAudioSampleEntry(box.TypeMP4A, 2, 16, 44100, truncatedESDS)
+	requireCodecTag(t, IndexTrack{ID: 2, FourCC: "mp4a", STSD: serializeSTSD(t, box.CreateSTSDBox(truncatedEntry))}, "mp4a")
 }

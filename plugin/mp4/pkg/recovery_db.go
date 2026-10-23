@@ -66,7 +66,18 @@ func recoveredTrackCodecTag(track IndexTrack) string {
 
 // codecTagFromSTSD 从 stsd box 推导 RFC 6381 codec 字符串。只处理恢复路径会
 // 遇到的 sample entry 类型；其它形态返回空串由调用方回退。
-func codecTagFromSTSD(stsdBytes []byte) string {
+//
+// stsd 来自不可信索引头：结构合法但语义畸形的 esds/hvcC 会让底层解析器直接
+// panic（gomedia BitStream 在 1 字节 esds 上报 "OUT OF RANGE"；vdk h265parser
+// 在 30/31 字节 hvcC 上索引 b[31] 越界）。这里用 recover 兜底并降级为空串
+// （调用方回退 FourCC）：返回值只是纯字符串，不存在"半初始化状态"泄漏；
+// 恢复流程也绝不会因一条畸形 codec 记录而中断整份录像的 DB 回写。
+func codecTagFromSTSD(stsdBytes []byte) (tag string) {
+	defer func() {
+		if recover() != nil {
+			tag = ""
+		}
+	}()
 	if len(stsdBytes) == 0 {
 		return ""
 	}
@@ -121,9 +132,9 @@ func codecTagFromSTSD(stsdBytes []byte) string {
 	return ""
 }
 
-// recoveredTrackCodecs 从索引头声明的轨道里挑出实际存在于产物中的 codec 表示。
-// dropped 里的轨道（没有任何可用样本）被跳过；同类型多条轨道取第一条。
-func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, video string) {
+// trackKindsDeclared 报告索引头里是否存在未被丢弃的音轨/视频轨。它只看
+// FourCC，不解析 stsd，因此可以在任何写入之前安全调用。
+func trackKindsDeclared(header IndexHeader, dropped map[uint16]bool) (audio, video bool) {
 	for _, track := range header.Tracks {
 		if dropped[track.ID] {
 			continue
@@ -132,16 +143,29 @@ func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, v
 		if !ok {
 			continue
 		}
-		tag := recoveredTrackCodecTag(track)
 		if cid.IsVideo() {
-			if video == "" {
-				video = tag
-			}
-		} else if audio == "" {
-			audio = tag
+			video = true
+		} else {
+			audio = true
 		}
 	}
-	return audio, video
+	return
+}
+
+// recoveredTrackCodecTagFor 返回指定类型中第一条未被丢弃轨道的 codec 表示。
+// 只在确实要写入该列时调用：内部会解析不可信的 stsd（见 codecTagFromSTSD）。
+func recoveredTrackCodecTagFor(header IndexHeader, dropped map[uint16]bool, wantVideo bool) string {
+	for _, track := range header.Tracks {
+		if dropped[track.ID] {
+			continue
+		}
+		cid, ok := codecTypeFromFourCC(track.FourCC)
+		if !ok || cid.IsVideo() != wantVideo {
+			continue
+		}
+		return recoveredTrackCodecTag(track)
+	}
+	return ""
 }
 
 // droppedTrackKinds 报告被丢弃的轨道里是否包含音轨/视频轨。
@@ -238,13 +262,14 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		updates["storage_type"] = storageType
 	}
 	// codec 的回写策略依赖"命中行的既有值"（见下方 found 分支），这里只做
-	// 纯计算：被丢弃轨道的类型，以及实际存在于产物中的 codec 表示。
+	// 不解析 stsd 的纯计算：被丢弃轨道的类型、各类型是否还有存活轨道。
+	// 真正的 codec 推导推迟到确定要写入时，缩小不可信 stsd 的解析面。
 	dropped := make(map[uint16]bool, len(droppedTrackIDs))
 	for _, id := range droppedTrackIDs {
 		dropped[id] = true
 	}
 	audioDropped, videoDropped := droppedTrackKinds(header, dropped)
-	audioCodec, videoCodec := recoveredTrackCodecs(header, dropped)
+	audioPresent, videoPresent := trackKindsDeclared(header, dropped)
 
 	dbCtx, cancel := context.WithTimeout(context.Background(), recoveryDBTimeout)
 	defer cancel()
@@ -321,19 +346,24 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		// 被丢弃的轨道必须**显式清空** codec 列。命中行是开录时写入的
 		// （recoder.go 已填好 AudioCodec/VideoCodec），只"不写该 key"会把
 		// 旧声明原样保留，API 仍会宣称产物里有一条实际不存在的音轨。
-		if audioDropped && audioCodec == "" {
+		if audioDropped && !audioPresent {
 			updates["audio_codec"] = ""
 		}
-		if videoDropped && videoCodec == "" {
+		if videoDropped && !videoPresent {
 			updates["video_codec"] = ""
 		}
 		// 绝不降级：既有非空值是录制方用 ICodecCtx.String() 写入的权威
-		// RFC 6381 表示（avc1.4D401E），恢复只有在该列为空时才补写。
-		if audioCodec != "" && strings.TrimSpace(existing.AudioCodec) == "" {
-			updates["audio_codec"] = audioCodec
+		// RFC 6381 表示（avc1.4D401E），恢复只有在该列为空时才补写——也只有在
+		// 这时才解析（不可信的）stsd 推导 codec。
+		if audioPresent && strings.TrimSpace(existing.AudioCodec) == "" {
+			if tag := recoveredTrackCodecTagFor(header, dropped, false); tag != "" {
+				updates["audio_codec"] = tag
+			}
 		}
-		if videoCodec != "" && strings.TrimSpace(existing.VideoCodec) == "" {
-			updates["video_codec"] = videoCodec
+		if videoPresent && strings.TrimSpace(existing.VideoCodec) == "" {
+			if tag := recoveredTrackCodecTagFor(header, dropped, true); tag != "" {
+				updates["video_codec"] = tag
+			}
 		}
 		// 只按主键更新命中行；即使值完全相同（MySQL RowsAffected=0）也算成功。
 		if err := db.WithContext(dbCtx).Model(&m7s.RecordStream{}).
@@ -372,15 +402,16 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	}
 
 	record := m7s.RecordStream{
-		StartTime:    startTime,
-		EndTime:      endTime,
-		Duration:     duration,
-		FileName:     filepath.Base(filePath),
-		Type:         "mp4",
-		FilePath:     filePath,
-		StreamPath:   header.StreamPath,
-		AudioCodec:   audioCodec,
-		VideoCodec:   videoCodec,
+		StartTime:  startTime,
+		EndTime:    endTime,
+		Duration:   duration,
+		FileName:   filepath.Base(filePath),
+		Type:       "mp4",
+		FilePath:   filePath,
+		StreamPath: header.StreamPath,
+		// 新建行没有可保留的既有值，直接写入推导结果（缺失时为空）。
+		AudioCodec:   recoveredTrackCodecTagFor(header, dropped, false),
+		VideoCodec:   recoveredTrackCodecTagFor(header, dropped, true),
 		StorageLevel: 1,
 		StorageType:  strings.TrimSpace(header.StorageType),
 	}
