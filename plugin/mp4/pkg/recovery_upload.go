@@ -381,10 +381,7 @@ func recoveryResolveStorage(storageType string, resolver RecoveryStorageResolver
 // 一律拒绝（返回空串，调用方已有 "missing object path" 错误分支），避免把
 // 恢复产物写成任意绝对路径或穿越到预期目录之外的对象键。
 func recoveryObjectKey(header IndexHeader) string {
-	key := strings.TrimSpace(header.FilePath)
-	if key == "" {
-		key = strings.TrimSpace(header.StorageKey)
-	}
+	key := indexHeaderRecordPath(header)
 	if !isSafeRecoveryObjectKey(key) {
 		return ""
 	}
@@ -395,17 +392,11 @@ func recoveryObjectKey(header IndexHeader) string {
 // 必须是相对路径，任何一段都不得是 ".."（同时覆盖 / 与 \ 分隔符），
 // 且至少要有一段有效名称（"." 之类不是合法的录像路径）。
 //
-// 与 ValidateIndexHeaderPaths 独立：即使上游漏调校验，这里也必须自己拦住。
+// 与 ValidateIndexHeaderPaths 共用 objectKeyInvalidReason 的规则实现——这里
+// 只是第二个调用点（纵深防御：即使上游漏调校验，这里也必须自己拦住），规则
+// 本身不再复制一份。
 func isSafeRecoveryObjectKey(key string) bool {
-	if key == "" || filepath.IsAbs(key) ||
-		strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) ||
-		filepath.VolumeName(key) != "" {
-		return false
-	}
-	if hasTraversalSegment(key) {
-		return false
-	}
-	return hasMeaningfulObjectKeySegment(key)
+	return objectKeyInvalidReason(key) == ""
 }
 
 // recoveryUploadRegistered 判断 upload_tasks 是否已经接管了「本次产物」。

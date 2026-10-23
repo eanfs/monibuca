@@ -132,21 +132,24 @@ func codecTagFromSTSD(stsdBytes []byte) (tag string) {
 	return ""
 }
 
-// trackKindsDeclared 报告索引头里是否存在未被丢弃的音轨/视频轨。它只看
-// FourCC，不解析 stsd，因此可以在任何写入之前安全调用。
-func trackKindsDeclared(header IndexHeader, dropped map[uint16]bool) (audio, video bool) {
+// trackKinds 一次遍历把索引头声明的轨道按「存活 / 被丢弃」与「音 / 视频」
+// 分类。它只看 FourCC，不解析 stsd，因此可以在任何写入之前安全调用。
+func trackKinds(header IndexHeader, dropped map[uint16]bool) (audioPresent, videoPresent, audioDropped, videoDropped bool) {
 	for _, track := range header.Tracks {
-		if dropped[track.ID] {
-			continue
-		}
 		cid, ok := codecTypeFromFourCC(track.FourCC)
 		if !ok {
 			continue
 		}
-		if cid.IsVideo() {
-			video = true
-		} else {
-			audio = true
+		isVideo := cid.IsVideo()
+		switch {
+		case dropped[track.ID] && isVideo:
+			videoDropped = true
+		case dropped[track.ID]:
+			audioDropped = true
+		case isVideo:
+			videoPresent = true
+		default:
+			audioPresent = true
 		}
 	}
 	return
@@ -166,25 +169,6 @@ func recoveredTrackCodecTagFor(header IndexHeader, dropped map[uint16]bool, want
 		return recoveredTrackCodecTag(track)
 	}
 	return ""
-}
-
-// droppedTrackKinds 报告被丢弃的轨道里是否包含音轨/视频轨。
-func droppedTrackKinds(header IndexHeader, dropped map[uint16]bool) (audioDropped, videoDropped bool) {
-	for _, track := range header.Tracks {
-		if !dropped[track.ID] {
-			continue
-		}
-		cid, ok := codecTypeFromFourCC(track.FourCC)
-		if !ok {
-			continue
-		}
-		if cid.IsVideo() {
-			videoDropped = true
-		} else {
-			audioDropped = true
-		}
-	}
-	return
 }
 
 // 恢复回写的「尚未收尾」谓词。
@@ -231,10 +215,7 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		return nil
 	}
 
-	filePath := strings.TrimSpace(header.FilePath)
-	if filePath == "" {
-		filePath = strings.TrimSpace(header.StorageKey)
-	}
+	filePath := indexHeaderRecordPath(header)
 	if filePath == "" {
 		logger.Warn("recovered record has no filePath/storageKey; skip record_streams update",
 			"streamPath", header.StreamPath, "mediaPath", header.MediaPath)
@@ -268,8 +249,7 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	for _, id := range droppedTrackIDs {
 		dropped[id] = true
 	}
-	audioDropped, videoDropped := droppedTrackKinds(header, dropped)
-	audioPresent, videoPresent := trackKindsDeclared(header, dropped)
+	audioPresent, videoPresent, audioDropped, videoDropped := trackKinds(header, dropped)
 
 	dbCtx, cancel := context.WithTimeout(context.Background(), recoveryDBTimeout)
 	defer cancel()

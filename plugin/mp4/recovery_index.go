@@ -218,10 +218,6 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 	return defaultRecoveryConcurrency
 }
 
-// defaultRecoveryRerunInterval 是 RerunInterval 未配置时的兜底（仅用于
-// GetTickInterval，正常路径由 record.recovery.reruninterval 的 default 注入）。
-const defaultRecoveryRerunInterval = 10 * time.Minute
-
 // periodicRerunEnabled 报告是否应注册周期重扫。
 //
 // 两个条件缺一不可：
@@ -241,11 +237,10 @@ type recoveryRerunTask struct {
 	owner *IndexRecoveryTask
 }
 
+// GetTickInterval 只由 periodicRerunEnabled 为真的任务使用，因此
+// RerunInterval 必然 > 0，不需要兜底值。
 func (r *recoveryRerunTask) GetTickInterval() time.Duration {
-	if r.owner.RerunInterval > 0 {
-		return r.owner.RerunInterval
-	}
-	return defaultRecoveryRerunInterval
+	return r.owner.RerunInterval
 }
 
 func (r *recoveryRerunTask) Tick(any) {
@@ -981,20 +976,10 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 		return recoverySkipped, item, nil
 	}
 
-	// 录制已正常收尾（committed）且本地 mp4 已有 moov：无需重建，
-	// 只需重新移交上传队列（上传失败/pending 补传场景）。
-	//
-	// 必须同时要求 source == output：locateRecoveryMedia 可能定位到与
-	// header.MediaPath 不同的候选（RENAME 目标尚未落盘的窗口），此时 output 由
-	// recorded 推导，是一个从未被校验、也未创建过的路径。直接入队只会让上传
-	// 任务永远等不到文件（fail-safe 但这条录像永远不会完成）。
-	if source == output && index.Committed && isMP4Path(source) && hasTopLevelMoov(source) {
-		if err := t.enqueue(item); err != nil {
-			return recoveryFailed, item, err
-		}
-		t.afterEnqueueSidecar(sidecar)
-		return recoverySkipped, item, nil
-	}
+	// 注意：这里不再单独处理「索引已 Commit 且本地 mp4 已有 moov」的分支。
+	// 它的条件（source == output && index.Committed && isMP4Path && hasTopLevelMoov）
+	// 被上面的 C1 完全包含，且 C1 在前，因此那道分支不可达。C1 的注释解释了
+	// 为什么此时必须直接入队而不是重建。
 
 	info, err := os.Stat(source)
 	if err != nil {
@@ -1021,9 +1006,10 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	if shift != 0 {
 		t.Info("applying index offset shift for interrupted INSERT_RANGE",
 			"sidecar", sidecar, "media", source, "shift", shift)
-		// 上传/入库链路必须拿到与产物一致的坐标。
-		item.Records = records
 	}
+	// 上传/入库链路必须拿到与产物一致的坐标。shift == 0 时 RecordsWithOffsetShift
+	// 原样返回索引记录，因此这里无条件赋值即可。
+	item.Records = records
 
 	marker, err := t.markRecovering(sidecar)
 	if err != nil {
@@ -1335,12 +1321,47 @@ func isPermanentIndexError(err error) bool {
 	return errors.Is(err, mp4pkg.ErrIndexCorrupt)
 }
 
-// 顶层 / moov 子 box 的扫描上限：只用于防止损坏文件把「判是否收尾」拖成
-// O(文件大小/8) 次读，合法 mp4 远低于这些值。
-const (
-	maxTopLevelBoxScan  = 1024
-	maxMoovChildBoxScan = 1024
-)
+// maxRecoveryBoxScan 是 box 扫描的条数上限（顶层与 moov 子层共用）：只用于
+// 防止损坏文件把「判是否收尾」拖成 O(区间长度/8) 次读，合法 mp4 远低于该值。
+const maxRecoveryBoxScan = 1024
+
+// walkBoxes 在 [start, start+length) 内顺序遍历 box 头，对每个完整落在区间内
+// 的 box 调用 yield；yield 返回 true 表示命中目标、停止扫描。
+//
+// 返回 true 表示命中。任何 box 声明尺寸非法（小于最小头、size==0、越过区间
+// 尾）都直接返回 false——该区间没有完整落盘。size==1 的 largesize 形式按
+// 16 字节头处理，payload 起点相应后移 8 字节。
+func walkBoxes(f io.ReaderAt, start, length int64, yield func(typ string, payloadStart, payloadLen int64) bool) bool {
+	var header [16]byte
+	for pos, seen := int64(0), 0; pos+8 <= length && seen < maxRecoveryBoxScan; seen++ {
+		if _, err := f.ReadAt(header[:8], start+pos); err != nil {
+			return false
+		}
+		size := int64(binary.BigEndian.Uint32(header[:4]))
+		typ := string(header[4:8])
+		extra := int64(0)
+		if size == 1 {
+			if pos+16 > length {
+				return false
+			}
+			if _, err := f.ReadAt(header[8:16], start+pos+8); err != nil {
+				return false
+			}
+			size = int64(binary.BigEndian.Uint64(header[8:16]))
+			extra = 8
+		} else if size == 0 {
+			return false
+		}
+		if size < 8+extra || pos > length-size {
+			return false
+		}
+		if yield(typ, start+pos+8+extra, size-8-extra) {
+			return true
+		}
+		pos += size
+	}
+	return false
+}
 
 // hasTopLevelMoov 扫描顶层 box，判断文件是否已经包含**完整**的 moov。
 // 只用于识别“已正常收尾”的本地录像，避免用重建结果覆盖完好文件。
@@ -1360,72 +1381,25 @@ func hasTopLevelMoov(path string) bool {
 	if err != nil {
 		return false
 	}
-	fileSize := info.Size()
 
-	var header [16]byte
-	// 顶层 box 数量有界：合法 mp4 不超过十几个。上限只防「大量 8 字节 box
-	// 让扫描退化成 O(文件大小/8) 次读」的损坏文件。
-	for pos, seen := int64(0), 0; pos+8 <= fileSize && seen < maxTopLevelBoxScan; seen++ {
-		if _, err = f.ReadAt(header[:8], pos); err != nil {
+	found := false
+	walkBoxes(f, 0, info.Size(), func(typ string, payloadStart, payloadLen int64) bool {
+		if typ != "moov" {
 			return false
 		}
-		size := int64(binary.BigEndian.Uint32(header[:4]))
-		typ := string(header[4:8])
-		extra := int64(0)
-		if size == 1 {
-			if pos+16 > fileSize {
-				return false
-			}
-			if _, err = f.ReadAt(header[8:16], pos+8); err != nil {
-				return false
-			}
-			size = int64(binary.BigEndian.Uint64(header[8:16]))
-			extra = 8
-		} else if size == 0 {
-			return false
-		}
-		// 声明尺寸小于最小 box 或越过文件尾：该 box 没有完整落盘。
-		if size < 8+extra || pos > fileSize-size {
-			return false
-		}
-		if typ == "moov" {
-			return moovContainsMvhd(f, pos+8+extra, size-8-extra)
-		}
-		pos += size
-	}
-	return false
+		// 找到 moov 就停止扫描：无论其内容是否完整，结论都已确定。
+		found = moovContainsMvhd(f, payloadStart, payloadLen)
+		return true
+	})
+	return found
 }
 
 // moovContainsMvhd 扫描 moov 的子 box，确认存在完整落在 moov 内的 mvhd。
 // 任一子 box 结构非法即判为「moov 未写完」，不再继续猜测。
 func moovContainsMvhd(f io.ReaderAt, start, length int64) bool {
-	var header [16]byte
-	// 合法 moov 的子 box 数量是个位数；上限只防损坏文件把扫描拖长。
-	for pos, seen := int64(0), 0; pos+8 <= length && seen < maxMoovChildBoxScan; seen++ {
-		if _, err := f.ReadAt(header[:8], start+pos); err != nil {
-			return false
-		}
-		size := int64(binary.BigEndian.Uint32(header[:4]))
-		extra := int64(0)
-		if size == 1 {
-			if pos+16 > length {
-				return false
-			}
-			if _, err := f.ReadAt(header[8:16], start+pos+8); err != nil {
-				return false
-			}
-			size = int64(binary.BigEndian.Uint64(header[8:16]))
-			extra = 8
-		}
-		if size < 8+extra || pos > length-size {
-			return false
-		}
-		if string(header[4:8]) == "mvhd" {
-			return true
-		}
-		pos += size
-	}
-	return false
+	return walkBoxes(f, start, length, func(typ string, _, _ int64) bool {
+		return typ == "mvhd"
+	})
 }
 
 func syncParentDir(path string) {

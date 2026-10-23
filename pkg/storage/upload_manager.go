@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -146,27 +145,12 @@ func MoveLocalFile(srcPath, dstPath string) error {
 		return nil
 	}
 
-	// fallback: copy + delete
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(dst, src); err != nil {
-		dst.Close()
+	// fallback: copy + delete。复用本包的 copyFileContents（它带 Sync，保证
+	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。
+	if err := copyFileContents(srcPath, dstPath); err != nil {
 		os.Remove(dstPath)
 		return err
 	}
-	if err = dst.Close(); err != nil {
-		os.Remove(dstPath)
-		return err
-	}
-	src.Close()
 	return os.Remove(srcPath)
 }
 

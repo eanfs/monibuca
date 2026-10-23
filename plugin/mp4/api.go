@@ -823,7 +823,7 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 		}
 		slotHeld := release != nil
 		defer func() {
-			if slotHeld && release != nil {
+			if slotHeld {
 				release()
 			}
 		}()

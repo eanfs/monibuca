@@ -603,7 +603,10 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 		}
 		sample.Size = int(r.Size)
 		track.AddSampleEntry(sample)
-		delete(dropped, r.TrackID)
+		if len(dropped) > 0 {
+			// 前几条记录之后 dropped 通常已空，避免对每条记录做一次无效哈希。
+			delete(dropped, r.TrackID)
+		}
 		if payloadStart < 0 || int64(r.Offset) < payloadStart {
 			payloadStart = int64(r.Offset)
 		}

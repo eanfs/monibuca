@@ -45,10 +45,7 @@ const (
 //
 // MediaPath 必须是绝对路径的约束由恢复侧的路径 guard 负责（这里只做绑定）。
 func ValidateIndexHeaderPaths(header IndexHeader) error {
-	key := strings.TrimSpace(header.FilePath)
-	if key == "" {
-		key = strings.TrimSpace(header.StorageKey)
-	}
+	key := indexHeaderRecordPath(header)
 	if key == "" {
 		return nil
 	}
@@ -71,14 +68,39 @@ func ValidateIndexHeaderPaths(header IndexHeader) error {
 	}
 
 	// 对象存储：必须是相对路径且含有效段。
-	if filepath.IsAbs(key) || strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) ||
-		filepath.VolumeName(key) != "" {
-		return recoveryPathRuleError(recoveryRuleObjectKeyAbsolute, header, mediaPath)
-	}
-	if !hasMeaningfulObjectKeySegment(key) {
-		return recoveryPathRuleError(recoveryRuleObjectKeyInvalid, header, mediaPath)
+	if rule := objectKeyInvalidReason(key); rule != "" {
+		return recoveryPathRuleError(rule, header, mediaPath)
 	}
 	return nil
+}
+
+// indexHeaderRecordPath 返回索引头里的录像逻辑路径：优先 FilePath，为空时
+// 回退 StorageKey（两端空白都会被去掉）。校验、上传对象键与 DB 回写必须用
+// 同一个取值口径，因此集中在这里。
+func indexHeaderRecordPath(header IndexHeader) string {
+	if key := strings.TrimSpace(header.FilePath); key != "" {
+		return key
+	}
+	return strings.TrimSpace(header.StorageKey)
+}
+
+// objectKeyInvalidReason 按对象键规则校验 key：必须非空、是相对路径（不接受
+// 绝对路径与盘符）、不含 ".." 段、至少含一段有效名称。返回命中的规则标签，
+// 合法时返回空字符串。
+//
+// ValidateIndexHeaderPaths 与 recoveryObjectKey 都调用这里，规则只写一份：
+// 两条入口的差异只剩「何时调用」，不再是「各自实现一遍规则」。
+func objectKeyInvalidReason(key string) string {
+	switch {
+	case filepath.IsAbs(key) || strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) ||
+		filepath.VolumeName(key) != "":
+		return recoveryRuleObjectKeyAbsolute
+	case hasTraversalSegment(key):
+		return recoveryRuleTraversal
+	case !hasMeaningfulObjectKeySegment(key):
+		return recoveryRuleObjectKeyInvalid
+	}
+	return ""
 }
 
 // recoveryPathRuleError 组装带规则标签的错误，便于现场日志直接定位。
@@ -180,10 +202,7 @@ func resolvePathForBinding(path string) string {
 // 因此「只更新既有行、不新建」是正确取舍：既抢救了 duration/end_time 等元数据，
 // 又不会把攻击者指定的绝对路径写成新的 file_path。
 func isSuffixBoundAbsoluteFilePath(header IndexHeader) bool {
-	key := strings.TrimSpace(header.FilePath)
-	if key == "" {
-		key = strings.TrimSpace(header.StorageKey)
-	}
+	key := indexHeaderRecordPath(header)
 	if key == "" || !filepath.IsAbs(key) {
 		return false
 	}

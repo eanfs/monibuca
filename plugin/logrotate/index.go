@@ -170,18 +170,29 @@ func foreignLogFiles(dir, prefix, layout string) ([]string, error) {
 	var stale []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, logFileExt) {
+		if strings.HasPrefix(name, prefix) || !entry.Type().IsRegular() {
 			continue
 		}
-		if !entry.Type().IsRegular() {
-			continue
-		}
-		if _, err := time.Parse(layout, strings.TrimSuffix(name, logFileExt)); err != nil {
+		if _, ok := rotatedLogStamp(name, layout); !ok {
 			continue
 		}
 		stale = append(stale, name)
 	}
 	return stale, nil
+}
+
+// rotatedLogStamp 判断文件名是否属于「轮转日志」命名约定：以 .log 结尾且去掉
+// 扩展名后的时间戳能被 layout 解析。命中的文件名在轮转/清理/遗留检测之间共用
+// 同一口径，避免三处判定漂移。
+func rotatedLogStamp(name, layout string) (string, bool) {
+	if !strings.HasSuffix(name, logFileExt) {
+		return "", false
+	}
+	stamp := strings.TrimSuffix(name, logFileExt)
+	if _, err := time.Parse(layout, stamp); err != nil {
+		return "", false
+	}
+	return stamp, true
 }
 
 // logPruneTask 按 Days 删除过期的轮转日志。走任务系统(TickTask),不使用裸 goroutine;
@@ -260,12 +271,11 @@ func pruneOldLogs(dir, prefix, layout string, days int, now time.Time) (int, err
 		if name == currentName {
 			continue
 		}
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, logFileExt) {
+		if !strings.HasPrefix(name, prefix) {
 			// 非本插件命名的文件(其它进程日志等)不归本插件清理。
 			continue
 		}
-		stamp := strings.TrimSuffix(strings.TrimPrefix(name, prefix), logFileExt)
-		if _, err := time.Parse(layout, stamp); err != nil {
+		if _, ok := rotatedLogStamp(strings.TrimPrefix(name, prefix), layout); !ok {
 			// 前缀相同但时间戳不符合本插件 Formatter,同样不碰。
 			continue
 		}

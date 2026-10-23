@@ -362,7 +362,7 @@ var legacyH264NALWhitelist = [32]bool{1: true, 5: true, 6: true, 7: true, 8: tru
 
 // legacyH265NALTypeAllowed 是 H.265 NAL 类型白名单（ITU-T H.265 Table 7-1）：
 // 0-31 = VCL，32 = VPS，33 = SPS，34 = PPS。35(AUD)/36-40(填充/SEI) 不接受。
-func legacyH265NALTypeAllowed(t int) bool { return t >= 0 && t <= 34 }
+func legacyH265NALTypeAllowed(t int) bool { return t <= 34 }
 
 func legacyNALType(codec legacyCodec, head []byte) (int, bool) {
 	if codec == legacyCodecH264 {
