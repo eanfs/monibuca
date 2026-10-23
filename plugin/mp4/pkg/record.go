@@ -70,11 +70,23 @@ type writeTrailerTask struct {
 // 调用：sidecar 提交之后文件还要经过 trailer 重写，期间恢复扫描必须继续把
 // 它当作「活跃录制」而不是崩溃残留。提前注销会让 mtime 成为唯一判据，
 // GB 级 mdat 的重写很容易超过 minage，正在写的文件就会被覆盖。
+// 可重复调用（UnregisterActiveIndex 只是按键删除）。
 func (t *writeTrailerTask) releaseActiveIndex() {
 	UnregisterActiveIndex(t.indexPath, t.indexMediaPath)
 }
 
 func (task *writeTrailerTask) Start() (err error) {
+	// gotask 只在 Start 成功时才调用 Run()；本任务没有 SetRetry，Start 失败即
+	// 终结（任务被直接移出队列），连 dispose 都不会真正执行（dispose 在
+	// state < TASK_STATE_STARTED 时直接返回），所以 Run 的 defer 与 OnDispose
+	// 都覆盖不到这条路径。不在这里注销，IsActiveRecordingPath 会让恢复扫描在
+	// 本进程余下的生命周期内永久跳过这个 sidecar（相对 commitIndex 同步注销的
+	// 基线是回归）。Start 失败后文件已关闭、不会再有 trailer 重写，注销是安全的。
+	defer func() {
+		if err != nil {
+			task.releaseActiveIndex()
+		}
+	}()
 	task.Info("write trailer start")
 	if err = task.muxer.WriteTrailer(task.file); err != nil {
 		task.Error("write trailer", "err", err)
@@ -973,6 +985,11 @@ func (r *Recorder) writeTailer(end time.Time) {
 		indexMediaPath: indexMediaPath,
 		startedAt:      r.recordStartedAt,
 	}
+	// OnDispose 必须在 AddTask 之前注册：与 OnStart 相同的 append-only 语义，
+	// 任务启动后再注册的监听器永远不会被消费。正常路径的注销由 Run 的 defer
+	// 完成（覆盖所有提前返回），这里只是任务确实进入 Dispose 时的兜底；
+	// 启动失败路径由 Start 自己注销（gotask 不会为启动失败的任务执行 Dispose）。
+	trailer.GetTask().OnDispose(trailer.releaseActiveIndex)
 	trailerTask := writeTrailerQueueTask.AddTask(trailer,
 		r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
 	if rejected, reason := m7s.AddTaskRejected(&writeTrailerQueueTask, trailerTask); rejected {
