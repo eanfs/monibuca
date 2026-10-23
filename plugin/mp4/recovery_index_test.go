@@ -71,7 +71,8 @@ func writeRecoverySidecar(t *testing.T, sidecar string, header mp4pkg.IndexHeade
 }
 
 // writeCompletedLocalMP4 造一个已有顶层 moov 的本地 mp4（ftyp|moov|mdat）。
-// hasTopLevelMoov 只扫描 box 头，因此不需要 moov 内容可被完整解析。
+// moov 必须是内容完整的（含 mvhd）：hasTopLevelMoov 除 box 头外还会校验 moov
+// 是否写全，空负载的 moov 会被判为「未收尾」。
 func writeCompletedLocalMP4(t *testing.T, path string, payload []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -84,7 +85,7 @@ func writeCompletedLocalMP4(t *testing.T, path string, payload []byte) []byte {
 		buf.Write(body)
 	}
 	writeBox("ftyp", []byte("isom"))
-	writeBox("moov", nil)
+	writeBox("moov", moovTestBox("mvhd", make([]byte, 100)))
 	writeBox("mdat", payload)
 	data := buf.Bytes()
 	if err := os.WriteFile(path, data, 0o644); err != nil {

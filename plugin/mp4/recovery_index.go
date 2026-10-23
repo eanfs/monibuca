@@ -1112,28 +1112,39 @@ func isPermanentIndexError(err error) bool {
 	return errors.Is(err, mp4pkg.ErrIndexCorrupt)
 }
 
-// hasTopLevelMoov 扫描顶层 box，判断文件是否已经包含 moov。
+// hasTopLevelMoov 扫描顶层 box，判断文件是否已经包含**完整**的 moov。
 // 只用于识别“已正常收尾”的本地录像，避免用重建结果覆盖完好文件。
+//
+// 只认 box 头是不够的：trailer 把 moov 写到文件头（或尾部）的中途掉电时，
+// 4 字节 size 与 type 可能已经落盘而 moov 内容尚未写完。旧实现读到 "moov"
+// 头就返回 true，C1 分支会把它当成品入队并删掉 sidecar，恢复侧从此再也不会
+// 重建这份录像。因此这里额外要求：moov 的声明尺寸完整落在文件内，且 moov
+// 内含 mvhd（合法 moov 的第一个子 box）。
 func hasTopLevelMoov(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	fileSize := info.Size()
 
 	var header [16]byte
-	for range 64 {
-		if _, err = io.ReadFull(f, header[:8]); err != nil {
+	for pos := int64(0); pos+8 <= fileSize; {
+		if _, err = f.ReadAt(header[:8], pos); err != nil {
 			return false
 		}
 		size := int64(binary.BigEndian.Uint32(header[:4]))
 		typ := string(header[4:8])
-		if typ == "moov" {
-			return true
-		}
 		extra := int64(0)
 		if size == 1 {
-			if _, err = io.ReadFull(f, header[8:16]); err != nil {
+			if pos+16 > fileSize {
+				return false
+			}
+			if _, err = f.ReadAt(header[8:16], pos+8); err != nil {
 				return false
 			}
 			size = int64(binary.BigEndian.Uint64(header[8:16]))
@@ -1141,12 +1152,45 @@ func hasTopLevelMoov(path string) bool {
 		} else if size == 0 {
 			return false
 		}
-		if size < 8+extra {
+		// 声明尺寸小于最小 box 或越过文件尾：该 box 没有完整落盘。
+		if size < 8+extra || pos > fileSize-size {
 			return false
 		}
-		if _, err = f.Seek(size-8-extra, io.SeekCurrent); err != nil {
+		if typ == "moov" {
+			return moovContainsMvhd(f, pos+8+extra, size-8-extra)
+		}
+		pos += size
+	}
+	return false
+}
+
+// moovContainsMvhd 扫描 moov 的子 box，确认存在完整落在 moov 内的 mvhd。
+// 任一子 box 结构非法即判为「moov 未写完」，不再继续猜测。
+func moovContainsMvhd(f io.ReaderAt, start, length int64) bool {
+	var header [16]byte
+	for pos := int64(0); pos+8 <= length; {
+		if _, err := f.ReadAt(header[:8], start+pos); err != nil {
 			return false
 		}
+		size := int64(binary.BigEndian.Uint32(header[:4]))
+		extra := int64(0)
+		if size == 1 {
+			if pos+16 > length {
+				return false
+			}
+			if _, err := f.ReadAt(header[8:16], start+pos+8); err != nil {
+				return false
+			}
+			size = int64(binary.BigEndian.Uint64(header[8:16]))
+			extra = 8
+		}
+		if size < 8+extra || pos > length-size {
+			return false
+		}
+		if string(header[4:8]) == "mvhd" {
+			return true
+		}
+		pos += size
 	}
 	return false
 }
