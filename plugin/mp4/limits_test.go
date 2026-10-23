@@ -380,7 +380,7 @@ func newRecordingTestEnv(t *testing.T) *recordingTestEnv {
 		t.Fatalf("start Records: %v", err)
 	}
 
-	// 只需要一个未停止的 Publisher（pendingAutoRecordTask 会检查 IsStopped）；
+	// 只需要一个未停止的 Publisher（pendingAutoRecordTask 会检查 m7s.PublisherStopped）；
 	// 不启动真实 Publisher，避免触发网络/别名等与限流无关的初始化。
 	pub := &m7s.Publisher{}
 	pub.StreamPath = "live/queued"

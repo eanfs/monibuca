@@ -253,8 +253,16 @@ mp4:
       dirs: []           # 留空：tempdir + pending_uploads + 录像输出目录都会被扫描
 ```
 
-**检查**：启动日志 `index recovery task started ... dirs=[...]` 必须包含 tempdir，
-且**不得**出现上面那条 Warn；否则本轮升级后对象存储录制一旦崩溃就只能人工恢复。
+**检查**（S3 已配置的前提下）：启动日志中**不得**出现上面那条
+`storage.s3.tempdir is not configured: ...` Warn——它的缺席说明 tempdir 已显式配置。
+注意启动 Info `index recovery task started ... dirs=[...]` 打印的是**配置值**
+`record.recovery.dirs`，不是解析后的扫描集合：按上文配 `dirs: []` 时该字段就是
+`dirs=[]`，属正常现象，**不能**据此判断 tempdir 是否在扫描集合内。解析后的集合
+（默认 = tempdir + `pending_uploads` + 录像输出目录）只出现在扫描触达条目上限时的
+Warn `recovery scan truncated at entry limit: remaining entries were not scanned`
+的 `dirs` 字段里；此外 `GET /api/recovery/list` 使用同一套解析目录扫描，返回条目的
+`path` 落在 tempdir 下即说明该目录在扫描集合内（无残留时自然没有条目；配置了不存在
+或不可读的目录时，响应的 `errors` 会点名该目录）。
 
 ---
 
