@@ -28,9 +28,10 @@ func TestIndexHeaderStoresAbsoluteMediaPath(t *testing.T) {
 	}
 }
 
-// commitIndex（以及 closeIndex，共用 resetIndex）必须注销活跃登记，否则恢复
-// 扫描会永远跳过已经结束的录像（M2）。
-func TestCommitIndexUnregistersActiveRecording(t *testing.T) {
+// Important 4：commitIndex 只关句柄，**不得**注销活跃登记。sidecar 提交之后
+// 文件还要经过 trailer 重写（moov 前移 / INSERT_RANGE），期间仍在被改写；
+// 提前注销会让恢复扫描只剩 mtime 判据，长重写超过 minage 就被当成崩溃残留。
+func TestCommitIndexKeepsActiveRegistration(t *testing.T) {
 	dir := t.TempDir()
 	mediaPath := filepath.Join(dir, "rec.mp4")
 	indexPath := indexFilePath(mediaPath)
@@ -50,11 +51,36 @@ func TestCommitIndexUnregistersActiveRecording(t *testing.T) {
 	}
 
 	r.commitIndex()
-	if IsActiveRecordingPath(indexPath, mediaPath) {
-		t.Fatal("commitIndex must unregister the active recording")
+	if !IsActiveRecordingPath(indexPath, mediaPath) {
+		t.Fatal("commitIndex must keep the recording active until the trailer finishes")
 	}
 	if r.indexPath != "" || r.indexMediaPath != "" {
 		t.Fatalf("resetIndex left state behind: indexPath=%q mediaPath=%q", r.indexPath, r.indexMediaPath)
+	}
+
+	// 收尾由 writeTrailerTask 负责注销（Run 的 defer）。
+	trailer := &writeTrailerTask{indexPath: indexPath, indexMediaPath: mediaPath}
+	trailer.releaseActiveIndex()
+	if IsActiveRecordingPath(indexPath, mediaPath) {
+		t.Fatal("trailer completion must release the active registration")
+	}
+}
+
+// closeIndex 表示媒体被丢弃（没有 trailer 任务接手），必须立刻注销。
+func TestCloseIndexUnregistersActiveRecording(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath := filepath.Join(dir, "rec.mp4")
+	indexPath := indexFilePath(mediaPath)
+	w, err := CreateIndex(indexPath, IndexHeader{Version: 1, MediaPath: mediaPath})
+	if err != nil {
+		t.Fatalf("create index: %v", err)
+	}
+	r := &Recorder{index: w, indexPath: indexPath, indexMediaPath: mediaPath}
+	RegisterActiveIndex(indexPath, mediaPath)
+
+	r.closeIndex()
+	if IsActiveRecordingPath(indexPath, mediaPath) {
+		t.Fatal("closeIndex must unregister the active recording")
 	}
 }
 

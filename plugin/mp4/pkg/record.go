@@ -61,6 +61,17 @@ type writeTrailerTask struct {
 	dbWrite func(tailJob task.IJob) error
 	// indexPath 是本段录像的伴随索引；上传成功后才删除，失败/pending 保留。
 	indexPath string
+	// indexMediaPath 是 sidecar 头的媒体路径，与 indexPath 一起构成活跃登记
+	// 的键。活跃登记保留到本任务结束（见 releaseActiveIndex）。
+	indexMediaPath string
+}
+
+// releaseActiveIndex 注销本段录像的活跃登记。必须在 Run 结束时（成功或失败）
+// 调用：sidecar 提交之后文件还要经过 trailer 重写，期间恢复扫描必须继续把
+// 它当作「活跃录制」而不是崩溃残留。提前注销会让 mtime 成为唯一判据，
+// GB 级 mdat 的重写很容易超过 minage，正在写的文件就会被覆盖。
+func (t *writeTrailerTask) releaseActiveIndex() {
+	UnregisterActiveIndex(t.indexPath, t.indexMediaPath)
 }
 
 func (task *writeTrailerTask) Start() (err error) {
@@ -129,6 +140,9 @@ func localMediaPath(f storage.File) string {
 // 直接移交给 storage.File（对象存储=上传源；本地=rename 到目标路径），省去一次
 // 全量回拷。未实现 TempFileFinalizer 的 File 回退到旧的 io.Copy 路径。
 func (t *writeTrailerTask) Run() (err error) {
+	// 活跃登记从 commitIndex 一直保留到这里：trailer 重写窗口内文件仍在被
+	// 改写，恢复扫描必须跳过。无论成功、失败还是提前返回都注销（defer）。
+	defer t.releaseActiveIndex()
 	t.Info("write trailer")
 	// 「录制结束」事件：在 trailer 改写前记录本段录像的最终统计。
 	// size 取改写前的文件长度（已写入的媒体总量），断流/失败路径同样能报出。
@@ -930,6 +944,8 @@ func (r *Recorder) writeTailer(end time.Time) {
 		r.progressClosedID = r.Event.ID
 	}
 	// 正常收尾只 Commit + Close，不删除 sidecar；删除发生在上传成功之后。
+	// 活跃登记不在这里注销：它要一直保留到 trailer 任务收尾（releaseActiveIndex）。
+	indexMediaPath := r.indexMediaPath
 	indexPath := r.commitIndex()
 	// WriteTailDeferred 仅设置 EndTime 并返回延迟 DB 写入闭包，不立即写库。
 	// DB 写入将在 writeTrailerTask.Run() 成功（包含对象存储上传）后执行，
@@ -944,18 +960,28 @@ func (r *Recorder) writeTailer(end time.Time) {
 	if st != nil {
 		storageKey = st.GetKey()
 	}
-	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:      r.muxer,
-		file:       r.file,
-		filePath:   r.Event.FilePath,
-		durationMs: r.Event.Duration,
-		streamPath: r.Event.StreamPath,
-		storageKey: storageKey,
-		db:         db,
-		dbWrite:    dbWrite,
-		indexPath:  indexPath,
-		startedAt:  r.recordStartedAt,
-	}, r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
+	trailer := &writeTrailerTask{
+		muxer:          r.muxer,
+		file:           r.file,
+		filePath:       r.Event.FilePath,
+		durationMs:     r.Event.Duration,
+		streamPath:     r.Event.StreamPath,
+		storageKey:     storageKey,
+		db:             db,
+		dbWrite:        dbWrite,
+		indexPath:      indexPath,
+		indexMediaPath: indexMediaPath,
+		startedAt:      r.recordStartedAt,
+	}
+	trailerTask := writeTrailerQueueTask.AddTask(trailer,
+		r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
+	if rejected, reason := m7s.AddTaskRejected(&writeTrailerQueueTask, trailerTask); rejected {
+		// 队列已停止（进程收尾）或通道满：没有人会替我们注销，立刻释放，
+		// 否则这条路径会永久留在活跃集合里。
+		trailer.releaseActiveIndex()
+		r.Warn("write trailer task rejected by task system",
+			"streamPath", r.Event.StreamPath, "filePath", r.Event.FilePath, "reason", reason)
+	}
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
@@ -1364,9 +1390,10 @@ func (r *Recorder) logIndexError(err error) {
 		"indexPath", r.indexPath)
 }
 
+// resetIndex 复位分片级索引状态。**不**注销活跃登记：commitIndex 的收尾
+// 由 writeTrailerTask 在 trailer 完成后负责（releaseActiveIndex），closeIndex
+// 自己负责。把注销留在这里会让重写窗口内的文件失去保护。
 func (r *Recorder) resetIndex() {
-	// commitIndex/closeIndex 都经这里收尾：注销活跃登记，恢复扫描才能接管。
-	UnregisterActiveIndex(r.indexPath, r.indexMediaPath)
 	r.index = nil
 	r.indexPath = ""
 	r.indexMediaPath = ""
@@ -1400,12 +1427,14 @@ func (r *Recorder) commitIndex() (indexPath string) {
 
 // closeIndex 不写 commit 直接关闭索引（媒体文件被丢弃的分支）。
 // 按提交式删除约定，这里也不删除 sidecar；同样无条件复位分片级索引状态。
+// 这条路径没有 trailer 任务接手，活跃登记必须在这里注销。
 func (r *Recorder) closeIndex() {
 	if r.index != nil {
 		if err := r.index.Close(); err != nil {
 			r.Warn("close index sidecar", "err", err, "indexPath", r.indexPath)
 		}
 	}
+	UnregisterActiveIndex(r.indexPath, r.indexMediaPath)
 	r.resetIndex()
 }
 
