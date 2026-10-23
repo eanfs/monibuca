@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -11,6 +12,8 @@ import (
 
 	"gorm.io/gorm"
 	"m7s.live/v5"
+	"m7s.live/v5/pkg/codec"
+	"m7s.live/v5/plugin/mp4/pkg/box"
 )
 
 // recoveryDBTimeout 是恢复回写 record_streams 的超时。恢复是后台任务，
@@ -47,9 +50,79 @@ func truncateRecordTime(t time.Time) time.Time {
 	return t.Truncate(time.Millisecond)
 }
 
-// recoveredTrackCodecs 从索引头声明的轨道里挑出实际存在于产物中的 codec。
+// recoveredTrackCodecTag 返回索引头轨道在录制路径下的 codec 表示。
+//
+// 录制路径写的是 ICodecCtx.String()，即 RFC 6381 字符串（H.264 avc1.4D401E、
+// H.265 hvc1.1.6.L120.00、AAC mp4a.40.2、G.711 alaw/ulaw、opus）。索引头里
+// 保存的 stsd 足以推导同样的字段，因此恢复回写也用它，而不是粗粒度的裸
+// FourCC——后者会把录制方写下的精确值降级。
+// stsd 缺失/不可解析时回退到 FourCC：宁可粗粒度，也不能写空值。
+func recoveredTrackCodecTag(track IndexTrack) string {
+	if tag := codecTagFromSTSD(track.STSD); tag != "" {
+		return tag
+	}
+	return track.FourCC
+}
+
+// codecTagFromSTSD 从 stsd box 推导 RFC 6381 codec 字符串。只处理恢复路径会
+// 遇到的 sample entry 类型；其它形态返回空串由调用方回退。
+func codecTagFromSTSD(stsdBytes []byte) string {
+	if len(stsdBytes) == 0 {
+		return ""
+	}
+	parsed, err := box.ReadFrom(bytes.NewReader(stsdBytes))
+	if err != nil {
+		return ""
+	}
+	stsd, ok := parsed.(*box.STSDBox)
+	if !ok || len(stsd.Entries) == 0 {
+		return ""
+	}
+	switch entry := stsd.Entries[0].(type) {
+	case *box.AudioSampleEntry:
+		switch entry.Type() {
+		case box.TypeALAW:
+			return "alaw"
+		case box.TypeULAW:
+			return "ulaw"
+		case box.TypeOPUS:
+			return "opus"
+		case box.TypeMP4A:
+			esds, ok := entry.ExtraData.(*box.ESDSBox)
+			if !ok {
+				return ""
+			}
+			_, record := box.DecodeESDescriptor(esds.Data)
+			ctx, _ := codec.NewAACCtxFromRecord(record)
+			if ctx != nil && ctx.Config.ObjectType > 0 {
+				return ctx.String()
+			}
+		}
+	case *box.VisualSampleEntry:
+		data, ok := entry.ExtraData.(*box.DataBox)
+		if !ok {
+			return ""
+		}
+		switch entry.Type() {
+		case box.TypeAVC1:
+			ctx, _ := codec.NewH264CtxFromRecord(data.Data)
+			// 构造器即使因缺 SPS/PPS 报错，也已解析出 RecordInfo；
+			// profile/level 为 0 说明记录本身不可用，交给 FourCC 回退。
+			if ctx != nil && ctx.RecordInfo.AVCProfileIndication != 0 && ctx.RecordInfo.AVCLevelIndication != 0 {
+				return ctx.String()
+			}
+		case box.TypeHVC1, box.TypeHEV1:
+			ctx, _ := codec.NewH265CtxFromRecord(data.Data)
+			if ctx != nil && ctx.RecordInfo.AVCProfileIndication != 0 && ctx.RecordInfo.AVCLevelIndication != 0 {
+				return ctx.String()
+			}
+		}
+	}
+	return ""
+}
+
+// recoveredTrackCodecs 从索引头声明的轨道里挑出实际存在于产物中的 codec 表示。
 // dropped 里的轨道（没有任何可用样本）被跳过；同类型多条轨道取第一条。
-// 返回的 codec 沿用录制路径的取值口径（FourCC 字符串，如 avc1/alaw）。
 func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, video string) {
 	for _, track := range header.Tracks {
 		if dropped[track.ID] {
@@ -59,15 +132,35 @@ func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, v
 		if !ok {
 			continue
 		}
+		tag := recoveredTrackCodecTag(track)
 		if cid.IsVideo() {
 			if video == "" {
-				video = track.FourCC
+				video = tag
 			}
 		} else if audio == "" {
-			audio = track.FourCC
+			audio = tag
 		}
 	}
 	return audio, video
+}
+
+// droppedTrackKinds 报告被丢弃的轨道里是否包含音轨/视频轨。
+func droppedTrackKinds(header IndexHeader, dropped map[uint16]bool) (audioDropped, videoDropped bool) {
+	for _, track := range header.Tracks {
+		if !dropped[track.ID] {
+			continue
+		}
+		cid, ok := codecTypeFromFourCC(track.FourCC)
+		if !ok {
+			continue
+		}
+		if cid.IsVideo() {
+			videoDropped = true
+		} else {
+			audioDropped = true
+		}
+	}
+	return
 }
 
 // updateRecoveredRecord 在恢复成功后回写 record_streams。
@@ -79,8 +172,10 @@ func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, v
 // end_time = header.StartTime + 索引算出的时长（spec §2.5）。File 保持原样：
 // header.FilePath 是逻辑录像路径，也是 record_streams.file_path 的匹配键。
 //
-// droppedTrackIDs 是索引头声明、但恢复产物里没有可用样本的轨道：它们的
-// codec 不会被写进 record_streams，避免 API 声称产物有一条实际不存在的音轨。
+// droppedTrackIDs 是索引头声明、但恢复产物里没有可用样本的轨道：命中既有行
+// 时它们的 codec 列会被显式清空（"不更新"会保留开录时写入的旧声明）。
+// codec 一律使用 RFC 6381 表示（与录制路径的 ICodecCtx.String() 同口径），
+// 且既有非空值不会被降级覆盖。
 func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader, records []IndexRecord, droppedTrackIDs []uint16) error {
 	if db == nil {
 		return nil
@@ -126,19 +221,14 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	if storageType := strings.TrimSpace(header.StorageType); storageType != "" {
 		updates["storage_type"] = storageType
 	}
-	// codec 来自索引头声明的轨道，但被丢弃的轨道（记录全越界/缺失）不能写：
-	// 产物里没有对应 trak，写进去就是错误承诺。
+	// codec 的回写策略依赖"命中行的既有值"（见下方 found 分支），这里只做
+	// 纯计算：被丢弃轨道的类型，以及实际存在于产物中的 codec 表示。
 	dropped := make(map[uint16]bool, len(droppedTrackIDs))
 	for _, id := range droppedTrackIDs {
 		dropped[id] = true
 	}
+	audioDropped, videoDropped := droppedTrackKinds(header, dropped)
 	audioCodec, videoCodec := recoveredTrackCodecs(header, dropped)
-	if videoCodec != "" {
-		updates["video_codec"] = videoCodec
-	}
-	if audioCodec != "" {
-		updates["audio_codec"] = audioCodec
-	}
 
 	dbCtx, cancel := context.WithTimeout(context.Background(), recoveryDBTimeout)
 	defer cancel()
@@ -213,6 +303,23 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	}
 
 	if found {
+		// 被丢弃的轨道必须**显式清空** codec 列。命中行是开录时写入的
+		// （recoder.go 已填好 AudioCodec/VideoCodec），只"不写该 key"会把
+		// 旧声明原样保留，API 仍会宣称产物里有一条实际不存在的音轨。
+		if audioDropped && audioCodec == "" {
+			updates["audio_codec"] = ""
+		}
+		if videoDropped && videoCodec == "" {
+			updates["video_codec"] = ""
+		}
+		// 绝不降级：既有非空值是录制方用 ICodecCtx.String() 写入的权威
+		// RFC 6381 表示（avc1.4D401E），恢复只有在该列为空时才补写。
+		if audioCodec != "" && strings.TrimSpace(existing.AudioCodec) == "" {
+			updates["audio_codec"] = audioCodec
+		}
+		if videoCodec != "" && strings.TrimSpace(existing.VideoCodec) == "" {
+			updates["video_codec"] = videoCodec
+		}
 		// 只按主键更新命中行；即使值完全相同（MySQL RowsAffected=0）也算成功。
 		if err := db.WithContext(dbCtx).Model(&m7s.RecordStream{}).
 			Where("id = ?", existing.ID).Updates(updates).Error; err != nil {

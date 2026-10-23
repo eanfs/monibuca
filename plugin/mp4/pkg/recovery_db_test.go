@@ -498,25 +498,53 @@ func TestUpdateRecoveredRecordRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-// 恢复产物可能丢掉整条音轨（记录全部越界）。此时把 AudioCodec 写进
-// record_streams 会让 API 对不存在的音轨做出承诺，必须跳过；视频轨仍按索引
-// 头回写 codec。
-func TestUpdateRecoveredRecordSkipsDroppedAudioCodec(t *testing.T) {
+// seedStartedRecordingRow 预置"开录时写入"的 record_streams 行。真实路径是
+// recoder.go 在录制开始时用 ICodecCtx.String()（RFC 6381，如 avc1.4D401E）
+// 保存 codec；崩溃后恢复命中的正是这一行，而不是空行。
+func seedStartedRecordingRow(t *testing.T, header IndexHeader, audio, video string) *gorm.DB {
+	t.Helper()
 	db := newRecoveryDBTestDB(t)
-	logger := recoveryDBTestLogger()
-	header := IndexHeader{
-		StreamPath:  "live/drop_audio",
-		FilePath:    "record/live/drop_audio.mp4",
+	row := m7s.RecordStream{
+		StartTime:    header.StartTime,
+		FilePath:     header.FilePath,
+		StreamPath:   header.StreamPath,
+		Type:         "mp4",
+		AudioCodec:   audio,
+		VideoCodec:   video,
+		StorageLevel: 1,
+		StorageType:  header.StorageType,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("seed record_streams: %v", err)
+	}
+	return db
+}
+
+// recoveryDBTestHeader 造 video+audio 双轨的索引头，STSD 是真实可解析的
+// avcC / alaw sample entry（恢复路径据此推导 RFC 6381 codec 字符串）。
+func recoveryDBTestHeader(t *testing.T, name string) IndexHeader {
+	t.Helper()
+	return IndexHeader{
+		StreamPath:  "live/" + name,
+		FilePath:    "record/live/" + name + ".mp4",
 		StorageType: "local",
 		StartTime:   time.Now().Add(-time.Minute).Truncate(time.Millisecond),
 		Tracks: []IndexTrack{
-			{ID: 1, FourCC: "avc1", Width: 320, Height: 240},
-			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1},
+			{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: restoreTestSTSD(t, false)},
 		},
 	}
-	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+}
 
-	if err := updateRecoveredRecord(db, logger, header, records, []uint16{2}); err != nil {
+// 恢复产物丢掉整条音轨（记录全部越界）时，必须**显式清空**既有行的
+// audio_codec：开录时写入的 "alaw" 若只是"不做更新"会被原样保留，API
+// (api.go:971) 仍会宣称产物有音轨。视频轨的录制值（RFC 6381）不得被降级。
+func TestUpdateRecoveredRecordClearsDroppedAudioCodecOnRecordedRow(t *testing.T) {
+	header := recoveryDBTestHeader(t, "drop_audio")
+	db := seedStartedRecordingRow(t, header, "alaw", "avc1.4D401E")
+
+	if err := updateRecoveredRecord(db, recoveryDBTestLogger(), header,
+		[]IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}, []uint16{2}); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var row m7s.RecordStream
@@ -524,40 +552,82 @@ func TestUpdateRecoveredRecordSkipsDroppedAudioCodec(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	if row.AudioCodec != "" {
-		t.Fatalf("audio_codec = %q, want empty (audio track was dropped)", row.AudioCodec)
+		t.Fatalf("audio_codec = %q, want cleared (audio track was dropped)", row.AudioCodec)
 	}
-	if row.VideoCodec != "avc1" {
-		t.Fatalf("video_codec = %q, want avc1", row.VideoCodec)
+	if row.VideoCodec != "avc1.4D401E" {
+		t.Fatalf("video_codec = %q, want recorded RFC 6381 value preserved", row.VideoCodec)
 	}
 }
 
-// 音轨确实被恢复时必须回写 AudioCodec，避免"有声音但库里没记录"。
-func TestUpdateRecoveredRecordWritesRecoveredCodecs(t *testing.T) {
-	db := newRecoveryDBTestDB(t)
-	logger := recoveryDBTestLogger()
-	header := IndexHeader{
-		StreamPath:  "live/with_audio",
-		FilePath:    "record/live/with_audio.mp4",
-		StorageType: "local",
-		StartTime:   time.Now().Add(-time.Minute).Truncate(time.Millisecond),
-		Tracks: []IndexTrack{
-			{ID: 1, FourCC: "avc1", Width: 320, Height: 240},
-			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1},
-		},
-	}
+// 既有行已带录制路径写入的 RFC 6381 codec 时，恢复回写绝不能把它降级成裸
+// FourCC（avc1.4D401E → avc1）。
+func TestUpdateRecoveredRecordDoesNotDowngradeRecordedCodecs(t *testing.T) {
+	header := recoveryDBTestHeader(t, "keep_codecs")
+	db := seedStartedRecordingRow(t, header, "alaw", "avc1.4D401E")
+
 	records := []IndexRecord{
 		{TrackID: 1, Size: 10, DTS: 0, Duration: 40},
 		{TrackID: 2, Size: 320, DTS: 0, Duration: 40},
 	}
-
-	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
+	if err := updateRecoveredRecord(db, recoveryDBTestLogger(), header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var row m7s.RecordStream
 	if err := db.Where("file_path = ?", header.FilePath).First(&row).Error; err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if row.AudioCodec != "alaw" || row.VideoCodec != "avc1" {
-		t.Fatalf("codecs = audio:%q video:%q, want alaw/avc1", row.AudioCodec, row.VideoCodec)
+	if row.AudioCodec != "alaw" || row.VideoCodec != "avc1.4D401E" {
+		t.Fatalf("codecs = audio:%q video:%q, want recorded values preserved (no downgrade)",
+			row.AudioCodec, row.VideoCodec)
+	}
+}
+
+// 既有行列值为空时，恢复应补写与录制口径一致的 RFC 6381 字符串
+// （从索引头保存的 stsd 推导），而不是裸 FourCC。
+func TestUpdateRecoveredRecordFillsEmptyCodecsWithRFC6381(t *testing.T) {
+	header := recoveryDBTestHeader(t, "fill_codecs")
+	db := seedStartedRecordingRow(t, header, "", "")
+
+	records := []IndexRecord{
+		{TrackID: 1, Size: 10, DTS: 0, Duration: 40},
+		{TrackID: 2, Size: 320, DTS: 0, Duration: 40},
+	}
+	if err := updateRecoveredRecord(db, recoveryDBTestLogger(), header, records, nil); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var row m7s.RecordStream
+	if err := db.Where("file_path = ?", header.FilePath).First(&row).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if row.AudioCodec != "alaw" || row.VideoCodec != "avc1.64001F" {
+		t.Fatalf("codecs = audio:%q video:%q, want alaw/avc1.64001F", row.AudioCodec, row.VideoCodec)
+	}
+}
+
+// 记录不存在时新建行，codec 同样使用 RFC 6381 表示。
+func TestUpdateRecoveredRecordWritesRecoveredCodecs(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	header := recoveryDBTestHeader(t, "with_audio")
+	records := []IndexRecord{
+		{TrackID: 1, Size: 10, DTS: 0, Duration: 40},
+		{TrackID: 2, Size: 320, DTS: 0, Duration: 40},
+	}
+
+	if err := updateRecoveredRecord(db, recoveryDBTestLogger(), header, records, nil); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var row m7s.RecordStream
+	if err := db.Where("file_path = ?", header.FilePath).First(&row).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if row.AudioCodec != "alaw" || row.VideoCodec != "avc1.64001F" {
+		t.Fatalf("codecs = audio:%q video:%q, want alaw/avc1.64001F", row.AudioCodec, row.VideoCodec)
+	}
+}
+
+// stsd 不可解析时回退到 FourCC：宁可给出粗粒度值，也不能写空/乱码。
+func TestRecoveredTrackCodecTagFallsBackToFourCC(t *testing.T) {
+	if got := recoveredTrackCodecTag(IndexTrack{ID: 1, FourCC: "hvc1"}); got != "hvc1" {
+		t.Fatalf("tag = %q, want FourCC fallback hvc1", got)
 	}
 }
