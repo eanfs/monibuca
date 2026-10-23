@@ -45,28 +45,129 @@ func TestSaveFailedUploadRequiresDB(t *testing.T) {
 	}
 }
 
-// 登记失败时 RecoverFailedUpload 必须返回错误（调用方据此保留 sidecar），
-// 且媒体是唯一副本——无论它留在原地还是已移入 pending，都不得被删除。
-func TestRecoverFailedUploadRegistrationFailureKeepsMedia(t *testing.T) {
+// 登记失败时 RecoverFailedUpload 必须返回错误（调用方据此保留 sidecar 与媒体），
+// 并把媒体从 pending **退回原路径**：留在 pending 的文件既不会被补传调度找到
+// （没有 DB 行），又会永久占用 pending 容量。
+func TestRecoverFailedUploadRegistrationFailureRestoresMedia(t *testing.T) {
 	db := closedUploadTestDB(t)
 	pendingDir := t.TempDir()
 	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "a.mp4")
+	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registeredPath, err := RecoverFailedUpload(nil, db, src, "recordings/live/a/a.mp4", "s3",
+		"live/a", 4, 0, nil, errors.New("boom"))
+	if err == nil {
+		t.Fatal("unconfirmed registration must surface an error")
+	}
+	if registeredPath != "" {
+		t.Fatalf("registeredPath = %q, want empty for an unconfirmed registration", registeredPath)
+	}
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("the only copy of the media must be restored to its original path: %v", statErr)
+	}
+	entries, readErr := os.ReadDir(pendingDir)
+	if readErr != nil {
+		t.Fatalf("read pending dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pending dir must not keep unregistered media, found %d entries", len(entries))
+	}
+}
+
+// pending 目录不可用（已满）时不能等于放弃：补传读的是本地文件，原地登记即可。
+func TestRecoverFailedUploadPendingFullRegistersInPlace(t *testing.T) {
+	db := newUploadTestDB(t)
+	pendingDir := t.TempDir()
+	// 占满文件数上限 → MoveToPendingDir 返回 ErrPendingDirFull。
+	if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed pending dir: %v", err)
+	}
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
 
 	src := filepath.Join(t.TempDir(), "a.mp4")
 	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	pendingPath, err := RecoverFailedUpload(nil, db, src, "recordings/live/a/a.mp4", "s3",
+	registeredPath, err := RecoverFailedUpload(nil, db, src, "recordings/live/a/a.mp4", "s3",
+		"live/a", 4, 0, nil, errors.New("boom"))
+	if err != nil {
+		t.Fatalf("in-place registration must succeed when only the pending dir is full: %v", err)
+	}
+	if registeredPath != src {
+		t.Fatalf("registeredPath = %q, want the original path %q", registeredPath, src)
+	}
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("media must stay at its original path: %v", statErr)
+	}
+	var tasks []UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].LocalPath != src || tasks[0].ObjectKey != "recordings/live/a/a.mp4" {
+		t.Fatalf("unexpected upload tasks: %+v", tasks)
+	}
+}
+
+// pending 满 + DB 不可用：既移不走也登记不了，媒体必须原地保留。
+func TestRecoverFailedUploadPendingFullAndDBDownKeepsMedia(t *testing.T) {
+	db := closedUploadTestDB(t)
+	pendingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed pending dir: %v", err)
+	}
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+
+	src := filepath.Join(t.TempDir(), "a.mp4")
+	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registeredPath, err := RecoverFailedUpload(nil, db, src, "recordings/live/a/a.mp4", "s3",
 		"live/a", 4, 0, nil, errors.New("boom"))
 	if err == nil {
-		t.Fatal("unconfirmed registration must surface an error")
+		t.Fatal("both move and registration failed; an error is required")
 	}
-	if pendingPath == "" {
-		t.Fatal("media was moved to pending; the pending path must be reported for recovery")
+	if registeredPath != "" {
+		t.Fatalf("registeredPath = %q, want empty", registeredPath)
 	}
-	if _, statErr := os.Stat(pendingPath); statErr != nil {
-		t.Fatalf("the only copy of the media must be kept: %v", statErr)
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("media must stay at its original path: %v", statErr)
+	}
+}
+
+// 回滚不得覆盖原路径上已存在的文件：固定 fileName + 分片时该路径可能已被
+// 新录像占用，覆盖会毁掉正在写的数据。此时保留 pending 副本并返回错误。
+func TestRecoverFailedUploadRestoreRefusesToOverwrite(t *testing.T) {
+	pendingDir := t.TempDir()
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "a.mp4")
+	if err := os.WriteFile(src, []byte("new recording"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟「媒体已被移入 pending、登记失败」的现场：MoveToPendingDir 会看到
+	// 同名文件而加唯一后缀，这里直接构造 pending 副本并在原路径放一份新数据。
+	pendingCopy := filepath.Join(pendingDir, "a.mp4")
+	if err := os.WriteFile(pendingCopy, []byte("old recording"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restoreErr := restoreMediaFromPending(pendingCopy, src)
+	if restoreErr == nil {
+		t.Fatal("restore must refuse to overwrite an occupied original path")
+	}
+	if data, readErr := os.ReadFile(src); readErr != nil || string(data) != "new recording" {
+		t.Fatalf("occupied original path must be untouched: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(pendingCopy); statErr != nil {
+		t.Fatalf("pending copy must be kept when restore is refused: %v", statErr)
 	}
 }
 

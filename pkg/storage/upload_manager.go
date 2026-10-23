@@ -133,6 +133,43 @@ func GetMaxConcurrentUploads() int {
 	return maxConcurrent
 }
 
+// MoveLocalFile 把 srcPath 移动到 dstPath：
+// 优先 rename（同文件系统，原子且快），跨设备时 fallback 到 copy + delete。
+//
+// 失败时保证 dstPath 不留半成品：copy 中途出错会删除目标文件，源文件保持不动。
+func MoveLocalFile(srcPath, dstPath string) error {
+	if srcPath == dstPath {
+		return nil
+	}
+	// 尝试 rename
+	if err := os.Rename(srcPath, dstPath); err == nil {
+		return nil
+	}
+
+	// fallback: copy + delete
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return err
+	}
+	if err = dst.Close(); err != nil {
+		os.Remove(dstPath)
+		return err
+	}
+	src.Close()
+	return os.Remove(srcPath)
+}
+
 // MoveToPendingDir 将文件移动到暂存目录，返回新路径。
 // 优先使用 rename（同文件系统快速），失败时 fallback 到 copy+delete。
 func MoveToPendingDir(srcPath string) (string, error) {
@@ -154,30 +191,9 @@ func MoveToPendingDir(srcPath string) (string, error) {
 			fmt.Sprintf("%s.%d", filepath.Base(srcPath), time.Now().UnixNano()))
 	}
 
-	// 尝试 rename
-	if err := os.Rename(srcPath, dstPath); err == nil {
-		return dstPath, nil
-	}
-
-	// fallback: copy + delete
-	src, err := os.Open(srcPath)
-	if err != nil {
+	if err := MoveLocalFile(srcPath, dstPath); err != nil {
 		return "", err
 	}
-	defer src.Close()
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return "", err
-	}
-	defer dst.Close()
-
-	if _, err = io.Copy(dst, src); err != nil {
-		os.Remove(dstPath)
-		return "", err
-	}
-	src.Close()
-	os.Remove(srcPath)
 	return dstPath, nil
 }
 

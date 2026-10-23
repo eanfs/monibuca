@@ -71,6 +71,36 @@ func TestMoveToPendingDir_NoLimit(t *testing.T) {
 	}
 }
 
+// TestMoveLocalFile 验证同盘移动（rename）语义，以及失败时源文件保持不动。
+func TestMoveLocalFile(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src.mp4")
+	if err := os.WriteFile(src, []byte("payload"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst.mp4")
+	if err := MoveLocalFile(src, dst); err != nil {
+		t.Fatalf("MoveLocalFile: %v", err)
+	}
+	if data, err := os.ReadFile(dst); err != nil || string(data) != "payload" {
+		t.Fatalf("dst content = %q (err=%v), want payload", data, err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("src should be gone after the move: %v", err)
+	}
+
+	// 目标是已存在的目录：rename 与 copy 都会失败，源文件必须原样保留。
+	src2 := filepath.Join(t.TempDir(), "src2.mp4")
+	if err := os.WriteFile(src2, []byte("keep"), 0644); err != nil {
+		t.Fatalf("write src2: %v", err)
+	}
+	if err := MoveLocalFile(src2, t.TempDir()); err == nil {
+		t.Fatal("moving onto a directory must fail")
+	}
+	if _, err := os.Stat(src2); err != nil {
+		t.Fatalf("source must be kept when the move fails: %v", err)
+	}
+}
+
 // TestGetDiskFreeBytes 验证磁盘剩余空间查询：Unix 返回 >0，Windows 降级返回 err。
 func TestGetDiskFreeBytes(t *testing.T) {
 	free, err := GetDiskFreeBytes(t.TempDir())

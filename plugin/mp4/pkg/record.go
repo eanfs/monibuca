@@ -261,34 +261,12 @@ func (t *writeTrailerTask) Run() (err error) {
 		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 	}
 
-	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
+	// recoverToPending 把已写好的临时文件登记进补传队列。
 	// 用于 FinalizeFromTemp 失败路径:此刻 tempPath 已是完整的 moov-first MP4,
-	// 绝不能随 defer 一起删掉。
-	//
-	// 登记未确认（pending 满 / DB 写失败 / 回查失败）时同样不能删：tempPath 是
-	// 这份录像的唯一副本，删掉即永久丢失。此时保留媒体与 sidecar——媒体留在
-	// 原地或 pending 目录里，sidecar 让后续扫描还能重新登记。
+	// 绝不能随 defer 一起删掉。tempOwned 由 recoverTempAfterFinalizeFailure
+	// 决定，只有「明确没有补传队列」时才允许 defer 删除。
 	recoverToPending := func(cause error) {
-		pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
-			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause)
-		if pendingPath != "" {
-			// 已移走（无论登记是否确认），defer 都不再负责这个文件。
-			tempOwned = false
-		}
-		if rerr != nil {
-			t.Error("failed upload registration not confirmed; keeping media and index sidecar",
-				"error", rerr, "cause", cause, "tempPath", tempPath,
-				"pendingPath", pendingPath, "filePath", t.filePath)
-			return
-		}
-		if pendingPath == "" {
-			// 无 DB / local 存储 / 空路径：没有补传队列可登记，按旧行为清理临时文件。
-			t.Warn("failed upload has no retry queue; local temp copy will be discarded",
-				"cause", cause, "tempPath", tempPath, "filePath", t.filePath)
-			return
-		}
-		// 登记已确认：媒体已移入 pending，原路径不再有数据，sidecar 留着会成为孤儿。
-		t.removeIndexAfterPendingRegistration(true)
+		tempOwned = t.recoverTempAfterFinalizeFailure(tempPath, expectedSize, metadata, cause)
 	}
 
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
@@ -324,28 +302,17 @@ func (t *writeTrailerTask) Run() (err error) {
 
 	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
 	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
-	// 均不删除它），移入 pending 补传。
+	// 均不删除它），登记补传。
 	//
 	// 唯一允许删除临时文件的场景是「明确无法补传」：无 DB 部署，没有补传队列
 	// 可登记。其余失败（pending 满 / DB 写失败 / 回查失败）一律保留媒体与
 	// sidecar——tempPath 是这份录像的唯一副本。
 	t.handoffToUploadQueue(expectedSize, func(cause error) {
-		if t.db == nil {
-			t.Warn("upload failed without database: discarding local temp copy (no retry queue)",
-				"cause", cause, "tempPath", tempPath, "filePath", t.filePath)
-			os.Remove(tempPath)
+		if keepMedia, _ := t.handleFailedUpload(tempPath, expectedSize, metadata, cause); keepMedia {
 			return
 		}
-		pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
-			t.streamPath, expectedSize, t.durationMs, metadata, cause)
-		if rerr != nil {
-			t.Error("failed upload registration not confirmed; keeping media and index sidecar",
-				"error", rerr, "cause", cause, "tempPath", tempPath,
-				"pendingPath", pendingPath, "filePath", t.filePath)
-			return
-		}
-		// 登记确认后媒体已移出，删除 sidecar 避免指向不存在的文件。
-		t.removeIndexAfterPendingRegistration(pendingPath != "")
+		// 明确没有补传队列：按旧行为清理临时文件，避免堆积（已 Warn）。
+		os.Remove(tempPath)
 	})
 	return
 }
@@ -447,29 +414,71 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 	return nil
 }
 
-// recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记到 pending
-// 目录供定时补传。用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
+// recoverTempAfterFinalizeFailure 处理 FinalizeFromTemp 失败（tempPath 已是一份
+// 完整的 moov-first MP4）：登记补传，并返回 tempPath 是否仍由调用方（defer）
+// 负责删除。
 //
-// 返回是否**登记确认**（媒体已移入 pending 且 upload_tasks 行可查）：确认后
-// 原路径已无媒体，sidecar 必须一并删除，否则会指向不存在的文件。登记未确认时
-// 媒体与 sidecar 全部保留，等下次恢复扫描重试；错误明细已在
-// m7s.RecoverFailedUpload 内以 Error 级记录。
-func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (registered bool) {
-	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
-	if t.durationMs > 0 {
-		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+// 只有「明确没有补传队列」（无 DB / local 存储）时才返回 true。其余情况——
+// 包括 pending 目录满、upload_tasks 写不进去、回查失败——tempPath 都是这份
+// 录像的唯一副本，返回 false，调用方绝不能删除：曾经这里按「移动成功才交还
+// 所有权」判断，移动失败时 defer 会直接删掉唯一副本，而日志还写着
+// "keeping media"，数据静默丢失。
+func (t *writeTrailerTask) recoverTempAfterFinalizeFailure(tempPath string, fileSize int64, metadata map[string]string, cause error) (deleteTemp bool) {
+	keepMedia, _ := t.handleFailedUpload(tempPath, fileSize, metadata, cause)
+	return !keepMedia
+}
+
+// handleFailedUpload 是「上传失败但本地仍有完整媒体」的唯一保命入口：
+// 把 mediaPath 登记进补传队列（优先移入 pending，pending 目录不可用时原地
+// 登记），并按媒体的实际位置决定 sidecar 的去留。
+//
+// 返回值描述调用方必须如何处置 mediaPath：
+//   - keepMedia：mediaPath 仍可能是这份录像的唯一副本，调用方绝不能删除它。
+//     只有「明确没有补传队列」（无 DB / local 存储）时才返回 false。
+//   - movedToPending：媒体已被移入 pending 目录，原路径不再有媒体，
+//     sidecar 已作为孤儿一并清理；false 表示媒体仍在原路径，sidecar 保留
+//     （它仍指向真实媒体，可作为恢复的额外保险）。
+//
+// 登记未确认时媒体与 sidecar 全部保留，等下次恢复扫描重试；错误明细已在
+// m7s.RecoverFailedUpload 内以 Error 级记录（并负责把媒体退回原路径）。
+func (t *writeTrailerTask) handleFailedUpload(mediaPath string, fileSize int64, metadata map[string]string, cause error) (keepMedia, movedToPending bool) {
+	// 复制一份再补字段：调用方传入的 map 可能被复用，这里不修改它。
+	uploadMetadata := make(map[string]string, len(metadata)+2)
+	for key, value := range metadata {
+		uploadMetadata[key] = value
 	}
-	pendingPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
-		t.streamPath, fileSize, t.durationMs, metadata, cause)
+	uploadMetadata["video-size-bytes"] = fmt.Sprintf("%d", fileSize)
+	if t.durationMs > 0 {
+		uploadMetadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+	}
+	registeredPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, mediaPath, t.filePath, t.storageKey,
+		t.streamPath, fileSize, t.durationMs, uploadMetadata, cause)
 	if err != nil {
 		t.Error("failed upload registration not confirmed; keeping media and index sidecar",
-			"error", err, "cause", cause, "localPath", localPath,
-			"pendingPath", pendingPath, "filePath", t.filePath)
-		return false
+			"error", err, "cause", cause, "mediaPath", mediaPath,
+			"registeredPath", registeredPath, "filePath", t.filePath)
+		return true, false
 	}
-	registered = pendingPath != ""
-	t.removeIndexAfterPendingRegistration(registered)
-	return registered
+	if registeredPath == "" {
+		// 无 DB / local 存储：没有补传队列可登记，调用方按旧行为处理临时文件。
+		t.Warn("failed upload has no retry queue; local temp copy will be discarded",
+			"cause", cause, "mediaPath", mediaPath, "filePath", t.filePath)
+		return false, false
+	}
+	movedToPending = registeredPath != mediaPath
+	// 媒体已离开原路径时 sidecar 才是孤儿；原地登记时它仍指向真实媒体。
+	t.removeIndexAfterPendingRegistration(movedToPending)
+	return true, movedToPending
+}
+
+// recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记进补传队列。
+// 用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
+//
+// 返回媒体是否被移入 pending 目录（此时原路径已无媒体，sidecar 已一并清理）；
+// 原地登记或登记失败时返回 false，媒体与 sidecar 都保留。
+func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (movedToPending bool) {
+	_, movedToPending = t.handleFailedUpload(localPath, fileSize, nil, cause)
+	return movedToPending
 }
 
 // runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，

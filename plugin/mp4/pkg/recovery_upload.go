@@ -241,9 +241,12 @@ func enqueueFinalizeUploadTask(u *finalizeUploadTask, logger *slog.Logger) error
 	return nil
 }
 
-// registerRecoveryPending 在上传失败后登记 pending 补传。
-// 只有「文件已移入 pending 且 upload_tasks 行确认存在」时才删除 sidecar；
-// 其余情况（无 DB / pending 满 / 入库失败）保留 sidecar 供下次恢复重试。
+// registerRecoveryPending 在上传失败后登记补传。
+//
+// 只有「媒体已离开原路径（移入 pending）且 upload_tasks 行确认存在」时才删除
+// sidecar；原地登记（pending 目录不可用）时媒体还在原路径，sidecar 仍指向真实
+// 文件，保留它作为额外恢复保险——下次扫描会因已登记而跳过上传，只回写 DB 并
+// 清理 sidecar。其余情况（无 DB / 入库失败）一律保留 sidecar。
 func registerRecoveryPending(logger *slog.Logger, db *gorm.DB, upload RecoveryUpload,
 	objectKey, storageType string, size int64, metadata map[string]string, cause error) {
 	pendingPath, err := m7s.RecoverFailedUpload(logger, db, upload.OutputPath, objectKey, storageType,
@@ -270,6 +273,11 @@ func registerRecoveryPending(logger *slog.Logger, db *gorm.DB, upload RecoveryUp
 	if !confirmed {
 		logger.Error("recovery pending registration not confirmed; keeping sidecar",
 			"cause", cause, "pendingPath", pendingPath, "objectKey", objectKey)
+		return
+	}
+	if pendingPath == upload.OutputPath {
+		logger.Warn("recovery upload failed; registered in place, keeping sidecar",
+			"cause", cause, "output", upload.OutputPath, "objectKey", objectKey)
 		return
 	}
 	if err := removeRecoverySidecar(upload.SidecarPath); err != nil {

@@ -28,7 +28,7 @@ func closedPendingTestDB(t *testing.T) *gorm.DB {
 }
 
 // 登记写不进去时 sidecar 必须保留：它是下次启动重试登记的唯一线索。
-// 媒体是唯一副本，不得被删除（留在原地或已移入 pending 均可）。
+// 媒体必须退回原路径（而不是留在 pending 里既没 DB 行又占容量）。
 func TestIndexKeptWhenPendingRegistrationFails(t *testing.T) {
 	pendingDir := t.TempDir()
 	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
@@ -38,18 +38,203 @@ func TestIndexKeptWhenPendingRegistrationFails(t *testing.T) {
 	logs := &captureHandler{}
 	task.Logger = slog.New(logs)
 
-	if registered := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); registered {
-		t.Fatal("recoverLocalFile must not report registration when the upload_tasks write fails")
+	if moved := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); moved {
+		t.Fatal("recoverLocalFile must not report a pending move when the upload_tasks write fails")
 	}
 	if _, err := os.Stat(indexPath); err != nil {
 		t.Fatalf("sidecar must be kept when pending registration fails: %v", err)
 	}
-	inPlace := pathExists(mediaPath)
-	inPending := pathExists(filepath.Join(pendingDir, filepath.Base(mediaPath)))
-	if !inPlace && !inPending {
-		t.Fatal("the only copy of the media was deleted")
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("media must be restored to its original path: %v", err)
+	}
+	entries, readErr := os.ReadDir(pendingDir)
+	if readErr != nil {
+		t.Fatalf("read pending dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unregistered media must not be left in pending, found %d entries", len(entries))
 	}
 	logs.mustFind(t, "failed upload registration failed; media kept for retry", slog.LevelError)
+}
+
+// 正常路径：媒体移入 pending，sidecar 作为孤儿被清理。
+func TestHandleFailedUploadMovesMediaToPending(t *testing.T) {
+	pendingDir := t.TempDir()
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	db := newPendingTestDB(t)
+	task := newPendingTestTrailerTask(indexPath, db)
+
+	keepMedia, moved := task.handleFailedUpload(mediaPath, 5, nil, errors.New("upload failed"))
+	if !keepMedia {
+		t.Fatal("media must be kept after pending registration")
+	}
+	if !moved {
+		t.Fatal("media should be reported as moved into the pending dir")
+	}
+	if _, err := os.Stat(mediaPath); !os.IsNotExist(err) {
+		t.Fatalf("media should have left its original path: %v", err)
+	}
+	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
+		t.Fatalf("sidecar must be removed once the media left its original path: %v", err)
+	}
+	var tasks []m7s.UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 || filepath.Dir(tasks[0].LocalPath) != pendingDir {
+		t.Fatalf("unexpected upload tasks: %+v", tasks)
+	}
+}
+
+// Critical 回归（决策层）：tempPath 是否可以被 defer 删除。
+// 只有「明确没有补传队列」才允许删；pending 满 / DB 写失败时删掉的就是唯一副本。
+func TestRecoverTempAfterFinalizeFailureOwnership(t *testing.T) {
+	t.Run("no database means no retry queue", func(t *testing.T) {
+		storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir()})
+		mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+		task := newPendingTestTrailerTask(indexPath, nil)
+
+		if deleteTemp := task.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("upload failed")); !deleteTemp {
+			t.Fatal("without a database there is no retry queue: caller may discard the temp copy")
+		}
+	})
+
+	t.Run("pending dir full keeps the temp copy", func(t *testing.T) {
+		pendingDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed pending dir: %v", err)
+		}
+		storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+		mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+		task := newPendingTestTrailerTask(indexPath, newPendingTestDB(t))
+
+		if deleteTemp := task.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("upload failed")); deleteTemp {
+			t.Fatal("media registered in place is the only copy: caller must not delete it")
+		}
+		if _, err := os.Stat(mediaPath); err != nil {
+			t.Fatalf("media must stay at its original path: %v", err)
+		}
+	})
+
+	t.Run("registration failure keeps the temp copy", func(t *testing.T) {
+		pendingDir := t.TempDir()
+		storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+		mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+		task := newPendingTestTrailerTask(indexPath, closedPendingTestDB(t))
+
+		if deleteTemp := task.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("upload failed")); deleteTemp {
+			t.Fatal("unconfirmed registration must never authorize deleting the only copy")
+		}
+		if _, err := os.Stat(mediaPath); err != nil {
+			t.Fatalf("media must be restored to its original path: %v", err)
+		}
+	})
+}
+
+// Critical 回归：pending 目录满（MoveToPendingDir 失败）时必须改为原地登记，
+// 媒体与 sidecar 都不能被删除——过去这里会让 defer 删掉唯一副本，而日志
+// 还写着 "keeping media"。
+func TestHandleFailedUploadKeepsMediaWhenPendingUnavailable(t *testing.T) {
+	pendingDir := t.TempDir()
+	// 占满文件数上限 → MoveToPendingDir 返回 ErrPendingDirFull。
+	if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed pending dir: %v", err)
+	}
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	db := newPendingTestDB(t)
+	task := newPendingTestTrailerTask(indexPath, db)
+	logs := &captureHandler{}
+	task.Logger = slog.New(logs)
+
+	keepMedia, moved := task.handleFailedUpload(mediaPath, 5, nil, errors.New("upload failed"))
+	if !keepMedia {
+		t.Fatal("the only copy of the media must be kept when the pending dir is unavailable")
+	}
+	if moved {
+		t.Fatal("media was not moved; movedToPending must be false")
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("media must stay at its original path: %v", err)
+	}
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("sidecar must be kept while the media stays in place: %v", err)
+	}
+	logs.mustFind(t, "move to pending dir failed", slog.LevelError)
+	// 原地登记：补传调度按原路径接手，媒体不会成为无人认领的孤儿。
+	var tasks []m7s.UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].LocalPath != mediaPath {
+		t.Fatalf("unexpected upload tasks: %+v", tasks)
+	}
+}
+
+// pending 满 + DB 不可用：两条路都失败，媒体与 sidecar 仍必须原样保留，
+// 且错误必须可见。
+func TestHandleFailedUploadKeepsMediaWhenPendingAndDBFail(t *testing.T) {
+	pendingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed pending dir: %v", err)
+	}
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	task := newPendingTestTrailerTask(indexPath, closedPendingTestDB(t))
+	logs := &captureHandler{}
+	task.Logger = slog.New(logs)
+
+	keepMedia, moved := task.handleFailedUpload(mediaPath, 5, nil, errors.New("upload failed"))
+	if !keepMedia {
+		t.Fatal("the only copy of the media must be kept when move and registration both fail")
+	}
+	if moved {
+		t.Fatal("media was not moved; movedToPending must be false")
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("media must stay at its original path: %v", err)
+	}
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("sidecar must be kept: %v", err)
+	}
+	logs.mustFind(t, "failed upload registration not confirmed; keeping media and index sidecar", slog.LevelError)
+}
+
+// 恢复上传失败且 pending 目录不可用：改为原地登记，媒体与 sidecar 都保留。
+// 下次扫描会因「已登记」跳过上传，只回写 DB 并清理 sidecar。
+func TestEnqueueRecoveryUploadPendingFullRegistersInPlace(t *testing.T) {
+	db := newPendingTestDB(t)
+	pendingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pendingDir, "existing.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed pending dir: %v", err)
+	}
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
+
+	fixture := newRecoveryUploadFixture(t, "s3")
+	backend := &fakeRecoveryStorage{key: "s3", file: &fakeRecoveryFile{closeErr: errors.New("upload failed")}}
+	if err := EnqueueRecoveryUploadWithOptions(fixture.upload(), RecoveryUploadOptions{
+		DB:       db,
+		Resolver: func(string) (storage.Storage, error) { return backend, nil },
+		enqueue: func(task *finalizeUploadTask, _ *slog.Logger) error {
+			_ = task.Go() // 上传失败只触发 onFail
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	fixture.assertRetained(t)
+
+	var tasks []m7s.UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].LocalPath != fixture.output {
+		t.Fatalf("media should be registered in place, got %+v", tasks)
+	}
 }
 
 // 判重查询失败时结果不可确定：既不重复上传，也不删除 sidecar/产物，
