@@ -282,6 +282,18 @@ func (t *writeTrailerTask) Run() (err error) {
 		recoverToPending(err)
 		return
 	}
+	// RENAME 必须**先于** finalize 落盘。FinalizeFromTemp 会删掉旧的暂存文件
+	// （对象存储的 s3writer_*.tmp），之后若进程被杀，sidecar 的 MediaPath 就
+	// 指向已删除文件，而真正的产物 tempPath 不在原路径上——恢复扫描永远
+	// 找不到它。先记下 tempPath，至少留下一条指向真实产物的线索。
+	preRecordedMediaPath := ""
+	if renameErr := t.recordIndexMediaPath(tempPath); renameErr != nil {
+		t.Warn("pre-record index rename failed", "err", renameErr,
+			"indexPath", t.indexPath, "mediaPath", tempPath)
+	} else {
+		preRecordedMediaPath = tempPath
+	}
+
 	// 快路径：直接移交 tempPath，省去全量回拷。
 	if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
 		t.Error("finalize from temp", "err", err)
@@ -290,11 +302,14 @@ func (t *writeTrailerTask) Run() (err error) {
 		// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
 		t.file = nil
 		recoverToPending(err)
+		// 失败路径上预写的 RENAME 可能已失效（如本地 rename 成功但 reopen
+		// 失败）：把 sidecar 拉回仍然存在的产物。
+		t.rollbackIndexMediaPath(tempPath, originalMediaPath)
 		return
 	}
 	tempOwned = false // 所有权已移交 t.file
 
-	t.syncIndexMediaPath(originalMediaPath)
+	t.syncIndexMediaPath(preRecordedMediaPath)
 	// moov 前移后 sample 偏移整体右移，同步 sidecar 记录，保证恢复时偏移有效。
 	if idxErr := rewriteIndexRecords(t.indexPath, t.muxer, t.durationMs); idxErr != nil {
 		t.Error("rewrite index records after trailer", "err", idxErr, "indexPath", t.indexPath)
@@ -317,21 +332,75 @@ func (t *writeTrailerTask) Run() (err error) {
 	return
 }
 
-// syncIndexMediaPath 在 FinalizeFromTemp 把媒体换成另一个本地文件后，
-// 向 sidecar 追加 RENAME 扩展记录。对象存储上传源是 trailer 临时文件；
-// 本地存储 rename 到目标路径后路径不变，无需记录。
-func (t *writeTrailerTask) syncIndexMediaPath(originalMediaPath string) {
+// recordIndexMediaPath 向 sidecar 追加一条 RENAME 扩展记录。返回错误供调用方
+// 决定是否继续（sidecar 只是恢复线索，写失败不应中断录制收尾）。
+func (t *writeTrailerTask) recordIndexMediaPath(mediaPath string) error {
+	if t.indexPath == "" || mediaPath == "" {
+		return nil
+	}
+	abs := absoluteMediaPath(mediaPath)
+	if abs == "" {
+		return nil
+	}
+	return appendIndexRename(t.indexPath, abs)
+}
+
+// syncIndexMediaPath 在 FinalizeFromTemp 之后把 sidecar 的 MediaPath 校正为
+// 媒体当前的真实路径。previous 是 finalize 之前**预写**的路径：
+//
+//   - 对象存储：finalize 后本地路径就是预写的 trailer 临时文件 → 无需重复追加；
+//   - 本地存储：finalize 把临时文件 rename 到目标路径 → 必须追加一条指向目标
+//     路径的 RENAME，否则 sidecar 指向已被 rename 走（不存在）的临时文件。
+func (t *writeTrailerTask) syncIndexMediaPath(previous string) {
 	if t.indexPath == "" {
 		return
 	}
 	newMediaPath := absoluteMediaPath(localMediaPath(t.file))
-	if newMediaPath == "" || newMediaPath == absoluteMediaPath(originalMediaPath) {
+	if newMediaPath == "" || (previous != "" && newMediaPath == absoluteMediaPath(previous)) {
 		return
 	}
 	if err := appendIndexRename(t.indexPath, newMediaPath); err != nil {
 		t.Error("append index rename record failed", "err", err,
 			"indexPath", t.indexPath, "mediaPath", newMediaPath)
 	}
+}
+
+// rollbackIndexMediaPath 在 FinalizeFromTemp 失败后把 sidecar 的 MediaPath 拉回
+// 一个**真实存在**的媒体文件上（恢复以最后一条 RENAME 为准）：
+//   - tempPath 优先：它已是完整的 moov-first 重写产物，也是失败路径继续
+//     补传/原地登记的同一份文件；
+//   - tempPath 已消失（如本地跨设备拷贝完成后仅 reopen 失败）时退回原路径。
+//
+// sidecar 已被补传登记清理（媒体移入 pending）时什么都不做，避免重建孤儿索引。
+func (t *writeTrailerTask) rollbackIndexMediaPath(tempPath, originalMediaPath string) {
+	if t.indexPath == "" {
+		return
+	}
+	if _, err := os.Stat(t.indexPath); err != nil {
+		return
+	}
+	target := ""
+	switch {
+	case localPathExists(tempPath):
+		target = tempPath
+	case localPathExists(originalMediaPath):
+		target = originalMediaPath
+	default:
+		return
+	}
+	if err := appendIndexRename(t.indexPath, absoluteMediaPath(target)); err != nil {
+		t.Warn("rollback index media path failed", "err", err,
+			"indexPath", t.indexPath, "mediaPath", target)
+	}
+}
+
+// localPathExists 报告路径是否是已存在的普通文件。
+func localPathExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // rewriteIndexRecords 用 muxer 的最终 sample 表重写 sidecar 记录。

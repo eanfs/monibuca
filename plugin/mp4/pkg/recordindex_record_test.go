@@ -190,11 +190,14 @@ func TestIndexRenameAfterFinalize(t *testing.T) {
 	task := &writeTrailerTask{file: f, indexPath: indexPath}
 	task.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// 模拟 writeTrailerTask.Run 的 FinalizeFromTemp + 路径同步。
+	// 模拟 writeTrailerTask.Run：finalize 之前预写 RENAME，finalize 后校正。
+	if err := task.recordIndexMediaPath(newMedia); err != nil {
+		t.Fatalf("recordIndexMediaPath: %v", err)
+	}
 	if err := f.FinalizeFromTemp(newMedia); err != nil {
 		t.Fatalf("FinalizeFromTemp: %v", err)
 	}
-	task.syncIndexMediaPath(oldMedia)
+	task.syncIndexMediaPath(newMedia)
 
 	got, err := ReadIndex(indexPath)
 	if err != nil {
