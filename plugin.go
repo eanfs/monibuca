@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -101,7 +102,9 @@ type (
 	// GateRecord 在发布路径上被调用，禁止阻塞。
 	IRecordGatePlugin interface {
 		// GateRecord 在自动录制启动前决定是否准入：
-		//   release 非空时，调用方必须在录制任务 dispose 时调用一次；
+		//   release 非空时由调用方负责调用；**release 必须幂等**——调用方可能在
+		//     “启动观测任务被拒”“RecordJob 被 Records 拒绝”“注册后发现 publisher
+		//     已停止”等路径上提前调用一次，之后 dispose 回调还会再调用一次；
 		//   result 为 Queued 表示插件已保存录制参数、稍后会自行启动；
 		//   result 为 Refused 表示本次录制无法启动，调用方记录 Error；
 		//   result 为 Unset 或未知值视为拒绝（fail-closed）。
@@ -136,6 +139,10 @@ const (
 )
 
 var plugins []PluginMeta
+
+// errPublisherStoppedDuringRegistration 是在 RecordWithDispose 注册后复核时发现
+// publisher 已停止所用的停止原因：job 从未真正开始录制，必须立即回收。
+var errPublisherStoppedDuringRegistration = errors.New("publisher stopped during recording registration")
 
 func (plugin *PluginMeta) Init(s *Server, userConfig map[string]any) (p *Plugin) {
 	instance, ok := reflect.New(plugin.Type).Interface().(IPlugin)
@@ -845,7 +852,8 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 	pusher.GetPushJob().Init(pusher, p, streamPath, conf, subConf)
 }
 
-// AddTaskRejected 报告 Job.AddTask 是否同步拒绝了任务。
+// AddTaskRejected 报告 Job.AddTask 是否同步拒绝了任务，并在拒绝时返回 startup
+// promise 的错误（即拒绝原因；可能为 nil）。
 //
 // gotask 的 AddTask 返回 *task.Task 而不是 error：拒绝时它把该任务的 startup
 // promise 置为 rejected，任务永远不会进入 Start()/Go()。拒绝有两条路径：
@@ -856,17 +864,14 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 // 调用方必须为被拒任务预留的资源（名额、run 状态等）自行回收，否则会永久泄漏。
 // 实现只依赖 context 状态与 sync.Map 成员关系，不读 Task.state（该字段由事件
 // 循环 goroutine 无锁写入，跨 goroutine 读会触发 -race）。
-func AddTaskRejected(parent task.IJob, t *task.Task) bool {
+//
+// reason 取自已拒绝的 startup promise：WaitStarted 在 promise 已 reject 时立即
+// 返回，不会阻塞（见下：只有“从未登记”的任务才会走到这里，而 AddTask 的每条
+// 未登记路径都会同步 Reject）。StopReason() 在键冲突/通道满这两条路径上是 nil，
+// 不能当原因用。
+func AddTaskRejected(parent task.IJob, t *task.Task) (rejected bool, reason error) {
 	if parent == nil || t == nil {
-		return false
-	}
-	if parent.IsStopped() {
-		// 父 Job 已停止时 AddTask 一律同步拒绝，任务不会运行。
-		return true
-	}
-	if t.IsStopped() {
-		// 任务上下文已取消：它跑过（或正在收尾），不是同步拒绝。
-		return false
+		return false, nil
 	}
 	registered := false
 	parent.RangeSubTask(func(child task.ITask) bool {
@@ -875,8 +880,24 @@ func AddTaskRejected(parent task.IJob, t *task.Task) bool {
 		}
 		return true
 	})
-	// 上下文仍有效却不在子任务表里 = 被 AddTask 同步拒绝后删除。
-	return !registered
+	// 仍登记在子任务表里 = AddTask 已接纳（可能正在运行或已启动待回收）。
+	// 这里必须先判登记、再判父 Job 是否停止：父 Job 停止后它仍会等已接纳的
+	// 子任务收尾，直接把“已接纳”误判成拒绝会触发错误的资源回收。
+	if registered {
+		return false, nil
+	}
+	if t.IsStopped() && !parent.IsStopped() {
+		// 上下文已取消且父 Job 仍在跑：任务跑过并已从子任务表移除（dispose），
+		// 不是 AddTask 的同步拒绝。
+		return false, nil
+	}
+	// 未登记 = AddTask 同步拒绝（父 Job 已停止 / 键冲突 / 通道满）。
+	// 这三条路径都在 AddTask 内部同步 Reject 了 startup promise，
+	// 所以 WaitStarted 立即返回，不会阻塞。
+	if err := t.WaitStarted(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // recordOnPublish 启动一次自动录像；若插件实现了 IRecordGatePlugin，
@@ -903,17 +924,19 @@ func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
 			// 自动录像不等待启动；若异步启动失败，用短命任务归还名额。
 			watcher := &recordStartWatcher{job: job, onStartFailure: release}
 			watcher.key = fmt.Sprintf("record-start-watch:%p", watcher)
-			if w := p.AddTask(watcher, p.Logger); AddTaskRejected(p, w) {
+			if rejected, reason := AddTaskRejected(p, p.AddTask(watcher, p.Logger)); rejected {
 				// 没人观察启动结果。release 幂等且 stopOnce 保证最多归还一次：
 				// 宁可短暂放宽上限（插件正在停止，录制很快也会停），也不能永久泄漏。
 				release()
 				p.Error("record start watcher rejected: released recording slot eagerly",
-					"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", w.StopReason())
+					"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", reason)
 			}
 		}
 	case RecordGateQueued:
-		// 插件已保存录制参数，取得名额后会自行启动；此处只做可观测记录。
-		p.Info("auto recording queued by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+		// 插件已保存录制参数，取得名额后会自行启动。这里只打 Debug：Queued 在
+		// 限流启用时对每一路自动录像都会出现（有空闲名额也一样），不是饱和信号；
+		// 真正的饱和由插件在排队时打 Info（含 active/waiting）与 Refused 的 Error。
+		p.Debug("auto recording queued by gate", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
 	case RecordGateRefused:
 		// 不得静默丢弃：记录完整参数，便于人工通过 API 补录。
 		p.Error("auto recording refused by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
@@ -956,10 +979,12 @@ func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subs
 //
 // 并发/生命周期约束：
 //   - pub.Using(job) 是裸 append（Task.Using），publisher 的 dispose 会在它自己
-//     的事件循环 goroutine 上遍历并截断同一 slice。因此在非 publisher 所有者的
-//     goroutine 上调用本方法前，调用方必须先确认 pub.GetTask().IsStopped() 为假
-//     （见 plugin/mp4 的 pendingAutoRecordTask.Go）。该检查仍有一个极窄窗口，
-//     所以队列路径的录制任务若因 publisher 已停止而失败，必须自行退出并归还名额。
+//     的事件循环 goroutine 上遍历并截断同一 slice。调用方若不在 publisher 所属
+//     goroutine 上，应先确认 pub.GetTask().IsStopped() 为假（见 plugin/mp4 的
+//     pendingAutoRecordTask.Go）以缩小窗口；窗口本身由本方法末尾的“注册后复核”
+//     兜底：复核发现 publisher 已停止就主动 Stop 该 job，由 dispose 回调回收资源。
+//     注意不能用“订阅失败自愈”兜底——落在窗口里的 job 不会被 publisher stop，
+//     而 recorder 是无限重试（SetRetry(-1,…)），它会一直活着并持有名额。
 //   - RecordJob 的 AddTask 若被 Records 同步拒绝，任务不会启动、onDispose 也不会
 //     触发：调用方必须检查返回值并在该路径显式释放资源（AddTaskRejected）。
 func (p *Plugin) RecordWithDispose(pub *Publisher, conf config.Record, subConf *config.Subscribe, onDispose func()) *RecordJob {
@@ -970,8 +995,36 @@ func (p *Plugin) RecordWithDispose(pub *Publisher, conf config.Record, subConf *
 	if onDispose != nil {
 		job.OnDispose(onDispose)
 	}
+	// 注册后复核的“先手”：OnStart 在 RecordJob 自己的事件循环 goroutine 上运行，
+	// 在这里 Stop 不会与 gotask 的 start() 并发写 task 字段（直接跨 goroutine
+	// Stop 一个正在启动的任务会触发 gotask v1.0.5 的 Stop/start 数据竞争）。
+	// 必须在 job.Init（即 AddTask）之前注册：OnStart 只在启动序列里消费一次。
+	var started, stopRequested atomic.Bool
+	job.OnStart(func() {
+		started.Store(true)
+		if stopRequested.Load() {
+			job.GetTask().Stop(errPublisherStoppedDuringRegistration)
+		}
+	})
 	job.Init(recorder, p, pub.StreamPath, conf, subConf)
 	pub.Using(job)
+	// 注册后复核：publisher 可能在上面的检查之后、Using 之前/期间停止，而它的
+	// dispose 已经遍历完 resources（或即将截断 slice）——这个 job 就再也没人
+	// stop。Records 只提供只读 Range/Find，没有别的停止入口；recorder 又是无限
+	// 重试，孤儿 RecordJob 会永久持有资源（并发名额、文件句柄），直到进程重启。
+	// 这里主动 Stop：Stop → dispose → OnDispose 回调（release 必须幂等，见
+	// IRecordGatePlugin 文档），不会双释放。
+	//   - 任务尚未启动：置位 stopRequested，由上面的 OnStart 在事件循环上 Stop；
+	//   - 任务已启动：OnStart 已消费（started==true），直接 Stop（此时 start()
+	//     已返回、字段写入对我们是可见的，无竞态）。
+	if PublisherStopped(pub) {
+		stopRequested.Store(true)
+		if started.Load() {
+			job.GetTask().Stop(errPublisherStoppedDuringRegistration)
+		}
+		p.Error("recording job stopped: publisher stopped during registration",
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath)
+	}
 	return job
 }
 

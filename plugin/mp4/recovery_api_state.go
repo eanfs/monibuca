@@ -175,20 +175,22 @@ func (s *recoveryAPIState) startRun(owner *IndexRecoveryTask, dirs []string, fil
 	// AddTask 只入队、不阻塞，但 owner 已停止（或事件循环输入通道满）时会同步
 	// 拒绝：任务永远不会运行、没人能回填状态，run 会永久停在 running。必须检查
 	// 返回值并同步收尾。m7s.AddTaskRejected 不读 Task.state（-race 安全）。
-	if m7s.AddTaskRejected(owner, child) {
-		reason := child.StopReason()
+	if rejected, reason := m7s.AddTaskRejected(owner, child); rejected {
+		if reason == nil {
+			reason = child.StopReason() // 父 Job 停止时原因随上下文传播
+		}
 		if reason == nil {
 			reason = errRecoveryTaskStopped
 		}
 		s.failStart(run, reason)
 		return id, false, false, fmt.Errorf("start recovery run: %w", reason)
 	}
-	if m7s.AddTaskRejected(owner, watcherTask) {
+	if rejected, reason := m7s.AddTaskRejected(owner, watcherTask); rejected {
 		// 恢复任务本身已被接纳，runRequest 会正常执行，因此不能标 failed
 		// （否则会把正在执行的 run 误报为失败）；只是没人能在它的启动阶段失败
 		// 时回填状态，记 Error 便于排障。
 		owner.Error("recovery start watcher rejected by task system; run status may stay running if the child fails to start",
-			"runId", id, "reason", watcherTask.StopReason())
+			"runId", id, "reason", reason)
 	}
 	return id, false, false, nil
 }

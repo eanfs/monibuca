@@ -696,6 +696,20 @@ curl -s "${AUTH[@]}" 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50
 `counts.failed` 必须为 0 或有明确原因；`counts.recovering` 不应长时间不降；
 `pending_uploads` 不应持续增长。
 
+### 8.5 验收记录（现场填写）
+
+| 项目 | 期望 | 实际 | 结论 |
+|---|---|---|---|
+| `global storage created type=s3` | 出现 | | |
+| `create storage failed` | 0 次 | | |
+| `/api/storage/status` | 200 / degraded=false | | |
+| 启动恢复 `index recovery completed` | failed=0 或已解释 | | |
+| 恢复对象 `mc stat` | 存在且可 `ffprobe` | | |
+| `record started` / `record stopped` | 字段齐全 | | |
+| 日志轮转 | 20 MB / 30 天 / 750 | | |
+| `fatal/` | 无非空文件 | | |
+| RSS（`docker stats`） | < mem_limit 80% | | |
+
 ### 8.6 录制并发名额（`mp4.limits.maxconcurrentrecordings`）
 
 配置示例（0 = 不限制，未配置即维持旧行为）：
@@ -714,31 +728,23 @@ mp4:
 检查：
 
 ```bash
-docker logs --since 30m xde-monibuca 2>&1 | grep -E "auto recording (queued|refused)|queued auto recording" | tail -20
+docker logs --since 30m xde-monibuca 2>&1 | grep -E "auto recording (queued|refused|skipped)|queued auto recording rejected|recording job stopped" | tail -20
 ```
 
-- `auto recording queued by concurrency limit` 持续大量出现 → 名额长期被占满；
+日志分级（**别把每次排队当饱和**）：限流启用后每路自动录像都会走排队任务，但只有
+真正需要等待（名额已满或已有等待者）时才打 `auto recording queued by concurrency
+limit`（**Info**，带 `active`/`waiting`）；有空闲名额时只打 Debug。
+
+- `auto recording queued by concurrency limit` 持续出现且 `waiting` 不为 0 → 名额被长期占满；
 - `auto recording refused by concurrency limit` / `queued auto recording rejected by task system`
   → 本次录像被丢弃（日志含 `streamPath`/`filePath`，可人工补录），不要静默放过；
+- `recording job stopped: publisher stopped during registration` → 流在注册录制的瞬间
+  停止，job 已被主动回收（名额已归还），属预期保护，少量可忽略，成批出现说明流抖动；
 - `auto recording skipped: record gate returned unset/unknown result` → 插件代码缺陷，
   按 fail-closed 未启动录制，需升级修复。
 
 排障顺序：先确认是否有坏流/磁盘打满导致录制器持续重试（`record job failed to start`、
 `record stopped` 中 `samples=0`），再评估是否临时调大 `maxconcurrentrecordings`。
-
-### 8.5 验收记录（现场填写）
-
-| 项目 | 期望 | 实际 | 结论 |
-|---|---|---|---|
-| `global storage created type=s3` | 出现 | | |
-| `create storage failed` | 0 次 | | |
-| `/api/storage/status` | 200 / degraded=false | | |
-| 启动恢复 `index recovery completed` | failed=0 或已解释 | | |
-| 恢复对象 `mc stat` | 存在且可 `ffprobe` | | |
-| `record started` / `record stopped` | 字段齐全 | | |
-| 日志轮转 | 20 MB / 30 天 / 750 | | |
-| `fatal/` | 无非空文件 | | |
-| RSS（`docker stats`） | < mem_limit 80% | | |
 
 ---
 

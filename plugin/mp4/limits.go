@@ -46,8 +46,10 @@ var disabledRecordLimiter = NewRecordLimiter(0)
 // 名额的持有期 = 录制任务的生命周期。recoder 用 SetRetry(-1, …) 无限重试，
 // 所以“启动成功但子任务持续失败”的录制会一直持有名额：配置 max=N 后，N 路
 // 坏流即可让后续自动录像全部停在排队/拒绝状态，只能运维介入（重启进程或修好
-// 坏流）。不要把 max 配得过小，并对 "queued auto recording" / "refused by
-// concurrency limit" 日志配置告警。
+// 坏流）。不要把 max 配得过小；告警请对准 "auto recording queued by
+// concurrency limit"（仅在确实需要排队时打 Info，带 active/waiting）与
+// "auto recording refused by concurrency limit"（Error），而不是每次排队都
+// 必然出现的 Debug 日志。
 type RecordLimiter struct {
 	max           int
 	queueCapacity int
@@ -98,6 +100,16 @@ func (l *RecordLimiter) Waiting() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.waiters)
+}
+
+// Stats 一次加锁返回当前占用与排队数（日志/可观测用途）。
+func (l *RecordLimiter) Stats() (active, waiting int) {
+	if l == nil {
+		return 0, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active, len(l.waiters)
 }
 
 // CanQueue 是发布路径上的廉价预检：报告新的录制请求是否还有可能拿到名额
@@ -297,7 +309,7 @@ func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) (release 
 	if !l.CanQueue() {
 		return nil, m7s.RecordGateRefused
 	}
-	if !p.queueAutoRecording(pub, conf) {
+	if !p.queueAutoRecording(pub, conf, l) {
 		return nil, m7s.RecordGateRefused
 	}
 	return nil, m7s.RecordGateQueued
@@ -306,7 +318,11 @@ func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) (release 
 // queueAutoRecording 把一次被推迟的自动录像参数交给任务系统，由
 // pendingAutoRecordTask.Go() 自行申请名额后启动录制。AddTask 被同步拒绝时返回
 // false：此时任务不会运行，也没有任何名额/等待位置被持有。
-func (p *MP4Plugin) queueAutoRecording(pub *m7s.Publisher, conf config.Record) bool {
+//
+// 日志分级：Queued 在限流启用时对每次自动录像都会出现（有空闲名额也一样），
+// 因此只有真正需要排队（名额已满或已有等待者）时打 Info（带 active/waiting
+// 便于判断饱和度），其余打 Debug，避免运维把“每次排队”误读成“长期占满”。
+func (p *MP4Plugin) queueAutoRecording(pub *m7s.Publisher, conf config.Record, l *RecordLimiter) bool {
 	todo := &pendingAutoRecordTask{plugin: p, pub: pub, conf: conf}
 	// 每个待录任务必须有唯一 key，否则 AddTask 会因键冲突拒绝后一个任务。
 	todo.key = fmt.Sprintf("onpub-record:%p", todo)
@@ -314,11 +330,21 @@ func (p *MP4Plugin) queueAutoRecording(pub *m7s.Publisher, conf config.Record) b
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// 饱和快照必须取在 AddTask 之前：入队后任务可能立刻取得空闲名额，
+	// 那时 active==max 会把“本来就空闲”误报成需要排队。
+	active, waiting := l.Stats()
 	t := p.AddTask(todo, logger.With("streamPath", pub.StreamPath, "filePath", conf.FilePath))
-	if m7s.AddTaskRejected(p, t) {
+	if rejected, reason := m7s.AddTaskRejected(p, t); rejected {
 		p.Error("queued auto recording rejected by task system",
-			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", t.StopReason())
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", reason)
 		return false
+	}
+	if waiting > 0 || active >= l.max {
+		p.Info("auto recording queued by concurrency limit",
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "active", active, "waiting", waiting)
+	} else {
+		p.Debug("auto recording queued",
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "active", active)
 	}
 	return true
 }
@@ -339,9 +365,16 @@ type pendingAutoRecordTask struct {
 func (t *pendingAutoRecordTask) GetKey() string { return t.key }
 
 func (t *pendingAutoRecordTask) Go() error {
+	// 先判停止：Acquire 的快路径（Reserve）不检查 ctx，名额空闲时即使任务
+	// 已被停止也会“成功”拿到名额，从而在插件停止后仍然启动录制并占位。
+	if t.IsStopped() {
+		t.Debug("queued auto recording skipped: task stopped before acquiring a slot",
+			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath)
+		return task.ErrTaskComplete
+	}
 	l := t.plugin.getRecordLimiter()
-	// ctx 是任务自身：插件停止时 Context 随之取消，Acquire 立即返回错误，
-	// 不会留下 waiter，也不会持有名额。
+	// 进入等待队列后 ctx（任务自身）才真正生效：插件停止 → Context 取消 →
+	// Acquire 从队列中摘除 waiter 并返回错误，不持有名额。
 	if err := l.Acquire(t); err != nil {
 		t.Error("auto recording refused by recording concurrency limit",
 			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath, "error", err)
@@ -351,9 +384,9 @@ func (t *pendingAutoRecordTask) Go() error {
 	release := func() { once.Do(l.Release) }
 	// publisher 的 dispose 会在它自己的事件循环 goroutine 上遍历/截断 resources
 	// slice，而 pub.Using(job) 是裸 append（gotask Task.Using）。启动前先确认
-	// publisher 仍存活，缩小这个交叉窗口；残余窗口内录制任务会因订阅失败自行
-	// 退出并归还名额。
-	if t.pub.GetTask().IsStopped() {
+	// publisher 仍存活以缩小交叉窗口；窗口本身由 RecordWithDispose 的“注册后
+	// 复核”兜底（发现已停止就 Stop 该 job → dispose 回调归还名额）。
+	if m7s.PublisherStopped(t.pub) {
 		release()
 		t.Info("queued auto recording skipped: publisher already stopped",
 			"streamPath", t.pub.StreamPath, "filePath", t.conf.FilePath)

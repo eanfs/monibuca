@@ -31,25 +31,30 @@ func TestAddTaskRejectedDetectsUnregisteredTask(t *testing.T) {
 	if registered == nil {
 		t.Fatal("AddTask returned nil task")
 	}
-	if AddTaskRejected(&s.Records, registered) {
-		t.Fatal("task that AddTask accepted must not be reported as rejected")
+	if rejected, reason := AddTaskRejected(&s.Records, registered); rejected {
+		t.Fatalf("task that AddTask accepted must not be reported as rejected (reason=%v)", reason)
 	}
 
 	// 未被 AddTask 登记、但上下文仍然有效的任务：即键冲突/通道满被拒后的形态。
 	orphan := &task.Task{Context: context.Background()}
-	if !AddTaskRejected(&s.Records, orphan) {
+	rejected, reason := AddTaskRejected(&s.Records, orphan)
+	if !rejected {
 		t.Fatal("unregistered task with a live context must be reported as rejected")
+	}
+	// 这个任务从未进过 AddTask，没有 startup promise，所以没有原因可给。
+	if reason != nil {
+		t.Fatalf("reason = %v, want nil for a task that never had a startup promise", reason)
 	}
 
 	// 已运行完（上下文已取消）且已从子任务表移除的任务不是“同步拒绝”。
 	doneCtx, doneCancel := context.WithCancel(context.Background())
 	doneCancel()
 	done := &task.Task{Context: doneCtx}
-	if AddTaskRejected(&s.Records, done) {
+	if rejected, _ := AddTaskRejected(&s.Records, done); rejected {
 		t.Fatal("a stopped task must not be reported as a synchronous AddTask rejection")
 	}
 
-	if AddTaskRejected(&s.Records, nil) {
+	if rejected, _ := AddTaskRejected(&s.Records, nil); rejected {
 		t.Fatal("nil task must not be reported as rejected")
 	}
 }

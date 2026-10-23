@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +22,15 @@ import (
 // GateRecord 的排队路径要把它自己的待录任务 AddTask 到已启动的 Job 上。
 func newGateTestEnv(t *testing.T) *recordingTestEnv {
 	t.Helper()
+	return newGateTestEnvWithLogger(t, slog.New(slog.DiscardHandler))
+}
+
+// newGateTestEnvWithLogger 同上，但允许在插件启动前替换 Logger（启动后再改
+// plugin.Logger 会与事件循环里的 Task.Debug/Error 读写同一字段，-race 报错）。
+func newGateTestEnvWithLogger(t *testing.T, logger *slog.Logger) *recordingTestEnv {
+	t.Helper()
 	env := newRecordingTestEnv(t)
+	env.plugin.Logger = logger
 	var pluginRoot task.RootManager[uint32, task.ManagerItem[uint32]]
 	pluginRoot.Init()
 	// 不注册 Stop 清理：gotask v1.0.5 在 Work 的最后一个子任务 dispose 时存在
@@ -91,6 +101,11 @@ func stoppedTestPlugin(t *testing.T) *MP4Plugin {
 
 // 插件已停止时 queueAutoRecording 的 AddTask 必定被同步拒绝：必须返回 false
 // （GateRecord 据此返回 Refused），并且不留下任何 waiter 或名额。
+//
+// 覆盖边界（M-5）：本用例走的是 AddTaskRejected 的 `parent.IsStopped()` 平凡
+// 分支；“键冲突 / 事件循环输入通道满”那条非平凡分支（上下文仍有效但任务未登记）
+// 需要灌满 gotask 的输入通道，无法确定性复现，由 root 包的
+// TestAddTaskRejectedDetectsUnregisteredTask 直接钉住识别逻辑。
 func TestQueueAutoRecordingRejectedLeavesNoWaiter(t *testing.T) {
 	p := stoppedTestPlugin(t)
 	l := NewRecordLimiter(1)
@@ -101,7 +116,7 @@ func TestQueueAutoRecordingRejectedLeavesNoWaiter(t *testing.T) {
 	pub.StreamPath = "live/rejected"
 
 	for i := 0; i < 10; i++ {
-		if p.queueAutoRecording(pub, config.Record{FilePath: "rejected.mp4"}) {
+		if p.queueAutoRecording(pub, config.Record{FilePath: "rejected.mp4"}, l) {
 			t.Fatalf("queueAutoRecording #%d = true, want false (AddTask must be rejected)", i)
 		}
 	}
@@ -150,11 +165,18 @@ func TestGateRecordRefusedLeavesNoWaiter(t *testing.T) {
 }
 
 // publisher 在排队期间已停止：不得启动录制（pub.Using 的并发窗口），名额必须归还。
+//
+// 断言刻意区分“取得名额后又归还”与“从未取得”：先把唯一名额占满，等任务进入
+// Acquire 的等待队列（Waiting()==1 证明它走到了排队路径），再 Release 把名额
+// 交接给它——若它没有在发现 publisher 已停止后归还，Active() 会停在 1。
 func TestPendingAutoRecordSkipsStoppedPublisherAndReleasesSlot(t *testing.T) {
 	env := newRecordingTestEnv(t)
 	l := NewRecordLimiter(1)
 	l.timeout = time.Second
 	env.plugin.recordLimiter.Store(l)
+	if err := l.Acquire(context.Background()); err != nil {
+		t.Fatalf("pre-acquire: %v", err)
+	}
 
 	stoppedPub := &m7s.Publisher{}
 	stoppedPub.StreamPath = "live/stopped"
@@ -173,6 +195,9 @@ func TestPendingAutoRecordSkipsStoppedPublisherAndReleasesSlot(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- todo.Go() }()
+	waitFor(t, "pending task to queue", func() bool { return l.Waiting() == 1 })
+
+	l.Release() // 名额交接给排队任务（Active 保持 1）
 	select {
 	case err := <-done:
 		if err != nil && !errors.Is(err, task.ErrTaskComplete) {
@@ -182,12 +207,134 @@ func TestPendingAutoRecordSkipsStoppedPublisherAndReleasesSlot(t *testing.T) {
 		t.Fatal("pending task Go did not return")
 	}
 
-	if got := l.Active(); got != 0 {
-		t.Fatalf("active = %d after publisher stop, want 0 (slot leaked)", got)
+	// 任务确实持有过名额（交接）→ 必须由它自己归还。
+	waitFor(t, "slot released after publisher stop", func() bool { return l.Active() == 0 })
+	if got := l.Waiting(); got != 0 {
+		t.Fatalf("waiting = %d, want 0", got)
 	}
 	select {
 	case <-env.rec.started:
 		t.Fatal("recording must not start when the publisher is already stopped")
 	default:
 	}
+}
+
+// logRecorder 记录所有 slog 记录，用于断言日志级别（I-2：排队日志不是饱和信号）。
+type logRecorder struct {
+	mu    sync.Mutex
+	items []slog.Record
+}
+
+func (h *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *logRecorder) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.items = append(h.items, r.Clone())
+	return nil
+}
+
+func (h *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *logRecorder) WithGroup(string) slog.Handler      { return h }
+
+func (h *logRecorder) count(level slog.Level, msg string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.items {
+		if r.Level == level && r.Message == msg {
+			n++
+		}
+	}
+	return n
+}
+
+// 排队日志分级：有空闲名额时只打 Debug（每路自动录像都会排队，Info 会被误读成
+// 饱和），只有真正需要等待（名额已满或已有等待者）才打 Info 并带 active/waiting。
+func TestQueueAutoRecordingLogsInfoOnlyWhenSaturated(t *testing.T) {
+	logs := &logRecorder{}
+	env := newGateTestEnvWithLogger(t, slog.New(logs))
+	l := NewRecordLimiter(1)
+	l.timeout = 50 * time.Millisecond // 第二个排队任务快速超时，避免占用整个测试
+	env.plugin.recordLimiter.Store(l)
+
+	// (1) 名额空闲：只能有 Debug。
+	release, result := env.plugin.GateRecord(env.pub, config.Record{FilePath: "free-slot.mp4"})
+	if result != m7s.RecordGateQueued || release != nil {
+		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", release != nil, result)
+	}
+	if got := logs.count(slog.LevelInfo, "auto recording queued by concurrency limit"); got != 0 {
+		t.Fatalf("info queued log = %d with a free slot, want 0 (noise)", got)
+	}
+	if got := logs.count(slog.LevelDebug, "auto recording queued"); got != 1 {
+		t.Fatalf("debug queued log = %d with a free slot, want 1", got)
+	}
+	select {
+	case <-env.rec.started:
+	case <-time.After(time.Second):
+		t.Fatal("recording with a free slot did not start")
+	}
+
+	// (2) 名额已满（上一步的录制占着唯一名额）：Info + active/waiting 字段。
+	if release, result = env.plugin.GateRecord(env.pub, config.Record{FilePath: "waiting.mp4"}); result != m7s.RecordGateQueued || release != nil {
+		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", release != nil, result)
+	}
+	if got := logs.count(slog.LevelInfo, "auto recording queued by concurrency limit"); got != 1 {
+		t.Fatalf("info queued log = %d when saturated, want 1", got)
+	}
+	// 等第二个排队任务真正超时退出（它会在 Acquire 失败时记 Error）：只等
+	// Waiting()==0 会在它还没入队时就成立，随后 Release 会把名额交接给它，
+	// 于是又启动一路录制（共享 fake job 会被重新 Init），cleanup 永远等不到 0。
+	waitFor(t, "second pending task to time out", func() bool {
+		return logs.count(slog.LevelError, "auto recording refused by recording concurrency limit") == 1
+	})
+	waitFor(t, "waiter drained", func() bool { return l.Waiting() == 0 })
+
+	stopQueuedRecording(t, env, l)
+}
+
+// I-1：publisher 在注册窗口内停止时，“注册后复核”必须 Stop 掉 RecordJob，
+// 由 dispose 回调归还名额。否则该 job 既不在 publisher 的 resources 里（没人
+// stop），recorder 又是无限重试（SetRetry(-1,…)），孤儿任务会永久占住名额。
+func TestRecordWithDisposeStopsJobWhenPublisherAlreadyStopped(t *testing.T) {
+	if raceEnabled {
+		// 本用例必然“停下刚创建的 RecordJob”：gotask v1.0.5 里 Job 的 dispose
+		// （waitChildrenDispose → 子任务 Stop，读 Task.StartTime）会与 recorder
+		// 子任务的 start()（写 Task.StartTime）并发，-race 下必报数据竞争。
+		// 这是上游缺陷（CLAUDE.md Known Issues 同类），与被测的限流逻辑无关；
+		// 用例在非 -race 门禁下运行，覆盖“注册后复核会 Stop”这一分支。
+		t.Skip("skipping under -race: gotask v1.0.5 Stop/start race on a freshly created Job")
+	}
+	env := newRecordingTestEnv(t)
+	l := NewRecordLimiter(1)
+	l.timeout = time.Second
+	env.plugin.recordLimiter.Store(l)
+
+	release, err := env.plugin.acquireRecordingSlot(context.Background())
+	if err != nil {
+		t.Fatalf("acquire slot: %v", err)
+	}
+	var calls atomic.Int32
+	counted := func() {
+		calls.Add(1)
+		release()
+	}
+
+	stoppedPub := &m7s.Publisher{}
+	stoppedPub.StreamPath = "live/gone"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stoppedPub.Context = ctx
+
+	job := env.plugin.RecordWithDispose(stoppedPub, config.Record{FilePath: "orphan.mp4"}, nil, counted)
+	waitFor(t, "recording job disposed", func() bool { return job.GetTask().IsStopped() })
+	waitFor(t, "slot released", func() bool { return l.Active() == 0 })
+	waitFor(t, "release callback", func() bool { return calls.Load() == 1 })
+	// 幂等性：dispose 结束后不得再有一次迟到的释放。
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("release called %d times, want exactly 1", got)
+	}
+	waitFor(t, "Records event loop to exit", func() bool { return !env.server.Records.EventLoopRunning() })
+	time.Sleep(20 * time.Millisecond)
 }
