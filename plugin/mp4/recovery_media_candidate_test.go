@@ -129,6 +129,68 @@ func TestRecoveryUsesDerivedMediaForLocalRecordingWhenRenameOutsideWhitelist(t *
 	}
 }
 
+// Minor 6（回归）：index.Committed 分支只在「源与产物同一路径」时才允许直接入队。
+//
+// locateRecoveryMedia 可能定位到与 header.MediaPath 不同的候选（RENAME 目标
+// 尚未落盘、原始媒体仍在原地的窗口）。此时 OutputPath 由 recorded 推导，指向
+// 一个从未被校验、也从未创建过的路径；直接入队会让上传任务永远等不到文件
+// （fail-safe 但这条录像永远不会完成）。必须落到重建流程，产物真实写出来后再入队。
+func TestRecoveryCommittedIndexDoesNotEnqueueUnvalidatedOutput(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	mediaPath := filepath.Join(dir, "media.mp4")
+	data := writeCompletedLocalMP4(t, mediaPath, payload)
+	mdatOffset := -1
+	for _, b := range scanRecoveryTopBoxes(data) {
+		if b.typ == "mdat" {
+			mdatOffset = b.offset
+		}
+	}
+	if mdatOffset < 0 {
+		t.Fatal("fixture lacks mdat box")
+	}
+
+	// recorded = 一次尚未完成的 RENAME 目标（不存在）；真实媒体是 sidecar 派生路径。
+	recorded := filepath.Join(dir, "renamed.mp4")
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	writeRecoverySidecar(t, sidecar, mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/test",
+		MediaPath:   recorded,
+		FilePath:    mediaPath,
+		TargetName:  "media.mp4",
+		StorageType: "local",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240,
+			STSD: recoveryTestSTSD(t),
+		}},
+	}, []mp4pkg.IndexRecord{{
+		Flags: 0x01, TrackID: 1, Size: uint32(len(payload)),
+		Offset: uint64(mdatOffset + 8), DTS: 0, Duration: 40,
+	}})
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	var items []RecoveryItem
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
+		items = append(items, item)
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("enqueued = %d, want 1 (must rebuild instead of enqueueing a phantom output)", len(items))
+	}
+	if _, statErr := os.Stat(items[0].OutputPath); statErr != nil {
+		t.Fatalf("enqueued output %q must exist (validated/written), got %v",
+			items[0].OutputPath, statErr)
+	}
+	if stats.Recovered != 1 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want recovered=1", stats)
+	}
+}
+
 // Important 2（信任边界）：所有存在的候选都在白名单外（recorded 越界、派生候选
 // 是指向白名单外的符号链接）时必须继续拒绝恢复——逐个筛选只改变「要不要落到
 // 下一个候选」，不改变「越界候选永不使用」。

@@ -29,9 +29,22 @@ import (
 const (
 	recoveryListDefaultPageSize = 50
 	recoveryListMaxPageSize     = 200
-	// recoveryScanEntryLimit 是单次目录扫描的**遍历条目**硬上限（含目录与
-	// 普通文件），list 与恢复扫描共用；超出时报告 truncated=true。
+	// recoveryScanEntryLimit 是单次扫描**收集结果**的硬上限：
+	//   - scanRecoveryEntries（list）按遍历条目计数（含目录与普通文件），
+	//     超出时报告 truncated=true；
+	//   - discoverSidecars（恢复扫描）按收集到的 sidecar 计数，防止把无界
+	//     目录的 sidecar 全部读进内存。
 	recoveryScanEntryLimit = 10000
+	// recoveryVisitedEntryLimit 是 discoverSidecars 的**遍历条目**预算
+	// （含目录与普通文件）。它必须远大于 recoveryScanEntryLimit：录像文件名
+	// 带时间戳前缀、WalkDir 按字典序遍历，默认扫描目录又包含整个录像根目录，
+	// 所以「遍历条目」先于「sidecar 数量」耗尽时，被截断掉的恰好是**最新的**
+	// 录像，且每次启动扫描/周期重扫都会稳定漏掉同一批文件。
+	//
+	// 遍历本身的内存成本可以忽略（WalkDir 不对普通文件 Stat，只分配一个
+	// DirEntry），真正占内存的是收集到的 sidecar 切片，因此遍历预算取 100 万
+	// 足以覆盖长期运行的录像目录，收集上限保持 recoveryScanEntryLimit。
+	recoveryVisitedEntryLimit = 1_000_000
 	// recoveryRunHistoryLimit 保留的最近运行记录数（超出淘汰最旧的已完成运行）。
 	recoveryRunHistoryLimit = 100
 	// recoveryRecentHistoryLimit 保留的最近恢复结果数。

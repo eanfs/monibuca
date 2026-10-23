@@ -136,7 +136,8 @@ func (t *IndexRecoveryTask) Start() error {
 	// 安全与可恢复性之间的取舍，必须让运维知道。Start 只执行一次，天然只记一条。
 	if t.s3TempDirUnconfigured() {
 		t.Warn("storage.s3.tempdir is not configured: object-storage crash leftovers in the system temp dir will not be auto-recovered",
-			"hint", "set storage.s3.tempdir or record.recovery.dirs to include the staging directory")
+			"hint", "set storage.s3.tempdir to a persistent directory and keep it in the scan set: leave record.recovery.dirs empty (tempdir is one of the defaults) or list the tempdir explicitly",
+			"runbook", "docs/superpowers/runbooks/2026-10-22-recording-recovery-deploy.md §2.2")
 	}
 	t.Info("index recovery task started",
 		"concurrency", t.effectiveConcurrency(),
@@ -459,15 +460,20 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 	resolved, dirErrs := t.resolveDirs(dirs)
 	stats.Errors = append(stats.Errors, dirErrs...)
 
-	files, bareTmp, truncated, walkErrs := discoverSidecars(resolved, recoveryScanEntryLimit)
+	files, bareTmp, truncated, walkErrs := discoverSidecars(resolved, recoveryVisitedEntryLimit, recoveryScanEntryLimit)
 	stats.BareTmp = bareTmp
 	stats.Errors = append(stats.Errors, walkErrs...)
 	stats.Scanned += len(files)
-	if truncated {
+	if truncated != "" {
 		// 截断必须显式暴露：运维需要知道本轮有目录没扫完（剩余 sidecar 要等
-		// 下一轮，或先缩小 record.recovery.dirs）。
+		// 下一轮，或先缩小 record.recovery.dirs）。limit 必须是本次真正命中
+		// 的那个预算，否则现场会去调错配置。
 		t.Warn("recovery scan truncated at entry limit: remaining entries were not scanned",
-			"limit", recoveryScanEntryLimit, "dirs", resolved)
+			"reason", string(truncated),
+			"limit", truncated.limit(),
+			"visitedLimit", recoveryVisitedEntryLimit,
+			"collectedLimit", recoveryScanEntryLimit,
+			"dirs", resolved)
 	}
 
 	if bareTmp > 0 {
@@ -663,20 +669,47 @@ func (t *IndexRecoveryTask) mediaTempDir() string {
 	return ""
 }
 
+// sidecarScanTruncated 说明 discoverSidecars 为何提前结束；空字符串表示未截断。
+type sidecarScanTruncated string
+
+const (
+	// sidecarScanTruncatedVisited：遍历条目预算（目录 + 普通文件）耗尽。
+	sidecarScanTruncatedVisited sidecarScanTruncated = "visited"
+	// sidecarScanTruncatedCollected：已收集的 sidecar 数达到上限。
+	sidecarScanTruncatedCollected sidecarScanTruncated = "collected"
+)
+
+// limit 返回本次截断命中的上限值，供日志指明「是哪个预算」。
+func (s sidecarScanTruncated) limit() int {
+	switch s {
+	case sidecarScanTruncatedVisited:
+		return recoveryVisitedEntryLimit
+	case sidecarScanTruncatedCollected:
+		return recoveryScanEntryLimit
+	default:
+		return 0
+	}
+}
+
 // discoverSidecars 递归收集 *.m7sidx 与 *.m7sidx.recovering。
 // 同一媒体同时存在两种标记时优先 .recovering；无 sidecar 的 s3writer_*.tmp
 // 只计数（Task 7 处理），不进入恢复队列。
 //
-// limit 是**遍历条目总数**预算（含目录与普通文件），与 scanRecoveryEntries
-// 同一语义：只在命中 sidecar 时计数会让塞满普通文件的目录无视上限、每次扫描
-// 都全树递归。预算耗尽时 truncated=true，剩余目录不再访问。
-func discoverSidecars(dirs []string, limit int) (files []string, bareTmp int, truncated bool, errs []error) {
+// 两个预算必须分开，语义不同：
+//   - visitedLimit 限制**遍历条目总数**（含目录与普通文件）。普通文件只计数，
+//     WalkDir 不会 Stat，内存成本可忽略；因此它取得很大，避免「旧文件多」把
+//     字典序靠后的最新录像挤出扫描范围（默认扫描目录包含整个录像根目录，
+//     文件名带时间戳前缀，被截断的恰好是最新记录，且每轮都稳定漏掉同一批）。
+//   - collectLimit 限制**收集到的 sidecar 数**，这才是真正的内存风险所在。
+//
+// 任一预算耗尽即 truncated 非空，剩余目录不再访问。
+func discoverSidecars(dirs []string, visitedLimit, collectLimit int) (files []string, bareTmp int, truncated sidecarScanTruncated, errs []error) {
 	preferred := make(map[string]string) // base(.m7sidx) -> 实际路径
 	bare := make(map[string]bool)
 	visited := 0
 
 	for _, dir := range dirs {
-		if truncated {
+		if truncated != "" {
 			break
 		}
 		walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -685,8 +718,8 @@ func discoverSidecars(dirs []string, limit int) (files []string, bareTmp int, tr
 				return nil
 			}
 			visited++
-			if visited > limit {
-				truncated = true
+			if visited > visitedLimit {
+				truncated = sidecarScanTruncatedVisited
 				return filepath.SkipAll
 			}
 			if d.IsDir() {
@@ -695,11 +728,26 @@ func discoverSidecars(dirs []string, limit int) (files []string, bareTmp int, tr
 			name := d.Name()
 			switch {
 			case strings.HasSuffix(name, mp4pkg.IndexExtension+recoveringSuffix):
-				preferred[strings.TrimSuffix(path, recoveringSuffix)] = path
-			case strings.HasSuffix(name, mp4pkg.IndexExtension):
-				if _, ok := preferred[path]; !ok {
-					preferred[path] = path
+				key := strings.TrimSuffix(path, recoveringSuffix)
+				if _, ok := preferred[key]; ok {
+					// 同一媒体的 .recovering 优先于普通 .m7sidx，不新增条目。
+					preferred[key] = path
+					return nil
 				}
+				if len(preferred) >= collectLimit {
+					truncated = sidecarScanTruncatedCollected
+					return filepath.SkipAll
+				}
+				preferred[key] = path
+			case strings.HasSuffix(name, mp4pkg.IndexExtension):
+				if _, ok := preferred[path]; ok {
+					return nil
+				}
+				if len(preferred) >= collectLimit {
+					truncated = sidecarScanTruncatedCollected
+					return filepath.SkipAll
+				}
+				preferred[path] = path
 			case strings.HasSuffix(name, mp4pkg.IndexExtension+".tmp"),
 				strings.HasSuffix(name, mp4pkg.IndexExtension+failedSuffix):
 				// 重写中间态或已判定失败的标记：忽略，避免与恢复队列重复。
@@ -935,7 +983,12 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 
 	// 录制已正常收尾（committed）且本地 mp4 已有 moov：无需重建，
 	// 只需重新移交上传队列（上传失败/pending 补传场景）。
-	if index.Committed && isMP4Path(source) && hasTopLevelMoov(source) {
+	//
+	// 必须同时要求 source == output：locateRecoveryMedia 可能定位到与
+	// header.MediaPath 不同的候选（RENAME 目标尚未落盘的窗口），此时 output 由
+	// recorded 推导，是一个从未被校验、也未创建过的路径。直接入队只会让上传
+	// 任务永远等不到文件（fail-safe 但这条录像永远不会完成）。
+	if source == output && index.Committed && isMP4Path(source) && hasTopLevelMoov(source) {
 		if err := t.enqueue(item); err != nil {
 			return recoveryFailed, item, err
 		}

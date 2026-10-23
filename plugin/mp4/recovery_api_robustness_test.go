@@ -230,8 +230,8 @@ func TestScanRecoveryEntriesCountsAllVisitedEntries(t *testing.T) {
 	}
 }
 
-// 恢复扫描（discoverSidecars）与 list 必须共用同一套预算语义：普通文件同样
-// 消耗预算，超限提前返回并报告 truncated。
+// 恢复扫描（discoverSidecars）与 list 共用「普通文件同样消耗遍历预算」的语义：
+// 超限提前返回并报告截断。收集上限与遍历预算分开，这里用小预算直接钉住遍历口径。
 func TestDiscoverSidecarsCountsAllVisitedEntries(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
@@ -243,15 +243,69 @@ func TestDiscoverSidecarsCountsAllVisitedEntries(t *testing.T) {
 		t.Fatalf("write sidecar: %v", err)
 	}
 
-	files, bareTmp, truncated, errs := discoverSidecars([]string{dir}, 3)
+	files, bareTmp, truncated, errs := discoverSidecars([]string{dir}, 3, recoveryScanEntryLimit)
 	if len(errs) != 0 {
 		t.Fatalf("scan errors: %v", errs)
 	}
-	if !truncated {
-		t.Fatal("discoverSidecars must report truncated when the entry budget is exhausted")
+	if truncated != sidecarScanTruncatedVisited {
+		t.Fatalf("truncated = %q, want %q (walk budget exhausted)", truncated, sidecarScanTruncatedVisited)
 	}
 	if len(files) != 0 || bareTmp != 0 {
 		t.Fatalf("files = %v, bareTmp = %d, want none", files, bareTmp)
+	}
+}
+
+// Important 1（回归）：遍历预算不得按「与 sidecar 无关的条目」先耗尽。
+//
+// 默认扫描目录包含整个录像根目录，文件名带时间戳前缀、WalkDir 按字典序遍历。
+// 若遍历预算仍是 1 万条，累计超过 1 万条目后扫描会稳定停在字典序靠前的旧文件，
+// 最新录像（字典序最后）每次启动/周期重扫都发现不了。遍历预算必须远大于
+// 收集上限，让「条目多」不再等于「新录像被饿死」。
+func TestDiscoverSidecarsDoesNotStarveNewestRecording(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < recoveryScanEntryLimit+1; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("f%05d.bin", i))
+		if err := os.WriteFile(name, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	// 字典序排在所有普通文件之后 = 最新录像：半成品 + sidecar，应被真正恢复。
+	buildRecoveryFixture(t, dir, "zz_newest.tmp", []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04})
+
+	var items []RecoveryItem
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
+		items = append(items, item)
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 || len(items) != 1 {
+		t.Fatalf("newest sidecar was starved by the walk budget: stats = %+v, enqueued = %d",
+			stats, len(items))
+	}
+}
+
+// 收集上限单独可观测：sidecar 数量达到 collectLimit 时报告 collected 截断，
+// 与遍历预算耗尽区分开（日志据此指明是哪个上限）。
+func TestDiscoverSidecarsReportsCollectedLimit(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.mp4.m7sidx", "b.mp4.m7sidx", "c.mp4.m7sidx"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	files, _, truncated, errs := discoverSidecars([]string{dir}, recoveryVisitedEntryLimit, 2)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if truncated != sidecarScanTruncatedCollected {
+		t.Fatalf("truncated = %q, want %q (collected budget exhausted)", truncated, sidecarScanTruncatedCollected)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %v, want exactly the collect cap (2)", files)
 	}
 }
 
