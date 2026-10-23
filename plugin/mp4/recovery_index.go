@@ -412,6 +412,10 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 		}
 	}
 
+	// 完成日志只记 errors=N，明细必须逐条可见：目录遍历失败、DB 补录失败
+	// 等错误没有其它出口，只给数字的话现场无法定位是哪个文件/目录出了问题。
+	t.logRecoveryErrors(stats.Errors)
+
 	t.Info("index recovery completed",
 		"scanned", stats.Scanned,
 		"recovered", stats.Recovered,
@@ -421,6 +425,22 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 		"errors", len(stats.Errors),
 		"elapsedMs", time.Since(startedAt).Milliseconds())
 	return stats
+}
+
+// recoveryErrorLogLimit 是逐条错误日志的上限：目录被大量坏 sidecar 塞满时
+// 不能把启动日志刷爆，超出部分只输出总条数（日志检索仍能拿到 errors 计数）。
+const recoveryErrorLogLimit = 20
+
+// logRecoveryErrors 逐条输出本轮扫描收集到的错误（Error 级）。
+func (t *IndexRecoveryTask) logRecoveryErrors(errs []error) {
+	for i, err := range errs {
+		if i >= recoveryErrorLogLimit {
+			t.Error("index recovery errors truncated",
+				"logged", recoveryErrorLogLimit, "total", len(errs))
+			return
+		}
+		t.Error("index recovery error", "error", err, "index", i+1, "total", len(errs))
+	}
 }
 
 func (t *IndexRecoveryTask) processWithWorkers(files []string, minAge time.Duration) RecoveryStats {

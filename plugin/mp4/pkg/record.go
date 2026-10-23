@@ -263,15 +263,32 @@ func (t *writeTrailerTask) Run() (err error) {
 
 	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
 	// 用于 FinalizeFromTemp 失败路径:此刻 tempPath 已是完整的 moov-first MP4,
-	// 绝不能随 defer 一起删掉。db 为 nil 或移动失败时让 defer 按 tempOwned 处理。
+	// 绝不能随 defer 一起删掉。
+	//
+	// 登记未确认（pending 满 / DB 写失败 / 回查失败）时同样不能删：tempPath 是
+	// 这份录像的唯一副本，删掉即永久丢失。此时保留媒体与 sidecar——媒体留在
+	// 原地或 pending 目录里，sidecar 让后续扫描还能重新登记。
 	recoverToPending := func(cause error) {
-		if pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
-			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr == nil && pendingPath != "" {
-			tempOwned = false // 已移走，不需 defer 删除
-			// 媒体已移入 pending，原路径不再有数据；sidecar 留着会成为孤儿。
-			// 登记失败时保留 sidecar，文件仍在原地可供后续重试。
-			t.removeIndexAfterPendingRegistration(true)
+		pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
+			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause)
+		if pendingPath != "" {
+			// 已移走（无论登记是否确认），defer 都不再负责这个文件。
+			tempOwned = false
 		}
+		if rerr != nil {
+			t.Error("failed upload registration not confirmed; keeping media and index sidecar",
+				"error", rerr, "cause", cause, "tempPath", tempPath,
+				"pendingPath", pendingPath, "filePath", t.filePath)
+			return
+		}
+		if pendingPath == "" {
+			// 无 DB / local 存储 / 空路径：没有补传队列可登记，按旧行为清理临时文件。
+			t.Warn("failed upload has no retry queue; local temp copy will be discarded",
+				"cause", cause, "tempPath", tempPath, "filePath", t.filePath)
+			return
+		}
+		// 登记已确认：媒体已移入 pending，原路径不再有数据，sidecar 留着会成为孤儿。
+		t.removeIndexAfterPendingRegistration(true)
 	}
 
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
@@ -307,19 +324,27 @@ func (t *writeTrailerTask) Run() (err error) {
 
 	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
 	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
-	// 均不删除它），移入 pending 补传;无 DB / pending 满时与旧行为一致清理临时文件。
+	// 均不删除它），移入 pending 补传。
+	//
+	// 唯一允许删除临时文件的场景是「明确无法补传」：无 DB 部署，没有补传队列
+	// 可登记。其余失败（pending 满 / DB 写失败 / 回查失败）一律保留媒体与
+	// sidecar——tempPath 是这份录像的唯一副本。
 	t.handoffToUploadQueue(expectedSize, func(cause error) {
 		if t.db == nil {
-			os.Remove(tempPath) // 无 DB 部署:无补传队列可登记,按旧行为清理
+			t.Warn("upload failed without database: discarding local temp copy (no retry queue)",
+				"cause", cause, "tempPath", tempPath, "filePath", t.filePath)
+			os.Remove(tempPath)
 			return
 		}
 		pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
 			t.streamPath, expectedSize, t.durationMs, metadata, cause)
 		if rerr != nil {
-			os.Remove(tempPath) // pending 目录满等异常(已告警):清理避免临时文件堆积
+			t.Error("failed upload registration not confirmed; keeping media and index sidecar",
+				"error", rerr, "cause", cause, "tempPath", tempPath,
+				"pendingPath", pendingPath, "filePath", t.filePath)
 			return
 		}
-		// 成功登记 pending：媒体已移出，删除 sidecar 避免指向不存在的文件。
+		// 登记确认后媒体已移出，删除 sidecar 避免指向不存在的文件。
 		t.removeIndexAfterPendingRegistration(pendingPath != "")
 	})
 	return
@@ -424,8 +449,11 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 
 // recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记到 pending
 // 目录供定时补传。用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
-// 返回是否真正登记成功（媒体被移入 pending）：成功后原路径已无媒体，
-// sidecar 必须一并删除，否则会指向不存在的文件。
+//
+// 返回是否**登记确认**（媒体已移入 pending 且 upload_tasks 行可查）：确认后
+// 原路径已无媒体，sidecar 必须一并删除，否则会指向不存在的文件。登记未确认时
+// 媒体与 sidecar 全部保留，等下次恢复扫描重试；错误明细已在
+// m7s.RecoverFailedUpload 内以 Error 级记录。
 func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (registered bool) {
 	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
 	if t.durationMs > 0 {
@@ -433,7 +461,13 @@ func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, ca
 	}
 	pendingPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
 		t.streamPath, fileSize, t.durationMs, metadata, cause)
-	registered = err == nil && pendingPath != ""
+	if err != nil {
+		t.Error("failed upload registration not confirmed; keeping media and index sidecar",
+			"error", err, "cause", cause, "localPath", localPath,
+			"pendingPath", pendingPath, "filePath", t.filePath)
+		return false
+	}
+	registered = pendingPath != ""
 	t.removeIndexAfterPendingRegistration(registered)
 	return registered
 }

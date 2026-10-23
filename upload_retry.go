@@ -17,6 +17,10 @@ type UploadRetryScheduler struct {
 	task.TickTask
 	s             *Server
 	retryInterval time.Duration
+	// pendingUsageErr 是上一次已告警的 pending 用量扫描错误。目录不可读会每个
+	// tick 复现，同一个错误只告警一次（错误变化时重新告警），避免刷屏；恢复
+	// 后清空并记一条 Info，让运维知道水位告警重新生效。
+	pendingUsageErr string
 }
 
 // GetTickInterval 补传检查间隔（默认 5 分钟）
@@ -42,7 +46,12 @@ func (u *UploadRetryScheduler) Tick(any) {
 
 	// pending 目录水位巡检:接近上限即告警(RaiseUploadAlarm 自带去重,不会刷屏)。
 	// 日志字段固定为 count/bytes/limit,供现场按 30 天日志检索。
-	if usage, usageErr := storage.GetPendingUsage(); usageErr == nil {
+	// 扫描失败必须显式告警:过去被 `usageErr == nil` 静默吞掉,目录不可读时
+	// 水位告警永久失效且没有任何日志。
+	if usage, usageErr := storage.GetPendingUsage(); usageErr != nil {
+		u.warnPendingUsageScanFailure(usageErr)
+	} else {
+		u.clearPendingUsageScanFailure()
 		if exceeded, limit := usage.WatermarkExceeded(); exceeded {
 			u.Warn("pending dir near full",
 				"count", usage.Count,
@@ -72,6 +81,32 @@ func (u *UploadRetryScheduler) Tick(any) {
 		ut := tasks[i]
 		go u.retryUpload(ut)
 	}
+}
+
+// warnPendingUsageScanFailure 记录 pending 用量扫描失败（同一错误只告警一次）。
+// 只有 Tick 调用，Tick 由任务事件循环串行执行，字段无需加锁。
+func (u *UploadRetryScheduler) warnPendingUsageScanFailure(err error) {
+	msg := err.Error()
+	if msg == u.pendingUsageErr {
+		return
+	}
+	u.pendingUsageErr = msg
+	u.Warn("pending dir usage scan failed",
+		"error", err,
+		"pendingDir", storage.GetPendingDir(),
+		"effect", "watermark alarm disabled")
+}
+
+// clearPendingUsageScanFailure 在扫描恢复后清空去重状态并提示一次，
+// 否则运维无从判断水位告警是否已重新生效。
+func (u *UploadRetryScheduler) clearPendingUsageScanFailure() {
+	if u.pendingUsageErr == "" {
+		return
+	}
+	u.pendingUsageErr = ""
+	u.Info("pending dir usage scan recovered",
+		"pendingDir", storage.GetPendingDir(),
+		"effect", "watermark alarm re-enabled")
 }
 
 // retryUpload 执行单个上传重试

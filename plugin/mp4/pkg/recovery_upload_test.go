@@ -361,6 +361,11 @@ func TestEnqueueRecoveryUploadDuplicateEnqueueIsIdempotent(t *testing.T) {
 
 	t.Run("already registered", func(t *testing.T) {
 		db := newPendingTestDB(t)
+		// 已登记分支会在删 sidecar 前回写 record_streams；表必须存在，否则
+		// 回写失败会（按新契约）保留 sidecar 并返回错误。
+		if err := db.AutoMigrate(&m7s.RecordStream{}); err != nil {
+			t.Fatalf("migrate record_streams: %v", err)
+		}
 		fixture := newRecoveryUploadFixture(t, "s3")
 		// pending 文件仍在：补传队列会接手，恢复不能重复上传。
 		pendingPath := filepath.Join(t.TempDir(), "pending.mp4")

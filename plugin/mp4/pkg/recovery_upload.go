@@ -143,15 +143,27 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 
 	// 崩溃窗口幂等：上一次已登记过 pending（可能尚未补传）或已上传成功时，
 	// 不再新建 upload_tasks 行，也不重复上传。
-	if recoveryUploadRegistered(opts.DB, objectKey, upload.OutputPath) {
+	registered, registerErr := recoveryUploadRegistered(opts.DB, objectKey, upload.OutputPath)
+	if registerErr != nil {
+		// 判重结果不可确定：既不能重复上传，也不能删 sidecar（那会让这次恢复
+		// 永久失去重试线索）。原样保留现场，交给下次扫描。
+		release()
+		logger.Error("recovery upload registration state unknown; keeping file and sidecar",
+			"error", registerErr, "objectKey", objectKey, "output", upload.OutputPath)
+		return fmt.Errorf("mp4: check recovery upload registration for %s: %w", upload.OutputPath, registerErr)
+	}
+	if registered {
 		release()
 		logger.Info("recovery upload already registered; skipping duplicate",
 			"objectKey", objectKey, "output", upload.OutputPath)
 		// 上一次恢复可能已入队但尚未回写（进程在两者之间被杀）。这里补写一次；
-		// 失败只告警——上传已登记，sidecar 不能再留着阻塞后续扫描。
+		// 失败必须保留 sidecar：它是「下次启动再回写 record_streams」的唯一线索，
+		// 删掉就等于永久丢失这条录像的 DB 记录。
 		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records); err != nil {
-			logger.Warn("update record_streams after recovery failed",
-				"err", err, "objectKey", objectKey, "output", upload.OutputPath)
+			logger.Error("update record_streams after recovery failed; keeping sidecar",
+				"error", err, "objectKey", objectKey, "output", upload.OutputPath)
+			return fmt.Errorf("mp4: update record_streams for registered recovery upload %s: %w",
+				upload.OutputPath, err)
 		}
 		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
 			logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
@@ -238,7 +250,8 @@ func registerRecoveryPending(logger *slog.Logger, db *gorm.DB, upload RecoveryUp
 		upload.Header.StreamPath, size, 0, metadata, cause)
 	if err != nil {
 		logger.Error("recovery upload failed and pending registration failed; keeping sidecar",
-			"err", err, "cause", cause, "output", upload.OutputPath, "objectKey", objectKey)
+			"error", err, "cause", cause, "output", upload.OutputPath,
+			"pendingPath", pendingPath, "objectKey", objectKey)
 		return
 	}
 	if pendingPath == "" {
@@ -246,7 +259,15 @@ func registerRecoveryPending(logger *slog.Logger, db *gorm.DB, upload RecoveryUp
 			"cause", cause, "output", upload.OutputPath, "objectKey", objectKey)
 		return
 	}
-	if !recoveryPendingConfirmed(db, pendingPath) {
+	// RecoverFailedUpload 已经做过一次确认；这里再查一次是纵深防御：任何一步
+	// 的「大概写进去了」都不能成为删除 sidecar 的依据。
+	confirmed, confirmErr := m7s.ConfirmPendingRegistration(db, pendingPath, objectKey)
+	if confirmErr != nil {
+		logger.Error("recovery pending registration check failed; keeping sidecar",
+			"error", confirmErr, "cause", cause, "pendingPath", pendingPath, "objectKey", objectKey)
+		return
+	}
+	if !confirmed {
 		logger.Error("recovery pending registration not confirmed; keeping sidecar",
 			"cause", cause, "pendingPath", pendingPath, "objectKey", objectKey)
 		return
@@ -337,11 +358,16 @@ func isSafeRecoveryObjectKey(key string) bool {
 //
 // 上传成功的行其本地文件已被 MarkUploadSuccess 删除，也不再指向本次产物，
 // 因此不会挡住后续复用同名的全新录像。
-func recoveryUploadRegistered(db *gorm.DB, objectKey, localPath string) bool {
+//
+// 返回 (registered, err)：err 非空表示查询失败、结果**不可确定**。过去这种
+// 情况被当成「未登记」继续上传，既可能重复上传，也可能把已登记的 sidecar
+// 留在磁盘上无人回收。调用方必须按「未确定」处理：不删 sidecar、不上传、
+// 保留现场等下次重试。
+func recoveryUploadRegistered(db *gorm.DB, objectKey, localPath string) (bool, error) {
 	// 没有产物路径就无法把“已登记”绑定到具体产物；宁可重复上传（对象覆盖，
 	// 幂等）也不能误删另一份录像的 sidecar。
 	if db == nil || localPath == "" {
-		return false
+		return false, nil
 	}
 	query := db.Model(&m7s.UploadTask{})
 	if objectKey != "" {
@@ -351,17 +377,17 @@ func recoveryUploadRegistered(db *gorm.DB, objectKey, localPath string) bool {
 	}
 	var tasks []m7s.UploadTask
 	if err := query.Find(&tasks).Error; err != nil {
-		return false
+		return false, fmt.Errorf("query upload_tasks for %s: %w", localPath, err)
 	}
 	for _, task := range tasks {
 		if task.LocalPath == localPath {
-			return true
+			return true, nil
 		}
 		if recoverySourcePath(task) == localPath {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // recoverySourcePath 读取 pending 行里记录的源产物路径。
@@ -375,19 +401,6 @@ func recoverySourcePath(task m7s.UploadTask) string {
 		return ""
 	}
 	return metadata[recoveryUploadSourceMetadataKey]
-}
-
-// recoveryPendingConfirmed 确认 pending 登记真的落库。
-// m7s.RecoverFailedUpload 不返回 DB 写入错误，因此必须回查。
-func recoveryPendingConfirmed(db *gorm.DB, pendingPath string) bool {
-	if db == nil || pendingPath == "" {
-		return false
-	}
-	var count int64
-	if err := db.Model(&m7s.UploadTask{}).Where("local_path = ?", pendingPath).Count(&count).Error; err != nil {
-		return false
-	}
-	return count > 0
 }
 
 // removeRecoverySidecar 提交式删除 sidecar；.recovering 场景同时清理同名普通索引。
