@@ -149,23 +149,20 @@ func TestReadFromRejectsNestedUnderflow(t *testing.T) {
 	}
 }
 
-// 边界不能误伤合法尺寸：size 恰好 16 的 stsd 与 largesize 恰好 24 的 stsd
-// 都必须正常解析。
-func TestReadFromAcceptsBoundarySTSD(t *testing.T) {
+// size 恰好 16 / largesize 恰好 24 的 stsd 只装得下 entry_count=0。空 sample
+// description 无法描述任何样本，属于结构性损坏：必须返回 ErrSTSDCorrupt，
+// 既不能 panic，也不能被当成合法轨道解析。
+func TestReadFromRejectsEmptyBoundarySTSD(t *testing.T) {
 	regular := append(boxHeader(16, "stsd"), make([]byte, 8)...)
 	large := append(largeBoxHeader(24, "stsd"), make([]byte, 8)...)
 
 	for name, data := range map[string][]byte{"size16": regular, "largesize24": large} {
 		parsed, err := ReadFrom(bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+		if err == nil {
+			t.Fatalf("%s: expected ErrSTSDCorrupt, got box %+v", name, parsed)
 		}
-		stsd, ok := parsed.(*STSDBox)
-		if !ok {
-			t.Fatalf("%s: parsed as %T, want *STSDBox", name, parsed)
-		}
-		if len(stsd.Entries) != 0 {
-			t.Fatalf("%s: entries = %d, want 0", name, len(stsd.Entries))
+		if !errors.Is(err, ErrSTSDCorrupt) {
+			t.Fatalf("%s: error = %v, want ErrSTSDCorrupt", name, err)
 		}
 	}
 }

@@ -31,6 +31,9 @@ type RecoveryUpload struct {
 	MediaPath   string
 	OutputPath  string
 	SidecarPath string
+	// DroppedTrackIDs 是索引头声明、但产物里没有可用样本的轨道。回写
+	// record_streams 时不得为它们写 codec。
+	DroppedTrackIDs []uint16
 }
 
 // RecoveryStorageResolver 按录像自己的存储类型解析上传后端。
@@ -119,7 +122,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 	// 本地存储没有上传动作：恢复产物已在最终路径，回写 record_streams
 	// 后删除 sidecar 即完成。DB 失败时保留 sidecar，下次恢复会重试回写。
 	if storageType == string(storage.StorageTypeLocal) {
-		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records); err != nil {
+		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
 			return fmt.Errorf("mp4: update record_streams for recovered local file %s: %w", upload.OutputPath, err)
 		}
 		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
@@ -159,7 +162,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		// 上一次恢复可能已入队但尚未回写（进程在两者之间被杀）。这里补写一次；
 		// 失败必须保留 sidecar：它是「下次启动再回写 record_streams」的唯一线索，
 		// 删掉就等于永久丢失这条录像的 DB 记录。
-		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records); err != nil {
+		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
 			logger.Error("update record_streams after recovery failed; keeping sidecar",
 				"error", err, "objectKey", objectKey, "output", upload.OutputPath)
 			return fmt.Errorf("mp4: update record_streams for registered recovery upload %s: %w",
@@ -202,7 +205,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		// 上传成功后才回写 record_streams，与正常录制路径语义一致：
 		// 文件可播放/已持久化前不留下“已完成”的 DB 记录。
 		dbWrite: func(task.IJob) error {
-			return updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records)
+			return updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs)
 		},
 		// 产物移交给 storage.File 的动作放到任务内部执行：任务若未能启动，
 		// 源的拥有权仍在恢复任务，不会出现“文件已被接管却没人上传”的悬空状态。

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 
 	"m7s.live/v5/pkg/storage"
 	. "m7s.live/v5/plugin/mp4/pkg/box"
@@ -56,6 +57,34 @@ var ErrIndexTruncated = errors.New("mp4: index records reference data past end o
 // ErrNoUsableSamples 表示索引里没有任何一条记录能落到已声明轨道且在媒体文件范围内。
 // 此时恢复不可进行（不能产出只有 ftyp/moov 头的空文件），调用方必须放弃本次恢复。
 var ErrNoUsableSamples = errors.New("mp4: index contains no usable samples")
+
+// RestoreReport 是 RestoreFromIndex 的结构性结果，用于让调用方发现"恢复成功
+// 但内容不完整"的情况。它不替代错误返回值：ErrIndexTruncated /
+// ErrNoUsableSamples 等仍按原样返回，调用方的错误分支语义不变。
+type RestoreReport struct {
+	// DroppedTrackIDs 是索引头声明、但没有任何可用样本的轨道 ID（升序）。
+	// 这些轨道不会出现在重建的 moov 里；调用方应告警，并避免回写对应 codec。
+	DroppedTrackIDs []uint16
+	// DamagedTrackIDs 是 stsd 结构性损坏（entry_count 为 0 或与条目数不符）
+	// 的轨道 ID。修复在第一条损坏轨道处停止，因此至多一个元素。这类损坏
+	// 无法通过重试修复，调用方应永久失败。
+	DamagedTrackIDs []uint16
+	// Truncated 与 ErrIndexTruncated 同步：只恢复了可用前缀。
+	Truncated bool
+}
+
+// sortedIDs 把轨道 ID 集合转成升序切片（map 迭代顺序不定，报告必须稳定）。
+func sortedIDs(set map[uint16]bool) []uint16 {
+	if len(set) == 0 {
+		return nil
+	}
+	ids := make([]uint16, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
 
 func (m Muxer) isFragment() bool {
 	return (m.Flag & FLAG_FRAGMENT) != 0
@@ -434,7 +463,9 @@ func codecTypeFromFourCC(fourCC string) (MP4_CODEC_TYPE, bool) {
 // largesize(size==1) 形式还多 8 字节 largesize，下界是 24。这两个下界是 stsd
 // 语义，通用解析器给不出，只能在恢复入口校验。
 func validateSTSDBounds(it IndexTrack) error {
-	errInvalid := fmt.Errorf("mp4: restore track %d: invalid stsd bounds", it.ID)
+	// 声明尺寸与字节长度不符同样是结构性损坏(无法靠重试修复)，包装
+	// ErrSTSDCorrupt 让 RestoreFromIndex 能把它计入 RestoreReport。
+	errInvalid := fmt.Errorf("%w: restore track %d: invalid stsd bounds", ErrSTSDCorrupt, it.ID)
 	n := len(it.STSD)
 	// 至少要读完 box 头(8) + version/flags(4) + entry_count(4)。
 	if n < minSTSDBoxSize {
@@ -495,7 +526,8 @@ func restoreTrackFromIndex(it IndexTrack) (*Track, error) {
 }
 
 // RestoreFromIndex 用伴随索引重建 muxer 的轨道与样本表，供 WriteMoovOnly
-// 写出恢复用 moov。
+// 写出恢复用 moov。返回值 RestoreReport 报告"恢复成功但内容不完整"的结构性
+// 事实（被丢弃的轨道、结构性损坏的 stsd、截断）；错误语义与之前一致。
 //
 // mediaSize 是媒体文件的实际长度(字节)。Offset+Size 超过它的记录被逐条跳过；
 // 只要还存在有效记录就返回 ErrIndexTruncated，有效部分已经恢复完成。
@@ -513,26 +545,32 @@ func restoreTrackFromIndex(it IndexTrack) (*Track, error) {
 //
 // 样本 Offset 保持源媒体文件的坐标系；WriteMoovOnly 会把它们平移为
 // ftyp|moov|mdat 输出布局中的绝对偏移。
-func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize int64) error {
+func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize int64) (RestoreReport, error) {
+	var report RestoreReport
 	if m.isFragment() || m.isDash() {
-		return errors.New("mp4: RestoreFromIndex is progressive-only")
+		return report, errors.New("mp4: RestoreFromIndex is progressive-only")
 	}
 	if len(h.Tracks) == 0 {
-		return errors.New("mp4: index header contains no tracks")
+		return report, errors.New("mp4: index header contains no tracks")
 	}
 	m.Tracks = make(map[uint32]*Track, len(h.Tracks))
 	m.nextTrackId = 1
 	for _, it := range h.Tracks {
 		if it.ID == 0 {
-			return errors.New("mp4: index track id must be non-zero")
+			return report, errors.New("mp4: index track id must be non-zero")
 		}
 		id := uint32(it.ID)
 		if _, dup := m.Tracks[id]; dup {
-			return fmt.Errorf("mp4: duplicate index track id %d", id)
+			return report, fmt.Errorf("mp4: duplicate index track id %d", id)
 		}
 		track, err := restoreTrackFromIndex(it)
 		if err != nil {
-			return err
+			// stsd 结构性损坏无法通过重试修复：报告损坏的轨道，调用方据此
+			// 永久失败（markFailed）而不是每次启动重复尝试。
+			if errors.Is(err, ErrSTSDCorrupt) {
+				report.DamagedTrackIDs = append(report.DamagedTrackIDs, it.ID)
+			}
+			return report, err
 		}
 		m.Tracks[id] = track
 		if id >= m.nextTrackId {
@@ -540,6 +578,11 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 		}
 	}
 
+	// 默认所有声明的轨道都"没有可用样本"；下面每接受一条记录就清除对应 ID。
+	dropped := make(map[uint16]bool, len(h.Tracks))
+	for _, it := range h.Tracks {
+		dropped[it.ID] = true
+	}
 	var payloadStart, payloadEnd int64 = -1, 0
 	truncated := false
 	for _, r := range records {
@@ -560,6 +603,7 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 		}
 		sample.Size = int(r.Size)
 		track.AddSampleEntry(sample)
+		delete(dropped, r.TrackID)
 		if payloadStart < 0 || int64(r.Offset) < payloadStart {
 			payloadStart = int64(r.Offset)
 		}
@@ -567,6 +611,8 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 			payloadEnd = end
 		}
 	}
+	report.DroppedTrackIDs = sortedIDs(dropped)
+	report.Truncated = truncated
 
 	end := mediaSize
 	if end < 0 {
@@ -575,7 +621,7 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 	}
 	if payloadStart < 0 {
 		// 一条可用记录都没有：绝不能产出合法的空壳 mp4 覆盖原始文件。
-		return ErrNoUsableSamples
+		return report, ErrNoUsableSamples
 	}
 	if end < payloadStart {
 		end = payloadStart
@@ -589,9 +635,9 @@ func (m *Muxer) RestoreFromIndex(h IndexHeader, records []IndexRecord, mediaSize
 		m.CurrentOffset = end
 	}
 	if truncated {
-		return ErrIndexTruncated
+		return report, ErrIndexTruncated
 	}
-	return nil
+	return report, nil
 }
 
 // RestorePayloadRange 返回源媒体文件中需要原样拷贝到恢复输出的载荷区间

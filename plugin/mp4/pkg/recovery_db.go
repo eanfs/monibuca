@@ -47,6 +47,29 @@ func truncateRecordTime(t time.Time) time.Time {
 	return t.Truncate(time.Millisecond)
 }
 
+// recoveredTrackCodecs 从索引头声明的轨道里挑出实际存在于产物中的 codec。
+// dropped 里的轨道（没有任何可用样本）被跳过；同类型多条轨道取第一条。
+// 返回的 codec 沿用录制路径的取值口径（FourCC 字符串，如 avc1/alaw）。
+func recoveredTrackCodecs(header IndexHeader, dropped map[uint16]bool) (audio, video string) {
+	for _, track := range header.Tracks {
+		if dropped[track.ID] {
+			continue
+		}
+		cid, ok := codecTypeFromFourCC(track.FourCC)
+		if !ok {
+			continue
+		}
+		if cid.IsVideo() {
+			if video == "" {
+				video = track.FourCC
+			}
+		} else if audio == "" {
+			audio = track.FourCC
+		}
+	}
+	return audio, video
+}
+
 // updateRecoveredRecord 在恢复成功后回写 record_streams。
 //
 // 崩溃前开录已插入一行（end_time 空、duration=0），旧的 DB 补录（RunDBBackfill）
@@ -55,7 +78,10 @@ func truncateRecordTime(t time.Time) time.Time {
 //
 // end_time = header.StartTime + 索引算出的时长（spec §2.5）。File 保持原样：
 // header.FilePath 是逻辑录像路径，也是 record_streams.file_path 的匹配键。
-func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader, records []IndexRecord) error {
+//
+// droppedTrackIDs 是索引头声明、但恢复产物里没有可用样本的轨道：它们的
+// codec 不会被写进 record_streams，避免 API 声称产物有一条实际不存在的音轨。
+func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader, records []IndexRecord, droppedTrackIDs []uint16) error {
 	if db == nil {
 		return nil
 	}
@@ -99,6 +125,19 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	}
 	if storageType := strings.TrimSpace(header.StorageType); storageType != "" {
 		updates["storage_type"] = storageType
+	}
+	// codec 来自索引头声明的轨道，但被丢弃的轨道（记录全越界/缺失）不能写：
+	// 产物里没有对应 trak，写进去就是错误承诺。
+	dropped := make(map[uint16]bool, len(droppedTrackIDs))
+	for _, id := range droppedTrackIDs {
+		dropped[id] = true
+	}
+	audioCodec, videoCodec := recoveredTrackCodecs(header, dropped)
+	if videoCodec != "" {
+		updates["video_codec"] = videoCodec
+	}
+	if audioCodec != "" {
+		updates["audio_codec"] = audioCodec
 	}
 
 	dbCtx, cancel := context.WithTimeout(context.Background(), recoveryDBTimeout)
@@ -218,6 +257,8 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		Type:         "mp4",
 		FilePath:     filePath,
 		StreamPath:   header.StreamPath,
+		AudioCodec:   audioCodec,
+		VideoCodec:   videoCodec,
 		StorageLevel: 1,
 		StorageType:  strings.TrimSpace(header.StorageType),
 	}

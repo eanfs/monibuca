@@ -532,3 +532,151 @@ func legacyWarningsContain(warnings []string, substr string) bool {
 	}
 	return false
 }
+
+// 白名单必须按标准收紧：H.264 只认 VCL slice/SEI/SPS/PPS(1/5/6/7/8)，
+// H.265 只认 VCL(0-31) 与 VPS/SPS/PPS(32-34)。放宽到任意类型会把音频/噪声里
+// 偶然凑出的 4 字节长度误当成样本边界。
+func TestLegacyNALTypeWhitelist(t *testing.T) {
+	cases := []struct {
+		name  string
+		codec legacyCodec
+		head  []byte
+		want  int
+		ok    bool
+	}{
+		{"h264_slice", legacyCodecH264, []byte{0x01}, 1, true},
+		{"h264_idr", legacyCodecH264, []byte{0x65}, 5, true},
+		{"h264_sei", legacyCodecH264, []byte{0x06}, 6, true},
+		{"h264_sps", legacyCodecH264, []byte{0x67}, 7, true},
+		{"h264_pps", legacyCodecH264, []byte{0x68}, 8, true},
+		{"h264_partition_b", legacyCodecH264, []byte{0x02}, 2, false},
+		{"h264_aud", legacyCodecH264, []byte{0x09}, 9, false},
+		{"h264_forbidden_bit", legacyCodecH264, []byte{0x81}, 1, false},
+		{"h265_vcl", legacyCodecH265, []byte{0x02, 0x01}, 1, true},
+		{"h265_idr", legacyCodecH265, []byte{0x26, 0x01}, 19, true},
+		{"h265_vps", legacyCodecH265, []byte{0x40, 0x01}, 32, true},
+		{"h265_sps", legacyCodecH265, []byte{0x42, 0x01}, 33, true},
+		{"h265_pps", legacyCodecH265, []byte{0x44, 0x01}, 34, true},
+		{"h265_aud", legacyCodecH265, []byte{0x46, 0x01}, 35, false},
+		{"h265_sei", legacyCodecH265, []byte{0x4e, 0x01}, 39, false},
+		{"h265_forbidden_bit", legacyCodecH265, []byte{0x82, 0x01}, 1, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			typ, ok := legacyNALType(c.codec, c.head)
+			if ok != c.ok || (ok && typ != c.want) {
+				t.Fatalf("legacyNALType = (%d,%v), want (%d,%v)", typ, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// 音频空洞里可能恰好出现"合法长度 + 白名单类型"的伪 NAL 前缀。扫描器必须
+// 把这类片段当空洞跳过，绝不能把它并进视频样本：否则后续真实 NAL 会被吞掉，
+// 或样本字节被污染（moov 偏移正确但内容错乱）。
+func TestRebuildFromMDATInterleavedAudioDoesNotSwallowNALs(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	idr := []byte{0x65, 0x88, 0x84, 0x00, 0x01}
+	p1 := []byte{0x41, 0x88, 0x84, 0x00, 0x02}
+	p2 := []byte{0x41, 0x88, 0x84, 0x00, 0x03}
+
+	// 伪 AVCC 前缀：长度 5、NAL type 9（AUD，不在白名单内），后面是音频帧。
+	fake := []byte{0x00, 0x00, 0x00, 0x05, 0x09, 0xAA, 0xBB, 0xCC, 0xDD}
+	audio := bytes.Repeat([]byte{0xD5}, 320)
+	au1 := avccBytes(sps, pps, idr)
+	au2 := avccBytes(p1)
+	au3 := avccBytes(p2)
+	payload := bytes.Join([][]byte{au1, fake, audio, au2, audio, au3}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, VideoOnly: true, OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.VideoFrames != 3 {
+		t.Fatalf("VideoFrames = %d, want 3 (fake NAL in audio must not split/absorb frames)", res.VideoFrames)
+	}
+	data, _, moov := parseLegacyOutput(t, outPath)
+	want := [][]byte{au1, au2, au3}
+	samples := moov.Tracks[0].ParseSamples()
+	if len(samples) != len(want) {
+		t.Fatalf("samples = %d, want %d", len(samples), len(want))
+	}
+	for i, sample := range samples {
+		got := data[sample.Offset : sample.Offset+int64(sample.Size)]
+		if !bytes.Equal(got, want[i]) {
+			t.Errorf("sample %d = %x, want %x (fake NAL bytes leaked into video)", i, got, want[i])
+		}
+	}
+}
+
+// 单个 NAL 的长度上限从 8MB 收紧到 1MB（4K 关键帧仍远小于该值）。超出上限的
+// 长度字段必须按空洞重同步，而不是被当成一个吞掉后续真实 NAL 的巨型样本。
+func TestRebuildFromMDATRejectsOversizedNALLength(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	idr := []byte{0x65, 0x88, 0x84, 0x00, 0x01}
+	p1 := []byte{0x41, 0x88, 0x84, 0x00, 0x02}
+	p2 := []byte{0x41, 0x88, 0x84, 0x00, 0x03}
+	au1 := avccBytes(sps, pps, idr)
+	au2 := avccBytes(p1)
+	au3 := avccBytes(p2)
+
+	// 伪长度 2MB（>1MB 新上限、<8MB 旧上限），紧跟一个合法的 H.264 type 1
+	// 字节：旧上限下这整段会被接受成一个巨型样本，把后面的 au2/au3 一起吞掉；
+	// 新上限下按空洞重同步，au2/au3 仍被找到。刻意不引用 legacyMaxNALSize，
+	// 否则测试会随常量一起漂移、无法钉住"上限是 1MB"。
+	const fakeLenBytes = 2 << 20
+	fakeLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(fakeLen, uint32(fakeLenBytes))
+	fakeHead := []byte{0x41}
+	filler := bytes.Repeat([]byte{0x00}, fakeLenBytes)
+	payload := bytes.Join([][]byte{au1, fakeLen, fakeHead, au2, au3, filler}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+	outPath := filepath.Join(t.TempDir(), "out.mp4")
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, VideoOnly: true, OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.VideoFrames != 3 {
+		t.Fatalf("VideoFrames = %d, want 3 (oversized length must resync, not swallow NALs)", res.VideoFrames)
+	}
+	data, _, moov := parseLegacyOutput(t, outPath)
+	want := [][]byte{au1, au2, au3}
+	samples := moov.Tracks[0].ParseSamples()
+	if len(samples) != len(want) {
+		t.Fatalf("samples = %d, want %d", len(samples), len(want))
+	}
+	for i, sample := range samples {
+		if got := data[sample.Offset : sample.Offset+int64(sample.Size)]; !bytes.Equal(got, want[i]) {
+			t.Errorf("sample %d bytes mismatch", i)
+		}
+	}
+}
+
+// 连续跳过 >4MB 仍未命中 NAL 时必须在结果里显式标记（HolesSkipped）并告警：
+// 这通常意味着截断/非 AVCC 数据，运维需要知道恢复质量。
+func TestRebuildFromMDATReportsLongHoles(t *testing.T) {
+	sps, pps := legacyTestParamSets(t)
+	payload := bytes.Join([][]byte{
+		avccBytes(sps, pps, []byte{0x65, 0x88, 0x84, 0x00, 0x01}),
+		bytes.Repeat([]byte{0x7F}, int(legacyHoleWarnThreshold)+16),
+		avccBytes([]byte{0x41, 0x88, 0x84, 0x00, 0x02}),
+	}, nil)
+	mediaPath := halfWrittenTmp(t, payload)
+
+	res, err := RebuildFromMDAT(mediaPath, LegacyOptions{FPS: 25, DryRun: true})
+	if err != nil {
+		t.Fatalf("RebuildFromMDAT: %v", err)
+	}
+	if res.VideoFrames != 2 {
+		t.Fatalf("VideoFrames = %d, want 2 (resync after long hole)", res.VideoFrames)
+	}
+	if res.HolesSkipped < 1 {
+		t.Fatalf("HolesSkipped = %d, want >= 1 for a >4MB non-NAL gap", res.HolesSkipped)
+	}
+	if !legacyWarningsContain(res.Warnings, "without finding a valid NAL") {
+		t.Fatalf("warnings = %v, want a long-hole warning", res.Warnings)
+	}
+}

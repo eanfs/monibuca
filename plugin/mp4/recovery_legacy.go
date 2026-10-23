@@ -41,8 +41,14 @@ const (
 	// 32(ftyp) + 8(free) + 8(mdat 占位头)。
 	legacyPayloadOffset int64 = 48
 
-	legacyMaxNALSize      = 8 << 20 // 单个 NAL 的上限（扫描重同步阈值，与 spike 探针一致）
+	// 单个 NAL 的上限（扫描重同步阈值）。1MB 远大于 4K 关键帧（典型 <200KB），
+	// 同时把"音频/噪声凑出的超大长度字段"挡在样本之外；旧值 8MB 会让一段
+	// 随机字节吞掉后续真实 NAL。
+	legacyMaxNALSize      = 1 << 20
 	legacyMaxParamSetSize = 1 << 20
+	// 连续跳过该字节数仍未命中 NAL 时记录告警并计入 HolesSkipped：这么长的
+	// 非 AVCC 区间通常意味着截断/损坏，恢复质量需要让运维看见。
+	legacyHoleWarnThreshold int64 = 4 << 20
 
 	// codec 探测允许跳过的前导非 AVCC 字节数。音视频是两条独立订阅，
 	// 首个落盘样本完全可能是音频帧；损坏的半成品也可能带前导噪声。
@@ -88,6 +94,9 @@ type LegacyResult struct {
 	AudioCodec     string
 	DurationMs     int64
 	Warnings       []string
+	// HolesSkipped 是"连续跳过 >4MB 仍未命中 NAL"的次数。>0 表示载荷里存在
+	// 长段非 AVCC 数据（截断/损坏），恢复产物可能缺失中间片段。
+	HolesSkipped int
 }
 
 type legacyCodec int
@@ -119,13 +128,14 @@ type legacyHole struct {
 }
 
 type legacyScan struct {
-	codec    legacyCodec
-	aus      []legacyAU
-	holes    []legacyHole
-	sps      []byte
-	pps      []byte
-	vps      []byte
-	warnings []string
+	codec        legacyCodec
+	aus          []legacyAU
+	holes        []legacyHole
+	sps          []byte
+	pps          []byte
+	vps          []byte
+	warnings     []string
+	holesSkipped int
 }
 
 type legacyAudioFrame struct {
@@ -175,6 +185,7 @@ func RebuildFromMDAT(mediaPath string, opts LegacyOptions) (LegacyResult, error)
 		return res, err
 	}
 	res.Warnings = append(res.Warnings, scan.warnings...)
+	res.HolesSkipped = scan.holesSkipped
 	if len(scan.aus) == 0 {
 		return res, errors.New("mp4 legacy recovery: no video access unit found in payload")
 	}
@@ -228,7 +239,9 @@ func RebuildFromMDAT(mediaPath string, opts LegacyOptions) (LegacyResult, error)
 
 	records, parts := legacyBuildRecords(scan, fps, audioFrames)
 	m := mp4pkg.NewMuxer(0)
-	if err = m.RestoreFromIndex(header, records, -1); err != nil {
+	// legacyBuildRecords 按 header.Tracks 逐条造记录，正常情况下不会有轨道被
+	// 丢弃；忽略报告即可（异常情况下方 payload 自检也会失败）。
+	if _, err = m.RestoreFromIndex(header, records, -1); err != nil {
 		return res, fmt.Errorf("mp4 legacy recovery: build sample table: %w", err)
 	}
 	var moov bytes.Buffer
@@ -296,7 +309,8 @@ func legacyValidateHeader(f *os.File) error {
 // legacyDetectCodec 在载荷头部窗口内用与扫描器相同的重同步规则找第一个合法
 // NAL 再判定 codec。不能硬要求第 48 字节就是 NAL：录制器按回调到达顺序落盘，
 // 音视频是两条独立订阅，首个样本可能是音频帧；损坏文件也可能带前导噪声。
-// H.264 的类型上限是 23，因此 HEVC 的 VPS（首字节 0x40）不会被误判成 H.264。
+// 类型判定用各 codec 的标准白名单，HEVC 的 VPS（首字节 0x40，H.264 解析为
+// type 0）不会被误判成 H.264。
 func legacyDetectCodec(f *os.File, fileSize int64) (legacyCodec, error) {
 	if fileSize <= legacyPayloadOffset {
 		return 0, errors.New("mp4 legacy recovery: payload is empty")
@@ -340,19 +354,29 @@ func legacyDetectCodec(f *os.File, fileSize int64) (legacyCodec, error) {
 		"(no H.264/H.265 AVCC NAL in the payload head)")
 }
 
+// legacyH264NALWhitelist 是 H.264 NAL 类型白名单（ITU-T H.264 Table 7-1）：
+// 1/5 = VCL slice，6 = SEI，7 = SPS，8 = PPS。其余类型（数据分区 2-4、AUD 9、
+// 10-23）不参与样本重建；音频/噪声里偶然凑出的 4 字节长度若指向它们，
+// 必须继续重同步而不是当成样本边界。
+var legacyH264NALWhitelist = [32]bool{1: true, 5: true, 6: true, 7: true, 8: true}
+
+// legacyH265NALTypeAllowed 是 H.265 NAL 类型白名单（ITU-T H.265 Table 7-1）：
+// 0-31 = VCL，32 = VPS，33 = SPS，34 = PPS。35(AUD)/36-40(填充/SEI) 不接受。
+func legacyH265NALTypeAllowed(t int) bool { return t >= 0 && t <= 34 }
+
 func legacyNALType(codec legacyCodec, head []byte) (int, bool) {
 	if codec == legacyCodecH264 {
 		if len(head) < 1 || head[0]&0x80 != 0 {
 			return 0, false
 		}
 		t := int(head[0] & 0x1F)
-		return t, t >= 1 && t <= 23
+		return t, legacyH264NALWhitelist[t]
 	}
 	if len(head) < 2 || head[0]&0x80 != 0 {
 		return 0, false
 	}
 	t := int((head[0] >> 1) & 0x3F)
-	return t, t <= 40
+	return t, legacyH265NALTypeAllowed(t)
 }
 
 func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
@@ -367,8 +391,23 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 	br := bufio.NewReaderSize(sr, 1<<20)
 	pos := legacyPayloadOffset
 	var holeStart int64 = -1
+	// holeWarned 保证同一段连续跳过只告警/计数一次。
+	holeWarned := false
+
+	// noteLongSkip 在连续跳过超过阈值仍未命中 NAL 时记录一次告警。
+	noteLongSkip := func(end int64) {
+		if holeWarned || holeStart < 0 || end-holeStart < legacyHoleWarnThreshold {
+			return
+		}
+		holeWarned = true
+		s.holesSkipped++
+		s.warnings = append(s.warnings, fmt.Sprintf(
+			"skipped %d MB without finding a valid NAL at offset %d; "+
+				"the payload is truncated or not AVCC", (end-holeStart)>>20, holeStart))
+	}
 
 	closeHole := func(end int64) error {
+		noteLongSkip(end)
 		if holeStart >= 0 && end > holeStart {
 			if len(s.holes) >= legacyMaxHoles {
 				return fmt.Errorf("mp4 legacy recovery: payload contains more than %d "+
@@ -377,6 +416,7 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 			s.holes = append(s.holes, legacyHole{off: holeStart, size: end - holeStart})
 		}
 		holeStart = -1
+		holeWarned = false
 		return nil
 	}
 
@@ -397,6 +437,10 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 		if codec == legacyCodecH265 {
 			headLen = 2
 		}
+		// 不做"链式前瞻"（要求 pos+4+n 处也是一个合法长度字段）：音视频样本
+		// 交错落盘，真实 NAL 后面紧跟的是无长度前缀的裸音频帧，链式规则会把
+		// 每个音视频交界处的最后一个真实 NAL 判掉（实测 3 帧流只恢复 2 帧）。
+		// 长度上限 + 类型白名单已经排除了绝大多数伪长度字段。
 		valid := n > 0 && n <= legacyMaxNALSize && pos+4+n <= fileSize && n >= headLen
 		var typ int
 		if valid {
@@ -412,6 +456,7 @@ func legacyScanPayload(f *os.File, fileSize int64) (*legacyScan, error) {
 			if holeStart < 0 {
 				holeStart = pos
 			}
+			noteLongSkip(pos)
 			if _, err := br.Discard(1); err != nil {
 				if err := closeHole(fileSize); err != nil {
 					return nil, err

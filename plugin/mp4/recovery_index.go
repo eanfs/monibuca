@@ -39,8 +39,12 @@ type RecoveryItem struct {
 	// SidecarPath 是本次恢复的伴随索引（可能是 .m7sidx 或 .recovering）。
 	// 只有产物上传成功或 pending 登记成功后才允许删除。
 	SidecarPath string
-	// Truncated 表示索引略微超前媒体（崩溃截断），只恢复了有效前缀。
+	// Truncated 表示只恢复了有效前缀：索引略微超前媒体，或索引中段存在
+	// 结构性损坏（Truncated/DroppedAt）。
 	Truncated bool
+	// DroppedTrackIDs 是索引头声明、但没有任何可用样本而被丢弃的轨道。
+	// 非空时产物缺少这些轨道，DB 回写不得声明对应 codec。
+	DroppedTrackIDs []uint16
 }
 
 // IndexRecoveryTask 启动时扫描残留伴随索引并定稿为可播放 MP4。
@@ -675,13 +679,18 @@ func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 	}
 	switch outcome {
 	case recoveryRecovered:
-		t.Info("recovery result",
+		attrs := []any{
 			"file", file,
 			"outcome", "recovered",
 			"elapsedMs", elapsedMs,
 			"sidecar", sidecar,
 			"samples", len(item.Records),
-			"truncated", item.Truncated)
+			"truncated", item.Truncated,
+		}
+		if len(item.DroppedTrackIDs) > 0 {
+			attrs = append(attrs, "droppedTracks", item.DroppedTrackIDs)
+		}
+		t.Info("recovery result", attrs...)
 	case recoverySkipped:
 		t.Info("recovery result",
 			"file", file,
@@ -890,9 +899,24 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	item.SidecarPath = marker
 
 	muxer := mp4pkg.NewMuxer(0)
-	restoreErr := muxer.RestoreFromIndex(index.Header, records, info.Size())
+	report, restoreErr := muxer.RestoreFromIndex(index.Header, records, info.Size())
+	if len(report.DamagedTrackIDs) > 0 {
+		// stsd 结构性损坏不会靠重试修复：下面的永久失败分支会 markFailed。
+		t.Error("reject recovery: sample description is structurally corrupt",
+			"sidecar", sidecar,
+			"media", source,
+			"damagedTracks", report.DamagedTrackIDs,
+			"err", restoreErr)
+	}
 	switch {
 	case errors.Is(restoreErr, mp4pkg.ErrNoUsableSamples):
+		// 媒体长度为 0（文件仍在创建/暂存中断）不是永久失败：保留 sidecar
+		// 等下次运行重试；只有确实存在非空媒体时才落 .failed。
+		if info.Size() <= 0 {
+			t.Warn("no usable samples in empty media file; keeping sidecar for a later run",
+				"sidecar", sidecar, "media", source, "err", restoreErr)
+			return recoveryFailed, item, fmt.Errorf("no usable samples: %w", restoreErr)
+		}
 		t.markFailed(marker)
 		return recoveryFailed, item, fmt.Errorf("no usable samples: %w", restoreErr)
 	case restoreErr != nil && !errors.Is(restoreErr, mp4pkg.ErrIndexTruncated):
@@ -900,8 +924,25 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 		return recoveryFailed, item, fmt.Errorf("restore index: %w", restoreErr)
 	}
 	// ErrIndexTruncated 表示索引略微超前媒体（S3 用户态缓冲/崩溃截断），
-	// 有效前缀已经恢复，继续产出文件。
-	item.Truncated = errors.Is(restoreErr, mp4pkg.ErrIndexTruncated)
+	// 有效前缀已经恢复，继续产出文件。IndexFile.Truncated（索引中段结构性
+	// 损坏）同样只丢了尾部，合并报告给日志与恢复 API。
+	item.Truncated = report.Truncated || index.Truncated ||
+		errors.Is(restoreErr, mp4pkg.ErrIndexTruncated)
+	item.DroppedTrackIDs = report.DroppedTrackIDs
+	if index.Truncated {
+		t.Warn("index is structurally damaged; recovered the usable prefix only",
+			"sidecar", sidecar,
+			"media", source,
+			"droppedAt", index.DroppedAt,
+			"records", len(index.Records))
+	}
+	if len(report.DroppedTrackIDs) > 0 {
+		t.Warn("recovery dropped declared tracks with no usable samples",
+			"outcome", "recovered",
+			"droppedTracks", report.DroppedTrackIDs,
+			"sidecar", sidecar,
+			"media", source)
+	}
 
 	if err = writeRecoveredMedia(muxer, source, output, info.Mode().Perm()); err != nil {
 		// 磁盘/IO 错误不是永久性的：保留 .recovering，下次启动重试。
@@ -928,11 +969,12 @@ func (t *IndexRecoveryTask) enqueue(item RecoveryItem) error {
 		return t.EnqueueUpload(item)
 	}
 	return mp4pkg.EnqueueRecoveryUploadWithOptions(mp4pkg.RecoveryUpload{
-		Header:      item.Header,
-		Records:     item.Records,
-		MediaPath:   item.MediaPath,
-		OutputPath:  item.OutputPath,
-		SidecarPath: item.SidecarPath,
+		Header:          item.Header,
+		Records:         item.Records,
+		MediaPath:       item.MediaPath,
+		OutputPath:      item.OutputPath,
+		SidecarPath:     item.SidecarPath,
+		DroppedTrackIDs: item.DroppedTrackIDs,
 	}, mp4pkg.RecoveryUploadOptions{
 		Resolver: t.ResolveUploadStorage,
 		DB:       t.DB,

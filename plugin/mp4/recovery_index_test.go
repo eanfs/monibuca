@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1109,5 +1110,202 @@ func TestStartupRecoveryUsesShortMinAge(t *testing.T) {
 	}
 	if _, err = os.Stat(manualSidecar); err != nil {
 		t.Fatalf("manual run must leave fresh sidecar untouched: %v", err)
+	}
+}
+
+// recoveryTestAudioSTSD 造一个音轨 stsd（G.711A），用于"声明音轨但无样本"场景。
+func recoveryTestAudioSTSD(t *testing.T) []byte {
+	t.Helper()
+	entry := box.CreateAudioSampleEntry(box.TypeALAW, 1, 16, 8000, nil)
+	var buf bytes.Buffer
+	if _, err := box.WriteTo(&buf, box.CreateSTSDBox(entry)); err != nil {
+		t.Fatalf("serialize audio stsd: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// 索引声明 video+audio、但音频记录全部越界：恢复成功但音轨被丢弃。必须
+// (1) 在 RecoveryItem 里暴露 DroppedTrackIDs，(2) 记 Warn（含 droppedTracks），
+// 让运维/DB 回写知道这版产物没有音轨。
+func TestIndexRecoveryReportsDroppedTracks(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, "s3writer_drop.tmp", payload)
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	header := mp4pkg.IndexHeader{
+		Version: 1, StreamPath: "live/drop", MediaPath: mediaPath,
+		FilePath: "live/drop/rec.mp4", StorageType: "s3",
+		Tracks: []mp4pkg.IndexTrack{
+			{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t)},
+			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: recoveryTestAudioSTSD(t)},
+		},
+	}
+	writeRecoverySidecar(t, sidecar, header, []mp4pkg.IndexRecord{
+		{TrackID: 1, Size: uint32(len(payload)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		{TrackID: 2, Size: 16, Offset: uint64(payloadStart) + uint64(len(payload)) + 100, DTS: 0, Duration: 20},
+	})
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	logs := &captureHandler{}
+	var got RecoveryItem
+	recovery := &IndexRecoveryTask{
+		EnqueueUpload: func(item RecoveryItem) error { got = item; return nil },
+	}
+	recovery.Logger = slog.New(logs)
+
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want recovered=1", stats)
+	}
+	if len(got.DroppedTrackIDs) != 1 || got.DroppedTrackIDs[0] != 2 {
+		t.Fatalf("DroppedTrackIDs = %v, want [2]", got.DroppedTrackIDs)
+	}
+	if !got.Truncated {
+		t.Fatalf("Truncated = false, want true (audio records were out of bounds)")
+	}
+	entry := logs.mustFind(t, "recovery dropped declared tracks with no usable samples", slog.LevelWarn)
+	if entry.Attrs["droppedTracks"] == nil {
+		t.Fatalf("warn log missing droppedTracks: %+v", entry.Attrs)
+	}
+	if entry.Attrs["outcome"] != "recovered" {
+		t.Fatalf("warn log outcome = %v, want recovered", entry.Attrs["outcome"])
+	}
+}
+
+// 索引中段结构性损坏（零帧）后仍有记录：读取返回可用前缀并标记 Truncated。
+// 恢复必须继续产出可播放文件，同时把 truncated=true 暴露给日志与恢复 API。
+func TestIndexRecoveryReportsStructuralIndexTruncation(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0x01, 0x02, 0x03, 0x04}
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, "s3writer_trunc.tmp", payload)
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	header := mp4pkg.IndexHeader{
+		Version: 1, StreamPath: "live/trunc", MediaPath: mediaPath,
+		FilePath: "live/trunc/rec.mp4", StorageType: "s3",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}
+	// 手工拼 sidecar：header + 1 条有效记录 + 23 字节零帧 + 1 条有效记录。
+	w, err := mp4pkg.CreateIndex(sidecar, header)
+	if err != nil {
+		t.Fatalf("create index: %v", err)
+	}
+	first := mp4pkg.IndexRecord{TrackID: 1, Size: uint32(len(payload)), Offset: uint64(payloadStart), DTS: 0, Duration: 40}
+	if err = w.Append(first); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	f, err := os.OpenFile(sidecar, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open sidecar: %v", err)
+	}
+	if _, err = f.Write(make([]byte, mp4pkg.IndexRecordSize)); err != nil {
+		t.Fatalf("append zero frame: %v", err)
+	}
+	f.Close()
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	var observed []bool
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error { return nil }}
+	recovery.observer = func(_, _ string, outcome string, _ error, _ int, truncated bool) {
+		if outcome == "recovered" {
+			observed = append(observed, truncated)
+		}
+	}
+
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Recovered != 1 {
+		t.Fatalf("stats = %+v, want recovered=1", stats)
+	}
+	if len(observed) != 1 || !observed[0] {
+		t.Fatalf("observer truncated flags = %v, want [true]", observed)
+	}
+	assertRecoveredPlayable(t, filepath.Join(dir, "s3writer_trunc.mp4"), 1)
+}
+
+// stsd 结构性损坏（entry_count 与实际条目数不符）不可重试：恢复入口必须
+// markFailed，避免每次启动都重复失败；日志要标出损坏的轨道。
+func TestIndexRecoveryCorruptSTSDMarksFailed(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0xDE, 0xAD}
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, "s3writer_stsd.tmp", payload)
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	// size=16 的 stsd：version/flags(4) + entry_count=1，但没有任何 entry。
+	corrupt := []byte{0, 0, 0, 16, 's', 't', 's', 'd', 0, 0, 0, 0, 0, 0, 0, 1}
+	header := mp4pkg.IndexHeader{
+		Version: 1, StreamPath: "live/stsd", MediaPath: mediaPath,
+		FilePath: "live/stsd/rec.mp4", StorageType: "s3",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: corrupt,
+		}},
+	}
+	writeRecoverySidecar(t, sidecar, header, []mp4pkg.IndexRecord{
+		{TrackID: 1, Size: uint32(len(payload)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+	})
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	logs := &captureHandler{}
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error { return nil }}
+	recovery.Logger = slog.New(logs)
+
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("expected error for corrupt stsd")
+	}
+	if stats.Failed != 1 || stats.Recovered != 0 {
+		t.Fatalf("stats = %+v, want failed=1", stats)
+	}
+	if _, statErr := os.Stat(sidecar + failedSuffix); statErr != nil {
+		t.Fatalf(".failed marker missing: %v", statErr)
+	}
+	entry := logs.mustFind(t, "reject recovery: sample description is structurally corrupt", slog.LevelError)
+	if entry.Attrs["damagedTracks"] == nil {
+		t.Fatalf("log missing damagedTracks: %+v", entry.Attrs)
+	}
+}
+
+// 媒体长度为 0（文件仍在创建/暂存中断）不等于"无可用样本"的永久失败：
+// 必须保留 sidecar 等下次重试，不能落 .failed。
+func TestIndexRecoveryZeroLengthMediaKeepsSidecar(t *testing.T) {
+	dir := t.TempDir()
+	mediaPath := filepath.Join(dir, "s3writer_empty.tmp")
+	if err := os.WriteFile(mediaPath, nil, 0o644); err != nil {
+		t.Fatalf("write empty media: %v", err)
+	}
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	header := mp4pkg.IndexHeader{
+		Version: 1, StreamPath: "live/empty", MediaPath: mediaPath,
+		FilePath: "live/empty/rec.mp4", StorageType: "s3",
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}
+	writeRecoverySidecar(t, sidecar, header, []mp4pkg.IndexRecord{
+		{TrackID: 1, Size: 4, Offset: 48, DTS: 0, Duration: 40},
+	})
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error { return nil }}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("RunOnce must report the failed attempt")
+	}
+	if stats.Failed != 1 {
+		t.Fatalf("stats = %+v, want failed=1", stats)
+	}
+	if _, statErr := os.Stat(sidecar + failedSuffix); !os.IsNotExist(statErr) {
+		t.Fatalf("zero-length media must not be marked .failed (stat err=%v)", statErr)
+	}
+	if _, statErr := os.Stat(sidecar + recoveringSuffix); statErr != nil {
+		t.Fatalf(".recovering marker must be kept for retry: %v", statErr)
 	}
 }

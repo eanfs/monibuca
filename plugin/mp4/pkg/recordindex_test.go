@@ -461,3 +461,112 @@ func TestMaxIndexRecordsValue(t *testing.T) {
 		t.Fatalf("maxIndexRecords = %d, want 20000000", maxIndexRecords)
 	}
 }
+
+// 索引中段出现结构性损坏（零帧 / TrackID==0 / 扩展负载超限）时，读取在损坏处
+// 停止并返回可用前缀。调用方必须能区分"完整索引"与"结构损坏后的前缀"，否则
+// 恢复产物会静默缺失后半段。Truncated/DroppedAt 就是该信号；DroppedAt 是
+// 第一条被丢弃记录的 sidecar 字节偏移，便于现场定位。
+func TestIndexStructuralDamageSetsTruncated(t *testing.T) {
+	dir := t.TempDir()
+	first := IndexRecord{Flags: 1, TrackID: 1, Size: 100, Offset: 48, DTS: 0, Duration: 40}
+	second := IndexRecord{TrackID: 1, Size: 100, Offset: 148, DTS: 40, Duration: 40}
+	var secondFrame [IndexRecordSize]byte
+	encodeIndexRecord(secondFrame[:], second)
+
+	baseSidecar := func(name string) (string, []byte, int) {
+		p := filepath.Join(dir, name)
+		w, err := CreateIndex(p, IndexHeader{Version: 1})
+		if err != nil {
+			t.Fatalf("create index: %v", err)
+		}
+		if err = w.Append(first); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		if err = w.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read index: %v", err)
+		}
+		headerLen := int(binary.BigEndian.Uint32(data[7:11]))
+		return p, data, 11 + headerLen
+	}
+
+	writeTail := func(name string, data []byte, tail ...[]byte) string {
+		out := append([]byte(nil), data...)
+		for _, b := range tail {
+			out = append(out, b...)
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, out, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	t.Run("zero_frame", func(t *testing.T) {
+		_, data, recStart := baseSidecar("zero.m7sidx")
+		p := writeTail("zero2.m7sidx", data, make([]byte, IndexRecordSize), secondFrame[:])
+		f, err := ReadIndex(p)
+		if err != nil {
+			t.Fatalf("ReadIndex: %v", err)
+		}
+		if len(f.Records) != 1 || !f.Truncated {
+			t.Fatalf("records=%d truncated=%v, want 1/true", len(f.Records), f.Truncated)
+		}
+		if want := int64(recStart + IndexRecordSize); f.DroppedAt != want {
+			t.Fatalf("DroppedAt = %d, want %d", f.DroppedAt, want)
+		}
+	})
+
+	t.Run("track_id_zero", func(t *testing.T) {
+		_, data, recStart := baseSidecar("track0.m7sidx")
+		var badTrack [IndexRecordSize]byte
+		encodeIndexRecord(badTrack[:], IndexRecord{Size: 100, Offset: 148, DTS: 40, Duration: 40})
+		p := writeTail("track02.m7sidx", data, badTrack[:], secondFrame[:])
+		f, err := ReadIndex(p)
+		if err != nil {
+			t.Fatalf("ReadIndex: %v", err)
+		}
+		if len(f.Records) != 1 || !f.Truncated {
+			t.Fatalf("records=%d truncated=%v, want 1/true", len(f.Records), f.Truncated)
+		}
+		if want := int64(recStart + IndexRecordSize); f.DroppedAt != want {
+			t.Fatalf("DroppedAt = %d, want %d", f.DroppedAt, want)
+		}
+	})
+
+	t.Run("oversized_payload", func(t *testing.T) {
+		_, data, recStart := baseSidecar("payload.m7sidx")
+		var frame [IndexRecordSize]byte
+		frame[0] = indexFlagExtension
+		binary.BigEndian.PutUint16(frame[1:3], 99)
+		binary.BigEndian.PutUint32(frame[3:7], maxIndexPayloadSize+1)
+		p := writeTail("payload2.m7sidx", data, frame[:], secondFrame[:])
+		f, err := ReadIndex(p)
+		if err != nil {
+			t.Fatalf("ReadIndex: %v", err)
+		}
+		if len(f.Records) != 1 || !f.Truncated {
+			t.Fatalf("records=%d truncated=%v, want 1/true", len(f.Records), f.Truncated)
+		}
+		if f.DroppedAt != int64(recStart+IndexRecordSize) {
+			t.Fatalf("DroppedAt = %d, want %d", f.DroppedAt, recStart+IndexRecordSize)
+		}
+	})
+
+	// 完整索引不得被误标为截断（否则所有正常恢复都会报 truncated=true）。
+	t.Run("well_formed", func(t *testing.T) {
+		_, data, _ := baseSidecar("clean.m7sidx")
+		p := writeTail("clean2.m7sidx", data, secondFrame[:])
+		f, err := ReadIndex(p)
+		if err != nil {
+			t.Fatalf("ReadIndex: %v", err)
+		}
+		if len(f.Records) != 2 || f.Truncated || f.DroppedAt != 0 {
+			t.Fatalf("got records=%d truncated=%v droppedAt=%d, want 2/false/0",
+				len(f.Records), f.Truncated, f.DroppedAt)
+		}
+	})
+}

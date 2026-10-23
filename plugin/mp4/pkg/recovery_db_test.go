@@ -98,7 +98,7 @@ func TestUpdateRecoveredRecordMySQLMillisecondPrecisionDoesNotDuplicate(t *testi
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 			t.Fatalf("updateRecoveredRecord #%d: %v", i+1, err)
 		}
 	}
@@ -149,7 +149,7 @@ func TestUpdateRecoveredRecordHistoricalRoundedStartTimeIsClaimed(t *testing.T) 
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 80}}
 
 	for i := 0; i < 2; i++ {
-		if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 			t.Fatalf("updateRecoveredRecord #%d: %v", i+1, err)
 		}
 	}
@@ -189,7 +189,7 @@ func TestUpdateRecoveredRecordNoopUpdateDoesNotDuplicate(t *testing.T) {
 	}
 	logger := recoveryDBTestLogger()
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("first updateRecoveredRecord: %v", err)
 	}
 	var first m7s.RecordStream
@@ -201,7 +201,7 @@ func TestUpdateRecoveredRecordNoopUpdateDoesNotDuplicate(t *testing.T) {
 	}
 
 	// 第二次：SELECT 命中同一行，UPDATE 为 no-op（RowsAffected 被强制为 0）。
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("second updateRecoveredRecord: %v", err)
 	}
 	var count int64
@@ -242,7 +242,7 @@ func TestUpdateRecoveredRecordHistoricalFallbackDoesNotDuplicate(t *testing.T) {
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
 	for i := 0; i < 2; i++ {
-		if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 			t.Fatalf("updateRecoveredRecord #%d: %v", i+1, err)
 		}
 	}
@@ -275,7 +275,7 @@ func TestUpdateRecoveredRecordCreatesWhenMissing(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 25}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var got m7s.RecordStream
@@ -301,7 +301,7 @@ func TestUpdateRecoveredRecordSkipsFilePathOutsideMediaDir(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
 	}
 	var count int64
@@ -329,7 +329,7 @@ func TestUpdateRecoveredRecordAcceptsFilePathWithinMediaDir(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var got m7s.RecordStream
@@ -354,7 +354,7 @@ func TestUpdateRecoveredRecordSkipsUnsafeStorageKey(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
 	}
 	var count int64
@@ -380,7 +380,7 @@ func TestUpdateRecoveredRecordAcceptsLocalStorageKey(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var got m7s.RecordStream
@@ -411,7 +411,7 @@ func TestUpdateRecoveredRecordSuffixOnlyWithoutExistingRowSkipsCreate(t *testing
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
 	// 返回成功：不阻塞上传（产物仍可 upload，只是不留下不可信的元数据行）。
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
 	}
 	var count int64
@@ -450,7 +450,7 @@ func TestUpdateRecoveredRecordSuffixFormUpdatesExistingRow(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord: %v", err)
 	}
 	var rows []m7s.RecordStream
@@ -484,7 +484,7 @@ func TestUpdateRecoveredRecordRejectsSymlinkEscape(t *testing.T) {
 	}
 	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
 
-	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
 		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
 	}
 	var count int64
@@ -495,5 +495,69 @@ func TestUpdateRecoveredRecordRejectsSymlinkEscape(t *testing.T) {
 		var rows []m7s.RecordStream
 		_ = db.Find(&rows).Error
 		t.Fatalf("record_streams rows = %d (%+v), want 0", count, rows)
+	}
+}
+
+// 恢复产物可能丢掉整条音轨（记录全部越界）。此时把 AudioCodec 写进
+// record_streams 会让 API 对不存在的音轨做出承诺，必须跳过；视频轨仍按索引
+// 头回写 codec。
+func TestUpdateRecoveredRecordSkipsDroppedAudioCodec(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	header := IndexHeader{
+		StreamPath:  "live/drop_audio",
+		FilePath:    "record/live/drop_audio.mp4",
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Minute).Truncate(time.Millisecond),
+		Tracks: []IndexTrack{
+			{ID: 1, FourCC: "avc1", Width: 320, Height: 240},
+			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1},
+		},
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records, []uint16{2}); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var row m7s.RecordStream
+	if err := db.Where("file_path = ?", header.FilePath).First(&row).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if row.AudioCodec != "" {
+		t.Fatalf("audio_codec = %q, want empty (audio track was dropped)", row.AudioCodec)
+	}
+	if row.VideoCodec != "avc1" {
+		t.Fatalf("video_codec = %q, want avc1", row.VideoCodec)
+	}
+}
+
+// 音轨确实被恢复时必须回写 AudioCodec，避免"有声音但库里没记录"。
+func TestUpdateRecoveredRecordWritesRecoveredCodecs(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	header := IndexHeader{
+		StreamPath:  "live/with_audio",
+		FilePath:    "record/live/with_audio.mp4",
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Minute).Truncate(time.Millisecond),
+		Tracks: []IndexTrack{
+			{ID: 1, FourCC: "avc1", Width: 320, Height: 240},
+			{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1},
+		},
+	}
+	records := []IndexRecord{
+		{TrackID: 1, Size: 10, DTS: 0, Duration: 40},
+		{TrackID: 2, Size: 320, DTS: 0, Duration: 40},
+	}
+
+	if err := updateRecoveredRecord(db, logger, header, records, nil); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var row m7s.RecordStream
+	if err := db.Where("file_path = ?", header.FilePath).First(&row).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if row.AudioCodec != "alaw" || row.VideoCodec != "avc1" {
+		t.Fatalf("codecs = audio:%q video:%q, want alaw/avc1", row.AudioCodec, row.VideoCodec)
 	}
 }

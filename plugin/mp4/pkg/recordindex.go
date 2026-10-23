@@ -168,6 +168,12 @@ type IndexFile struct {
 	// （插入前）与插入长度。
 	ShiftPreLen    int64
 	ShiftInsertLen int64
+	// Truncated 表示读取在结构性损坏处停止（全零帧、TrackID==0、扩展负载超限），
+	// Records 只包含损坏点之前的可用前缀。与"尾部恰好结束"不同：完整但未提交的
+	// 索引不会置位。恢复侧据此把结果标记为 truncated。
+	Truncated bool
+	// DroppedAt 是第一条被丢弃记录的 sidecar 字节偏移；未截断时为 0。
+	DroppedAt int64
 }
 
 // ResolveOffsetShift 根据媒体文件实际长度，确定索引记录需要的偏移平移量。
@@ -444,7 +450,8 @@ func RemoveIndex(path string) error {
 
 // ReadIndex 读取索引文件。只校验格式，不感知媒体文件长度：
 // 调用方应自行在 offset+size 超过媒体大小时停止使用记录。
-// 尾部被截断、零填充或结构损坏(如 track ID 为 0)时返回已读出的部分，不报错。
+// 尾部被截断、零填充或结构损坏(如 track ID 为 0)时返回已读出的部分，不报错；
+// 结构性损坏会置位 IndexFile.Truncated/DroppedAt（干净结束不会）。
 // 样本记录数超过 maxIndexRecords 时视为确定性损坏：返回 ErrIndexCorrupt 并
 // 丢弃全部记录，避免伪造的超大索引决定进程内存占用。
 func ReadIndex(path string) (*IndexFile, error) {
@@ -505,16 +512,26 @@ func readIndexFrom(r io.Reader) (*IndexFile, error) {
 // 上限做成参数只为让单测用小值覆盖该分支：真正跑满上限要分配数百 MB 的记录
 // 数组，不适合放进常规单测。
 func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
-	h, err := readIndexHeader(r)
+	// 包装成计数 reader，用于报告结构性损坏发生的位置（DroppedAt）。
+	cr := &countingReader{r: r}
+	h, err := readIndexHeader(cr)
 	if err != nil {
 		return nil, err
 	}
 	idx := &IndexFile{Header: h, MediaPath: h.MediaPath}
+	// stopAtDamagedFrame 在读到结构性损坏的帧时停止：返回可用前缀，并置位
+	// Truncated/DroppedAt。cr.n 已经包含该帧，故帧起点是 n-IndexRecordSize。
+	stopAtDamagedFrame := func() (*IndexFile, error) {
+		idx.Truncated = true
+		idx.DroppedAt = cr.n - IndexRecordSize
+		return idx, nil
+	}
 
 	var frame [IndexRecordSize]byte
 	for {
-		if _, err := io.ReadFull(r, frame[:]); err != nil {
-			// EOF 或不完整帧都表示尾部被截断：返回已读部分。
+		if _, err := io.ReadFull(cr, frame[:]); err != nil {
+			// EOF 或不完整帧都表示尾部被截断：返回已读部分。干净结束不算
+			// 结构性损坏（未提交的完整索引是崩溃常态），不置 Truncated。
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				return idx, nil
 			}
@@ -523,30 +540,30 @@ func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
 		// 零填充尾不是样本：把它当作损坏尾部停止，与截断同一契约。
 		// 必须放在扩展记录分派之前——全零帧的 type 也是 0，不能被当成扩展。
 		if isZeroIndexFrame(frame[:]) {
-			return idx, nil
+			return stopAtDamagedFrame()
 		}
 		if frame[0] != indexFlagExtension {
-			r := decodeIndexRecord(frame[:])
+			rec := decodeIndexRecord(frame[:])
 			// track ID 0 不是合法轨道，遇到即说明该帧内容已损坏。其余内容
 			// 损坏无校验和可查，调用方仍需按 trackID/size 兜底。
-			if r.TrackID == 0 {
-				return idx, nil
+			if rec.TrackID == 0 {
+				return stopAtDamagedFrame()
 			}
 			// 超限是不可接受的：宁可丢弃整个索引，也不能把"读了一半"当成功
 			// 返回——调用方会据此写出缺样本的 moov，比不恢复更危险。
 			if len(idx.Records) >= maxRecords {
 				return nil, fmt.Errorf("%w: index exceeds %d records", ErrIndexCorrupt, maxRecords)
 			}
-			idx.Records = append(idx.Records, r)
+			idx.Records = append(idx.Records, rec)
 			continue
 		}
 		extType := binary.BigEndian.Uint16(frame[1:3])
 		payloadLen := binary.BigEndian.Uint32(frame[3:7])
 		if payloadLen > maxIndexPayloadSize {
-			return idx, nil
+			return stopAtDamagedFrame()
 		}
 		payload := make([]byte, payloadLen)
-		if _, err := io.ReadFull(r, payload); err != nil {
+		if _, err := io.ReadFull(cr, payload); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				return idx, nil
 			}
@@ -579,6 +596,18 @@ func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
 			idx.ShiftPreLen, idx.ShiftInsertLen = 0, 0
 		}
 	}
+}
+
+// countingReader 统计已读取的字节数，用于把"损坏点"映射回 sidecar 偏移。
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // isZeroIndexFrame 报告整帧是否全为 0，用于识别零填充尾。

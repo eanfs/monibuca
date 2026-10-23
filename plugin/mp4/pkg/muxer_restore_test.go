@@ -111,7 +111,7 @@ func TestRestoreFromIndexBuildsPlayableMoov(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	if err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
+	if _, err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
 		t.Fatalf("RestoreFromIndex: %v", err)
 	}
 	var out bytes.Buffer
@@ -200,7 +200,7 @@ func TestRestoreFromIndexTruncatesOverrun(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	err := m.RestoreFromIndex(header, records, mediaSize)
+	_, err := m.RestoreFromIndex(header, records, mediaSize)
 	if !errors.Is(err, ErrIndexTruncated) {
 		t.Fatalf("RestoreFromIndex error = %v, want ErrIndexTruncated", err)
 	}
@@ -266,7 +266,7 @@ func TestRestoreFromIndexCO64Upgrade(t *testing.T) {
 	mediaSize := int64(farOffset) + 4
 
 	m := NewMuxer(0)
-	if err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
+	if _, err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
 		t.Fatalf("RestoreFromIndex: %v", err)
 	}
 	var out bytes.Buffer
@@ -332,7 +332,7 @@ func TestRestoreFromIndexOmitsEmptyTrack(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	if err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
+	if _, err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
 		t.Fatalf("RestoreFromIndex: %v", err)
 	}
 	var out bytes.Buffer
@@ -367,7 +367,7 @@ func TestRestoreFromIndexNoUsableSamples(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	err := m.RestoreFromIndex(header, records, mediaSize)
+	_, err := m.RestoreFromIndex(header, records, mediaSize)
 	if !errors.Is(err, ErrNoUsableSamples) {
 		t.Fatalf("RestoreFromIndex error = %v, want ErrNoUsableSamples", err)
 	}
@@ -400,7 +400,7 @@ func TestRestoreFromIndexNonMonotonicKeepsLaterTracks(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	err := m.RestoreFromIndex(header, records, mediaSize)
+	_, err := m.RestoreFromIndex(header, records, mediaSize)
 	if !errors.Is(err, ErrIndexTruncated) {
 		t.Fatalf("RestoreFromIndex error = %v, want ErrIndexTruncated", err)
 	}
@@ -452,7 +452,7 @@ func TestRestoreFromIndexAudioTrack(t *testing.T) {
 	}
 
 	m := NewMuxer(0)
-	if err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
+	if _, err := m.RestoreFromIndex(header, records, mediaSize); err != nil {
 		t.Fatalf("RestoreFromIndex: %v", err)
 	}
 	var out bytes.Buffer
@@ -603,5 +603,93 @@ func TestValidateSTSDBoundsRejectsOverrun(t *testing.T) {
 	}
 	if err := validateSTSDBounds(IndexTrack{ID: 1, STSD: large(25)}); err == nil {
 		t.Fatal("largesize == len+1 must be rejected")
+	}
+}
+
+// 索引头声明了 video+audio，但音频记录全部越界：音轨被静默丢弃时调用方无从
+// 得知，恢复结果看起来"成功"却没有声音。RestoreFromIndex 必须在报告里列出
+// 被丢弃的轨道，调用方才能告警并避免回写 AudioCodec。
+func TestRestoreFromIndexReportsDroppedTracks(t *testing.T) {
+	sample := bytes.Repeat([]byte{0x11}, 8)
+	_, mediaSize, payloadStart := buildHalfWrittenMedia(t, sample)
+
+	header := IndexHeader{Tracks: []IndexTrack{
+		{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+		{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: restoreTestSTSD(t, false)},
+	}}
+	records := []IndexRecord{
+		{TrackID: 1, Size: uint32(len(sample)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		// 音轨记录全部越界。
+		{TrackID: 2, Size: 16, Offset: uint64(mediaSize) + 100, DTS: 0, Duration: 20},
+		{TrackID: 2, Size: 16, Offset: uint64(mediaSize) + 200, DTS: 20, Duration: 20},
+	}
+
+	m := NewMuxer(0)
+	report, err := m.RestoreFromIndex(header, records, mediaSize)
+	if !errors.Is(err, ErrIndexTruncated) {
+		t.Fatalf("RestoreFromIndex error = %v, want ErrIndexTruncated", err)
+	}
+	if !report.Truncated {
+		t.Fatalf("report.Truncated = false, want true alongside ErrIndexTruncated")
+	}
+	if len(report.DroppedTrackIDs) != 1 || report.DroppedTrackIDs[0] != 2 {
+		t.Fatalf("DroppedTrackIDs = %v, want [2]", report.DroppedTrackIDs)
+	}
+	if track := m.Tracks[2]; track == nil || len(track.Samplelist) != 0 {
+		t.Fatalf("audio track must stay empty, got %+v", track)
+	}
+
+	var out bytes.Buffer
+	if err := m.WriteMoovOnly(&out); err != nil {
+		t.Fatalf("WriteMoovOnly: %v", err)
+	}
+	_, moov := parseRestoreOutput(t, out.Bytes())
+	if len(moov.Tracks) != 1 || moov.Tracks[0].TKHD.TrackID != 1 {
+		t.Fatalf("moov tracks = %+v, want only video track 1", moov.Tracks)
+	}
+}
+
+// 每一条记录都能落到轨道上时不得报告丢弃。
+func TestRestoreFromIndexReportsNoDroppedTracks(t *testing.T) {
+	sample := bytes.Repeat([]byte{0x22}, 4)
+	_, mediaSize, payloadStart := buildHalfWrittenMedia(t, sample)
+	header := IndexHeader{Tracks: []IndexTrack{
+		{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+	}}
+	records := []IndexRecord{
+		{TrackID: 1, Size: uint32(len(sample)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+	}
+
+	m := NewMuxer(0)
+	report, err := m.RestoreFromIndex(header, records, mediaSize)
+	if err != nil {
+		t.Fatalf("RestoreFromIndex: %v", err)
+	}
+	if len(report.DroppedTrackIDs) != 0 || report.Truncated || len(report.DamagedTrackIDs) != 0 {
+		t.Fatalf("report = %+v, want zero report", report)
+	}
+}
+
+// stsd 结构性损坏（entry_count 与实际条目数不符）无法通过重试修复。恢复入口
+// 必须拿到明确错误（包装 ErrSTSDCorrupt）并在报告里标出损坏的轨道，便于调用
+// 方 markFailed 并记录日志。
+func TestRestoreFromIndexReportsCorruptSTSD(t *testing.T) {
+	// size=16 的 stsd：version/flags(4) + entry_count=1，但没有任何 entry。
+	corrupt := []byte{0, 0, 0, 16, 's', 't', 's', 'd', 0, 0, 0, 0, 0, 0, 0, 1}
+	header := IndexHeader{Tracks: []IndexTrack{
+		{ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: restoreTestSTSD(t, true)},
+		{ID: 2, FourCC: "alaw", SampleRate: 8000, Channels: 1, STSD: corrupt},
+	}}
+
+	m := NewMuxer(0)
+	report, err := m.RestoreFromIndex(header, nil, -1)
+	if err == nil {
+		t.Fatal("expected error for structurally corrupt stsd")
+	}
+	if !errors.Is(err, box.ErrSTSDCorrupt) {
+		t.Fatalf("error = %v, want box.ErrSTSDCorrupt", err)
+	}
+	if len(report.DamagedTrackIDs) != 1 || report.DamagedTrackIDs[0] != 2 {
+		t.Fatalf("DamagedTrackIDs = %v, want [2]", report.DamagedTrackIDs)
 	}
 }

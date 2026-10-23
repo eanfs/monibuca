@@ -3,9 +3,14 @@ package box
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
+
+// ErrSTSDCorrupt 标记 stsd 的结构性损坏（entry_count 与实际条目数不符、或
+// entry_count==0）。这类损坏无法通过重试修复：恢复入口应据此永久放弃该文件。
+var ErrSTSDCorrupt = errors.New("box: corrupt sample description")
 
 // aligned(8) abstract class SampleEntry (unsigned int(32) format) extends Box(format){
 // 	const unsigned int(8)[6] reserved = 0;
@@ -276,16 +281,21 @@ func (stsd *STSDBox) Unmarshal(buf []byte) (IBox, error) {
 	// 至少要能读完 entry_count(4 字节)；更短的负载走 box.ReadFrom 的 demuxer 路径
 	// 时不会被恢复入口的 16 下界拦下，必须在这里返回错误而不是越界 panic。
 	if len(buf) < 4 {
-		return nil, fmt.Errorf("box stsd: payload %d too short for entry count", len(buf))
+		return nil, fmt.Errorf("%w: payload %d too short for entry count", ErrSTSDCorrupt, len(buf))
 	}
 	// entry_count 直接来自不可信负载，不能直接当 make 的 cap：IBox 是接口(16 字节)，
 	// 0xFFFFFFFF 条 ≈ 68GB。子 box 头最短 8 字节，故条数不可能超过剩余负载/8，
 	// 先校验再分配。16 字节的 stsd(恢复入口的最小合法尺寸)在此处 maxEntries=0。
 	entryCount := binary.BigEndian.Uint32(buf)
+	// 空 stsd 没有任何 sample entry：无法描述任何样本，按结构性损坏处理
+	// (恢复侧据此永久失败，而不是写出一条没有 stsd 的残缺轨道)。
+	if entryCount == 0 {
+		return nil, fmt.Errorf("%w: entry count is zero", ErrSTSDCorrupt)
+	}
 	maxEntries := (len(buf) - 4) / BasicBoxLen
 	if uint64(entryCount) > uint64(maxEntries) {
-		return nil, fmt.Errorf("box stsd: entry count %d exceeds %d entries in %d bytes",
-			entryCount, maxEntries, len(buf)-4)
+		return nil, fmt.Errorf("%w: entry count %d exceeds %d entries in %d bytes",
+			ErrSTSDCorrupt, entryCount, maxEntries, len(buf)-4)
 	}
 	stsd.Entries = make([]IBox, 0, entryCount)
 	r := bytes.NewReader(buf[4:])
@@ -300,6 +310,12 @@ func (stsd *STSDBox) Unmarshal(buf []byte) (IBox, error) {
 			return nil, err
 		}
 		stsd.Entries = append(stsd.Entries, box)
+	}
+	// entry_count 是声明值：解析出的条目数必须与之一致，否则说明 stsd 结构
+	// 损坏（少读=被截断，多读=声明错误）。两者都会让后续样本描述错位。
+	if len(stsd.Entries) != int(entryCount) {
+		return nil, fmt.Errorf("%w: parsed %d entries, entry_count=%d",
+			ErrSTSDCorrupt, len(stsd.Entries), entryCount)
 	}
 	return stsd, nil
 }
