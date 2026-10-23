@@ -997,11 +997,14 @@ func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subs
 // 并发/生命周期约束：
 //   - pub.Using(job) 是裸 append（Task.Using），publisher 的 dispose 会在它自己
 //     的事件循环 goroutine 上遍历并截断同一 slice。调用方若不在 publisher 所属
-//     goroutine 上，应先确认 pub.GetTask().IsStopped() 为假（见 plugin/mp4 的
+//     goroutine 上，应先用 m7s.PublisherStopped(pub) 确认为假（见 plugin/mp4 的
 //     pendingAutoRecordTask.Go）以缩小窗口；窗口本身由本方法末尾的“注册后复核”
 //     兜底：复核发现 publisher 已停止就主动 Stop 该 job，由 dispose 回调回收资源。
 //     注意不能用“订阅失败自愈”兜底——落在窗口里的 job 不会被 publisher stop，
 //     而 recorder 是无限重试（SetRetry(-1,…)），它会一直活着并持有名额。
+//     不要用 pub.GetTask().IsStopped()：零值 Publisher 的 Task.Context 为 nil，
+//     IsStopped() 会解引用空接口 panic；PublisherStopped 专门把这种形态按
+//     “未停止”处理。
 //   - RecordJob 的 AddTask 若被 Records 同步拒绝，任务不会启动、onDispose 也不会
 //     触发：调用方必须检查返回值并在该路径显式释放资源（AddTaskRejected）。
 func (p *Plugin) RecordWithDispose(pub *Publisher, conf config.Record, subConf *config.Subscribe, onDispose func()) *RecordJob {

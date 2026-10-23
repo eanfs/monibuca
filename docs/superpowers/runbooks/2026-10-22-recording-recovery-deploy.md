@@ -220,6 +220,42 @@ NETMODE=$(docker inspect -f '{{.HostConfig.NetworkMode}}' xde-monibuca); docker 
 三条都成功才继续。`host` 模式下 `<S3_ENDPOINT>` 就是 `127.0.0.1:9000`；其他模式
 若这里失败，说明 2.0 的 endpoint 选错，必须先改对再换镜像。
 
+### 2.2 `storage.s3.tempdir` 与对象存储崩溃恢复（升级必读）
+
+`storage.s3.tempdir` 不只是暂存目录，也是**崩溃恢复的扫描入口**：S3 场景的
+`s3writer_*.tmp` 与它的 `.m7sidx` 都写在该目录下，恢复任务默认扫描的也是这里。
+`record.recovery.dirs` 留空时，扫描集合 = tempdir + `pending_uploads` + 录像
+输出目录；**一旦显式配置了 `record.recovery.dirs`，默认集合就被整体替换**，
+此时必须把 tempdir 也列进去。
+
+**未配置 tempdir 时会发生什么**：`pkg/storage/s3.go` 会退回系统临时目录（容器内
+`/tmp`），而恢复扫描出于安全考虑**不再默认包含系统临时目录**——该目录通常全局
+可写，任何本机进程都能在其中伪造 sidecar，把恢复变成“攻击者指定的文件/对象键”
+的入口。因此**升级后这些残留不会被自动恢复**，只能人工处理（参考第 6 节的离线
+抢救流程）。进程启动时会输出一条 Warn：
+
+```
+storage.s3.tempdir is not configured: object-storage crash leftovers in the system temp dir will not be auto-recovered
+```
+
+**推荐配置**：tempdir 指向持久化 bind mount（见 2.0），并让它落在恢复扫描集合内：
+`record.recovery.dirs` 留空时 tempdir 自动被扫描；若必须自定义 dirs，就把 tempdir
+与其他必需目录一起写全，漏写等于关闭对象存储的自动恢复：
+
+```yaml
+global:
+  storage:
+    s3:
+      tempdir: "/tmp"    # 容器内持久化目录；非容器部署换成实际暂存路径
+mp4:
+  record:
+    recovery:
+      dirs: []           # 留空：tempdir + pending_uploads + 录像输出目录都会被扫描
+```
+
+**检查**：启动日志 `index recovery task started ... dirs=[...]` 必须包含 tempdir，
+且**不得**出现上面那条 Warn；否则本轮升级后对象存储录制一旦崩溃就只能人工恢复。
+
 ---
 
 ## 3. 容量与启动洪峰
