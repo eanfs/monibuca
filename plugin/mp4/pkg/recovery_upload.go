@@ -273,10 +273,27 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 
 // enqueueFinalizeUploadTask 把任务投递到包级上传队列（与正常录制收尾共用）。
 // 与 record.go 的 handoffToUploadQueue 一致，不等待任务启动：队列在 server
-// 启动时已就绪，等待只会在队列未运行（CLI/测试）时无限阻塞。即使任务未能
-// 执行，恢复任务也会因 sidecar 未删除而在下次启动重试。
+// 启动时已就绪，等待只会在队列未运行（CLI/测试）时无限阻塞。
 func enqueueFinalizeUploadTask(u *finalizeUploadTask, logger *slog.Logger) error {
-	uploadQueueTask.AddTask(u, logger)
+	return enqueueUploadTask(&uploadQueueTask, u, logger)
+}
+
+// enqueueUploadTask 投递上传任务，并把 AddTask 的同步拒绝转成错误。
+//
+// 任务被拒时永远不会执行 Go()，因此 onDone（在途去重键释放）也不会触发。
+// 调用方必须把错误当作「未入队」处理：保留媒体与 sidecar，并释放 in-flight
+// 键。否则该文件会在进程存活期间一直命中「recovery upload already in flight」
+// 被静默跳过——周期重扫也救不回来，只能等重启。
+//
+// queue 参数化是为了让测试能构造「已停止的队列」这一拒绝形态。
+func enqueueUploadTask(queue task.IJob, u *finalizeUploadTask, logger *slog.Logger) error {
+	child := queue.AddTask(u, logger)
+	if rejected, reason := m7s.AddTaskRejected(queue, child); rejected {
+		if reason != nil {
+			return fmt.Errorf("mp4: recovery upload task rejected by task system: %w", reason)
+		}
+		return errors.New("mp4: recovery upload task rejected by task system")
+	}
 	return nil
 }
 

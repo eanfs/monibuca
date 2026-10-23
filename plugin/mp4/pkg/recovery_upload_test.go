@@ -10,9 +10,63 @@ import (
 	"path/filepath"
 	"testing"
 
+	task "github.com/eanfs/gotask"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/storage"
 )
+
+// newStoppedUploadQueue 返回一个「已启动后停止」的上传队列，用于复现 AddTask
+// 的同步拒绝。队列挂在临时 RootManager 下启动，不依赖全局 m7s.Servers。
+func newStoppedUploadQueue(t *testing.T) *UploadQueueTask {
+	t.Helper()
+	var root task.RootManager[uint32, task.ManagerItem[uint32]]
+	root.Init()
+	queue := &UploadQueueTask{}
+	if err := root.AddTask(queue).WaitStarted(); err != nil {
+		t.Fatalf("start upload queue: %v", err)
+	}
+	queue.Stop(errors.New("test: upload queue stopped"))
+	// shutdown promise 以停止原因作为返回值，这里只等它收尾。
+	_ = queue.WaitStopped()
+	return queue
+}
+
+// Important 5（回归）：上传队列同步拒绝任务时必须返回错误，并释放在途键。
+//
+// AddTask 被拒（队列已停止/键冲突/通道满）时任务永远不会执行 Go()，onDone
+// 不会触发；若把拒绝当成成功，in-flight 键会泄漏到进程结束，之后每轮重扫都把
+// 该文件当成「recovery upload already in flight」静默跳过，只能重启恢复。
+func TestEnqueueUploadTaskPropagatesRejectionAndReleasesInFlight(t *testing.T) {
+	queue := newStoppedUploadQueue(t)
+
+	fixture := newRecoveryUploadFixture(t, "s3")
+	backend := &fakeRecoveryStorage{key: "s3"}
+	opts := RecoveryUploadOptions{
+		Resolver: func(string) (storage.Storage, error) { return backend, nil },
+		enqueue: func(u *finalizeUploadTask, logger *slog.Logger) error {
+			return enqueueUploadTask(queue, u, logger)
+		},
+	}
+
+	if err := EnqueueRecoveryUploadWithOptions(fixture.upload(), opts); err == nil {
+		t.Fatal("rejected upload task must be reported as an error")
+	}
+	fixture.assertRetained(t)
+
+	// in-flight 键必须已释放：换成可用队列后同一产物必须能再次入队，
+	// 而不是被「already in flight」静默跳过。
+	queued := 0
+	opts.enqueue = func(u *finalizeUploadTask, _ *slog.Logger) error {
+		queued++
+		return u.Go()
+	}
+	if err := EnqueueRecoveryUploadWithOptions(fixture.upload(), opts); err != nil {
+		t.Fatalf("second enqueue after rejection: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued tasks = %d, want 1 (in-flight key must be released on rejection)", queued)
+	}
+}
 
 // recoverySourceMetadata 构造 pending 行里记录的源产物标记（JSON）。
 func recoverySourceMetadata(sourcePath string) string {
