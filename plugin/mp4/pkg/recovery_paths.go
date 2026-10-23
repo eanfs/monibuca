@@ -123,8 +123,11 @@ func recoveryAbsolutePathBinding(mediaPath, key string) recoveryPathBinding {
 	if mediaPath == "" || !filepath.IsAbs(mediaPath) || !filepath.IsAbs(key) {
 		return recoveryBindingNone
 	}
-	media := filepath.Clean(mediaPath)
-	keyClean := filepath.Clean(key)
+	// 必须解析符号链接后再比较：词法上同在 <dir> 下的 <dir>/sub/x 若 sub 是
+	// 指向白名单外的链接，写入 record_streams.file_path 后，下载（api.go:151）、
+	// 取流（api_extract.go）与删除（exception.go）都会跟随链接操作任意文件。
+	media := resolvePathForBinding(mediaPath)
+	keyClean := resolvePathForBinding(key)
 	if media == keyClean {
 		return recoveryBindingSameFile
 	}
@@ -137,6 +140,30 @@ func recoveryAbsolutePathBinding(mediaPath, key string) recoveryPathBinding {
 		return recoveryBindingWithinMediaDir
 	}
 	return recoveryBindingNone
+}
+
+// resolvePathForBinding 解析绝对路径中的符号链接，供绑定比较使用。
+//
+// 与 filepath.EvalSymlinks 的区别：目标可以尚不存在（恢复产物还没生成）。
+// 此时逐级解析父目录再把叶子拼回，而不是放弃解析——否则攻击者只要让叶子
+// 不存在即可绕过链接检查（「<dir>/sub -> /etc」+ FilePath=<dir>/sub/shadow）。
+// 相对路径原样返回（绑定逻辑只处理绝对路径）。
+func resolvePathForBinding(path string) string {
+	clean := filepath.Clean(path)
+	if clean == "" || !filepath.IsAbs(clean) {
+		return clean
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	parent, base := filepath.Split(clean)
+	if base == "" || base == "." {
+		return clean
+	}
+	if parent = filepath.Clean(parent); parent == clean {
+		return clean
+	}
+	return filepath.Join(resolvePathForBinding(parent), base)
 }
 
 // isSuffixBoundAbsoluteFilePath 报告绝对录像路径是否仅以「MediaPath 尾部」形态

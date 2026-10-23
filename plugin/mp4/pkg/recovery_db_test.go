@@ -3,6 +3,7 @@ package mp4
 import (
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -461,5 +462,38 @@ func TestUpdateRecoveredRecordSuffixFormUpdatesExistingRow(t *testing.T) {
 	}
 	if rows[0].Duration != 40 || rows[0].EndTime.IsZero() {
 		t.Fatalf("row not updated: %+v", rows[0])
+	}
+}
+
+// FilePath 经符号链接解析后落在白名单外时不得写库（否则下载/删除侧跟随链接）。
+func TestUpdateRecoveredRecordRejectsSymlinkEscape(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "sub")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	header := IndexHeader{
+		StreamPath:  "live/symlink",
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "a.tmp"),
+		FilePath:    filepath.Join(link, "shadow"),
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
+	}
+	var count int64
+	if err := db.Model(&m7s.RecordStream{}).Count(&count).Error; err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if count != 0 {
+		var rows []m7s.RecordStream
+		_ = db.Find(&rows).Error
+		t.Fatalf("record_streams rows = %d (%+v), want 0", count, rows)
 	}
 }

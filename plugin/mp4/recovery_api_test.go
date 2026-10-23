@@ -924,3 +924,76 @@ func TestS3TempDirUnconfigured(t *testing.T) {
 		}
 	}
 }
+
+// FilePath 词法上在媒体目录内、但解析后指向白名单外的符号链接时，
+// 恢复必须被拒绝：写入 record_streams.file_path 后，下载/取流/删除侧
+// 都会跟随链接操作任意文件。
+func TestRecoverSidecarRejectsFilePathSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "sub")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	buildRecoveryFixtureWithFilePath(t, dir, "a.tmp",
+		[]byte{0x00, 0x01, 0x02, 0x03}, filepath.Join(link, "shadow"), "local")
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error {
+		enqueued++
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("recovery must be rejected when FilePath escapes through a symlink")
+	}
+	if stats.Failed != 1 || stats.Recovered != 0 || enqueued != 0 {
+		t.Fatalf("stats = %+v, enqueued = %d, want failed=1 enqueued=0", stats, enqueued)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "a.mp4")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected recovery must not produce output: %v", statErr)
+	}
+}
+
+// 校验与下游必须使用同一份 MediaPath：header.MediaPath 已过期（指向别处）时，
+// 本次实际读写的是 sidecar 名推导出的媒体文件，绑定校验与下游入队/DB 回写
+// 都必须以它为准，否则会出现「校验用 A、写库用 B」。
+func TestRecoverSidecarUsesActualMediaPathForBinding(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte{0x00, 0x01, 0x02, 0x03}
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, "a.tmp", payload)
+	sidecar := mediaPath + mp4pkg.IndexExtension
+	stalePath := filepath.Join(dir, "missing.tmp") // 同目录但已过期（文件不存在）
+	writeRecoverySidecar(t, sidecar, mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/test",
+		MediaPath:   stalePath,
+		FilePath:    filepath.Join(dir, "rec.mp4"),
+		TargetName:  "rec.mp4",
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Hour),
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}, []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: uint32(len(payload)), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+	})
+	ageRecoveryFiles(t, mediaPath, sidecar)
+
+	var enqueued []RecoveryItem
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
+		enqueued = append(enqueued, item)
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("recovery must bind against the actual media path: %v", err)
+	}
+	if stats.Recovered != 1 || len(enqueued) != 1 {
+		t.Fatalf("stats = %+v, enqueued = %d, want recovered=1 enqueued=1", stats, len(enqueued))
+	}
+	if got := enqueued[0].Header.MediaPath; got != mediaPath {
+		t.Fatalf("downstream header.mediaPath = %q, want the actual media path %q", got, mediaPath)
+	}
+}

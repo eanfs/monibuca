@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -161,5 +162,73 @@ func TestValidateIndexHeaderPaths(t *testing.T) {
 		case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
 			t.Fatalf("%s: error = %v, want it to mention %q", tc.name, err, tc.wantErr)
 		}
+	}
+}
+
+// symlink 逃逸：FilePath 词法上落在 MediaPath 目录内，但解析符号链接后
+// 指向白名单外的目录。词法绑定必须解析链接后再判断，否则
+// record_streams.file_path 会被写成 <dir>/sub/shadow（sub -> 外部目录），
+// 下载/取流/删除侧都会跟随链接操作任意文件。
+func TestValidateIndexHeaderPathsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "sub")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	header := IndexHeader{
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "a.tmp"),
+		FilePath:    filepath.Join(link, "shadow"),
+	}
+	err := ValidateIndexHeaderPaths(header)
+	if err == nil {
+		t.Fatal("symlink escape via FilePath must be rejected")
+	}
+	if !errors.Is(err, ErrIndexHeaderPathMismatch) || !strings.Contains(err.Error(), "rule=local-directory") {
+		t.Fatalf("error = %v, want rule=local-directory", err)
+	}
+}
+
+// 目标叶子尚不存在（恢复产物还没生成）时也必须按父目录解析：
+// 中间目录是逃逸链接 → 仍拒绝。
+func TestValidateIndexHeaderPathsSymlinkEscapeWithMissingLeaf(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "sub")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	header := IndexHeader{
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "a.tmp"),
+		FilePath:    filepath.Join(link, "not-yet-created.mp4"),
+	}
+	if err := ValidateIndexHeaderPaths(header); err == nil {
+		t.Fatal("symlinked parent of a not-yet-existing FilePath must still be resolved and rejected")
+	}
+}
+
+// 符号链接解析后仍落在 MediaPath 目录内 → 正常通过（防过度拒绝）。
+func TestValidateIndexHeaderPathsSymlinkInsideMediaDirAllowed(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	link := filepath.Join(dir, "alias")
+	if err := os.Symlink(sub, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	header := IndexHeader{
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "a.tmp"),
+		FilePath:    filepath.Join(link, "x.mp4"),
+	}
+	if err := ValidateIndexHeaderPaths(header); err != nil {
+		t.Fatalf("symlink resolving inside the media directory must pass: %v", err)
 	}
 }

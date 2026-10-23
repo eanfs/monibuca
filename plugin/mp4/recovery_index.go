@@ -753,6 +753,10 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 			"err", err)
 		return recoveryFailed, item, err
 	}
+	// 下游（上传/DB 回写）必须拿到与校验一致的 MediaPath，而不是 sidecar 里的
+	// 原值：MediaPath 可能被 RENAME 扩展记录覆盖，或与实际定位到的 source 不同。
+	// 校验通过后统一成同一份数据，避免「校验用 A、写库用 B」。
+	item.Header = bindingHeader
 
 	if !found {
 		// 崩溃窗口：产物已 rename，但源暂存文件已删除、sidecar 尚未清理。
