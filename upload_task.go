@@ -62,6 +62,13 @@ func nextRetryDelay(retryCount int) time.Duration {
 	return 24 * time.Hour
 }
 
+// NextUploadRetryAt 返回给定重试次数下补传调度的下次执行时间。
+// 与 SaveFailedUpload / MarkUploadRetryFailed 使用同一套指数退避，
+// 供结构化日志的 nextRetryAt 字段使用，避免日志与真实调度时间漂移。
+func NextUploadRetryAt(retryCount int) time.Time {
+	return time.Now().Add(nextRetryDelay(retryCount))
+}
+
 // SaveFailedUpload 保存失败的上传任务到数据库
 func SaveFailedUpload(db *gorm.DB, localPath, objectKey, storageType, streamPath string,
 	fileSize int64, durationMs uint32, metadata map[string]string, uploadErr error) {

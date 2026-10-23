@@ -94,9 +94,31 @@ type (
 		OnPublish(pub *Publisher)
 	}
 
+	// RecordGateResult 描述自动录像（onpub / pull_on_start）在并发保护下的准入结果。
+	RecordGateResult int
+
+	// IRecordGatePlugin 由希望限制自动录像并发的插件实现。
+	// GateRecord 在发布路径上被调用，禁止阻塞。
+	IRecordGatePlugin interface {
+		// GateRecord 在自动录制启动前决定是否准入：
+		//   release 非空时，调用方必须在录制任务 dispose 时调用一次；
+		//   result 为 Queued 表示插件已保存录制参数、稍后会自行启动；
+		//   result 为 Refused 表示本次录制无法启动，调用方记录 Error。
+		GateRecord(pub *Publisher, conf config.Record) (release func(), result RecordGateResult)
+	}
+
 	ISubscribeHookPlugin interface {
 		OnSubscribe(streamPath string, args url.Values)
 	}
+)
+
+const (
+	// RecordGateAdmit 表示立即允许录制。
+	RecordGateAdmit RecordGateResult = iota
+	// RecordGateQueued 表示插件已保存录制参数并会在取得名额后启动。
+	RecordGateQueued
+	// RecordGateRefused 表示名额与等待队列均已满，本次录制被拒绝。
+	RecordGateRefused
 )
 
 var plugins []PluginMeta
@@ -559,7 +581,7 @@ func (p *Plugin) onPublish(pub *Publisher) {
 	if p.Meta.NewRecorder != nil {
 		for r, recConf := range onPublish.Record {
 			if recConf.FilePath = r.Replace(pub.StreamPath, recConf.FilePath); recConf.FilePath != "" {
-				p.Record(pub, recConf, nil)
+				p.recordOnPublish(pub, recConf)
 			}
 		}
 	}
@@ -809,9 +831,71 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 	pusher.GetPushJob().Init(pusher, p, streamPath, conf, subConf)
 }
 
+// recordOnPublish 启动一次自动录像；若插件实现了 IRecordGatePlugin，
+// 先由插件做并发准入判断。
+func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
+	gate, gated := p.handler.(IRecordGatePlugin)
+	if !gated {
+		p.Record(pub, conf, nil)
+		return
+	}
+	release, result := gate.GateRecord(pub, conf)
+	switch result {
+	case RecordGateAdmit:
+		job := p.RecordWithDispose(pub, conf, nil, release)
+		if release != nil {
+			// 自动录像不等待启动；若异步启动失败，用短命任务归还名额。
+			watcher := &recordStartWatcher{job: job, onStartFailure: release}
+			watcher.key = fmt.Sprintf("record-start-watch:%p", watcher)
+			p.AddTask(watcher, p.Logger)
+		}
+	case RecordGateQueued:
+		// 插件已保存录制参数，取得名额后会自行启动；此处只做可观测记录。
+		p.Info("auto recording queued by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+	default:
+		// 不得静默丢弃：记录完整参数，便于人工通过 API 补录。
+		p.Error("auto recording refused by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+	}
+}
+
+// recordStartWatcher 是短命任务：录制任务异步启动失败时调用 onStartFailure
+// （例如归还并发名额），成功后立即结束。避免在发布路径上同步等待启动。
+type recordStartWatcher struct {
+	task.Task
+	job            *RecordJob
+	onStartFailure func()
+	key            string
+}
+
+func (w *recordStartWatcher) GetKey() string { return w.key }
+
+func (w *recordStartWatcher) Go() error {
+	if err := w.job.WaitStarted(); err != nil {
+		w.onStartFailure()
+		w.Error("record job failed to start", "error", err)
+	}
+	return task.ErrTaskComplete
+}
+
 func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subscribe) *RecordJob {
+	return p.RecordWithDispose(pub, conf, subConf, nil)
+}
+
+// RecordWithDispose 与 Record 相同，但在录制任务入队前注册 onDispose 回调，
+// 用于在录制生命周期结束时释放资源（如并发配额）。
+//
+// 必须使用本方法而不是 Record 之后再调用 job.OnDispose：gotask 的 dispose
+// 监听器在任务开始前注册才会被消费，任务已进入 DISPOSING/DISPOSED 后再注册
+// 永远不会触发（与 OnStart 的顺序约束同源）。
+func (p *Plugin) RecordWithDispose(pub *Publisher, conf config.Record, subConf *config.Subscribe, onDispose func()) *RecordJob {
 	recorder := p.Meta.NewRecorder(conf)
-	job := recorder.GetRecordJob().Init(recorder, p, pub.StreamPath, conf, subConf)
+	job := recorder.GetRecordJob()
+	// 注册在 RecordJob 自身：只要任务成功启动，dispose 时必然回调；
+	// 启动失败的任务不会进入 dispose，由调用方在 WaitStarted 错误路径显式释放。
+	if onDispose != nil {
+		job.OnDispose(onDispose)
+	}
+	job.Init(recorder, p, pub.StreamPath, conf, subConf)
 	pub.Using(job)
 	return job
 }

@@ -726,6 +726,19 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		return
 	}
 
+	// 并发软保护：名额在此取得，成功后在录制任务 dispose 时释放；
+	// 之后任何错误路径都由 defer 归还，保证不泄漏名额。
+	release, acquireErr := p.acquireRecordingSlot(ctx)
+	if acquireErr != nil {
+		return nil, recordLimitRefusalError(acquireErr)
+	}
+	slotHeld := release != nil
+	defer func() {
+		if slotHeld && release != nil {
+			release()
+		}
+	}()
+
 	// Confirmed via 寸止: REQ-MP4-002 — api/start 支持 type=mp4|fmp4
 	recordConf := config.Record{
 		Append:   false,
@@ -745,10 +758,14 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	if err = p.Server.ValidateRecordingStorage(); err != nil {
 		return nil, err
 	}
-	job := p.Record(stream, recordConf, nil)
+	// 名额所有权移交给录制任务：任务 dispose（含启动失败）时释放一次。
+	job := p.RecordWithDispose(stream, recordConf, nil, release)
 	p.Debug("mp4 record job", "taskPtr", uint64(job.GetTaskPointer()))
 	res.Data = uint64(job.GetTaskPointer())
-	err = job.WaitStarted()
+	if err = job.WaitStarted(); err != nil {
+		return
+	}
+	slotHeld = false
 	return
 }
 

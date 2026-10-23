@@ -238,23 +238,50 @@ func checkPendingCapacity() error {
 	return nil
 }
 
+// PendingUsage 是 pending 目录当前用量与已配置上限的快照。
+// 上限为 0 表示该维度未配置限制。
+type PendingUsage struct {
+	Bytes     int64
+	Count     int
+	SizeLimit int64 // pendingMaxSizeBytes
+	FileLimit int   // pendingMaxFiles
+}
+
+// GetPendingUsage 统计 pending 目录用量并带上已配置上限。
+func GetPendingUsage() (PendingUsage, error) {
+	usage := PendingUsage{SizeLimit: pendingMaxSizeBytes, FileLimit: pendingMaxFiles}
+	total, count, err := GetPendingDirUsage()
+	usage.Bytes, usage.Count = total, count
+	return usage, err
+}
+
+// WatermarkExceeded 返回是否达到告警水位（已配置阈值的 80%）及触发维度的上限。
+// 未配置 size/files 阈值时恒返回 false；size 与 files 同时超标时优先返回 size 上限。
+func (u PendingUsage) WatermarkExceeded() (exceeded bool, limit int64) {
+	if u.SizeLimit > 0 && u.Bytes >= u.SizeLimit*8/10 {
+		return true, u.SizeLimit
+	}
+	if u.FileLimit > 0 && u.Count >= u.FileLimit*8/10 {
+		return true, int64(u.FileLimit)
+	}
+	return false, 0
+}
+
 // PendingWatermarkExceeded 检查 pending 目录用量是否达到告警水位（已配置阈值的 80%）。
 // 返回是否超水位及描述;未配置 size/files 阈值时恒返回 false。
 func PendingWatermarkExceeded() (exceeded bool, detail string) {
-	if pendingMaxSizeBytes <= 0 && pendingMaxFiles <= 0 {
-		return false, ""
-	}
-	total, count, err := GetPendingDirUsage()
+	usage, err := GetPendingUsage()
 	if err != nil {
 		return false, ""
 	}
-	if pendingMaxSizeBytes > 0 && total >= pendingMaxSizeBytes*8/10 {
-		return true, fmt.Sprintf("已用 %d 字节,达上限 %d 的 80%%", total, pendingMaxSizeBytes)
+	exceeded, limit := usage.WatermarkExceeded()
+	if !exceeded {
+		return false, ""
 	}
-	if pendingMaxFiles > 0 && count >= pendingMaxFiles*8/10 {
-		return true, fmt.Sprintf("已有 %d 文件,达上限 %d 的 80%%", count, pendingMaxFiles)
+	if usage.SizeLimit > 0 && usage.Bytes >= usage.SizeLimit*8/10 {
+		return true, fmt.Sprintf("已用 %d 字节,达上限 %d 的 80%%", usage.Bytes, limit)
 	}
-	return false, ""
+	return true, fmt.Sprintf("已有 %d 文件,达上限 %d 的 80%%", usage.Count, limit)
 }
 
 // AcquireTrailerSlot 获取一个 trailer 写盘槽位, 阻塞直到有可用槽位或 ctx 取消.
