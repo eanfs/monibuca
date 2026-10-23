@@ -109,7 +109,7 @@ func (t *IndexRecoveryTask) runRequest(runID string, dirs []string, file string)
 		stats.recordOutcome(file, outcome, err)
 		return t.finish(stats)
 	}
-	return t.finish(t.runRecovery(dirs, true, minAge))
+	return t.finish(t.runRecovery(dirs, true, minAge, false))
 }
 
 func (p *MP4Plugin) recoveryStateStore() *recoveryAPIState {

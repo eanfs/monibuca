@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -503,6 +504,10 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	if plugin.RecordConfig.Recovery.Concurrency != 2 {
 		t.Fatalf("record.recovery.concurrency = %d, want 2", plugin.RecordConfig.Recovery.Concurrency)
 	}
+	// 周期重扫默认 10 分钟；0 表示关闭。
+	if plugin.RecordConfig.Recovery.RerunInterval != 10*time.Minute {
+		t.Fatalf("record.recovery.reruninterval = %v, want 10m", plugin.RecordConfig.Recovery.RerunInterval)
+	}
 	// 未启用登录时 run 端点默认只接受本地回环请求，必须显式放行才能对外。
 	if plugin.RecordConfig.Recovery.AllowUnauthenticated {
 		t.Fatal("record.recovery.allowunauthenticated must default to false")
@@ -517,6 +522,7 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 			"onstart":              false,
 			"minage":               "30s",
 			"concurrency":          5,
+			"reruninterval":        "90s",
 			"dirs":                 []any{"/tmp/recovery-a"},
 			"allowunauthenticated": true,
 		},
@@ -532,6 +538,9 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	}
 	if plugin.RecordConfig.Recovery.MinAge != 30*time.Second {
 		t.Fatalf("recovery minage override = %v, want 30s", plugin.RecordConfig.Recovery.MinAge)
+	}
+	if plugin.RecordConfig.Recovery.RerunInterval != 90*time.Second {
+		t.Fatalf("recovery reruninterval override = %v, want 90s", plugin.RecordConfig.Recovery.RerunInterval)
 	}
 	if len(plugin.RecordConfig.Recovery.Dirs) != 1 || plugin.RecordConfig.Recovery.Dirs[0] != "/tmp/recovery-a" {
 		t.Fatalf("recovery dirs = %v", plugin.RecordConfig.Recovery.Dirs)
@@ -1074,7 +1083,7 @@ func TestStartupRecoveryUsesShortMinAge(t *testing.T) {
 		MinAge:        5 * time.Minute, // 生产默认值
 		EnqueueUpload: func(RecoveryItem) error { enqueued++; return nil },
 	}
-	stats := startup.runRecovery([]string{startupDir}, false, startup.startupMinAge())
+	stats := startup.runRecovery([]string{startupDir}, false, startup.startupMinAge(), false)
 	if stats.Recovered != 1 || stats.Skipped != 0 || stats.Failed != 0 {
 		t.Fatalf("startup stats = %+v, want recovered=1", stats)
 	}
@@ -1307,5 +1316,155 @@ func TestIndexRecoveryZeroLengthMediaKeepsSidecar(t *testing.T) {
 	}
 	if _, statErr := os.Stat(sidecar + recoveringSuffix); statErr != nil {
 		t.Fatalf(".recovering marker must be kept for retry: %v", statErr)
+	}
+}
+
+// waitForRecovery 在 deadline 前轮询 ready。周期重扫的间隔由测试注入
+// （100ms），用轮询而不是固定 sleep 避免在慢机器上不稳定。
+func waitForRecovery(t *testing.T, deadline time.Duration, what string, ready func() bool) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if ready() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// 周期重扫（Important 9）：启动扫描因暂时性故障（本例为上传队列尚未就绪）
+// 失败的残留，必须由 reruninterval 到点后的自动重扫重试成功，而不是等到下次
+// 进程重启或人工 POST /api/recovery/run。这是 PR「恢复无需人工介入」承诺的
+// 最后一块拼图。
+func TestIndexRecoveryTaskPeriodicRerunRetriesLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	_, sidecar, _ := buildRecoveryFixture(t, dir, "s3writer_rerun.tmp", []byte{0x01, 0x02, 0x03, 0x04})
+	marker := sidecar + recoveringSuffix
+	if err := os.Rename(sidecar, marker); err != nil {
+		t.Fatalf("mark sidecar recovering: %v", err)
+	}
+	output := filepath.Join(dir, "s3writer_rerun.mp4")
+
+	var enqueued atomic.Int32
+	var attempts atomic.Int32
+	var fail atomic.Bool
+	fail.Store(true)
+	recovery := &IndexRecoveryTask{
+		Dirs:          []string{dir},
+		Concurrency:   1,
+		RunOnStart:    true,
+		RerunInterval: 100 * time.Millisecond,
+		EnqueueUpload: func(RecoveryItem) error {
+			attempts.Add(1)
+			if fail.Load() {
+				return errors.New("upload queue not ready")
+			}
+			enqueued.Add(1)
+			return nil
+		},
+	}
+
+	var root task.RootManager[uint32, *task.Work]
+	root.Init()
+	// 同其它 gotask 测试：不 root.Stop，规避上游 dispose-vs-start 竞态。
+	if err := root.AddTask(recovery).WaitStarted(); err != nil {
+		t.Fatalf("start recovery task: %v", err)
+	}
+	defer recovery.Stop(errors.New("test complete"))
+
+	// 启动扫描：产物落盘但入队失败，.recovering 必须保留（可重试状态）。
+	// 必须等到启动扫描**真的尝试过**入队（失败）后再放行，否则慢机器上可能
+	// 让启动扫描直接成功，测试就绕过了周期重扫这条路径。
+	waitForRecovery(t, 5*time.Second, "startup scan to fail its enqueue", func() bool {
+		return attempts.Load() >= 1
+	})
+	if _, statErr := os.Stat(output); statErr != nil {
+		t.Fatalf("startup scan must leave the recovered output in place: %v", statErr)
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf(".recovering marker must survive the failed startup scan: %v", statErr)
+	}
+
+	// 放行入队：下一轮周期重扫必须自动完成移交并清掉 .recovering。
+	fail.Store(false)
+	waitForRecovery(t, 5*time.Second, "periodic rerun to finish the handoff", func() bool {
+		_, statErr := os.Stat(marker)
+		return os.IsNotExist(statErr)
+	})
+	if got := enqueued.Load(); got != 1 {
+		t.Fatalf("enqueued = %d, want 1 (exactly one successful handoff)", got)
+	}
+}
+
+// 周期重扫的开关语义：reruninterval=0 关闭；onstart=false（关闭自动恢复）
+// 时也不注册——该键承诺的是「启动时不做自动扫描」，周期扫描同样属于自动
+// 恢复，不能绕过它。只有显式开启自动恢复且间隔为正才注册 TickTask。
+func TestIndexRecoveryTaskPeriodicRerunGating(t *testing.T) {
+	cases := []struct {
+		name     string
+		onStart  bool
+		interval time.Duration
+		want     bool
+	}{
+		{"enabled", true, 10 * time.Minute, true},
+		{"zero interval disables", true, 0, false},
+		{"onstart=false disables automatic recovery", false, 10 * time.Minute, false},
+		{"negative interval disables", true, -time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recovery := &IndexRecoveryTask{RunOnStart: tc.onStart, RerunInterval: tc.interval}
+			if got := recovery.periodicRerunEnabled(); got != tc.want {
+				t.Fatalf("periodicRerunEnabled(onStart=%v, interval=%v) = %v, want %v",
+					tc.onStart, tc.interval, got, tc.want)
+			}
+		})
+	}
+	if got := (&recoveryRerunTask{owner: &IndexRecoveryTask{RerunInterval: 10 * time.Minute}}).GetTickInterval(); got != 10*time.Minute {
+		t.Fatalf("GetTickInterval = %v, want the configured interval", got)
+	}
+}
+
+// 周期重扫在没有残留时必须极廉价：不做逐文件工作，也不产生 Info 日志
+// （每 10 分钟一次的扫描不能把启动汇总日志变成周期性噪声）。
+func TestPeriodicRecoveryScanIsQuietWhenNothingToDo(t *testing.T) {
+	h := &captureHandler{}
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error { return nil }}
+	recovery.Logger = slog.New(h)
+
+	stats := recovery.runRecovery([]string{t.TempDir()}, false, recovery.startupMinAge(), true)
+	if stats.Scanned != 0 || stats.BareTmp != 0 || stats.Recovered != 0 || len(stats.Errors) != 0 {
+		t.Fatalf("stats = %+v, want all zero", stats)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, entry := range h.logs {
+		if entry.Level >= slog.LevelInfo {
+			t.Fatalf("periodic scan with no leftovers logged at %v: %q %v", entry.Level, entry.Msg, entry.Attrs)
+		}
+	}
+}
+
+// 周期重扫只负责重试残留 sidecar，不重复执行 AutoRecovery 的启动 DB 补录：
+// 后者是全表扫描，放进 10 分钟周期里没有新信息、只会增加 DB 压力。
+func TestPeriodicRecoveryScanSkipsDBBackfill(t *testing.T) {
+	called := false
+	recovery := &IndexRecoveryTask{
+		RunDBBackfill: true,
+		Backfill: func() (RecoveryStats, error) {
+			called = true
+			return RecoveryStats{}, nil
+		},
+		EnqueueUpload: func(RecoveryItem) error { return nil },
+	}
+	recovery.runRecovery([]string{t.TempDir()}, false, recovery.startupMinAge(), true)
+	if called {
+		t.Fatal("periodic rerun must not repeat the startup DB backfill")
+	}
+	// 启动扫描（非周期）仍然要跑补录，确认上面的断言不是因为开关失效。
+	recovery.runRecovery([]string{t.TempDir()}, false, recovery.startupMinAge(), false)
+	if !called {
+		t.Fatal("startup scan must still run the DB backfill")
 	}
 }

@@ -72,6 +72,12 @@ type IndexRecoveryTask struct {
 	// 5s 下限只用于覆盖跨进程重启瞬间仍在写的文件；本进程内的活跃 recorder
 	// 由 pkg 的 activeIndexRegistry 权威判定，先于新鲜度闸门生效。
 	MinAge time.Duration
+	// RerunInterval 是**周期重扫**间隔：启动扫描之后每隔该时长自动再扫一轮，
+	// 只处理残留 sidecar（重试启动时因上传后端未就绪/挂载点抖动等原因失败的
+	// 文件），兑现「恢复无需人工介入」的承诺。0/负值关闭周期重扫。
+	// 周期重扫只在 RunOnStart=true（自动恢复开启）时注册：onstart=false 承诺
+	// 「不做自动扫描」，不能用另一个键绕过它。
+	RerunInterval time.Duration
 	// RunOnStart 控制任务注册后是否立即跑一次。
 	RunOnStart bool
 	// RunDBBackfill 对应旧的 AutoRecovery：补录 DB 记录。它与索引定稿解耦：
@@ -138,6 +144,7 @@ func (t *IndexRecoveryTask) Start() error {
 		"manualMinAge", t.effectiveMinAge(),
 		"runOnStart", t.RunOnStart,
 		"runDBBackfill", t.RunDBBackfill,
+		"rerunInterval", t.RerunInterval,
 		"dirs", t.Dirs)
 	// 不能在 Start 里等待子任务（会阻塞事件循环）。run task 在自己的
 	// goroutine 中执行，完成后自行记录日志。
@@ -160,6 +167,13 @@ func (t *IndexRecoveryTask) Start() error {
 			backfillOnly: true,
 		}, t.Logger)
 	}
+	// 周期重扫：启动扫描之后每隔 reruninterval 自动再扫一轮，重试启动时因
+	// 暂时性故障（上传后端未就绪/挂载点抖动/目录暂时不可读）失败的残留 sidecar。
+	// Tick 在事件循环上执行，只做 TryLock + AddTask；真正的扫描在 run task 的
+	// Go() 里跑，不会阻塞事件循环。
+	if t.periodicRerunEnabled() {
+		t.AddTask(&recoveryRerunTask{owner: t}, t.Logger)
+	}
 	return nil
 }
 
@@ -170,7 +184,7 @@ func (t *IndexRecoveryTask) RunOnce(dirs []string) (RecoveryStats, error) {
 	if !t.taskStarted() {
 		t.runMu.Lock()
 		defer t.runMu.Unlock()
-		return t.finish(t.runRecovery(dirs, false, t.effectiveMinAge()))
+		return t.finish(t.runRecovery(dirs, false, t.effectiveMinAge(), false))
 	}
 
 	stats := RecoveryStats{}
@@ -201,6 +215,55 @@ func (t *IndexRecoveryTask) effectiveConcurrency() int {
 		return t.Concurrency
 	}
 	return defaultRecoveryConcurrency
+}
+
+// defaultRecoveryRerunInterval 是 RerunInterval 未配置时的兜底（仅用于
+// GetTickInterval，正常路径由 record.recovery.reruninterval 的 default 注入）。
+const defaultRecoveryRerunInterval = 10 * time.Minute
+
+// periodicRerunEnabled 报告是否应注册周期重扫。
+//
+// 两个条件缺一不可：
+//   - RerunInterval > 0：显式的关闭开关（0/负值 = 关闭）；
+//   - RunOnStart：onstart=false 的语义是「启动时不做自动扫描」，周期扫描同样
+//     属于自动恢复，不能用一个默认开启的新键绕过既有配置的意图。
+func (t *IndexRecoveryTask) periodicRerunEnabled() bool {
+	return t.RunOnStart && t.RerunInterval > 0
+}
+
+// recoveryRerunTask 周期触发重扫的 TickTask。
+//
+// Tick 在 owner 的事件循环上执行：只做 TryLock + AddTask，绝不调用 RunOnce
+// （后者会 WaitStarted 并等待整轮扫描完成，阻塞整个 Work 的事件循环）。
+type recoveryRerunTask struct {
+	task.TickTask
+	owner *IndexRecoveryTask
+}
+
+func (r *recoveryRerunTask) GetTickInterval() time.Duration {
+	if r.owner.RerunInterval > 0 {
+		return r.owner.RerunInterval
+	}
+	return defaultRecoveryRerunInterval
+}
+
+func (r *recoveryRerunTask) Tick(any) {
+	owner := r.owner
+	// runMu.TryLock 既判断「是否已有扫描在跑」（启动扫描/手动 run/上一轮周期
+	// 重扫），又不会在事件循环里等待。取到后立刻释放：真正的锁由 run task 的
+	// Go() 持有；这里只借用它做一次非阻塞的占用检测，避免 tick 堆积。
+	if !owner.runMu.TryLock() {
+		owner.Debug("periodic recovery scan skipped: another scan is still running")
+		return
+	}
+	owner.runMu.Unlock()
+	owner.AddTask(&recoveryRunTask{
+		owner:    owner,
+		minAge:   owner.startupMinAge(),
+		stats:    &RecoveryStats{},
+		done:     make(chan struct{}),
+		periodic: true,
+	}, owner.Logger)
 }
 
 // recoveryMinAgeFloor 是新鲜度阈值的下限：max(5s, 2×索引落盘间隔)。
@@ -264,6 +327,9 @@ type recoveryRunTask struct {
 	done   chan struct{}
 	// backfillOnly 为 true 时只跑 DB 补录（onstart=false 但 AutoRecovery 开启）。
 	backfillOnly bool
+	// periodic 标记周期重扫：只重试残留 sidecar，不重复 DB 补录，无残留时不记
+	// Info 汇总日志（每 10 分钟一条噪声没有价值）。
+	periodic bool
 }
 
 func (r *recoveryRunTask) Go() error {
@@ -274,7 +340,7 @@ func (r *recoveryRunTask) Go() error {
 		*r.stats = r.owner.runDBBackfill()
 		return nil
 	}
-	*r.stats = r.owner.runRecovery(r.dirs, true, r.minAge)
+	*r.stats = r.owner.runRecovery(r.dirs, true, r.minAge, r.periodic)
 	return nil
 }
 
@@ -378,12 +444,17 @@ func (t *IndexRecoveryTask) runDBBackfill() RecoveryStats {
 
 // runRecovery 是扫描主流程，调用方必须持有 runMu。
 // minAge 是本次运行的新鲜度阈值（启动扫描/手动运行取值不同）。
-func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge time.Duration) RecoveryStats {
+// periodic 表示本轮由周期重扫触发：跳过 DB 补录，且无残留时不记 Info 汇总。
+func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge time.Duration, periodic bool) RecoveryStats {
 	startedAt := time.Now()
 	stats := RecoveryStats{}
 
 	// 1. 先跑既有 DB 补录（旧 AutoRecovery 行为），再定稿索引。
-	stats.merge(t.runDBBackfill())
+	// 周期重扫只重试残留 sidecar：DB 补录是启动扫描（AutoRecovery）的语义，
+	// 每 reruninterval 全表扫一次没有新信息，只会增加 DB 压力。
+	if !periodic {
+		stats.merge(t.runDBBackfill())
+	}
 
 	resolved, dirErrs := t.resolveDirs(dirs)
 	stats.Errors = append(stats.Errors, dirErrs...)
@@ -420,14 +491,18 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 	// 等错误没有其它出口，只给数字的话现场无法定位是哪个文件/目录出了问题。
 	t.logRecoveryErrors(stats.Errors)
 
-	t.Info("index recovery completed",
-		"scanned", stats.Scanned,
-		"recovered", stats.Recovered,
-		"failed", stats.Failed,
-		"skipped", stats.Skipped,
-		"bareTmp", stats.BareTmp,
-		"errors", len(stats.Errors),
-		"elapsedMs", time.Since(startedAt).Milliseconds())
+	// 周期重扫无残留时保持安静：每 reruninterval 一条 scanned=0 的 Info 只是
+	// 噪声。错误仍由上面的 Error 逐条输出，截断仍有独立 Warn，不会漏报。
+	if !periodic || stats.Scanned > 0 || stats.BareTmp > 0 || len(stats.Errors) > 0 {
+		t.Info("index recovery completed",
+			"scanned", stats.Scanned,
+			"recovered", stats.Recovered,
+			"failed", stats.Failed,
+			"skipped", stats.Skipped,
+			"bareTmp", stats.BareTmp,
+			"errors", len(stats.Errors),
+			"elapsedMs", time.Since(startedAt).Milliseconds())
+	}
 	return stats
 }
 

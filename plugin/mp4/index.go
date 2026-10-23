@@ -39,7 +39,12 @@ type MP4Plugin struct {
 			OnStart     bool          `default:"true" desc:"启动时是否自动扫描并定稿残留录像（不影响 AutoRecovery 的 DB 补录）"`
 			MinAge      time.Duration `default:"5m" desc:"仅用于手动恢复(API/CLI)：sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；实际生效值不小于 max(5s, 2×index.flushinterval)；启动自动扫描不受该值影响，固定使用 max(5s, 2×index.flushinterval) 短阈值以保证崩溃重启后自动恢复；本进程内的活跃 recorder 无论 mtime 均跳过；负数关闭保护"`
 			Concurrency int           `default:"2" desc:"恢复定稿并发上限"`
-			Dirs        []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+			// RerunInterval 让「自动恢复」不再依赖进程重启：启动扫描失败的残留
+			// （上传后端未就绪、挂载点抖动等）会在下一轮周期重扫中重试。
+			// 周期重扫只处理残留 sidecar，不重复 AutoRecovery 的 DB 补录；无残留
+			// 时不产生逐文件日志与 Info 汇总。仅在 recovery.onstart=true 时生效。
+			RerunInterval time.Duration `default:"10m" desc:"启动自动扫描后的周期重扫间隔：自动重试启动扫描失败的残留 sidecar，0 关闭；仅在 recovery.onstart=true（自动恢复开启）时生效"`
+			Dirs          []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
 			// AllowUnauthenticated 控制未启用 admin.enablelogin 时
 			// POST /api/recovery/run 是否接受任意来源的请求。默认 false：
 			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。
@@ -152,6 +157,7 @@ func (p *MP4Plugin) Start() (err error) {
 		Dirs:          p.RecordConfig.Recovery.Dirs,
 		Concurrency:   p.RecordConfig.Recovery.Concurrency,
 		MinAge:        p.RecordConfig.Recovery.MinAge,
+		RerunInterval: p.RecordConfig.Recovery.RerunInterval,
 		RunOnStart:    p.RecordConfig.Recovery.OnStart,
 		RunDBBackfill: p.AutoRecovery && p.DB != nil,
 	}
