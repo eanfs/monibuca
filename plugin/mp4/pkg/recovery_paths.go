@@ -64,8 +64,7 @@ func ValidateIndexHeaderPaths(header IndexHeader) error {
 			// 由下载侧的 storage 解析（GetFullPath）兜住。
 			return nil
 		}
-		if mediaPath != "" && filepath.IsAbs(mediaPath) &&
-			withinRecoveryDir(filepath.Dir(mediaPath), key) {
+		if recoveryAbsolutePathBinding(mediaPath, key) != recoveryBindingNone {
 			return nil
 		}
 		return recoveryPathRuleError(recoveryRuleLocalDirectory, header, mediaPath)
@@ -86,6 +85,60 @@ func ValidateIndexHeaderPaths(header IndexHeader) error {
 func recoveryPathRuleError(rule string, header IndexHeader, mediaPath string) error {
 	return fmt.Errorf("%w: rule=%s filePath=%q storageKey=%q mediaPath=%q storageType=%q",
 		ErrIndexHeaderPathMismatch, rule, header.FilePath, header.StorageKey, mediaPath, header.StorageType)
+}
+
+// recoveryPathBinding 描述录像路径与 MediaPath 的绑定形态。
+type recoveryPathBinding int
+
+const (
+	// recoveryBindingNone 表示未建立绑定。
+	recoveryBindingNone recoveryPathBinding = iota
+	// recoveryBindingSameFile 表示录像路径就是 MediaPath 指向的同一个文件。
+	recoveryBindingSameFile
+	// recoveryBindingWithinMediaDir 表示录像路径位于 MediaPath 的目录子树内。
+	recoveryBindingWithinMediaDir
+	// recoveryBindingMediaSuffix 表示 MediaPath = <storage base> + 绝对录像路径：
+	// 即 LocalStorage.CreateFile 的 filepath.Join(basePath, path) 形态
+	// （local.go:189）。此时二者是同一逻辑文件却不同目录。
+	recoveryBindingMediaSuffix
+)
+
+// recoveryAbsolutePathBinding 判断绝对录像路径与 MediaPath 的绑定形态。
+func recoveryAbsolutePathBinding(mediaPath, key string) recoveryPathBinding {
+	if mediaPath == "" || !filepath.IsAbs(mediaPath) || !filepath.IsAbs(key) {
+		return recoveryBindingNone
+	}
+	media := filepath.Clean(mediaPath)
+	keyClean := filepath.Clean(key)
+	if media == keyClean {
+		return recoveryBindingSameFile
+	}
+	// MediaPath = basePath + FilePath：MediaPath 以分隔符 + FilePath 的相对形式结尾。
+	if rel := strings.TrimPrefix(keyClean, string(filepath.Separator)); rel != "" &&
+		strings.HasSuffix(media, string(filepath.Separator)+rel) {
+		return recoveryBindingMediaSuffix
+	}
+	if withinRecoveryDir(filepath.Dir(media), keyClean) {
+		return recoveryBindingWithinMediaDir
+	}
+	return recoveryBindingNone
+}
+
+// isSuffixBoundAbsoluteFilePath 报告绝对录像路径是否仅以「MediaPath 尾部」形态
+// 通过绑定（MediaPath = <storage base> + FilePath），而非真的指向媒体文件。
+//
+// 该形态足以放行恢复（录制侧确实这样拼接），但不足以证明录像路径本身可信：
+// sidecar 由不可信来源提供时，MediaPath 与 FilePath 都是攻击者可控的，
+// 后缀关系可以随手构造。因此 DB 回写必须额外收紧（见 updateRecoveredRecord）。
+func isSuffixBoundAbsoluteFilePath(header IndexHeader) bool {
+	key := strings.TrimSpace(header.FilePath)
+	if key == "" {
+		key = strings.TrimSpace(header.StorageKey)
+	}
+	if key == "" || !filepath.IsAbs(key) {
+		return false
+	}
+	return recoveryAbsolutePathBinding(strings.TrimSpace(header.MediaPath), key) == recoveryBindingMediaSuffix
 }
 
 func isLocalRecoveryStorage(storageType string) bool {

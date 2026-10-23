@@ -187,6 +187,21 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		return nil
 	}
 
+	// 后缀形态（MediaPath = <local storage base> + 绝对 FilePath）能放行恢复，
+	// 但不能证明 FilePath 本身可信：sidecar 不可信时二者都由攻击者构造，
+	// 「媒体文件 <dir>/etc/shadow + FilePath=/etc/shadow」即可构造后缀关系。
+	// 这类路径只允许更新录制自己写入的既有行；新建行会把任意绝对路径写进
+	// record_streams.file_path，而下载接口对绝对 file_path 直接 ServeFile/os.Open
+	// （api.go:151-158），等于任意文件读取。宁可少一条元数据，也不投毒。
+	if isSuffixBoundAbsoluteFilePath(header) {
+		logger.Warn("recovered record filePath only matched as a suffix of mediaPath and no existing row was found; skip creating record_streams row",
+			"filePath", filePath,
+			"mediaPath", header.MediaPath,
+			"streamPath", header.StreamPath,
+			"storageType", header.StorageType)
+		return nil
+	}
+
 	record := m7s.RecordStream{
 		StartTime:    startTime,
 		EndTime:      endTime,

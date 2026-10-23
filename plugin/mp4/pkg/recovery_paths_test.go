@@ -14,6 +14,9 @@ func TestValidateIndexHeaderPaths(t *testing.T) {
 	mediaDir := t.TempDir()
 	mediaPath := filepath.Join(mediaDir, "rec.tmp")
 	otherDir := t.TempDir()
+	// 绝对 record.filepath 与 LocalStorage 拼出的 MediaPath（basePath + FilePath）。
+	absoluteRecordPath := "/data/records/rec.mp4"
+	absoluteRecordBase := t.TempDir()
 
 	cases := []struct {
 		name    string
@@ -65,6 +68,25 @@ func TestValidateIndexHeaderPaths(t *testing.T) {
 		{
 			name:   "local: storageKey equals mediaPath",
 			header: IndexHeader{StorageType: "local", StorageKey: mediaPath, MediaPath: mediaPath},
+		},
+		{
+			// LocalStorage.CreateFile 用 filepath.Join(basePath, FilePath)：
+			// 绝对 record.filepath 会被拼到 basePath 之后，MediaPath 以 FilePath 结尾。
+			name: "local: absolute filePath joined under the storage base",
+			header: IndexHeader{
+				StorageType: "local",
+				FilePath:    absoluteRecordPath,
+				MediaPath:   filepath.Join(absoluteRecordBase, absoluteRecordPath),
+			},
+		},
+		{
+			name: "local: unrelated absolute filePath is not a MediaPath suffix",
+			header: IndexHeader{
+				StorageType: "local",
+				FilePath:    "/etc/shadow",
+				MediaPath:   filepath.Join(absoluteRecordBase, absoluteRecordPath),
+			},
+			wantErr: "rule=local-directory",
 		},
 
 		// ---- 对象存储（s3/cos/oss）----

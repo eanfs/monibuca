@@ -390,3 +390,75 @@ func TestUpdateRecoveredRecordAcceptsLocalStorageKey(t *testing.T) {
 		t.Fatalf("record = %+v, want duration 40", got)
 	}
 }
+
+// 后缀形态（MediaPath = <storage base> + FilePath）的绝对 file_path 只能更新
+// 录制本身已写入的既有行，绝不新建：否则可写恢复目录的进程可以用
+// 「媒体文件 <dir>/etc/shadow + FilePath=/etc/shadow」投毒 record_streams，
+// 而下载接口对绝对 file_path 直接 http.ServeFile/os.Open（api.go:151-158），
+// 会变成任意文件读取。
+func TestUpdateRecoveredRecordSuffixFormDoesNotCreateRow(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	dir := t.TempDir()
+	header := IndexHeader{
+		StreamPath:  "live/poison",
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "etc", "shadow"),
+		FilePath:    "/etc/shadow",
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
+	}
+	var count int64
+	if err := db.Model(&m7s.RecordStream{}).Count(&count).Error; err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if count != 0 {
+		var rows []m7s.RecordStream
+		_ = db.Find(&rows).Error
+		t.Fatalf("record_streams rows = %d (%+v), want 0", count, rows)
+	}
+}
+
+// 正常录制在开录时已用同一个绝对 file_path 写入半成品行：后缀形态必须更新该行。
+func TestUpdateRecoveredRecordSuffixFormUpdatesExistingRow(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	dir := t.TempDir()
+	filePath := "/data/records/rec.mp4"
+	start := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	if err := db.Create(&m7s.RecordStream{
+		StartTime:   start,
+		FilePath:    filePath,
+		StreamPath:  "live/rec",
+		Type:        "mp4",
+		StorageType: "local",
+	}).Error; err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	header := IndexHeader{
+		StreamPath:  "live/rec",
+		StorageType: "local",
+		MediaPath:   filepath.Join(dir, "data", "records", "rec.mp4"),
+		FilePath:    filePath,
+		StartTime:   start,
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var rows []m7s.RecordStream
+	if err := db.Where("file_path = ?", filePath).Find(&rows).Error; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("record_streams rows = %d, want 1", len(rows))
+	}
+	if rows[0].Duration != 40 || rows[0].EndTime.IsZero() {
+		t.Fatalf("row not updated: %+v", rows[0])
+	}
+}

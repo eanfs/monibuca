@@ -884,3 +884,43 @@ func TestRecoverSidecarAcceptsObjectKey(t *testing.T) {
 		t.Fatalf("object-storage MediaPath must stay the local staging path: %+v", enqueued[0].Header)
 	}
 }
+
+// newMP4PluginWithStorage 组装一个仅带 storage 配置的插件（用于恢复任务判定）。
+func newMP4PluginWithStorage(storageConfig map[string]any) *MP4Plugin {
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = storageConfig
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+	return plugin
+}
+
+// S3 已配置但未显式配置 tempdir 时，启动扫描会漏掉系统临时目录里的崩溃残留
+// （默认扫描目录已移除 os.TempDir()），必须在启动时提示一次。
+func TestS3TempDirUnconfigured(t *testing.T) {
+	tempDir := t.TempDir()
+	cases := []struct {
+		name   string
+		plugin *MP4Plugin
+		want   bool
+	}{
+		{"nil plugin", nil, false},
+		{"plugin without server", &MP4Plugin{}, false},
+		{"no s3 storage", newMP4PluginWithStorage(map[string]any{
+			"local": map[string]any{"path": "/data"},
+		}), false},
+		{"s3 object form without tempdir", newMP4PluginWithStorage(map[string]any{
+			"s3": map[string]any{"endpoint": "minio:9000"},
+		}), true},
+		{"s3 string form", newMP4PluginWithStorage(map[string]any{
+			"s3": "my-bucket",
+		}), true},
+		{"s3 with tempdir", newMP4PluginWithStorage(map[string]any{
+			"s3": map[string]any{"tempdir": tempDir},
+		}), false},
+	}
+	for _, tc := range cases {
+		if got := (&IndexRecoveryTask{plugin: tc.plugin}).s3TempDirUnconfigured(); got != tc.want {
+			t.Fatalf("%s: s3TempDirUnconfigured = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

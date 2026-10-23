@@ -121,6 +121,13 @@ const (
 )
 
 func (t *IndexRecoveryTask) Start() error {
+	// 恢复扫描默认不再包含系统临时目录（全局可写，见 mediaTempDir）。S3 未
+	// 显式配置 tempdir 时暂存文件仍落在 /tmp，崩溃残留将永远扫描不到——这是
+	// 安全与可恢复性之间的取舍，必须让运维知道。Start 只执行一次，天然只记一条。
+	if t.s3TempDirUnconfigured() {
+		t.Warn("storage.s3.tempdir is not configured: object-storage crash leftovers in the system temp dir will not be auto-recovered",
+			"hint", "set storage.s3.tempdir or record.recovery.dirs to include the staging directory")
+	}
 	t.Info("index recovery task started",
 		"concurrency", t.effectiveConcurrency(),
 		"startupMinAge", t.startupMinAge(),
@@ -516,6 +523,19 @@ func (t *IndexRecoveryTask) defaultDirs() []string {
 		}
 	}
 	return dirs
+}
+
+// s3TempDirUnconfigured 报告「S3 已配置但未显式配置 tempdir」：
+// 此时暂存文件仍写在系统临时目录（pkg/storage/s3.go 的 effectiveTempDir），
+// 而默认扫描目录已不再包含它，崩溃残留无法被自动恢复。
+func (t *IndexRecoveryTask) s3TempDirUnconfigured() bool {
+	if t.plugin == nil || t.plugin.Server == nil {
+		return false
+	}
+	if _, ok := t.plugin.Server.ServerConfig.Storage[string(storage.StorageTypeS3)]; !ok {
+		return false
+	}
+	return strings.TrimSpace(t.mediaTempDir()) == ""
 }
 
 // mediaTempDir 返回对象存储暂存文件目录（storage.s3.tempdir），未配置时返回空。
