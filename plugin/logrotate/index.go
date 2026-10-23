@@ -36,17 +36,26 @@ const (
 	currentFileSuffix = "current"
 	// pruneInterval 每日执行一次保留期清理。
 	pruneInterval = 24 * time.Hour
+	// defaultRotateSize / defaultRotateMaxFiles 是 Size / MaxFiles 的零值回退值,
+	// 必须与 struct tag 的 default 保持一致(TestClampDefaultsMatchTags 钉住)。
+	// 零值不能透传给 rotoslog: MaxFileSize(0) 会让每次写入都轮转,
+	// MaxRotatedFiles(0) 会在轮转后立刻删除刚生成的文件。
+	defaultRotateSize     uint64 = 20971520
+	defaultRotateMaxFiles uint64 = 750
+	// staleLogSampleLimit 是"上一份配置遗留日志"告警里列出的文件名上限,
+	// 避免目录里有成百上千个旧文件时刷屏; total 字段仍给出完整数量。
+	staleLogSampleLimit = 10
 )
 
 type LogRotatePlugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
 	Path       string `default:"./logs" desc:"日志文件存放目录"`
-	Size       uint64 `default:"20971520" desc:"日志文件大小，单位：字节"`
+	Size       uint64 `default:"20971520" desc:"单个日志文件的大小上限，单位：字节；磁盘占用上限 = Size × MaxFiles"`
 	Days       int    `default:"30" desc:"日志文件保留天数，按文件修改时间计算；<=0 表示不做时间清理"`
-	Formatter  string `default:"2006-01-02T15-04" desc:"日志文件名时间格式（Go time layout），默认分钟级以避免同一小时内多次轮转互相覆盖"`
+	Formatter  string `default:"2006-01-02T15-04" desc:"日志文件名时间格式（Go time layout），默认分钟级以避免同一小时内多次轮转互相覆盖；留空会拒绝启动"`
 	FilePrefix string `default:"m7s-" desc:"日志文件名前缀，用于隔离本插件文件并限定清理范围"`
-	MaxFiles   uint64 `default:"750" desc:"最大日志文件数量"`
+	MaxFiles   uint64 `default:"750" desc:"最大轮转日志文件数量；磁盘占用上限 = Size × MaxFiles"`
 	Level      string `default:"info" desc:"日志级别"`
 	handler    slog.Handler
 }
@@ -56,7 +65,40 @@ var _ = m7s.InstallPlugin[LogRotatePlugin](m7s.PluginMeta{
 	ServiceDesc:         &pb.Api_ServiceDesc,
 })
 
+// resolveRotateParams 校验并夹紧 rotoslog 参数。
+//
+// Size / MaxFiles 的零值在 rotoslog 里并非“使用默认值”而是字面意义的 0：
+// MaxFileSize(0) 使 `written > 0` 恒真（每写一条就轮转一次），
+// MaxRotatedFiles(0) 使轮转后立刻删除刚生成的文件。这两种“配置漏填”
+// 过去是静默零值，这里回退到 default tag 的值并告警。
+//
+// Formatter 为空则无法命名轮转文件，也无法界定保留期清理范围：直接失败，
+// 不做任何静默回退（改错配置应当立刻暴露，而不是悄悄换一套文件名）。
+func (config *LogRotatePlugin) resolveRotateParams() (size, maxFiles uint64, err error) {
+	if config.Formatter == "" {
+		return 0, 0, errors.New("logrotate: formatter must not be empty (a Go time layout is required for rotated file names)")
+	}
+	size, maxFiles = config.Size, config.MaxFiles
+	if size == 0 {
+		size = defaultRotateSize
+		config.Warn("log size is zero; using default", "size", size)
+	}
+	if maxFiles == 0 {
+		maxFiles = defaultRotateMaxFiles
+		config.Warn("max files is zero; using default", "maxFiles", maxFiles)
+	}
+	return size, maxFiles, nil
+}
+
 func (config *LogRotatePlugin) Start() (err error) {
+	size, maxFiles, err := config.resolveRotateParams()
+	if err != nil {
+		return err
+	}
+	// 只提示、绝不删除：文件名不带当前前缀说明它不属于本插件（可能是旧的
+	// fileprefix/formatter 配置留下的取证日志，也可能是别的进程的文件）。
+	// 按前缀隔离原则删除会误伤，因此交给运维手工判断。
+	config.warnAboutStaleLogs()
 	builder := func(w io.Writer, opts *slog.HandlerOptions) slog.Handler {
 		return console.NewHandler(w, &console.HandlerOptions{NoColor: true, Level: pkg.ParseLevel(config.Level), TimeFormat: "2006-01-02 15:04:05.000"})
 	}
@@ -64,9 +106,9 @@ func (config *LogRotatePlugin) Start() (err error) {
 		rotoslog.LogHandlerBuilder(builder),
 		rotoslog.LogDir(config.Path),
 		rotoslog.FilePrefix(config.FilePrefix),
-		rotoslog.MaxFileSize(config.Size),
+		rotoslog.MaxFileSize(size),
 		rotoslog.DateTimeLayout(config.Formatter),
-		rotoslog.MaxRotatedFiles(config.MaxFiles),
+		rotoslog.MaxRotatedFiles(maxFiles),
 	)
 	if err != nil {
 		return err
@@ -81,6 +123,65 @@ func (config *LogRotatePlugin) Start() (err error) {
 	// 每日清理任务不使用 OnStart,启动时的一次清理写在 Start 里。
 	config.AddTask(&logPruneTask{plugin: config})
 	return nil
+}
+
+// warnAboutStaleLogs 在启动时一次性提示“上一份配置遗留的日志”。判定指纹是
+// 名称不带当前 FilePrefix、但去掉扩展名后能被当前 Formatter 解析的 *.log：
+// 这几乎只可能来自曾经的 fileprefix/formatter 配置（或 prefix 为空时的旧版本）。
+// 只列不删——它们不在本插件的前缀隔离范围内，清理必须由运维决定。
+func (config *LogRotatePlugin) warnAboutStaleLogs() {
+	stale, err := foreignLogFiles(config.Path, config.FilePrefix, config.Formatter)
+	if err != nil {
+		config.Warn("scan for logs left by a previous logrotate config failed", "dir", config.Path, "error", err)
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+	sample := stale
+	if len(sample) > staleLogSampleLimit {
+		sample = sample[:staleLogSampleLimit]
+	}
+	config.Warn("found log files that do not match the current fileprefix/formatter; they are left untouched (prefix isolation), clean them up manually",
+		"dir", config.Path,
+		"filePrefix", config.FilePrefix,
+		"formatter", config.Formatter,
+		"total", len(stale),
+		"sample", sample)
+}
+
+// foreignLogFiles 返回 dir 下“像是上一份配置遗留”的日志文件名（已按名称排序）：
+// 扩展名 .log、名称不带当前 prefix、且去掉扩展名后能被 layout 解析的普通文件。
+//
+// prefix 或 layout 为空时无法区分本插件与其他进程的文件，直接返回空：
+// strings.HasPrefix(name, "") 恒真，按空前缀“匹配”会列出一整个目录。
+// 目录不存在视为无遗留文件。
+func foreignLogFiles(dir, prefix, layout string) ([]string, error) {
+	if prefix == "" || layout == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var stale []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, logFileExt) {
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if _, err := time.Parse(layout, strings.TrimSuffix(name, logFileExt)); err != nil {
+			continue
+		}
+		stale = append(stale, name)
+	}
+	return stale, nil
 }
 
 // logPruneTask 按 Days 删除过期的轮转日志。走任务系统(TickTask),不使用裸 goroutine;

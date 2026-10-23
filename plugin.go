@@ -98,17 +98,33 @@ type (
 	// RecordGateResult 描述自动录像（onpub / pull_on_start）在并发保护下的准入结果。
 	RecordGateResult int
 
+	// RecordAdmission 是 GateRecord 的准入结论。
+	//
+	// Release 非空时表示插件已为本次录制持有一个必须归还的资源（并发名额等），
+	// 由调用方负责调用。**Release 必须幂等**：调用方会在“启动观测任务被拒”
+	// “RecordJob 被 Records 拒绝”“注册后发现 publisher 已停止”等提前失败路径上
+	// 调用一次，之后 dispose 回调还会再调用一次（实现应使用 sync.Once 包裹）。
+	//
+	// Release 允许为 nil，表示插件没有需要归还的资源；调用方必须容忍 nil，
+	// 绝不能因为缺少 release 就跳过启动录制或解引用它。
+	//
+	// Result 与 Release 必须一起返回（而不是两个裸返回值）：只拿到 result 的
+	// 调用方无法判断“要不要归还”，旧签名让漏接 release 变成静默的名额泄漏。
+	RecordAdmission struct {
+		Result  RecordGateResult
+		Release func()
+	}
+
 	// IRecordGatePlugin 由希望限制自动录像并发的插件实现。
 	// GateRecord 在发布路径上被调用，禁止阻塞。
 	IRecordGatePlugin interface {
 		// GateRecord 在自动录制启动前决定是否准入：
-		//   release 非空时由调用方负责调用；**release 必须幂等**——调用方可能在
-		//     “启动观测任务被拒”“RecordJob 被 Records 拒绝”“注册后发现 publisher
-		//     已停止”等路径上提前调用一次，之后 dispose 回调还会再调用一次；
-		//   result 为 Queued 表示插件已保存录制参数、稍后会自行启动；
-		//   result 为 Refused 表示本次录制无法启动，调用方记录 Error；
-		//   result 为 Unset 或未知值视为拒绝（fail-closed）。
-		GateRecord(pub *Publisher, conf config.Record) (release func(), result RecordGateResult)
+		//   Result 为 Admit 表示立即允许录制（Release 可为 nil）；
+		//   Result 为 Queued 表示插件已保存录制参数、稍后会自行启动；
+		//   Result 为 Refused 表示本次录制无法启动，调用方记录 Error；
+		//   Result 为 Unset 或未知值视为拒绝（fail-closed）；
+		//   Release 的调用与幂等契约见 RecordAdmission。
+		GateRecord(pub *Publisher, conf config.Record) RecordAdmission
 	}
 
 	// IRecordSlotPlugin 由实现了录制并发保护的插件实现，供其它插件在直接发起
@@ -908,8 +924,9 @@ func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
 		p.Record(pub, conf, nil)
 		return
 	}
-	release, result := gate.GateRecord(pub, conf)
-	switch result {
+	admission := gate.GateRecord(pub, conf)
+	release := admission.Release
+	switch admission.Result {
 	case RecordGateAdmit:
 		job := p.RecordWithDispose(pub, conf, nil, release)
 		if release != nil {
@@ -943,7 +960,7 @@ func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
 	default:
 		// RecordGateUnset 或未知值：fail-closed，绝不启动录制。
 		p.Error("auto recording skipped: record gate returned unset/unknown result",
-			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "result", int(result))
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "result", int(admission.Result))
 	}
 }
 

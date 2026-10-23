@@ -53,11 +53,11 @@ type gatePlugin struct {
 	lastConf atomic.Value
 }
 
-func (g *gatePlugin) GateRecord(pub *Publisher, conf config.Record) (func(), RecordGateResult) {
+func (g *gatePlugin) GateRecord(pub *Publisher, conf config.Record) RecordAdmission {
 	g.calls.Add(1)
 	g.lastPub.Store(pub.StreamPath)
 	g.lastConf.Store(conf.FilePath)
-	return g.release, g.result
+	return RecordAdmission{Result: g.result, Release: g.release}
 }
 
 type pullGateTestEnv struct {
@@ -168,6 +168,43 @@ func TestPullProxyOnStartAdmittedRecordingStarts(t *testing.T) {
 	// 恰好一次语义由 plugin/mp4 的 TestRecordJobDisposeReleasesSlotExactlyOnce 钉住。
 	if got := releases.Load(); got != 0 {
 		t.Fatalf("release called %d times while recording is still active, want 0", got)
+	}
+}
+
+// Release 可以为 nil（插件没有占用任何需要归还的资源）：准入通过时照常启动
+// 录制，调用方不得因 nil 跳过启动或解引用崩溃。RecordAdmission 契约明确允许
+// nil，这是 GateRecord 从“返回裸 func()”改成结构体后必须钉住的语义。
+func TestPullProxyOnStartAdmitWithNilReleaseStarts(t *testing.T) {
+	env := newPullGateTestEnv(t, RecordGateAdmit)
+	env.gate.release = nil
+
+	env.publisher().processPullProxyOnStart()
+
+	if got := env.gate.calls.Load(); got != 1 {
+		t.Fatalf("GateRecord calls = %d, want 1", got)
+	}
+	select {
+	case <-env.recorder.started:
+	case <-time.After(time.Second):
+		t.Fatal("admitted pull_on_start recording with nil Release did not start")
+	}
+	if got := env.server.Records.Length(); got != 1 {
+		t.Fatalf("record jobs = %d, want 1", got)
+	}
+}
+
+// 未知的 Result（既不是 Admit/Queued 也不是 Refused）同样必须 fail-closed：
+// 未来新增枚举值或第三方实现返回越界值时，绝不能默认放行。
+func TestPullProxyOnStartUnknownGateResultDoesNotRecord(t *testing.T) {
+	env := newPullGateTestEnv(t, RecordGateResult(99))
+
+	env.publisher().processPullProxyOnStart()
+
+	if got := env.gate.calls.Load(); got != 1 {
+		t.Fatalf("GateRecord calls = %d, want 1", got)
+	}
+	if got := env.server.Records.Length(); got != 0 {
+		t.Fatalf("unknown gate result created %d recording job(s), want 0 (fail-closed)", got)
 	}
 }
 

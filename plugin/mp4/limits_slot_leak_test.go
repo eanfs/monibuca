@@ -64,12 +64,12 @@ func TestGateRecordQueuesWithoutReservingSlot(t *testing.T) {
 	l.timeout = 5 * time.Second
 	env.plugin.recordLimiter.Store(l)
 
-	release, result := env.plugin.GateRecord(env.pub, config.Record{FilePath: "gate-queued.mp4"})
-	if release != nil {
+	admission := env.plugin.GateRecord(env.pub, config.Record{FilePath: "gate-queued.mp4"})
+	if admission.Release != nil {
 		t.Fatal("queued gate result must not carry a release fn")
 	}
-	if result != m7s.RecordGateQueued {
-		t.Fatalf("result = %v, want RecordGateQueued (GateRecord must not reserve on the publish path)", result)
+	if admission.Result != m7s.RecordGateQueued {
+		t.Fatalf("result = %v, want RecordGateQueued (GateRecord must not reserve on the publish path)", admission.Result)
 	}
 
 	// 排队任务自行取得名额后必须真正启动录制，且名额恰好被占用一次。
@@ -144,12 +144,12 @@ func TestGateRecordRefusedLeavesNoWaiter(t *testing.T) {
 	pub.StreamPath = "live/refused"
 
 	for i := 0; i < 10; i++ {
-		release, result := p.GateRecord(pub, config.Record{FilePath: "refused.mp4"})
-		if release != nil {
+		admission := p.GateRecord(pub, config.Record{FilePath: "refused.mp4"})
+		if admission.Release != nil {
 			t.Fatal("refused result must not carry a release fn")
 		}
-		if result != m7s.RecordGateRefused {
-			t.Fatalf("result #%d = %v, want RecordGateRefused", i, result)
+		if admission.Result != m7s.RecordGateRefused {
+			t.Fatalf("result #%d = %v, want RecordGateRefused", i, admission.Result)
 		}
 	}
 	if got := l.Waiting(); got != 0 {
@@ -259,9 +259,9 @@ func TestQueueAutoRecordingLogsInfoOnlyWhenSaturated(t *testing.T) {
 	env.plugin.recordLimiter.Store(l)
 
 	// (1) 名额空闲：只能有 Debug。
-	release, result := env.plugin.GateRecord(env.pub, config.Record{FilePath: "free-slot.mp4"})
-	if result != m7s.RecordGateQueued || release != nil {
-		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", release != nil, result)
+	admission := env.plugin.GateRecord(env.pub, config.Record{FilePath: "free-slot.mp4"})
+	if admission.Result != m7s.RecordGateQueued || admission.Release != nil {
+		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", admission.Release != nil, admission.Result)
 	}
 	if got := logs.count(slog.LevelInfo, "auto recording queued by concurrency limit"); got != 0 {
 		t.Fatalf("info queued log = %d with a free slot, want 0 (noise)", got)
@@ -276,8 +276,8 @@ func TestQueueAutoRecordingLogsInfoOnlyWhenSaturated(t *testing.T) {
 	}
 
 	// (2) 名额已满（上一步的录制占着唯一名额）：Info + active/waiting 字段。
-	if release, result = env.plugin.GateRecord(env.pub, config.Record{FilePath: "waiting.mp4"}); result != m7s.RecordGateQueued || release != nil {
-		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", release != nil, result)
+	if admission = env.plugin.GateRecord(env.pub, config.Record{FilePath: "waiting.mp4"}); admission.Result != m7s.RecordGateQueued || admission.Release != nil {
+		t.Fatalf("GateRecord = (%v, %v), want (nil, Queued)", admission.Release != nil, admission.Result)
 	}
 	if got := logs.count(slog.LevelInfo, "auto recording queued by concurrency limit"); got != 1 {
 		t.Fatalf("info queued log = %d when saturated, want 1", got)

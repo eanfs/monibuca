@@ -297,22 +297,22 @@ func recordLimitRefusalError(err error) error {
 // 直接申请名额（同步 API，需立即返回结果，不能排队到任务里）；GB28181 下载录像
 // 通过 m7s.IRecordSlotPlugin.AcquireRecordSlot 复用同一 limiter；flv/hls 使用
 // 各自的 recorder，不受 mp4.limits.maxconcurrentrecordings 约束。
-func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) (release func(), result m7s.RecordGateResult) {
+func (p *MP4Plugin) GateRecord(pub *m7s.Publisher, conf config.Record) m7s.RecordAdmission {
 	l := p.getRecordLimiter()
 	if !l.Enabled() {
-		return nil, m7s.RecordGateAdmit
+		return m7s.RecordAdmission{Result: m7s.RecordGateAdmit}
 	}
 	// 插件已停止时 AddTask 会拒绝待录任务，直接拒绝并交给调用方记日志。
 	if p.Context != nil && p.IsStopped() {
-		return nil, m7s.RecordGateRefused
+		return m7s.RecordAdmission{Result: m7s.RecordGateRefused}
 	}
 	if !l.CanQueue() {
-		return nil, m7s.RecordGateRefused
+		return m7s.RecordAdmission{Result: m7s.RecordGateRefused}
 	}
 	if !p.queueAutoRecording(pub, conf, l) {
-		return nil, m7s.RecordGateRefused
+		return m7s.RecordAdmission{Result: m7s.RecordGateRefused}
 	}
-	return nil, m7s.RecordGateQueued
+	return m7s.RecordAdmission{Result: m7s.RecordGateQueued}
 }
 
 // queueAutoRecording 把一次被推迟的自动录像参数交给任务系统，由

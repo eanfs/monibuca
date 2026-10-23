@@ -110,6 +110,23 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 	}
 }
 
+// applyRecordIndexConfig 把 record.index 注入 pkg 层录制器，并在索引关闭时告警。
+//
+// 告警必须走插件的 logger（p.Warn）：pkg 层没有插件 logger，用 slog.Default()
+// 会绕过插件的日志路由（文件/级别/远端汇集），导致“恢复能力被关闭”这条
+// 关键信息只出现在控制台。
+func (p *MP4Plugin) applyRecordIndexConfig() {
+	cfg := mp4pkg.IndexConfig{
+		Enable:        p.RecordConfig.Index.Enable,
+		FlushInterval: p.RecordConfig.Index.FlushInterval,
+	}
+	mp4pkg.SetIndexConfig(cfg)
+	if !cfg.Enable {
+		p.Warn("record.index disabled: recordings will not write a sidecar index, so interrupted recordings cannot be recovered on restart",
+			"flushInterval", cfg.FlushInterval)
+	}
+}
+
 func (p *MP4Plugin) Start() (err error) {
 	// 录制并发软保护：0 表示不限制，保持既有行为（无队列、无拒绝）。
 	p.recordLimiter.Store(NewRecordLimiter(p.Limits.MaxConcurrentRecordings))
@@ -120,10 +137,7 @@ func (p *MP4Plugin) Start() (err error) {
 	}
 
 	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
-	mp4pkg.SetIndexConfig(mp4pkg.IndexConfig{
-		Enable:        p.RecordConfig.Index.Enable,
-		FlushInterval: p.RecordConfig.Index.FlushInterval,
-	})
+	p.applyRecordIndexConfig()
 
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})

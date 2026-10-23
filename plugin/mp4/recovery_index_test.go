@@ -974,7 +974,14 @@ func TestIndexRecoveryTaskKeepsSourceWhenEnqueueUnverified(t *testing.T) {
 	mediaPath, sidecar, _ := buildRecoveryFixture(t, dir, "s3writer_unverified.tmp", []byte{0x11, 0x22, 0x33, 0x44})
 	output := filepath.Join(dir, "s3writer_unverified.mp4")
 
-	if err := mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{MediaPath: mediaPath, OutputPath: output}); err == nil {
+	// 移交必须通过 NewRecoveryUpload 的校验（storageType 非空、路径绝对），
+	// 这样失败才确实来自“后端无法解析”，而不是参数校验。
+	if err := mp4pkg.EnqueueRecoveryUpload(mp4pkg.RecoveryUpload{
+		Header:      mp4pkg.IndexHeader{StorageType: "s3"},
+		MediaPath:   mediaPath,
+		OutputPath:  output,
+		SidecarPath: sidecar,
+	}); err == nil {
 		t.Fatal("unresolvable storage must not report a verified enqueue")
 	}
 

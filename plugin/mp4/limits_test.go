@@ -190,12 +190,12 @@ func TestGateRecordRefusesWhenQueueFull(t *testing.T) {
 	l.mu.Unlock()
 	p.recordLimiter.Store(l)
 
-	release, result := p.GateRecord(&m7s.Publisher{}, config.Record{})
-	if release != nil {
+	admission := p.GateRecord(&m7s.Publisher{}, config.Record{})
+	if admission.Release != nil {
 		t.Fatal("refused recording must not return a release fn")
 	}
-	if result != m7s.RecordGateRefused {
-		t.Fatalf("result = %v, want RecordGateRefused", result)
+	if admission.Result != m7s.RecordGateRefused {
+		t.Fatalf("result = %v, want RecordGateRefused", admission.Result)
 	}
 }
 
@@ -203,12 +203,12 @@ func TestGateRecordRefusesWhenQueueFull(t *testing.T) {
 func TestGateRecordDisabledAdmits(t *testing.T) {
 	p := &MP4Plugin{}
 	p.recordLimiter.Store(NewRecordLimiter(0))
-	release, result := p.GateRecord(&m7s.Publisher{}, config.Record{})
-	if release != nil {
+	admission := p.GateRecord(&m7s.Publisher{}, config.Record{})
+	if admission.Release != nil {
 		t.Fatal("disabled limiter must not return a release fn")
 	}
-	if result != m7s.RecordGateAdmit {
-		t.Fatalf("result = %v, want RecordGateAdmit", result)
+	if admission.Result != m7s.RecordGateAdmit {
+		t.Fatalf("result = %v, want RecordGateAdmit", admission.Result)
 	}
 }
 

@@ -79,6 +79,35 @@ func EnqueueRecoveryUpload(upload RecoveryUpload) error {
 	return EnqueueRecoveryUploadWithOptions(upload, RecoveryUploadOptions{})
 }
 
+// NewRecoveryUpload 校验一次恢复产物移交并返回规范化副本。所有入队入口都必须
+// 经由它，保证任何调用方（包括测试注入路径）都不会把无效移交带进上传流程。
+//
+// 校验是“失败即保留”语义的一部分：调用方拿到错误时必须保留源媒体与 sidecar，
+// 等人工或后续扫描重试。绝不放宽成猜一个默认值：
+//   - Header.StorageType 为空 → 无法判定后端；猜 local 会直接把尚未上传的
+//     对象存储录像当成本地产物处理（回写后删 sidecar，原对象永远不存在）；
+//   - OutputPath / SidecarPath 必须是绝对路径 → 相对路径取决于进程工作目录，
+//     恢复任务与上传队列可能在不同目录语义下运行，会删错/读错文件。
+//
+// storageType 两端的空白会被规范化，避免与后端 GetKey() 的比较因空白失败。
+func NewRecoveryUpload(upload RecoveryUpload) (RecoveryUpload, error) {
+	storageType := strings.TrimSpace(upload.Header.StorageType)
+	if storageType == "" {
+		return RecoveryUpload{}, fmt.Errorf(
+			"mp4: recovery upload header missing storageType for %q; refusing to guess", upload.OutputPath)
+	}
+	if !filepath.IsAbs(upload.OutputPath) {
+		return RecoveryUpload{}, fmt.Errorf(
+			"mp4: recovery upload output path %q must be absolute", upload.OutputPath)
+	}
+	if !filepath.IsAbs(upload.SidecarPath) {
+		return RecoveryUpload{}, fmt.Errorf(
+			"mp4: recovery upload sidecar path %q must be absolute", upload.SidecarPath)
+	}
+	upload.Header.StorageType = storageType
+	return upload, nil
+}
+
 // EnqueueRecoveryUploadWithOptions 按 header.StorageType 解析后端并把产物交给
 // 既有上传队列（finalizeUploadTask）：
 //
@@ -88,18 +117,19 @@ func EnqueueRecoveryUpload(upload RecoveryUpload) error {
 //     Close 的重试/并发控制；成功后删 sidecar + 本地产物，失败后移入
 //     pending_uploads 并登记 upload_tasks，只有登记确认后才删 sidecar。
 func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUploadOptions) error {
+	// 构造校验先于任何副作用：无效移交（缺 storageType / 相对路径）不解析后端、
+	// 不投递任务、不碰任何文件，调用方据此保留源媒体与 sidecar。
+	validated, err := NewRecoveryUpload(upload)
+	if err != nil {
+		return err
+	}
+	upload = validated
+
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-
-	// header 缺 storageType 时不能按 local 处理：这可能是个对象存储暂存文件，
-	// 静默当成本地会直接删掉未上传的录像。宁可报错保留，等人工/后续修复。
-	storageType := strings.TrimSpace(upload.Header.StorageType)
-	if storageType == "" {
-		return fmt.Errorf("mp4: recovery upload header missing storageType for %s; refusing to guess",
-			upload.OutputPath)
-	}
+	storageType := upload.Header.StorageType
 
 	backend, err := recoveryResolveStorage(storageType, opts.Resolver)
 	if err != nil {
@@ -122,6 +152,12 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 	// 本地存储没有上传动作：恢复产物已在最终路径，回写 record_streams
 	// 后删除 sidecar 即完成。DB 失败时保留 sidecar，下次恢复会重试回写。
 	if storageType == string(storage.StorageTypeLocal) {
+		// 纵深防御：sidecar 声明的产物可能已被外部删除/移动。此时既不能回写
+		// record_streams（会留下指向不存在文件的记录），也不能删 sidecar
+		// （那是下次恢复重试的唯一线索）。
+		if _, err := os.Stat(upload.OutputPath); err != nil {
+			return fmt.Errorf("mp4: stat recovered local output %s: %w", upload.OutputPath, err)
+		}
 		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
 			return fmt.Errorf("mp4: update record_streams for recovered local file %s: %w", upload.OutputPath, err)
 		}
