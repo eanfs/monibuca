@@ -208,6 +208,20 @@ func TestResolveOffsetShiftDecisionTable(t *testing.T) {
 			mediaSize: preLen,
 			wantErr:   true,
 		},
+		{
+			name:      "negative preLen is invalid",
+			file:      IndexFile{OffsetShift: OffsetShiftPending, ShiftPreLen: -1, ShiftInsertLen: insertLen},
+			mediaSize: preLen,
+			wantErr:   true,
+		},
+		{
+			// sidecar 不可信：正数相加溢出成负数时不能把「>= 负数」当成已生效。
+			name: "overflowing preLen+insertLen is invalid",
+			file: IndexFile{OffsetShift: OffsetShiftPending,
+				ShiftPreLen: 1 << 62, ShiftInsertLen: 1 << 62},
+			mediaSize: 1,
+			wantErr:   true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

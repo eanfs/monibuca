@@ -1134,6 +1134,13 @@ func isPermanentIndexError(err error) bool {
 	return errors.Is(err, mp4pkg.ErrIndexCorrupt)
 }
 
+// 顶层 / moov 子 box 的扫描上限：只用于防止损坏文件把「判是否收尾」拖成
+// O(文件大小/8) 次读，合法 mp4 远低于这些值。
+const (
+	maxTopLevelBoxScan  = 1024
+	maxMoovChildBoxScan = 1024
+)
+
 // hasTopLevelMoov 扫描顶层 box，判断文件是否已经包含**完整**的 moov。
 // 只用于识别“已正常收尾”的本地录像，避免用重建结果覆盖完好文件。
 //
@@ -1155,7 +1162,9 @@ func hasTopLevelMoov(path string) bool {
 	fileSize := info.Size()
 
 	var header [16]byte
-	for pos := int64(0); pos+8 <= fileSize; {
+	// 顶层 box 数量有界：合法 mp4 不超过十几个。上限只防「大量 8 字节 box
+	// 让扫描退化成 O(文件大小/8) 次读」的损坏文件。
+	for pos, seen := int64(0), 0; pos+8 <= fileSize && seen < maxTopLevelBoxScan; seen++ {
 		if _, err = f.ReadAt(header[:8], pos); err != nil {
 			return false
 		}
@@ -1190,7 +1199,8 @@ func hasTopLevelMoov(path string) bool {
 // 任一子 box 结构非法即判为「moov 未写完」，不再继续猜测。
 func moovContainsMvhd(f io.ReaderAt, start, length int64) bool {
 	var header [16]byte
-	for pos := int64(0); pos+8 <= length; {
+	// 合法 moov 的子 box 数量是个位数；上限只防损坏文件把扫描拖长。
+	for pos, seen := int64(0), 0; pos+8 <= length && seen < maxMoovChildBoxScan; seen++ {
 		if _, err := f.ReadAt(header[:8], start+pos); err != nil {
 			return false
 		}

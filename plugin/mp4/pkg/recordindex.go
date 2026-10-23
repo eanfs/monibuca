@@ -188,10 +188,17 @@ func (f *IndexFile) ResolveOffsetShift(mediaSize int64) (int64, error) {
 			return 0, fmt.Errorf("%w: invalid shift record preLen=%d insertLen=%d",
 				ErrOffsetShiftUncertain, f.ShiftPreLen, f.ShiftInsertLen)
 		}
+		// sidecar 是不可信输入：两个正数相加仍可能溢出成负数，那样
+		// mediaSize >= 负数 会恒真，把损坏记录误判成「插入已生效」。
+		postLen := f.ShiftPreLen + f.ShiftInsertLen
+		if postLen < f.ShiftPreLen {
+			return 0, fmt.Errorf("%w: shift record overflows preLen=%d insertLen=%d",
+				ErrOffsetShiftUncertain, f.ShiftPreLen, f.ShiftInsertLen)
+		}
 		switch {
 		case mediaSize == f.ShiftPreLen:
 			return 0, nil
-		case mediaSize >= f.ShiftPreLen+f.ShiftInsertLen:
+		case mediaSize >= postLen:
 			return f.ShiftInsertLen, nil
 		}
 		return 0, fmt.Errorf("%w: media size %d, preLen %d, insertLen %d",
