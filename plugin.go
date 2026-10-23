@@ -103,8 +103,19 @@ type (
 		// GateRecord 在自动录制启动前决定是否准入：
 		//   release 非空时，调用方必须在录制任务 dispose 时调用一次；
 		//   result 为 Queued 表示插件已保存录制参数、稍后会自行启动；
-		//   result 为 Refused 表示本次录制无法启动，调用方记录 Error。
+		//   result 为 Refused 表示本次录制无法启动，调用方记录 Error；
+		//   result 为 Unset 或未知值视为拒绝（fail-closed）。
 		GateRecord(pub *Publisher, conf config.Record) (release func(), result RecordGateResult)
+	}
+
+	// IRecordSlotPlugin 由实现了录制并发保护的插件实现，供其它插件在直接发起
+	// 录制时申请同一份名额（例如 GB28181 下载录像复用 MP4 插件的
+	// maxconcurrentrecordings）。未实现该接口的插件不受并发限制。
+	IRecordSlotPlugin interface {
+		// AcquireRecordSlot 取得一个录制名额。返回的 release 必须且只能调用一次：
+		// 录制任务 dispose 时由 RecordWithDispose 的回调调用；任务启动失败或
+		// 录制根本没启动时由调用方显式调用。release 自身幂等。
+		AcquireRecordSlot(ctx context.Context) (release func(), err error)
 	}
 
 	ISubscribeHookPlugin interface {
@@ -113,8 +124,11 @@ type (
 )
 
 const (
+	// RecordGateUnset 是零值：插件没有给出明确结论。调用方必须按拒绝处理
+	// （fail-closed），否则任何漏赋值的路径都会静默绕过并发限制。
+	RecordGateUnset RecordGateResult = iota
 	// RecordGateAdmit 表示立即允许录制。
-	RecordGateAdmit RecordGateResult = iota
+	RecordGateAdmit
 	// RecordGateQueued 表示插件已保存录制参数并会在取得名额后启动。
 	RecordGateQueued
 	// RecordGateRefused 表示名额与等待队列均已满，本次录制被拒绝。
@@ -831,6 +845,40 @@ func (p *Plugin) Push(streamPath string, conf config.Push, subConf *config.Subsc
 	pusher.GetPushJob().Init(pusher, p, streamPath, conf, subConf)
 }
 
+// AddTaskRejected 报告 Job.AddTask 是否同步拒绝了任务。
+//
+// gotask 的 AddTask 返回 *task.Task 而不是 error：拒绝时它把该任务的 startup
+// promise 置为 rejected，任务永远不会进入 Start()/Go()。拒绝有两条路径：
+//   - 父 Job 已停止：任务的 Context 随父上下文取消，IsStopped() 为真；
+//   - 键冲突 / 事件循环输入通道满（ErrTooManyChildren）：任务被立刻从父 Job
+//     的子任务表里删除，但 Context 仍然有效。
+//
+// 调用方必须为被拒任务预留的资源（名额、run 状态等）自行回收，否则会永久泄漏。
+// 实现只依赖 context 状态与 sync.Map 成员关系，不读 Task.state（该字段由事件
+// 循环 goroutine 无锁写入，跨 goroutine 读会触发 -race）。
+func AddTaskRejected(parent task.IJob, t *task.Task) bool {
+	if parent == nil || t == nil {
+		return false
+	}
+	if parent.IsStopped() {
+		// 父 Job 已停止时 AddTask 一律同步拒绝，任务不会运行。
+		return true
+	}
+	if t.IsStopped() {
+		// 任务上下文已取消：它跑过（或正在收尾），不是同步拒绝。
+		return false
+	}
+	registered := false
+	parent.RangeSubTask(func(child task.ITask) bool {
+		if child.GetTask() == t {
+			registered = true
+		}
+		return true
+	})
+	// 上下文仍有效却不在子任务表里 = 被 AddTask 同步拒绝后删除。
+	return !registered
+}
+
 // recordOnPublish 启动一次自动录像；若插件实现了 IRecordGatePlugin，
 // 先由插件做并发准入判断。
 func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
@@ -844,17 +892,35 @@ func (p *Plugin) recordOnPublish(pub *Publisher, conf config.Record) {
 	case RecordGateAdmit:
 		job := p.RecordWithDispose(pub, conf, nil, release)
 		if release != nil {
+			if job.GetTask().IsStopped() {
+				// RecordJob 的 AddTask 已被同步拒绝（Records 已停止）：任务不会
+				// 启动、dispose 也不会触发，必须在此归还名额，否则永久泄漏。
+				release()
+				p.Error("auto recording not started: record job rejected",
+					"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", job.GetTask().StopReason())
+				return
+			}
 			// 自动录像不等待启动；若异步启动失败，用短命任务归还名额。
 			watcher := &recordStartWatcher{job: job, onStartFailure: release}
 			watcher.key = fmt.Sprintf("record-start-watch:%p", watcher)
-			p.AddTask(watcher, p.Logger)
+			if w := p.AddTask(watcher, p.Logger); AddTaskRejected(p, w) {
+				// 没人观察启动结果。release 幂等且 stopOnce 保证最多归还一次：
+				// 宁可短暂放宽上限（插件正在停止，录制很快也会停），也不能永久泄漏。
+				release()
+				p.Error("record start watcher rejected: released recording slot eagerly",
+					"streamPath", pub.StreamPath, "filePath", conf.FilePath, "reason", w.StopReason())
+			}
 		}
 	case RecordGateQueued:
 		// 插件已保存录制参数，取得名额后会自行启动；此处只做可观测记录。
 		p.Info("auto recording queued by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
-	default:
+	case RecordGateRefused:
 		// 不得静默丢弃：记录完整参数，便于人工通过 API 补录。
 		p.Error("auto recording refused by concurrency limit", "streamPath", pub.StreamPath, "filePath", conf.FilePath)
+	default:
+		// RecordGateUnset 或未知值：fail-closed，绝不启动录制。
+		p.Error("auto recording skipped: record gate returned unset/unknown result",
+			"streamPath", pub.StreamPath, "filePath", conf.FilePath, "result", int(result))
 	}
 }
 
@@ -887,6 +953,15 @@ func (p *Plugin) Record(pub *Publisher, conf config.Record, subConf *config.Subs
 // 必须使用本方法而不是 Record 之后再调用 job.OnDispose：gotask 的 dispose
 // 监听器在任务开始前注册才会被消费，任务已进入 DISPOSING/DISPOSED 后再注册
 // 永远不会触发（与 OnStart 的顺序约束同源）。
+//
+// 并发/生命周期约束：
+//   - pub.Using(job) 是裸 append（Task.Using），publisher 的 dispose 会在它自己
+//     的事件循环 goroutine 上遍历并截断同一 slice。因此在非 publisher 所有者的
+//     goroutine 上调用本方法前，调用方必须先确认 pub.GetTask().IsStopped() 为假
+//     （见 plugin/mp4 的 pendingAutoRecordTask.Go）。该检查仍有一个极窄窗口，
+//     所以队列路径的录制任务若因 publisher 已停止而失败，必须自行退出并归还名额。
+//   - RecordJob 的 AddTask 若被 Records 同步拒绝，任务不会启动、onDispose 也不会
+//     触发：调用方必须检查返回值并在该路径显式释放资源（AddTaskRejected）。
 func (p *Plugin) RecordWithDispose(pub *Publisher, conf config.Record, subConf *config.Subscribe, onDispose func()) *RecordJob {
 	recorder := p.Meta.NewRecorder(conf)
 	job := recorder.GetRecordJob()

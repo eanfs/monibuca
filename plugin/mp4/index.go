@@ -49,7 +49,7 @@ type MP4Plugin struct {
 
 	// Limits 是录制资源软保护配置（yaml: mp4.limits）。
 	Limits struct {
-		MaxConcurrentRecordings int `default:"0" desc:"最大并发录制数，0 表示不限制。超限时请求进入有界等待队列（容量=上限×4），排队超过 30s 返回 503；自动录像(onpub/pull_on_start)排队超限时记录 Error 并保留参数。"`
+		MaxConcurrentRecordings int `default:"0" desc:"最大并发录制数，0 表示不限制。超限时请求进入有界等待队列（容量=上限×4），排队超过 30s 返回 503；自动录像(onpub/pull_on_start)、事件录像与 GB28181 下载录像共用该名额，自动录像排队超限时记录 Error 并保留参数。"`
 		MaxMemoryMB             int `default:"0" desc:"录制内存预算(MB)，0 表示不限制。当前版本仅解析并预留，尚未强制执行。"`
 	} `yaml:"limits" desc:"录制资源软保护配置"`
 

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	task "github.com/eanfs/gotask"
+
+	m7s "m7s.live/v5"
 )
 
 // 恢复 API 的运行状态机：运行登记/幂等判定、进度观测、历史淘汰。
@@ -168,18 +170,25 @@ func (s *recoveryAPIState) startRun(owner *IndexRecoveryTask, dirs []string, fil
 	// watcher 必须有唯一 key：默认 key 是任务 ID，这里用自身指针，语义明确且
 	// 不会与同批其它 watcher 冲突。
 	watcher.key = fmt.Sprintf("recovery-start-watch:%p", watcher)
-	owner.AddTask(watcher, owner.Logger)
+	watcherTask := owner.AddTask(watcher, owner.Logger)
 
-	// 两个 AddTask 都只是入队，不会阻塞；若 owner 在登记瞬间已停止，两次
-	// AddTask 都会被立即拒绝，watcher 永远不会运行、没人能回填状态。
-	// 这是唯一的同步失败路径（正常运行时 owner 只在进程退出时停止）。
-	if owner.IsStopped() {
-		reason := owner.StopReason()
+	// AddTask 只入队、不阻塞，但 owner 已停止（或事件循环输入通道满）时会同步
+	// 拒绝：任务永远不会运行、没人能回填状态，run 会永久停在 running。必须检查
+	// 返回值并同步收尾。m7s.AddTaskRejected 不读 Task.state（-race 安全）。
+	if m7s.AddTaskRejected(owner, child) {
+		reason := child.StopReason()
 		if reason == nil {
 			reason = errRecoveryTaskStopped
 		}
 		s.failStart(run, reason)
 		return id, false, false, fmt.Errorf("start recovery run: %w", reason)
+	}
+	if m7s.AddTaskRejected(owner, watcherTask) {
+		// 恢复任务本身已被接纳，runRequest 会正常执行，因此不能标 failed
+		// （否则会把正在执行的 run 误报为失败）；只是没人能在它的启动阶段失败
+		// 时回填状态，记 Error 便于排障。
+		owner.Error("recovery start watcher rejected by task system; run status may stay running if the child fails to start",
+			"runId", id, "reason", watcherTask.StopReason())
 	}
 	return id, false, false, nil
 }

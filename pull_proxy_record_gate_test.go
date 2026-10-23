@@ -170,3 +170,19 @@ func TestPullProxyOnStartAdmittedRecordingStarts(t *testing.T) {
 		t.Fatalf("release called %d times while recording is still active, want 0", got)
 	}
 }
+
+// gate 返回值未显式设置（零值 RecordGateUnset）时必须 fail-closed：不启动录制。
+// 该接口是本 PR 新增的，零值改造没有兼容成本；但若零值等于 Admit，任何漏赋值
+// 都会静默放开并发限制。
+func TestPullProxyOnStartUnsetGateResultDoesNotRecord(t *testing.T) {
+	env := newPullGateTestEnv(t, RecordGateUnset)
+
+	env.publisher().processPullProxyOnStart()
+
+	if got := env.gate.calls.Load(); got != 1 {
+		t.Fatalf("GateRecord calls = %d, want 1", got)
+	}
+	if got := env.server.Records.Length(); got != 0 {
+		t.Fatalf("unset gate result created %d recording job(s), want 0 (fail-closed)", got)
+	}
+}

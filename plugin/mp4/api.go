@@ -813,6 +813,20 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 		return job.StreamPath == req.StreamPath
 	})
 	if tmpJob == nil { //为空表示没有正在进行的录制，也就是没有自动录像，则进行正常的事件录像
+		// 事件录像与 StartRecord 共用并发名额：不能绕过
+		// mp4.limits.maxconcurrentrecordings 直接开录。名额先于流查找申请（与
+		// StartRecord 顺序一致），之后所有未启动/错误路径都由 defer 归还；
+		// 录制任务启动成功后所有权移交，由 dispose 回调释放。
+		release, acquireErr := p.acquireRecordingSlot(ctx)
+		if acquireErr != nil {
+			return nil, recordLimitRefusalError(acquireErr)
+		}
+		slotHeld := release != nil
+		defer func() {
+			if slotHeld && release != nil {
+				release()
+			}
+		}()
 		if stream, ok := p.Server.Streams.SafeGet(req.StreamPath); ok {
 			// Confirmed via 寸止: REQ-MP4-002 — 事件录像支持 type
 			recordConf := config.Record{
@@ -834,7 +848,12 @@ func (p *MP4Plugin) EventStart(ctx context.Context, req *mp4pb.ReqEventRecord) (
 			var subconfig config.Subscribe
 			defaults.SetDefaults(&subconfig)
 			subconfig.BufferTime = beforeDuration
-			p.Record(stream, recordConf, &subconfig)
+			eventJob := p.RecordWithDispose(stream, recordConf, &subconfig, release)
+			if startErr := eventJob.WaitStarted(); startErr != nil {
+				// 未启动的任务不会触发 dispose 回调，由上面的 defer 归还名额。
+				return nil, startErr
+			}
+			slotHeld = false // 名额所有权移交给录制任务
 		}
 	} else {
 		if tmpJob.Event != nil { //当前有事件录像正在录制，则更新该录像的结束时间

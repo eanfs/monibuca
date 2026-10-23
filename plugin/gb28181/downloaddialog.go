@@ -12,9 +12,9 @@ import (
 
 	"m7s.live/v5"
 
+	task "github.com/eanfs/gotask"
 	sipgo "github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
-	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/config"
 	gb28181 "m7s.live/v5/plugin/gb28181/pkg"
 	mrtp "m7s.live/v5/plugin/rtp/pkg"
@@ -473,8 +473,33 @@ func (d *DownloadDialog) Go() error {
 			FilePath: filePath, // 完整路径（不含扩展名）
 		}
 
-		// 使用 Plugin.Record 方法创建录制任务
-		mp4Plugin.Record(publisher, recConf, nil)
+		// 复用 MP4 插件的录制并发名额（mp4.limits.maxconcurrentrecordings）：
+		// 下载录像同样是长录制，绕过限流会让 max 形同虚设。插件未实现
+		// IRecordSlotPlugin 时 release 为 nil，行为与旧版本一致（不限制）。
+		var release func()
+		if slot, ok := mp4Plugin.GetHandler().(m7s.IRecordSlotPlugin); ok {
+			var slotErr error
+			release, slotErr = slot.AcquireRecordSlot(d)
+			if slotErr != nil {
+				// 名额拿不到就不要继续拉流：否则只下载不录制，浪费设备带宽。
+				publisher.Stop(slotErr)
+				d.Status = "failed"
+				d.ErrorString = fmt.Sprintf("录制并发已达上限: %v", slotErr)
+				return fmt.Errorf("申请录制名额失败: %w", slotErr)
+			}
+		}
+		// 名额所有权移交给录制任务：dispose 时释放；启动失败由下面的
+		// WaitStarted 错误路径显式归还（未启动的任务不会触发 dispose 回调）。
+		job := mp4Plugin.RecordWithDispose(publisher, recConf, nil, release)
+		if startErr := job.WaitStarted(); startErr != nil {
+			if release != nil {
+				release()
+			}
+			publisher.Stop(startErr)
+			d.Status = "failed"
+			d.ErrorString = fmt.Sprintf("启动 MP4 录制失败: %v", startErr)
+			return fmt.Errorf("启动 MP4 录制失败: %w", startErr)
+		}
 
 		// 保存存储路径前缀（用于后续模糊匹配查找完整路径）
 		d.FilePath = filePath

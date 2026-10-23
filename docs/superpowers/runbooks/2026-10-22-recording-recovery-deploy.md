@@ -696,6 +696,36 @@ curl -s "${AUTH[@]}" 'http://127.0.0.1:8080/mp4/api/recovery/list?page=1&size=50
 `counts.failed` 必须为 0 或有明确原因；`counts.recovering` 不应长时间不降；
 `pending_uploads` 不应持续增长。
 
+### 8.6 录制并发名额（`mp4.limits.maxconcurrentrecordings`）
+
+配置示例（0 = 不限制，未配置即维持旧行为）：
+
+```yaml
+mp4:
+  limits:
+    maxconcurrentrecordings: 32
+```
+
+名额的持有期 = 一次录制的完整生命周期（含录制器无限重试期）。**已知限制**：
+`recoder.go` 用 `SetRetry(-1, …)` 无限重试，所以「启动成功但子任务持续失败」的
+录制会一直持有名额。配置 `max=N` 后，N 路坏流就能让后续自动录像全部停在排队
+或拒绝状态，**只能运维介入**（重启进程或修好坏流），不会自愈。
+
+检查：
+
+```bash
+docker logs --since 30m xde-monibuca 2>&1 | grep -E "auto recording (queued|refused)|queued auto recording" | tail -20
+```
+
+- `auto recording queued by concurrency limit` 持续大量出现 → 名额长期被占满；
+- `auto recording refused by concurrency limit` / `queued auto recording rejected by task system`
+  → 本次录像被丢弃（日志含 `streamPath`/`filePath`，可人工补录），不要静默放过；
+- `auto recording skipped: record gate returned unset/unknown result` → 插件代码缺陷，
+  按 fail-closed 未启动录制，需升级修复。
+
+排障顺序：先确认是否有坏流/磁盘打满导致录制器持续重试（`record job failed to start`、
+`record stopped` 中 `samples=0`），再评估是否临时调大 `maxconcurrentrecordings`。
+
 ### 8.5 验收记录（现场填写）
 
 | 项目 | 期望 | 实际 | 结论 |

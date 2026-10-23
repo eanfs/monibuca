@@ -275,6 +275,47 @@ func TestStartRecordUnlimitedPreservesBehavior(t *testing.T) {
 	}
 }
 
+// 事件录像入口必须与 StartRecord 走同一套限流：名额满且队列满时返回 503，
+// 而不是绕过 maxconcurrentrecordings 直接开录。
+func TestEventStartGoesThroughLimiter(t *testing.T) {
+	p := newLimiterTestPlugin(t)
+	l := NewRecordLimiter(1)
+	l.timeout = 10 * time.Millisecond
+	l.active = 1
+	l.mu.Lock()
+	for i := 0; i < l.queueCapacity; i++ {
+		l.waiters = append(l.waiters, &recordWaiter{ch: make(chan struct{}, 1), limiter: l})
+	}
+	l.mu.Unlock()
+	p.recordLimiter.Store(l)
+
+	_, err := p.EventStart(context.Background(), &mp4pb.ReqEventRecord{StreamPath: "live/missing"})
+	if err == nil {
+		t.Fatal("EventStart must be refused when the limiter is saturated")
+	}
+	if got := status.Code(err); got != codes.Unavailable {
+		t.Fatalf("status code = %v, want %v (err=%v)", got, codes.Unavailable, err)
+	}
+	if got := l.Waiting(); got != l.queueCapacity {
+		t.Fatalf("waiting = %d, want %d (limiter state must be untouched)", got, l.queueCapacity)
+	}
+}
+
+// RecordGateResult 的零值必须是 RecordGateUnset：调用方据此 fail-closed，
+// 未显式给出结论的插件不得被当作“准入”。
+func TestRecordGateUnsetIsZeroValue(t *testing.T) {
+	var unset m7s.RecordGateResult
+	if unset != m7s.RecordGateUnset {
+		t.Fatalf("zero value = %v, want RecordGateUnset", unset)
+	}
+	if m7s.RecordGateAdmit == m7s.RecordGateUnset {
+		t.Fatal("RecordGateAdmit must not be the zero value")
+	}
+	if m7s.RecordGateQueued == m7s.RecordGateUnset || m7s.RecordGateRefused == m7s.RecordGateUnset {
+		t.Fatal("all gate results must be distinct from the zero value")
+	}
+}
+
 func newLimiterTestPlugin(t *testing.T) *MP4Plugin {
 	t.Helper()
 	p := &MP4Plugin{}
@@ -412,31 +453,22 @@ func TestRecordJobDisposeReleasesSlotExactlyOnce(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 }
 
-// Queued 的自动录像必须在 Release 后取得名额并启动录制；同时 Go() 必须使用
-// Reserve 时的 limiter（这里故意把插件当前 limiter 换成另一代）。
+// 排队任务必须**自己**申请名额（GateRecord 不再预占）：名额被占满时先排队，
+// Release 后取得名额并启动录制。
 func TestPendingAutoRecordQueuedThenStarts(t *testing.T) {
 	env := newRecordingTestEnv(t)
 	l := NewRecordLimiter(1)
 	l.timeout = time.Second
+	env.plugin.recordLimiter.Store(l)
 	if err := l.Acquire(context.Background()); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
 	}
-	waiter, ok := l.Reserve()
-	if !ok || waiter == nil {
-		t.Fatalf("Reserve = (%v, %v), want a queued waiter", waiter, ok)
-	}
-
-	// 模拟插件重启：当前 limiter 已是新一代，Go() 不得用它。
-	nextGen := NewRecordLimiter(1)
-	env.plugin.recordLimiter.Store(nextGen)
 
 	todo := &pendingAutoRecordTask{
-		plugin:  env.plugin,
-		pub:     env.pub,
-		conf:    config.Record{FilePath: "queued.mp4"},
-		limiter: l,
-		waiter:  waiter,
-		key:     "queued-record-test",
+		plugin: env.plugin,
+		pub:    env.pub,
+		conf:   config.Record{FilePath: "queued.mp4"},
+		key:    "queued-record-test",
 	}
 	todo.Logger = slog.New(slog.DiscardHandler)
 	todo.Context = context.Background() // 生产环境由 AddTask 注入；直接调 Go() 时需要
@@ -444,7 +476,7 @@ func TestPendingAutoRecordQueuedThenStarts(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- todo.Go() }()
 
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, "pending task to queue", func() bool { return l.Waiting() == 1 })
 	select {
 	case <-env.rec.started:
 		t.Fatal("recording started before a slot was released")
@@ -467,20 +499,9 @@ func TestPendingAutoRecordQueuedThenStarts(t *testing.T) {
 	}
 
 	if got := l.Active(); got != 1 {
-		t.Fatalf("active on reserved limiter = %d, want 1", got)
+		t.Fatalf("active while recording = %d, want 1", got)
 	}
-	if got := nextGen.Active(); got != 0 {
-		t.Fatalf("slot released on wrong limiter generation: active = %d, want 0", got)
-	}
-
-	var keeper task.Task
-	if err := env.rec.job.AddTask(&keeper).WaitStarted(); err != nil {
-		t.Fatalf("add keeper task: %v", err)
-	}
-	env.rec.job.GetTask().Stop(task.ErrTaskComplete)
-	waitFor(t, "queued recording to release slot", func() bool { return l.Active() == 0 })
-	waitFor(t, "Records event loop to exit", func() bool { return !env.server.Records.EventLoopRunning() })
-	time.Sleep(20 * time.Millisecond)
+	stopQueuedRecording(t, env, l)
 }
 
 // 启动失败（此处 Records 已停止，AddTask 被拒）必须立即归还名额。
@@ -488,12 +509,9 @@ func TestPendingAutoRecordReleasesSlotWhenStartFails(t *testing.T) {
 	env := newRecordingTestEnv(t)
 	l := NewRecordLimiter(1)
 	l.timeout = time.Second
+	env.plugin.recordLimiter.Store(l)
 	if err := l.Acquire(context.Background()); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
-	}
-	waiter, ok := l.Reserve()
-	if !ok || waiter == nil {
-		t.Fatalf("Reserve = (%v, %v), want a queued waiter", waiter, ok)
 	}
 
 	// Records 停止后，RecordJob 的 AddTask 必然被拒 → WaitStarted 失败。
@@ -503,18 +521,17 @@ func TestPendingAutoRecordReleasesSlotWhenStartFails(t *testing.T) {
 	}
 
 	todo := &pendingAutoRecordTask{
-		plugin:  env.plugin,
-		pub:     env.pub,
-		conf:    config.Record{FilePath: "start-fails.mp4"},
-		limiter: l,
-		waiter:  waiter,
-		key:     "failed-record-test",
+		plugin: env.plugin,
+		pub:    env.pub,
+		conf:   config.Record{FilePath: "start-fails.mp4"},
+		key:    "failed-record-test",
 	}
 	todo.Logger = slog.New(slog.DiscardHandler)
 	todo.Context = context.Background() // 生产环境由 AddTask 注入；直接调 Go() 时需要
 
 	done := make(chan error, 1)
 	go func() { done <- todo.Go() }()
+	waitFor(t, "pending task to queue", func() bool { return l.Waiting() == 1 })
 
 	l.Release()
 	select {
