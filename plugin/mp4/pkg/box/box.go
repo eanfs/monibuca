@@ -312,6 +312,12 @@ func remainingBytes(r io.Reader) (int64, bool) {
 		Stat() (os.FileInfo, error)
 		Seek(offset int64, whence int) (int64, error)
 	}:
+		// 必须先 Seek 再 Stat：storage.File(S3/COS/OSS) 的 Stat() 依赖本地临时
+		// 文件已存在，而 Seek 才会按需惰性下载/落盘缓冲。
+		cur, err := v.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, false
+		}
 		info, err := v.Stat()
 		if err != nil {
 			return 0, false
@@ -319,10 +325,6 @@ func remainingBytes(r io.Reader) (int64, bool) {
 		// 管道/设备/目录的 Size() 没有"剩余字节"的含义（常为 0），误用会把所有
 		// 带负载的 box 判成超限，退回兜底上限。
 		if !info.Mode().IsRegular() {
-			return 0, false
-		}
-		cur, err := v.Seek(0, io.SeekCurrent)
-		if err != nil {
 			return 0, false
 		}
 		if cur >= info.Size() {

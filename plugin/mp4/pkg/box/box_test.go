@@ -335,3 +335,52 @@ func TestRemainingBytes(t *testing.T) {
 		t.Fatalf("pipe must not report remaining bytes, got %d", n)
 	}
 }
+
+// entry_count 同样来自不可信负载：16 字节 stsd 恰好是恢复入口的最小合法边界，
+// 声明 0xFFFFFFFF 条若直接作为 make 的 cap，按 IBox(接口)16 字节算约 68GB。
+func TestReadFromRejectsHugeEntryCount(t *testing.T) {
+	stsd := boxHeader(16, "stsd")               // 8 字节头
+	stsd = append(stsd, 0, 0, 0, 0)             // version/flags
+	stsd = append(stsd, 0xFF, 0xFF, 0xFF, 0xFF) // entry_count = 2^32-1
+	if len(stsd) != 16 {
+		t.Fatalf("fixture = %d bytes, want 16", len(stsd))
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ReadFrom panicked: %v", r)
+		}
+	}()
+	var got IBox
+	var err error
+	alloc := allocDelta(func() { got, err = ReadFrom(bytes.NewReader(stsd)) })
+	if err == nil {
+		t.Fatalf("expected error, got box %+v", got)
+	}
+	t.Logf("err=%v alloc=%d bytes", err, alloc)
+	if alloc > maxReadFromAlloc {
+		t.Fatalf("allocated %d bytes for %d input bytes", alloc, len(stsd))
+	}
+}
+
+// 合法多 entry 的 stsd 回归：条数上界不能误伤正常文件。
+func TestReadFromAcceptsMultiEntrySTSD(t *testing.T) {
+	video := CreateVisualSampleEntry(TypeAVC1, 320, 240, CreateDataBox(TypeAVCC, []byte{1, 2, 3}))
+	audio := CreateAudioSampleEntry(TypeALAW, 1, 16, 8000, nil)
+	var buf bytes.Buffer
+	if _, err := WriteTo(&buf, CreateSTSDBox(video, audio)); err != nil {
+		t.Fatalf("serialize stsd: %v", err)
+	}
+	parsed, err := ReadFrom(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+	stsd, ok := parsed.(*STSDBox)
+	if !ok {
+		t.Fatalf("parsed as %T, want *STSDBox", parsed)
+	}
+	if len(stsd.Entries) != 2 ||
+		stsd.Entries[0].Type() != TypeAVC1 || stsd.Entries[1].Type() != TypeALAW {
+		t.Fatalf("entries = %+v, want avc1+alaw", stsd.Entries)
+	}
+}

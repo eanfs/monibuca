@@ -278,7 +278,16 @@ func (stsd *STSDBox) Unmarshal(buf []byte) (IBox, error) {
 	if len(buf) < 4 {
 		return nil, fmt.Errorf("box stsd: payload %d too short for entry count", len(buf))
 	}
-	stsd.Entries = make([]IBox, 0, binary.BigEndian.Uint32(buf))
+	// entry_count 直接来自不可信负载，不能直接当 make 的 cap：IBox 是接口(16 字节)，
+	// 0xFFFFFFFF 条 ≈ 68GB。子 box 头最短 8 字节，故条数不可能超过剩余负载/8，
+	// 先校验再分配。16 字节的 stsd(恢复入口的最小合法尺寸)在此处 maxEntries=0。
+	entryCount := binary.BigEndian.Uint32(buf)
+	maxEntries := (len(buf) - 4) / BasicBoxLen
+	if uint64(entryCount) > uint64(maxEntries) {
+		return nil, fmt.Errorf("box stsd: entry count %d exceeds %d entries in %d bytes",
+			entryCount, maxEntries, len(buf)-4)
+	}
+	stsd.Entries = make([]IBox, 0, entryCount)
 	r := bytes.NewReader(buf[4:])
 	for {
 		box, err := ReadFrom(r)

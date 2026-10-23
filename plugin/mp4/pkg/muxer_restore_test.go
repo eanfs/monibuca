@@ -520,6 +520,8 @@ func TestRestoreTrackRejectsInvalidSTSD(t *testing.T) {
 		{"size_twelve_missing_entry_count", append(stsdHead(12), fullPayload()...)},
 		{"size_gt_len", stsdHead(0x100)},
 		{"size_max_uint32", stsdHead(0xFFFFFFFF)},
+		// 16 字节(恢复入口最小合法) + entry_count=2^32-1：不能变成 68GB 分配。
+		{"size16_huge_entry_count", append(stsdHead(16), []byte{0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF}...)},
 		// size==1 是 largesize 形式，8 字节尺寸小于 16 会让 make 下溢。
 		{"largesize_zero", largeHead(0)},
 		{"largesize_eight", largeHead(8)},
