@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	task "github.com/eanfs/gotask"
 	m7s "m7s.live/v5"
+	"m7s.live/v5/pkg/storage"
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 )
 
@@ -42,6 +44,15 @@ func startRecoveryAPITestTask(t *testing.T, recovery *IndexRecoveryTask) {
 func doRecoveryRequest(t *testing.T, handler http.HandlerFunc, method, target string,
 	body []byte, pathValues map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doRecoveryRequestFrom(t, handler, method, target, body, pathValues, "127.0.0.1:54321")
+}
+
+// doRecoveryRequestFrom 与 doRecoveryRequest 相同，但可指定来源地址。
+// 默认用回环地址：httptest.NewRequest 的默认 RemoteAddr（192.0.2.1:1234）
+// 会让「未启用登录时 run 仅限本机」的闸门把请求判为远程并拒绝。
+func doRecoveryRequestFrom(t *testing.T, handler http.HandlerFunc, method, target string,
+	body []byte, pathValues map[string]string, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
 	var reader *bytes.Reader
 	if body == nil {
 		reader = bytes.NewReader(nil)
@@ -49,6 +60,7 @@ func doRecoveryRequest(t *testing.T, handler http.HandlerFunc, method, target st
 		reader = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, reader)
+	req.RemoteAddr = remoteAddr
 	for key, value := range pathValues {
 		req.SetPathValue(key, value)
 	}
@@ -616,5 +628,196 @@ func TestRecoveryRunProgressIgnoresInFlightStartupScan(t *testing.T) {
 	}
 	if status.Result == nil || status.Result.Scanned != 0 || status.Result.Recovered != 0 {
 		t.Fatalf("result must reflect the manual run only: %+v", status.Result)
+	}
+}
+
+// ---------------------------------------------------------------- 信任边界（C1）
+
+// buildRecoveryFixtureWithFilePath 造一个 FilePath 由调用方指定的 sidecar，
+// 用于复现「sidecar 内容被篡改」的现场（FilePath 与 MediaPath 无绑定）。
+func buildRecoveryFixtureWithFilePath(t *testing.T, dir, name string, payload []byte,
+	filePath string) (mediaPath, sidecar string) {
+	t.Helper()
+	mediaPath, payloadStart := writeHalfWrittenRecording(t, dir, name, payload)
+	split := len(payload) / 2
+	if split == 0 {
+		split = len(payload)
+	}
+	records := []mp4pkg.IndexRecord{
+		{Flags: 0x01, TrackID: 1, Size: uint32(split), Offset: uint64(payloadStart), DTS: 0, Duration: 40},
+		{TrackID: 1, Size: uint32(len(payload) - split), Offset: uint64(payloadStart) + uint64(split), DTS: 40, Duration: 40},
+	}
+	sidecar = mediaPath + mp4pkg.IndexExtension
+	writeRecoverySidecar(t, sidecar, mp4pkg.IndexHeader{
+		Version:     1,
+		StreamPath:  "live/test",
+		MediaPath:   mediaPath,
+		FilePath:    filePath,
+		TargetName:  filepath.Base(filePath),
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Hour),
+		Tracks: []mp4pkg.IndexTrack{{
+			ID: 1, FourCC: "avc1", Width: 320, Height: 240, STSD: recoveryTestSTSD(t),
+		}},
+	}, records)
+	ageRecoveryFiles(t, mediaPath, sidecar)
+	return mediaPath, sidecar
+}
+
+// 默认扫描目录不得包含系统临时目录：/tmp 通常全局可写，任何本机进程都能在
+// 其中投放 sidecar，配合无鉴权 run 端点构成任意文件读取/任意对象键覆盖。
+func TestDefaultDirsExcludeSystemTempDirWithoutS3TempDir(t *testing.T) {
+	recovery := &IndexRecoveryTask{plugin: &MP4Plugin{}}
+	dirs := recovery.defaultDirs()
+	tempDir := filepath.Clean(os.TempDir())
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			t.Fatalf("defaultDirs must not contain empty entries: %v", dirs)
+		}
+		if filepath.Clean(dir) == tempDir {
+			t.Fatalf("defaultDirs must not include system temp dir %q: %v", tempDir, dirs)
+		}
+	}
+}
+
+// 显式配置 storage.s3.tempdir 时，该目录仍是默认扫描目录。
+func TestDefaultDirsIncludeConfiguredS3TempDir(t *testing.T) {
+	tempDir := t.TempDir()
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = map[string]any{
+		string(storage.StorageTypeS3): map[string]any{"tempdir": tempDir},
+	}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	dirs := (&IndexRecoveryTask{plugin: plugin}).defaultDirs()
+	for _, dir := range dirs {
+		if filepath.Clean(dir) == filepath.Clean(tempDir) {
+			return
+		}
+	}
+	t.Fatalf("defaultDirs = %v, want configured s3 tempdir %q", dirs, tempDir)
+}
+
+// 未启用登录、未显式放行时，非回环来源的 run 必须 403：否则任何能访问
+// HTTP 端口的进程都能触发恢复扫描（白名单内的 sidecar 即可驱动文件读写）。
+func TestRecoveryRunRejectsRemoteClientWithoutLogin(t *testing.T) {
+	dir := t.TempDir()
+	p, recovery := newRecoveryAPITestPlugin(t, dir)
+	p.Server = &m7s.Server{} // EnableLogin 默认 false
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"dir": dir})
+	rec := doRecoveryRequestFrom(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run",
+		body, nil, "203.0.113.9:4321")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "allowunauthenticated") {
+		t.Fatalf("403 body must explain how to enable the endpoint: %s", rec.Body.String())
+	}
+	// 拒绝必须发生在登记任务之前：没有运行被创建。
+	p.recoveryState.mu.Lock()
+	registered := len(p.recoveryState.runs)
+	p.recoveryState.mu.Unlock()
+	if registered != 0 {
+		t.Fatalf("rejected request registered %d recovery runs", registered)
+	}
+}
+
+// 显式开启 record.recovery.allowunauthenticated 后，非回环来源可正常触发。
+func TestRecoveryRunAllowsRemoteClientWithOptIn(t *testing.T) {
+	dir := t.TempDir()
+	p, recovery := newRecoveryAPITestPlugin(t, dir)
+	p.Server = &m7s.Server{}
+	p.RecordConfig.Recovery.AllowUnauthenticated = true
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"dir": dir})
+	rec := doRecoveryRequestFrom(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run",
+		body, nil, "203.0.113.9:4321")
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want accepted, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 本地回环来源默认放行（运维在同机 curl 的常规用法）。
+func TestRecoveryRunAllowsLoopbackClient(t *testing.T) {
+	dir := t.TempDir()
+	p, recovery := newRecoveryAPITestPlugin(t, dir)
+	p.Server = &m7s.Server{}
+	recovery.EnqueueUpload = func(RecoveryItem) error { return nil }
+	startRecoveryAPITestTask(t, recovery)
+
+	body, _ := json.Marshal(map[string]string{"dir": dir})
+	rec := doRecoveryRequestFrom(t, p.handleRecoveryRun, http.MethodPost, "/api/recovery/run",
+		body, nil, "[::1]:4321")
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want accepted, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// sidecar 的 FilePath 指向媒体目录之外（/etc/shadow）时必须拒绝恢复：
+// 它既会被写进 record_streams.file_path，也会被当作上传对象键。
+func TestRecoverSidecarRejectsFilePathOutsideMediaDir(t *testing.T) {
+	dir := t.TempDir()
+	media, sidecar := buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, "/etc/shadow")
+	before, err := os.ReadFile(media)
+	if err != nil {
+		t.Fatalf("read media: %v", err)
+	}
+
+	enqueued := 0
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(RecoveryItem) error {
+		enqueued++
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("recovery must be rejected when header.filePath escapes the media directory")
+	}
+	if stats.Failed != 1 || stats.Recovered != 0 {
+		t.Fatalf("stats = %+v, want failed=1 recovered=0", stats)
+	}
+	if enqueued != 0 {
+		t.Fatalf("rejected recovery must not be enqueued (would write record_streams), got %d", enqueued)
+	}
+	if got, readErr := os.ReadFile(media); readErr != nil || !bytes.Equal(got, before) {
+		t.Fatalf("media must be left untouched: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "a.mp4")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected recovery must not produce output: %v", statErr)
+	}
+	// 证据必须保留：sidecar 不删除、不改名为 .recovering/.failed（header 可能
+	// 被人工修复后重试）。
+	if _, statErr := os.Stat(sidecar); statErr != nil {
+		t.Fatalf("rejected sidecar must be left in place: %v", statErr)
+	}
+	if _, statErr := os.Stat(sidecar + ".recovering"); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected sidecar must not be renamed: %v", statErr)
+	}
+}
+
+// FilePath 与 MediaPath 同目录（本地录制的正常形态）必须正常通过。
+func TestRecoverSidecarAcceptsFilePathWithinMediaDir(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "rec.mp4")
+	buildRecoveryFixtureWithFilePath(t, dir, "a.tmp", []byte{0x00, 0x01, 0x02, 0x03}, filePath)
+
+	var enqueued []RecoveryItem
+	recovery := &IndexRecoveryTask{EnqueueUpload: func(item RecoveryItem) error {
+		enqueued = append(enqueued, item)
+		return nil
+	}}
+	stats, err := recovery.RunOnce([]string{dir})
+	if err != nil {
+		t.Fatalf("recovery failed for a same-directory filePath: %v", err)
+	}
+	if stats.Recovered != 1 || len(enqueued) != 1 {
+		t.Fatalf("stats = %+v, enqueued = %d, want recovered=1 enqueued=1", stats, len(enqueued))
+	}
+	if enqueued[0].Header.FilePath != filePath {
+		t.Fatalf("header.filePath = %q, want %q", enqueued[0].Header.FilePath, filePath)
 	}
 }

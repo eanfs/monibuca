@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -290,11 +291,43 @@ func recoveryResolveStorage(storageType string, resolver RecoveryStorageResolver
 //
 // 优先 FilePath：它是录制时传给 CreateFile 的原始路径，后端会自行追加 prefix。
 // StorageKey 是 File.Name()，S3 场景已含 prefix，再传一次会重复前缀。
+//
+// 纵深防御：header 来自 sidecar，属于不可信输入。绝对路径或含 ".." 段的值
+// 一律拒绝（返回空串，调用方已有 "missing object path" 错误分支），避免把
+// 恢复产物写成任意绝对路径或穿越到预期目录之外的对象键。
 func recoveryObjectKey(header IndexHeader) string {
-	if path := strings.TrimSpace(header.FilePath); path != "" {
-		return path
+	key := strings.TrimSpace(header.FilePath)
+	if key == "" {
+		key = strings.TrimSpace(header.StorageKey)
 	}
-	return strings.TrimSpace(header.StorageKey)
+	if !isSafeRecoveryObjectKey(key) {
+		return ""
+	}
+	return key
+}
+
+// isSafeRecoveryObjectKey 判断对象键是否可安全交给存储后端：
+// 必须是相对路径，任何一段都不得是 ".."（同时覆盖 / 与 \ 分隔符），
+// 且至少要有一段有效名称（"." 之类不是合法的录像路径）。
+func isSafeRecoveryObjectKey(key string) bool {
+	if key == "" || filepath.IsAbs(key) || strings.HasPrefix(key, "/") {
+		return false
+	}
+	if filepath.VolumeName(key) != "" {
+		return false
+	}
+	meaningful := false
+	for _, segment := range strings.FieldsFunc(key, func(r rune) bool { return r == '/' || r == '\\' }) {
+		switch segment {
+		case "..":
+			return false
+		case ".":
+			continue
+		default:
+			meaningful = true
+		}
+	}
+	return meaningful
 }
 
 // recoveryUploadRegistered 判断 upload_tasks 是否已经接管了「本次产物」。

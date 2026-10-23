@@ -285,3 +285,108 @@ func TestUpdateRecoveredRecordCreatesWhenMissing(t *testing.T) {
 		t.Fatalf("created record = %+v", got)
 	}
 }
+
+// sidecar 的 filePath 指向媒体目录之外时不得写进 record_streams：
+// DB 回写与对象键一样把 sidecar 内容视为不可信输入。
+func TestUpdateRecoveredRecordSkipsFilePathOutsideMediaDir(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	header := IndexHeader{
+		StreamPath:  "live/shadow",
+		MediaPath:   filepath.Join(t.TempDir(), "s3writer_test.tmp"),
+		FilePath:    "/etc/shadow",
+		StorageType: "s3",
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
+	}
+	var count int64
+	if err := db.Model(&m7s.RecordStream{}).Count(&count).Error; err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if count != 0 {
+		var rows []m7s.RecordStream
+		_ = db.Find(&rows).Error
+		t.Fatalf("record_streams rows = %d (%+v), want 0", count, rows)
+	}
+}
+
+// FilePath 与 MediaPath 同目录（本地录制的正常形态）仍然正常回写。
+func TestUpdateRecoveredRecordAcceptsFilePathWithinMediaDir(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	dir := t.TempDir()
+	header := IndexHeader{
+		StreamPath:  "live/ok",
+		MediaPath:   filepath.Join(dir, "rec.mp4"),
+		FilePath:    filepath.Join(dir, "rec.mp4"),
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var got m7s.RecordStream
+	if err := db.Where("file_path = ?", header.FilePath).First(&got).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if got.Duration != 40 {
+		t.Fatalf("record = %+v, want duration 40", got)
+	}
+}
+
+// FilePath 为空时 StorageKey 回落同样不可信：绝对路径不得写进 record_streams。
+func TestUpdateRecoveredRecordSkipsUnsafeStorageKey(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	header := IndexHeader{
+		StreamPath:  "live/unsafe_key",
+		MediaPath:   filepath.Join(t.TempDir(), "s3writer_test.tmp"),
+		StorageKey:  "/etc/shadow",
+		StorageType: "s3",
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord must not fail the upload path: %v", err)
+	}
+	var count int64
+	if err := db.Model(&m7s.RecordStream{}).Count(&count).Error; err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("record_streams rows = %d, want 0", count)
+	}
+}
+
+// 本地存储的 StorageKey 就是媒体绝对路径：与 MediaPath 一致时正常回写。
+func TestUpdateRecoveredRecordAcceptsLocalStorageKey(t *testing.T) {
+	db := newRecoveryDBTestDB(t)
+	logger := recoveryDBTestLogger()
+	mediaPath := filepath.Join(t.TempDir(), "rec.mp4")
+	header := IndexHeader{
+		StreamPath:  "live/local_key",
+		MediaPath:   mediaPath,
+		StorageKey:  mediaPath,
+		StorageType: "local",
+		StartTime:   time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+	}
+	records := []IndexRecord{{TrackID: 1, Size: 10, DTS: 0, Duration: 40}}
+
+	if err := updateRecoveredRecord(db, logger, header, records); err != nil {
+		t.Fatalf("updateRecoveredRecord: %v", err)
+	}
+	var got m7s.RecordStream
+	if err := db.Where("file_path = ?", mediaPath).First(&got).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if got.Duration != 40 {
+		t.Fatalf("record = %+v, want duration 40", got)
+	}
+}

@@ -2,6 +2,7 @@ package plugin_mp4
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 //     符号链接逃逸/路径穿越一律 403。
 //   - 鉴权开启（admin.enablelogin）时要求 admin 角色；仓库没有可复用的
 //     HTTP admin 中间件，这里沿用 pkg/auth 的 Bearer token 校验 + DB 角色查询。
+//   - 未开启登录时 run 仍要求本地回环来源，或在 record.recovery.allowunauthenticated
+//     中显式放行：恢复管线会读索引内容并改写文件，不能对任意网络来源开放。
 //   - list 的分页默认 50、上限 200；目录遍历有硬上限，避免把超大目录全读入内存。
 
 const (
@@ -204,6 +207,9 @@ func (p *MP4Plugin) handleRecoveryRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !p.requireRecoveryRunAuth(w, r) {
+		return
+	}
 	recovery := p.recoveryTask.Load()
 	if recovery == nil {
 		http.Error(w, "recovery task not initialized", http.StatusServiceUnavailable)
@@ -314,6 +320,47 @@ func (p *MP4Plugin) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// requireRecoveryRunAuth 在未启用登录时仍限制 run 端点。
+//
+// 恢复管线会按 sidecar 内容读写文件并改写 DB，而 sidecar 可能是任意本机
+// 进程投放的（例如全局可写的临时目录）。因此 admin.enablelogin=false 时
+// 默认只接受本地回环请求；需要从远端触发时，运维必须显式开启
+// record.recovery.allowunauthenticated。
+func (p *MP4Plugin) requireRecoveryRunAuth(w http.ResponseWriter, r *http.Request) bool {
+	if p.Server != nil && p.Server.ServerConfig.Admin.EnableLogin {
+		// requireAdmin 已校验过 admin 角色。
+		return true
+	}
+	if p.RecordConfig.Recovery.AllowUnauthenticated {
+		return true
+	}
+	if isLoopbackRemoteAddr(r.RemoteAddr) {
+		return true
+	}
+	p.Warn("rejected unauthenticated recovery run from non-loopback client",
+		"remoteAddr", r.RemoteAddr,
+		"hint", "set record.recovery.allowunauthenticated=true or admin.enablelogin=true")
+	http.Error(w,
+		"recovery run from a non-loopback client requires authentication; "+
+			"set record.recovery.allowunauthenticated=true or admin.enablelogin=true",
+		http.StatusForbidden)
+	return false
+}
+
+// isLoopbackRemoteAddr 判断 HTTP 请求来源是否为本地回环地址。
+// 只信任 RemoteAddr：X-Forwarded-For 等客户端可控头不能作为判据。
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	if remoteAddr == "" {
+		return false
+	}
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func writeRecoveryJSON(w http.ResponseWriter, status int, payload any) {

@@ -40,6 +40,10 @@ type MP4Plugin struct {
 			MinAge      time.Duration `default:"5m" desc:"仅用于手动恢复(API/CLI)：sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；实际生效值不小于 max(5s, 2×index.flushinterval)；启动自动扫描不受该值影响，固定使用 max(5s, 2×index.flushinterval) 短阈值以保证崩溃重启后自动恢复；本进程内的活跃 recorder 无论 mtime 均跳过；负数关闭保护"`
 			Concurrency int           `default:"2" desc:"恢复定稿并发上限"`
 			Dirs        []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+			// AllowUnauthenticated 控制未启用 admin.enablelogin 时
+			// POST /api/recovery/run 是否接受任意来源的请求。默认 false：
+			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。
+			AllowUnauthenticated bool `default:"false" desc:"未启用 admin.enablelogin 时是否允许任意来源调用 POST /api/recovery/run；false 时仅允许本地回环请求"`
 		} `desc:"录像崩溃恢复配置"`
 	} `yaml:"record" desc:"录像配置"`
 

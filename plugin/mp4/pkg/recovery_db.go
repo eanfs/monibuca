@@ -59,6 +59,17 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 	if db == nil {
 		return nil
 	}
+	if err := ValidateIndexHeaderPaths(header); err != nil {
+		// 不阻塞上传：产物已经落盘/可上传，只是这条元数据不可信。
+		// 写进 DB 会让下载接口按 file_path 直接打开任意文件。
+		logger.Warn("recovered record filePath is not bound to mediaPath; skip record_streams update",
+			"err", err,
+			"streamPath", header.StreamPath,
+			"filePath", header.FilePath,
+			"mediaPath", header.MediaPath)
+		return nil
+	}
+
 	filePath := strings.TrimSpace(header.FilePath)
 	if filePath == "" {
 		filePath = strings.TrimSpace(header.StorageKey)

@@ -490,27 +490,39 @@ func (t *IndexRecoveryTask) resolveDirs(explicit []string) ([]string, []error) {
 
 // defaultDirs = 对象存储本地暂存目录 + pending_uploads + 录像输出目录。
 // 录像输出目录保证本地存储场景下崩溃残留的 sidecar 也能被发现。
+// 空目录一律跳过：mediaTempDir 在未显式配置时为空的语义必须体现在这里。
 func (t *IndexRecoveryTask) defaultDirs() []string {
-	dirs := []string{t.mediaTempDir()}
+	dirs := make([]string, 0, 4)
+	add := func(dir string) {
+		if strings.TrimSpace(dir) == "" {
+			return
+		}
+		dirs = append(dirs, dir)
+	}
+	add(t.mediaTempDir())
 	if pending := storage.GetPendingDir(); pending != "" {
-		dirs = append(dirs, pending)
+		add(pending)
 	}
 	if t.plugin != nil {
 		if common := t.plugin.GetCommonConf(); common != nil {
 			for _, conf := range common.OnPub.Record {
 				if conf.FilePath != "" {
-					dirs = append(dirs, filepath.Dir(conf.FilePath))
+					add(filepath.Dir(conf.FilePath))
 				}
 			}
 		}
 		if t.plugin.EventRecordFilePath != "" {
-			dirs = append(dirs, filepath.Dir(t.plugin.EventRecordFilePath))
+			add(filepath.Dir(t.plugin.EventRecordFilePath))
 		}
 	}
 	return dirs
 }
 
-// mediaTempDir 返回对象存储暂存文件目录（storage.s3.tempdir），未配置时用系统临时目录。
+// mediaTempDir 返回对象存储暂存文件目录（storage.s3.tempdir），未配置时返回空。
+//
+// 绝不回落到 os.TempDir()：系统临时目录通常全局可写，任何本机进程都能在其中
+// 投放 sidecar，把恢复扫描变成「攻击者指定的文件/对象键」的入口。需要在
+// 临时目录恢复时，必须在 storage.s3.tempdir 中显式配置。
 func (t *IndexRecoveryTask) mediaTempDir() string {
 	if t.plugin != nil && t.plugin.Server != nil {
 		if raw, ok := t.plugin.Server.ServerConfig.Storage[string(storage.StorageTypeS3)]; ok {
@@ -523,7 +535,7 @@ func (t *IndexRecoveryTask) mediaTempDir() string {
 			}
 		}
 	}
-	return os.TempDir()
+	return ""
 }
 
 // discoverSidecars 递归收集 *.m7sidx 与 *.m7sidx.recovering。
@@ -697,6 +709,30 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	}
 	item.MediaPath = source
 	item.OutputPath = output
+
+	// sidecar 内容是不可信输入：FilePath（以及 FilePath 为空时的 StorageKey）
+	// 会被写进 record_streams.file_path（下载接口可能直接 os.Open 它），
+	// 也会被当作上传对象键。必须与本次读写的媒体路径绑定——该媒体路径刚刚
+	// 通过了白名单 guard，因此绑定等价于「逻辑路径必须落在受信目录内」。
+	// 必须在任何 rename/覆盖/入队之前拦截。
+	bindingHeader := index.Header
+	bindingMedia := recorded
+	if source != "" {
+		// source 已通过 guard，是本次真正读写的媒体路径。
+		bindingMedia = source
+	}
+	if bindingMedia != "" {
+		bindingHeader.MediaPath = bindingMedia
+	}
+	if err = mp4pkg.ValidateIndexHeaderPaths(bindingHeader); err != nil {
+		t.Error("reject recovery: index header filePath is not bound to mediaPath",
+			"sidecar", sidecar,
+			"filePath", index.Header.FilePath,
+			"storageKey", index.Header.StorageKey,
+			"mediaPath", bindingHeader.MediaPath,
+			"err", err)
+		return recoveryFailed, item, err
+	}
 
 	if !found {
 		// 崩溃窗口：产物已 rename，但源暂存文件已删除、sidecar 尚未清理。

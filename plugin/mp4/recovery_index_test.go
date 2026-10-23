@@ -500,6 +500,10 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	if plugin.RecordConfig.Recovery.Concurrency != 2 {
 		t.Fatalf("record.recovery.concurrency = %d, want 2", plugin.RecordConfig.Recovery.Concurrency)
 	}
+	// 未启用登录时 run 端点默认只接受本地回环请求，必须显式放行才能对外。
+	if plugin.RecordConfig.Recovery.AllowUnauthenticated {
+		t.Fatal("record.recovery.allowunauthenticated must default to false")
+	}
 
 	conf.ParseModifyFile(map[string]any{
 		"index": map[string]any{
@@ -507,10 +511,11 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 			"flushinterval": "2s",
 		},
 		"recovery": map[string]any{
-			"onstart":     false,
-			"minage":      "30s",
-			"concurrency": 5,
-			"dirs":        []any{"/tmp/recovery-a"},
+			"onstart":              false,
+			"minage":               "30s",
+			"concurrency":          5,
+			"dirs":                 []any{"/tmp/recovery-a"},
+			"allowunauthenticated": true,
 		},
 	})
 	if plugin.RecordConfig.Index.Enable {
@@ -527,6 +532,9 @@ func TestMP4RecordConfigDefaultsAndOverride(t *testing.T) {
 	}
 	if len(plugin.RecordConfig.Recovery.Dirs) != 1 || plugin.RecordConfig.Recovery.Dirs[0] != "/tmp/recovery-a" {
 		t.Fatalf("recovery dirs = %v", plugin.RecordConfig.Recovery.Dirs)
+	}
+	if !plugin.RecordConfig.Recovery.AllowUnauthenticated {
+		t.Fatal("record.recovery.allowunauthenticated override was ignored")
 	}
 }
 

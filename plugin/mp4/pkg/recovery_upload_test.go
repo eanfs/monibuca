@@ -570,3 +570,53 @@ func TestEnqueueRecoveryUploadPrepareFailureRegistersPending(t *testing.T) {
 		t.Fatalf("sidecar should be removed after pending registration: %v", err)
 	}
 }
+
+// 对象键来自 sidecar（不可信输入）：绝对路径或含 ".." 段必须拒绝，
+// 否则恢复产物会被写到任意绝对路径/穿越到预期目录之外的对象键。
+func TestRecoveryObjectKeyRejectsUnsafePaths(t *testing.T) {
+	cases := []struct {
+		name   string
+		header IndexHeader
+		want   string
+	}{
+		{"absolute filePath", IndexHeader{FilePath: "/etc/shadow"}, ""},
+		{"parent traversal filePath", IndexHeader{FilePath: "../escape.mp4"}, ""},
+		{"embedded traversal filePath", IndexHeader{FilePath: "live/../../etc/shadow"}, ""},
+		{"backslash traversal filePath", IndexHeader{FilePath: `live\..\..\etc\shadow`}, ""},
+		{"absolute storageKey fallback", IndexHeader{StorageKey: "/etc/shadow"}, ""},
+		{"traversal storageKey fallback", IndexHeader{StorageKey: "a/../../escape.mp4"}, ""},
+		{"dot-only filePath", IndexHeader{FilePath: "."}, ""},
+		{"both empty", IndexHeader{}, ""},
+		{"clean relative filePath", IndexHeader{FilePath: "live/test/rec.mp4"}, "live/test/rec.mp4"},
+		{"filePath wins over storageKey", IndexHeader{FilePath: "live/test/rec.mp4", StorageKey: "prefix/live/test/rec.mp4"}, "live/test/rec.mp4"},
+		{"storageKey fallback", IndexHeader{StorageKey: "prefix/live/test/rec.mp4"}, "prefix/live/test/rec.mp4"},
+		{"dots inside a segment are not traversal", IndexHeader{FilePath: "live/v1..2/rec.mp4"}, "live/v1..2/rec.mp4"},
+	}
+	for _, tc := range cases {
+		if got := recoveryObjectKey(tc.header); got != tc.want {
+			t.Fatalf("%s: recoveryObjectKey = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 不安全对象键必须让上传整体失败并保留产物/sidecar，绝不静默换键上传。
+func TestEnqueueRecoveryUploadRejectsUnsafeObjectKey(t *testing.T) {
+	fixture := newRecoveryUploadFixture(t, "s3")
+	fixture.header.FilePath = "/etc/shadow"
+
+	backend := &fakeRecoveryStorage{key: "s3"}
+	err := EnqueueRecoveryUploadWithOptions(fixture.upload(), RecoveryUploadOptions{
+		Resolver: func(string) (storage.Storage, error) { return backend, nil },
+		enqueue: func(*finalizeUploadTask, *slog.Logger) error {
+			t.Fatal("unsafe object key must not be enqueued")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unsafe object key")
+	}
+	if backend.createdPath != "" {
+		t.Fatalf("backend.CreateFile called with %q", backend.createdPath)
+	}
+	fixture.assertRetained(t)
+}
