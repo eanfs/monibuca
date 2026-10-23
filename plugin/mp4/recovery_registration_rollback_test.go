@@ -55,9 +55,14 @@ func TestRecoveryLocatesMediaAfterFailedPendingRegistration(t *testing.T) {
 	}
 
 	// 回滚后媒体在原路径，恢复扫描（sidecar → locateRecoveryMedia）仍能找回它。
-	found, ok := locateRecoveryMedia(mediaPath, sidecar)
-	if !ok || found != mediaPath {
-		t.Fatalf("locateRecoveryMedia = (%q, %v), want the media restored at %q", found, ok, mediaPath)
+	guard, err := newRecoveryPathGuard(nil, sidecar)
+	if err != nil {
+		t.Fatalf("newRecoveryPathGuard: %v", err)
+	}
+	found, ok, locateErr := locateRecoveryMedia(mediaPath, sidecar, guard)
+	if locateErr != nil || !ok || found != canonPath(t, mediaPath) {
+		t.Fatalf("locateRecoveryMedia = (%q, %v, %v), want the media restored at %q",
+			found, ok, locateErr, mediaPath)
 	}
 	entries, readErr := os.ReadDir(pendingDir)
 	if readErr != nil {

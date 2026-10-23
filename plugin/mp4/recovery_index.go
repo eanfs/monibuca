@@ -756,7 +756,10 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	if recorded == "" {
 		recorded = mediaPathFromSidecar(sidecar)
 	}
-	source, found := locateRecoveryMedia(recorded, sidecar)
+	// 候选逐个过白名单：最后一条 RENAME 可能指向白名单外的 trailer 临时文件
+	// （Task 6 预写的 RENAME），但 sidecar 派生的原始媒体仍在白名单内。
+	// 取「第一个存在的候选」再整体拒绝会把这个可恢复窗口永久判死。
+	source, found, locationErr := locateRecoveryMedia(recorded, sidecar, guard)
 
 	item := RecoveryItem{
 		Header:      index.Header,
@@ -764,14 +767,17 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 		SidecarPath: sidecar,
 	}
 
-	// 校验 locateRecoveryMedia 的结果：候选只做过 fileExists，可能是指向
-	// 白名单外的符号链接。拒绝时必须保持目标文件原样（后续不再 rename/remove）。
-	if found {
-		if source, err = guard.allowExisting(source, "recovery media"); err != nil {
-			return recoveryFailed, item, err
-		}
+	// 存在候选、但全部落在白名单之外：保持拒绝恢复语义，绝不读写白名单外的
+	// 路径（后续不再 rename/remove 任何文件）。
+	if locationErr != nil {
+		return recoveryFailed, item, locationErr
 	}
 	output, err := guard.allowOutput(recoveryOutputPath(recorded), "recovery output")
+	if err != nil && found {
+		// 按 recorded 推导的产物同样越界（recoveryOutputPath 只换后缀/同目录）：
+		// 改用已通过白名单的 source 推导产物，恢复走实际定位到的媒体。
+		output, err = guard.allowOutput(recoveryOutputPath(source), "recovery output")
+	}
 	if err != nil {
 		return recoveryFailed, item, err
 	}
@@ -1086,7 +1092,9 @@ func writeRecoveredMedia(muxer *mp4pkg.Muxer, source, output string, mode os.Fil
 	return nil
 }
 
-func locateRecoveryMedia(recorded, sidecar string) (string, bool) {
+// recoveryMediaCandidates 按优先级列出候选媒体路径：
+// 索引记录的最后一条 RENAME → sidecar 派生路径 → pending 暂存目录。
+func recoveryMediaCandidates(recorded, sidecar string) []string {
 	var candidates []string
 	if recorded != "" {
 		candidates = append(candidates, recorded)
@@ -1099,15 +1107,38 @@ func locateRecoveryMedia(recorded, sidecar string) (string, bool) {
 			candidates = append(candidates, filepath.Join(pending, filepath.Base(recorded)))
 		}
 	}
-	for _, candidate := range candidates {
-		if candidate == "" {
+	return candidates
+}
+
+// locateRecoveryMedia 定位本次恢复真正要读的源媒体，候选逐个通过 guard 校验。
+//
+// 只按「存在」挑第一个候选是不够的：Task 6 会在 FinalizeFromTemp 之前预写一条
+// 指向 trailer 临时文件（os.CreateTemp("", "*.mp4")）的 RENAME，配置了非默认
+// storage.s3.tempdir（或本地录像目录不在 /tmp）时该路径落在恢复白名单之外，
+// 而 sidecar 派生的原始媒体仍在白名单内。旧实现命中越界候选后直接拒绝，等于把
+// 这个可恢复窗口永久判死。越界/符号链接候选必须跳过并继续尝试下一个。
+//
+// 返回：
+//   - (path, true, nil)：命中且通过白名单（path 为解析符号链接后的 canon）；
+//   - ("", false, nil)：没有任何候选存在，可由后续运行重试；
+//   - ("", false, err)：存在候选但全部被白名单拒绝（errRecoveryPathDenied），
+//     调用方必须继续拒绝恢复。
+func locateRecoveryMedia(recorded, sidecar string, guard *recoveryPathGuard) (string, bool, error) {
+	var denied error
+	for _, candidate := range recoveryMediaCandidates(recorded, sidecar) {
+		if !fileExists(candidate) {
 			continue
 		}
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
+		allowed, err := guard.allowExisting(candidate, "recovery media")
+		if err != nil {
+			if denied == nil {
+				denied = err
+			}
+			continue
 		}
+		return allowed, true, nil
 	}
-	return "", false
+	return "", false, denied
 }
 
 func mediaPathFromSidecar(sidecar string) string {
