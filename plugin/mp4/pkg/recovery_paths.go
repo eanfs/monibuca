@@ -43,6 +43,17 @@ const (
 //   - 对象存储（s3/cos/oss/未声明）：录像路径就是对象键，必须是相对路径，
 //     绝对路径一律拒绝（对象键不是文件系统路径，同目录绑定对它无意义）。
 //
+// 已知限制（**既有坏配置，不是本校验引入的回归**）：local 存储配置了绝对
+// record.filepath 且 storage.local.path（basePath）不是 "/" 时，
+// LocalStorage.CreateFile 会写出 <basePath>/<绝对 filepath>（local.go:189），
+// 而 record_streams 记录的是那个绝对路径；下载侧对绝对 file_path 直接
+// http.ServeFile / os.Open（api.go:151-155），不拼 basePath，因此这类配置的
+// 录像本来就无法下载。恢复拒绝它是正确行为——放宽绑定（例如允许 FilePath 只是
+// MediaPath 的路径尾部）会让任意绝对路径（/etc/shadow）重新写进
+// record_streams.file_path，而该值随后会被下载接口直接打开，等于重开任意
+// 文件读取。遇到这类现场应改配置：record.filepath 用相对路径，或把
+// storage.local.path 设为 "/"（此时 FilePath 与 MediaPath 同文件，校验通过）。
+//
 // MediaPath 必须是绝对路径的约束由恢复侧的路径 guard 负责（这里只做绑定）。
 func ValidateIndexHeaderPaths(header IndexHeader) error {
 	key := strings.TrimSpace(header.FilePath)
@@ -64,7 +75,7 @@ func ValidateIndexHeaderPaths(header IndexHeader) error {
 			// 由下载侧的 storage 解析（GetFullPath）兜住。
 			return nil
 		}
-		if recoveryAbsolutePathBinding(mediaPath, key) != recoveryBindingNone {
+		if absoluteFilePathBoundToMedia(mediaPath, key) {
 			return nil
 		}
 		return recoveryPathRuleError(recoveryRuleLocalDirectory, header, mediaPath)
@@ -87,58 +98,18 @@ func recoveryPathRuleError(rule string, header IndexHeader, mediaPath string) er
 		ErrIndexHeaderPathMismatch, rule, header.FilePath, header.StorageKey, mediaPath, header.StorageType)
 }
 
-// recoveryPathBinding 描述录像路径与 MediaPath 的绑定形态。
-type recoveryPathBinding int
-
-const (
-	// recoveryBindingNone 表示未建立绑定。
-	recoveryBindingNone recoveryPathBinding = iota
-	// recoveryBindingSameFile 表示录像路径就是 MediaPath 指向的同一个文件。
-	recoveryBindingSameFile
-	// recoveryBindingWithinMediaDir 表示录像路径位于 MediaPath 的目录子树内。
-	recoveryBindingWithinMediaDir
-	// recoveryBindingMediaSuffix 表示 MediaPath = <storage base> + 绝对录像路径：
-	// 即 LocalStorage.CreateFile 的 filepath.Join(basePath, path) 形态
-	// （local.go:189）。此时二者是同一逻辑文件却不同目录。
-	recoveryBindingMediaSuffix
-)
-
-// recoveryAbsolutePathBinding 判断绝对录像路径与 MediaPath 的绑定形态。
-func recoveryAbsolutePathBinding(mediaPath, key string) recoveryPathBinding {
+// absoluteFilePathBoundToMedia 判断绝对录像路径是否确实落在 MediaPath 上：
+// 同一文件，或位于 MediaPath 的目录子树内。
+func absoluteFilePathBoundToMedia(mediaPath, key string) bool {
 	if mediaPath == "" || !filepath.IsAbs(mediaPath) || !filepath.IsAbs(key) {
-		return recoveryBindingNone
+		return false
 	}
 	media := filepath.Clean(mediaPath)
 	keyClean := filepath.Clean(key)
 	if media == keyClean {
-		return recoveryBindingSameFile
+		return true
 	}
-	// MediaPath = basePath + FilePath：MediaPath 以分隔符 + FilePath 的相对形式结尾。
-	if rel := strings.TrimPrefix(keyClean, string(filepath.Separator)); rel != "" &&
-		strings.HasSuffix(media, string(filepath.Separator)+rel) {
-		return recoveryBindingMediaSuffix
-	}
-	if withinRecoveryDir(filepath.Dir(media), keyClean) {
-		return recoveryBindingWithinMediaDir
-	}
-	return recoveryBindingNone
-}
-
-// isSuffixBoundAbsoluteFilePath 报告绝对录像路径是否仅以「MediaPath 尾部」形态
-// 通过绑定（MediaPath = <storage base> + FilePath），而非真的指向媒体文件。
-//
-// 该形态足以放行恢复（录制侧确实这样拼接），但不足以证明录像路径本身可信：
-// sidecar 由不可信来源提供时，MediaPath 与 FilePath 都是攻击者可控的，
-// 后缀关系可以随手构造。因此 DB 回写必须额外收紧（见 updateRecoveredRecord）。
-func isSuffixBoundAbsoluteFilePath(header IndexHeader) bool {
-	key := strings.TrimSpace(header.FilePath)
-	if key == "" {
-		key = strings.TrimSpace(header.StorageKey)
-	}
-	if key == "" || !filepath.IsAbs(key) {
-		return false
-	}
-	return recoveryAbsolutePathBinding(strings.TrimSpace(header.MediaPath), key) == recoveryBindingMediaSuffix
+	return withinRecoveryDir(filepath.Dir(media), keyClean)
 }
 
 func isLocalRecoveryStorage(storageType string) bool {
