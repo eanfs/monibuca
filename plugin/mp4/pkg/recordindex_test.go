@@ -570,3 +570,60 @@ func TestIndexStructuralDamageSetsTruncated(t *testing.T) {
 		}
 	})
 }
+
+// ReadIndexHeaderAndExtensions 只解析头与扩展记录：样本记录被丢弃，但
+// RENAME/COMMIT 的效果必须保留——否则 trailer 重写会用旧 MediaPath 覆盖刚
+// 追加的路径。对照组确认全量读取仍然拿得到全部记录。
+func TestReadIndexHeaderAndExtensionsSkipsRecords(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "b.tmp.m7sidx")
+	h := IndexHeader{
+		Version:     1,
+		StreamPath:  "live/b",
+		MediaPath:   "/tmp/b.tmp",
+		StorageType: "local",
+		Tracks:      []IndexTrack{{ID: 1, FourCC: "avc1", STSD: []byte{1, 2, 3, 4}}},
+	}
+	w, err := CreateIndex(p, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 100
+	for i := 0; i < n; i++ {
+		if err := w.Append(IndexRecord{Flags: 1, TrackID: 1, Size: 10, Offset: uint64(48 + i*10), Duration: 40}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Rename("/tmp/b-final.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(4000, n); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	head, err := ReadIndexHeaderAndExtensions(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(head.Records) != 0 {
+		t.Fatalf("records = %d, want 0 (header-only read)", len(head.Records))
+	}
+	if !head.Committed {
+		t.Fatal("Committed must be preserved")
+	}
+	if head.MediaPath != "/tmp/b-final.mp4" || head.Header.MediaPath != "/tmp/b-final.mp4" {
+		t.Fatalf("rename extension not applied: MediaPath=%q Header.MediaPath=%q",
+			head.MediaPath, head.Header.MediaPath)
+	}
+
+	full, err := ReadIndex(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Records) != n {
+		t.Fatalf("full read records = %d, want %d", len(full.Records), n)
+	}
+}

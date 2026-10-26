@@ -153,7 +153,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 
 	// 本地存储没有上传动作：恢复产物已在最终路径，回写 record_streams
 	// 后删除 sidecar 即完成。DB 失败时保留 sidecar，下次恢复会重试回写。
-	if storageType == string(storage.StorageTypeLocal) {
+	if isLocalRecoveryStorage(storageType) {
 		// 纵深防御：sidecar 声明的产物可能已被外部删除/移动。此时既不能回写
 		// record_streams（会留下指向不存在文件的记录），也不能删 sidecar
 		// （那是下次恢复重试的唯一线索）。
@@ -217,7 +217,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		release()
 		return fmt.Errorf("mp4: create recovery upload file %s: %w", objectKey, err)
 	}
-	file.SetMetadata("video-size-bytes", strconv.FormatInt(info.Size(), 10))
+	file.SetMetadata(metadataVideoSizeBytes, strconv.FormatInt(info.Size(), 10))
 
 	finalizer, ok := file.(storage.TempFileFinalizer)
 	if !ok {
@@ -226,7 +226,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 	}
 
 	metadata := map[string]string{
-		"video-size-bytes":              strconv.FormatInt(info.Size(), 10),
+		metadataVideoSizeBytes:          strconv.FormatInt(info.Size(), 10),
 		recoveryUploadSourceMetadataKey: upload.OutputPath,
 	}
 	uploadTask := &finalizeUploadTask{
@@ -471,14 +471,5 @@ func recoverySourcePath(task m7s.UploadTask) string {
 
 // removeRecoverySidecar 提交式删除 sidecar；.recovering 场景同时清理同名普通索引。
 func removeRecoverySidecar(path string) error {
-	if path == "" {
-		return nil
-	}
-	err := RemoveIndex(path)
-	if plain := strings.TrimSuffix(path, IndexRecoveringSuffix); plain != path {
-		if plainErr := RemoveIndex(plain); err == nil {
-			err = plainErr
-		}
-	}
-	return err
+	return RemoveIndexArtifacts(path)
 }

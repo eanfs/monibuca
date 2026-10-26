@@ -29,7 +29,9 @@ func (h *retryLogCapture) countLogs(msg string) int {
 func newPendingScanFailScheduler(t *testing.T) (*UploadRetryScheduler, *retryLogCapture) {
 	t.Helper()
 	broken := filepath.Join(t.TempDir(), "pending\x00unreadable")
-	storage.InitUploadManager(storage.UploadConfig{PendingDir: broken})
+	// 必须配置上限：未配置时调度器会跳过整轮水位巡检（判定恒为 false），
+	// 本测试要验证的是「配置了上限、巡检失败」这条路径。
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: broken, PendingMaxSizeMB: 1})
 
 	db := newUploadTestDB(t)
 	server := &Server{}

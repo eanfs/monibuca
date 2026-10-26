@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -439,6 +440,26 @@ func RemoveIndex(path string) error {
 	return nil
 }
 
+// RemoveIndexArtifacts 删除 sidecar，并连同它对应的普通索引（路径带
+// IndexRecoveringSuffix 时）一并删除。
+//
+// 「.recovering 与其 plain 副本成对出现」这条规则原先在 4 处各写一遍
+// （录制成功、pending 登记、恢复上传、插件侧清理），改一处漏一处就会留下
+// 孤儿索引被下次扫描重复处理。返回值只反映主 sidecar 的删除结果；plain 副本
+// 是尽力而为。
+func RemoveIndexArtifacts(path string) error {
+	if path == "" {
+		return nil
+	}
+	err := RemoveIndex(path)
+	if plain := strings.TrimSuffix(path, IndexRecoveringSuffix); plain != path {
+		if plainErr := RemoveIndex(plain); err == nil {
+			err = plainErr
+		}
+	}
+	return err
+}
+
 // ReadIndex 读取索引文件。只校验格式，不感知媒体文件长度：
 // 调用方应自行在 offset+size 超过媒体大小时停止使用记录。
 // 尾部被截断、零填充或结构损坏(如 track ID 为 0)时返回已读出的部分，不报错；
@@ -503,6 +524,25 @@ func readIndexFrom(r io.Reader) (*IndexFile, error) {
 // 上限做成参数只为让单测用小值覆盖该分支：真正跑满上限要分配数百 MB 的记录
 // 数组，不适合放进常规单测。
 func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
+	return readIndexFromLimitMode(r, maxRecords, true)
+}
+
+// ReadIndexHeaderAndExtensions 只解析索引头与扩展记录（RENAME/SHIFT），
+// 丢弃样本记录。供「只关心 Header 与扩展状态」的重写路径使用：那里不需要
+// 样本表，全量解析意味着每次重写都把整份索引读进内存（1 小时双轨 ≈ 24.5 万
+// 条 ≈ 5.6 MB 读放大 + 一个 ~8 MB 的记录切片）。
+func ReadIndexHeaderAndExtensions(path string) (*IndexFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readIndexFromLimitMode(f, maxIndexRecords, false)
+}
+
+// readIndexFromLimitMode 是 readIndexFromLimit 的实现；keepRecords=false 时
+// 只保留头与扩展记录的效果，样本记录照常解码校验但不再累积。
+func readIndexFromLimitMode(r io.Reader, maxRecords int, keepRecords bool) (*IndexFile, error) {
 	// 包装成计数 reader，用于报告结构性损坏发生的位置（DroppedAt）。
 	cr := &countingReader{r: r}
 	h, err := readIndexHeader(cr)
@@ -539,6 +579,11 @@ func readIndexFromLimit(r io.Reader, maxRecords int) (*IndexFile, error) {
 			// 损坏无校验和可查，调用方仍需按 trackID/size 兜底。
 			if rec.TrackID == 0 {
 				return stopAtDamagedFrame()
+			}
+			if !keepRecords {
+				// 只关心头与扩展记录：样本记录照常解码校验（TrackID==0 的
+				// 结构性损坏仍会被发现），但不累积、也不受记录数上限约束。
+				continue
 			}
 			// 超限是不可接受的：宁可丢弃整个索引，也不能把"读了一半"当成功
 			// 返回——调用方会据此写出缺样本的 moov，比不恢复更危险。

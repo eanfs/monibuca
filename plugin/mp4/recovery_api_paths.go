@@ -334,12 +334,13 @@ func resolveRecoverySidecar(path string, allowed []string) (sidecar string, stat
 		}
 		return canon, 0, ""
 	}
-	switch {
-	case strings.HasSuffix(path, mp4pkg.IndexExtension+recoveringSuffix),
-		strings.HasSuffix(path, mp4pkg.IndexExtension):
-		return canonical(path)
-	case strings.HasSuffix(path, mp4pkg.IndexExtension+failedSuffix):
+	// 用扫描/列表同一套分类器判定 sidecar 类别：新增一种恢复标记时，
+	// 这里不会与 discoverSidecars 给出不同答案。
+	switch category, ok := recoveryCategoryForName(path); {
+	case ok && category == "failed":
 		return "", http.StatusBadRequest, "no pending recovery index for file (failed indexes are not retried)"
+	case ok:
+		return canonical(path)
 	}
 	for _, suffix := range []string{mp4pkg.IndexExtension + recoveringSuffix, mp4pkg.IndexExtension} {
 		candidate := path + suffix

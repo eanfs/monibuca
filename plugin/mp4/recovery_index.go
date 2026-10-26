@@ -1132,11 +1132,9 @@ func (t *IndexRecoveryTask) markFailed(sidecar string) {
 }
 
 func (t *IndexRecoveryTask) removeSidecar(sidecar string) {
-	if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
+	// 成对删除规则只在 mp4pkg.RemoveIndexArtifacts 里实现一次。
+	if err := mp4pkg.RemoveIndexArtifacts(sidecar); err != nil {
 		t.Warn("remove recovery sidecar failed", "err", err, "sidecar", sidecar)
-	}
-	if plain := strings.TrimSuffix(sidecar, recoveringSuffix); plain != sidecar {
-		_ = os.Remove(plain)
 	}
 	syncParentDir(sidecar)
 }

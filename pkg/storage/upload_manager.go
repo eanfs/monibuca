@@ -255,6 +255,13 @@ func GetPendingUsage() (PendingUsage, error) {
 	return usage, err
 }
 
+// PendingLimitsConfigured 报告是否配置了 pending 目录的 size/files 上限。
+// 未配置时水位判定恒为 false，调用方应跳过整目录遍历（每次 tick 一次 WalkDir
+// 只为算出一个不会被使用的数字）。
+func PendingLimitsConfigured() bool {
+	return pendingMaxSizeBytes > 0 || pendingMaxFiles > 0
+}
+
 // WatermarkExceeded 返回是否达到告警水位（已配置阈值的 80%）及触发维度的上限。
 // 未配置 size/files 阈值时恒返回 false；size 与 files 同时超标时优先返回 size 上限。
 func (u PendingUsage) WatermarkExceeded() (exceeded bool, limit int64) {
