@@ -25,6 +25,10 @@ type (
 		fragments       []Fragment
 		defaultSize     uint32
 		defaultDuration uint32
+		// 索引恢复路径没有 ICodecCtx：用这些字段补全 tkhd 的显示尺寸/音量。
+		restoreWidth  uint16
+		restoreHeight uint16
+		restoreAudio  bool
 		// defaultSampleFlags     uint32
 		// baseDataOffset         uint64
 		// stbl                   []byte
@@ -134,6 +138,13 @@ func (track *Track) makeTkhdBox() *TrackHeaderBox {
 		tkhd.Height = uint32(ctx.Height()) << 16
 	case pkg.IAudioCodecCtx:
 		tkhd.Volume = 0x0100
+	default:
+		// 索引恢复路径从 IndexTrack 取回尺寸/声道信息，ICodecCtx 为空。
+		tkhd.Width = uint32(track.restoreWidth) << 16
+		tkhd.Height = uint32(track.restoreHeight) << 16
+		if track.restoreAudio {
+			tkhd.Volume = 0x0100
+		}
 	}
 	return tkhd
 }
@@ -167,7 +178,11 @@ func (track *Track) makeMdiaBox() *ContainerBox {
 }
 
 func (track *Track) makeStblBox() IBox {
-	track.STSD = track.makeStsd()
+	// 索引恢复路径已注入 stsd(直接来自 IndexTrack.STSD)；
+	// 不能再用(可能为空的)ICodecCtx 重建覆盖它。
+	if track.STSD == nil {
+		track.STSD = track.makeStsd()
+	}
 	if !track.isFragment {
 		if track.Cid == MP4_CODEC_H264 || track.Cid == MP4_CODEC_H265 {
 			track.STSS = track.makeStssBox()

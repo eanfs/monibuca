@@ -261,12 +261,17 @@ func (d *Device) GetKey() string {
 
 // ensureCollectionMutex 确保 channels/catalogReqs 的读写锁已初始化。
 // 从数据库恢复的设备可能未走 Register/Recover 路径，L 为 nil 时 Collection 无并发保护。
+// 目录路径还会读写插件级 d.plugin.channels，其锁同样在这里幂等补齐，
+// 避免设备初始化独立于插件 Start 时插件级集合裸奔（10-18 concurrent map access 崩溃）。
 func (d *Device) ensureCollectionMutex() {
 	if d.channels.L == nil {
 		d.channels.L = new(sync.RWMutex)
 	}
 	if d.catalogReqs.L == nil {
 		d.catalogReqs.L = new(sync.RWMutex)
+	}
+	if d.plugin != nil {
+		d.plugin.ensureChannelsMutex()
 	}
 }
 

@@ -51,6 +51,20 @@ type S3StorageConfig struct {
 	RetryInterval   time.Duration `desc:"重试基础间隔（指数退避）" default:"5s"`
 	PartSize        int64         `desc:"multipart 分片大小（字节），默认 64MB" default:"67108864"`
 	ConnectTimeout  time.Duration `desc:"TCP 连接超时" default:"10s"`
+	TempDir         string        `desc:"本地临时文件目录，为空时使用系统临时目录"`
+}
+
+// effectiveTempDir 返回 S3 临时文件应写入的目录。
+// 未配置或仅含空白字符时回退到系统临时目录，保持原有行为。
+// 第二个返回值表示 tempdir 是否被显式配置：调用方据此决定是否需要创建目录，
+// 「是否配置」这一个判断只有这里一处。
+func effectiveTempDir(cfg *S3StorageConfig) (dir string, configured bool) {
+	if cfg != nil {
+		if d := strings.TrimSpace(cfg.TempDir); d != "" {
+			return d, true
+		}
+	}
+	return os.TempDir(), false
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -513,12 +527,19 @@ func (w *S3File) cleanup(deleteFile bool) {
 	}
 }
 
-// createTempFile 创建临时文件
+// createTempFile 创建临时文件。
+// 配置了 tempdir 时为其创建目录；创建失败直接报错，绝不静默回退到系统临时目录。
 func (w *S3File) createTempFile() error {
+	dir, configured := effectiveTempDir(w.storage.config)
+	if configured {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create temp dir %q: %w", dir, err)
+		}
+	}
 	// 创建临时文件
-	tempFile, err := os.CreateTemp("", "s3writer_*.tmp")
+	tempFile, err := os.CreateTemp(dir, "s3writer_*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return fmt.Errorf("failed to create temp file in %q: %w", dir, err)
 	}
 	w.tempFile = tempFile
 	w.filePath = tempFile.Name()

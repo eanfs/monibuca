@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"m7s.live/v5"
@@ -26,6 +27,45 @@ type MP4Plugin struct {
 	AutoRecovery         bool          `default:"false" desc:"是否自动恢复"`
 	ExceptionPostUrl     string        `desc:"第三方异常上报地址"`
 	EventRecordFilePath  string        `desc:"事件录像存放地址"`
+
+	// RecordConfig 是录像相关配置（yaml: mp4.record）。
+	// 字段不能命名为 Record：会遮蔽 Plugin.Record() 方法。
+	RecordConfig struct {
+		Index struct {
+			Enable        bool          `default:"true" desc:"是否写伴随索引（崩溃恢复的前提）"`
+			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
+		} `desc:"录像伴随索引配置"`
+		Recovery struct {
+			OnStart     bool          `default:"true" desc:"启动时是否自动扫描并定稿残留录像（不影响 AutoRecovery 的 DB 补录）"`
+			MinAge      time.Duration `default:"5m" desc:"仅用于手动恢复(API/CLI)：sidecar/媒体 mtime 新于该阈值时视为仍在录制并跳过；实际生效值不小于 max(5s, 2×index.flushinterval)；启动自动扫描不受该值影响，固定使用 max(5s, 2×index.flushinterval) 短阈值以保证崩溃重启后自动恢复；本进程内的活跃 recorder 无论 mtime 均跳过；负数关闭保护"`
+			Concurrency int           `default:"2" desc:"恢复定稿并发上限"`
+			// RerunInterval 让「自动恢复」不再依赖进程重启：启动扫描失败的残留
+			// （上传后端未就绪、挂载点抖动等）会在下一轮周期重扫中重试。
+			// 周期重扫只处理残留 sidecar，不重复 AutoRecovery 的 DB 补录；无残留
+			// 时不产生逐文件日志与 Info 汇总。仅在 recovery.onstart=true 时生效。
+			RerunInterval time.Duration `default:"10m" desc:"启动自动扫描后的周期重扫间隔：自动重试启动扫描失败的残留 sidecar，0 关闭；仅在 recovery.onstart=true（自动恢复开启）时生效"`
+			Dirs          []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+			// AllowUnauthenticated 控制未启用 admin.enablelogin 时
+			// POST /api/recovery/run 是否接受任意来源的请求。默认 false：
+			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。
+			AllowUnauthenticated bool `default:"false" desc:"未启用 admin.enablelogin 时是否允许任意来源调用 POST /api/recovery/run；false 时仅允许本地回环请求"`
+		} `desc:"录像崩溃恢复配置"`
+	} `yaml:"record" desc:"录像配置"`
+
+	// Limits 是录制资源软保护配置（yaml: mp4.limits）。
+	Limits struct {
+		MaxConcurrentRecordings int `default:"0" desc:"最大并发录制数，0 表示不限制。超限时请求进入有界等待队列（容量=上限×4），排队超过 30s 返回 503；自动录像(onpub/pull_on_start)、事件录像与 GB28181 下载录像共用该名额，自动录像排队超限时记录 Error 并保留参数。"`
+		MaxMemoryMB             int `default:"0" desc:"录制内存预算(MB)，0 表示不限制。当前版本仅解析并预留，尚未强制执行。"`
+	} `yaml:"limits" desc:"录制资源软保护配置"`
+
+	// recordLimiter 在 Start 时按 Limits 初始化；为 nil 时按不限制处理。
+	recordLimiter atomic.Pointer[RecordLimiter]
+
+	// recoveryTask 供 /api/recovery/* 手动触发与状态查询；Start 时存入。
+	// 用 atomic 是因为 HTTP handler 可能先于/并发于插件启动被调用。
+	recoveryTask atomic.Pointer[IndexRecoveryTask]
+	// recoveryState 是恢复 API 的运行时状态（运行历史/最近恢复结果）。
+	recoveryState recoveryAPIState
 }
 
 const defaultConfig m7s.DefaultYaml = `publish:
@@ -64,10 +104,41 @@ func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
 		"/snap/{streamPath...}":               p.snapHandel,
 		"/api/upload/exhausted":               p.handleListExhaustedUploads,
 		"/api/upload/retry":                   p.handleRetryUpload,
+		"/api/recovery/list":                  p.handleRecoveryList,
+		"/api/recovery/run":                   p.handleRecoveryRun,
+		"/api/recovery/status/{id}":           p.handleRecoveryStatus,
+	}
+}
+
+// applyRecordIndexConfig 把 record.index 注入 pkg 层录制器，并在索引关闭时告警。
+//
+// 告警必须走插件的 logger（p.Warn）：pkg 层没有插件 logger，用 slog.Default()
+// 会绕过插件的日志路由（文件/级别/远端汇集），导致“恢复能力被关闭”这条
+// 关键信息只出现在控制台。
+func (p *MP4Plugin) applyRecordIndexConfig() {
+	cfg := mp4pkg.IndexConfig{
+		Enable:        p.RecordConfig.Index.Enable,
+		FlushInterval: p.RecordConfig.Index.FlushInterval,
+	}
+	mp4pkg.SetIndexConfig(cfg)
+	if !cfg.Enable {
+		p.Warn("record.index disabled: recordings will not write a sidecar index, so interrupted recordings cannot be recovered on restart",
+			"flushInterval", cfg.FlushInterval)
 	}
 }
 
 func (p *MP4Plugin) Start() (err error) {
+	// 录制并发软保护：0 表示不限制，保持既有行为（无队列、无拒绝）。
+	p.recordLimiter.Store(NewRecordLimiter(p.Limits.MaxConcurrentRecordings))
+	if p.Limits.MaxMemoryMB > 0 {
+		// 预留配置：当前版本只解析、记录，不执行内存预算判定。
+		p.Warn("limits.maxmemorymb is configured but not enforced yet",
+			"maxMemoryMB", p.Limits.MaxMemoryMB)
+	}
+
+	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
+	p.applyRecordIndexConfig()
+
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
 		if err != nil {
@@ -86,13 +157,33 @@ func (p *MP4Plugin) Start() (err error) {
 			storageTask.plugin = p
 			p.AddTask(&storageTask)
 		}
-		if p.AutoRecovery {
-			var recoveryTask RecordRecoveryTask
-			recoveryTask.DB = p.DB
-			recoveryTask.plugin = p
-			p.AddTask(&recoveryTask)
-		}
 	}
+
+	// 恢复任务合并了旧 RecordRecoveryTask：启动扫描先补 DB 记录（AutoRecovery），
+	// 再定稿 sidecar。索引定稿不依赖 DB，因此即使 DB 未启用也会运行。
+	// onstart=false 只关闭索引扫描；AutoRecovery 的 DB 补录仍在任务 Start 中执行。
+	//
+	// 任务始终注册：/api/recovery/run 需要在关闭启动扫描时仍能手动触发，
+	// 同时保留运行状态供 /api/recovery/status 查询。空闲的 Work 无额外开销。
+	recoveryTask := &IndexRecoveryTask{
+		DB:            p.DB,
+		plugin:        p,
+		Dirs:          p.RecordConfig.Recovery.Dirs,
+		Concurrency:   p.RecordConfig.Recovery.Concurrency,
+		MinAge:        p.RecordConfig.Recovery.MinAge,
+		RerunInterval: p.RecordConfig.Recovery.RerunInterval,
+		RunOnStart:    p.RecordConfig.Recovery.OnStart,
+		RunDBBackfill: p.AutoRecovery && p.DB != nil,
+	}
+	// 按 sidecar 记录的存储类型解析上传后端：用本 server 的 registry 且
+	// 绝不回落到当前活跃存储（S3 不可用时也不写 local）。
+	if server := p.Server; server != nil {
+		recoveryTask.ResolveUploadStorage = server.GetStorageForType
+	}
+	// observer 必须在任务启动前设置（之后只读）。
+	recoveryTask.observer = p.observeRecovery
+	p.recoveryTask.Store(recoveryTask)
+	p.AddTask(recoveryTask)
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {
 	// 		p.SendToThirdPartyAPI(exception)

@@ -77,6 +77,7 @@ type GB28181Plugin struct {
 	deviceRegisterManager task.WorkCollection[string, *DeviceRegisterQueueTask]
 	Platforms             []*gb28181.PlatformModel
 	channels              util.Collection[string, *Channel]
+	channelsInitOnce      sync.Once // 插件级 channels 锁的幂等初始化（见 ensureChannelsMutex）
 	singlePorts           util.Collection[uint32, *gb28181.SinglePortReader]
 	downloadDialogs       task.WorkCollection[string, *DownloadDialog]
 	completedDownloads    util.Collection[string, *CompletedDownloadDialog]
@@ -168,6 +169,22 @@ func (gb *GB28181Plugin) initDatabase() error {
 	return nil
 }
 
+// ensureChannelsMutex 幂等确保插件级 channels 集合的读写锁已初始化。
+// Device.ensureCollectionMutex（目录/注册/心跳路径）与 Start 都会走到这里；
+// sync.Once 保证多 goroutine 首次并发访问时只初始化一次，且提供 happens-before。
+// 无锁时 Collection.Get/Set 会直接裸读写 Items/m，
+// 现场表现为 internal/runtime/maps.fatal（concurrent map access）。
+func (gb *GB28181Plugin) ensureChannelsMutex() {
+	if gb == nil {
+		return
+	}
+	gb.channelsInitOnce.Do(func() {
+		if gb.channels.L == nil {
+			gb.channels.L = new(sync.RWMutex)
+		}
+	})
+}
+
 func (gb *GB28181Plugin) Start() (err error) {
 	if gb.DB == nil {
 		return pkg.ErrNoDB
@@ -199,7 +216,7 @@ func (gb *GB28181Plugin) Start() (err error) {
 		// channels 必须在 SIP Listen 之前加锁：checkDeviceExpire 与并发 REGISTER 会同时 Set，
 		// 无锁时 Collection.Items 竞态会 index out of range，Start panic 被 recover 后插件异常，
 		// 现场表现为登录连不上 50051（gRPC Serve 异常/未正常 Accept）。
-		gb.channels.L = new(sync.RWMutex)
+		gb.ensureChannelsMutex()
 		BroadcastSessions.L = new(sync.RWMutex)
 		gb.server, _ = sipgo.NewServer(gb.ua, sipgo.WithServerLogger(logger)) // Creating server handle for ua
 		gb.server.OnMessage(gb.OnMessage)

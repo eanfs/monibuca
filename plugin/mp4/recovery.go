@@ -21,47 +21,80 @@ type RecordRecoveryTask struct {
 	plugin *MP4Plugin
 }
 
-// RecoveryStats 恢复统计信息
+// RecoveryStats 恢复统计信息。
+//
+// Scanned 是本次扫描到的待恢复文件数（含最终失败/跳过的）；Recovered/Failed/
+// Skipped 是逐文件结果；Errors 按文件包装路径，便于 API 展示与排障。
+// BareTmp 是没有伴随索引的 s3writer_*.tmp 数量——Task 7 才处理这类文件，
+// 当前只统计并记日志。
 type RecoveryStats struct {
-	TotalFiles   int
-	SuccessCount int
-	FailureCount int
-	SkippedCount int
-	Errors       []error
+	Scanned   int
+	Recovered int
+	Failed    int
+	Skipped   int
+	BareTmp   int
+	Errors    []error
 }
 
-// Start 从文件系统中恢复录像记录
+// merge 合并另一轮扫描的统计（DB 补录 + 索引定稿）。
+func (s *RecoveryStats) merge(other RecoveryStats) {
+	s.Scanned += other.Scanned
+	s.Recovered += other.Recovered
+	s.Failed += other.Failed
+	s.Skipped += other.Skipped
+	s.BareTmp += other.BareTmp
+	s.Errors = append(s.Errors, other.Errors...)
+}
+
+// Start 保留旧行为：仅做 DB 补录扫描。索引定稿由 IndexRecoveryTask 统一驱动。
 func (t *RecordRecoveryTask) Start() error {
-	// 获取所有录像目录
-	var recordDirs []string
-	if len(t.plugin.GetCommonConf().OnPub.Record) > 0 {
-		for _, conf := range t.plugin.GetCommonConf().OnPub.Record {
-			dirPath := filepath.Dir(conf.FilePath)
-			recordDirs = append(recordDirs, dirPath)
+	_, err := t.RunBackfill()
+	return err
+}
+
+// recordOutputDirs 返回配置中的录像输出目录：onpub 各规则的文件目录 + 事件
+// 录像目录。索引定稿扫描（defaultDirs）与 DB 补录（RunBackfill）必须看到同一
+// 组目录，否则两条路径的覆盖范围会静默分叉。
+func (p *MP4Plugin) recordOutputDirs() []string {
+	if p == nil {
+		return nil
+	}
+	var dirs []string
+	if common := p.GetCommonConf(); common != nil {
+		for _, conf := range common.OnPub.Record {
+			if conf.FilePath != "" {
+				dirs = append(dirs, filepath.Dir(conf.FilePath))
+			}
 		}
 	}
-	if t.plugin.EventRecordFilePath != "" {
-		dirPath := filepath.Dir(t.plugin.EventRecordFilePath)
-		recordDirs = append(recordDirs, dirPath)
+	if p.EventRecordFilePath != "" {
+		dirs = append(dirs, filepath.Dir(p.EventRecordFilePath))
 	}
+	return dirs
+}
+
+// RunBackfill 从文件系统中恢复数据库记录（不处理 sidecar 定稿）。
+// 带伴随索引的 .mp4 由 IndexRecoveryTask 负责：这里的扫描会跳过它们，
+// 避免半成品文件被 demux 失败污染统计。
+func (t *RecordRecoveryTask) RunBackfill() (RecoveryStats, error) {
+	if t.DB == nil {
+		t.Info("No database configured, skipping record DB recovery")
+		return RecoveryStats{}, nil
+	}
+	// 获取所有录像目录（与索引定稿扫描共用同一份枚举）
+	recordDirs := t.plugin.recordOutputDirs()
 
 	if len(recordDirs) == 0 {
 		t.Info("No record directories configured, skipping recovery")
-		return nil
+		return RecoveryStats{}, nil
 	}
 
-	stats := &RecoveryStats{}
+	stats := RecoveryStats{}
 
 	// 遍历所有录像目录，收集所有错误而不是在第一个错误时停止
 	for _, dir := range recordDirs {
 		dirStats, err := t.scanDirectory(dir)
-		if dirStats != nil {
-			stats.TotalFiles += dirStats.TotalFiles
-			stats.SuccessCount += dirStats.SuccessCount
-			stats.FailureCount += dirStats.FailureCount
-			stats.SkippedCount += dirStats.SkippedCount
-			stats.Errors = append(stats.Errors, dirStats.Errors...)
-		}
+		stats.merge(dirStats)
 
 		if err != nil {
 			stats.Errors = append(stats.Errors, fmt.Errorf("failed to scan directory %s: %w", dir, err))
@@ -69,11 +102,11 @@ func (t *RecordRecoveryTask) Start() error {
 	}
 
 	// 记录统计信息
-	t.Info("Recovery completed",
-		"totalFiles", stats.TotalFiles,
-		"success", stats.SuccessCount,
-		"failed", stats.FailureCount,
-		"skipped", stats.SkippedCount,
+	t.Info("Record DB recovery completed",
+		"scanned", stats.Scanned,
+		"recovered", stats.Recovered,
+		"failed", stats.Failed,
+		"skipped", stats.Skipped,
 		"errors", len(stats.Errors))
 
 	// 如果有错误，返回一个汇总错误
@@ -82,17 +115,17 @@ func (t *RecordRecoveryTask) Start() error {
 		for _, err := range stats.Errors {
 			errorMsgs = append(errorMsgs, err.Error())
 		}
-		return fmt.Errorf("recovery completed with %d errors: %s", len(stats.Errors), strings.Join(errorMsgs, "; "))
+		return stats, fmt.Errorf("recovery completed with %d errors: %s", len(stats.Errors), strings.Join(errorMsgs, "; "))
 	}
 
-	return nil
+	return stats, nil
 }
 
 // scanDirectory 扫描目录中的MP4文件
-func (t *RecordRecoveryTask) scanDirectory(dir string) (*RecoveryStats, error) {
+func (t *RecordRecoveryTask) scanDirectory(dir string) (RecoveryStats, error) {
 	t.Info("Scanning directory for MP4 files", "directory", dir)
 
-	stats := &RecoveryStats{}
+	stats := RecoveryStats{}
 
 	// 递归遍历目录
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -112,29 +145,36 @@ func (t *RecordRecoveryTask) scanDirectory(dir string) (*RecoveryStats, error) {
 			return nil
 		}
 
-		stats.TotalFiles++
+		stats.Scanned++
+
+		// 带伴随索引的文件由 IndexRecoveryTask 定稿；此时 mp4 还没有 moov，
+		// demux 必然失败，跳过它避免把正常恢复流程记成失败。
+		if hasIndexSidecar(path) {
+			stats.Skipped++
+			return nil
+		}
 
 		// 检查文件是否已经有记录
 		var count int64
 		if err := t.DB.Model(&m7s.RecordStream{}).Where("file_path = ?", path).Count(&count).Error; err != nil {
 			t.Error("Failed to check existing record", "file", path, "error", err)
-			stats.FailureCount++
+			stats.Failed++
 			stats.Errors = append(stats.Errors, fmt.Errorf("failed to check existing record for %s: %w", path, err))
 			return nil
 		}
 
 		if count > 0 {
 			// 已有记录，跳过
-			stats.SkippedCount++
+			stats.Skipped++
 			return nil
 		}
 
 		// 解析MP4文件并创建记录
 		if err := t.recoverRecordFromFile(path); err != nil {
-			stats.FailureCount++
+			stats.Failed++
 			stats.Errors = append(stats.Errors, fmt.Errorf("failed to recover record from %s: %w", path, err))
 		} else {
-			stats.SuccessCount++
+			stats.Recovered++
 		}
 		return nil
 	})
