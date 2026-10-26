@@ -28,6 +28,13 @@ import (
 // progressDBInterval：fmp4 进行中切片周期刷新 EndTime 的节流间隔（REQ-MP4-001 方案 B / M1）
 const progressDBInterval = 10 * time.Second
 
+// 写入对象存储 user metadata 的键名。录制收尾、trailer 与恢复上传三条链路都会
+// 写这组元数据，键名必须一致，否则同一份录像的大小/时长时有时无。
+const (
+	metadataVideoSizeBytes  = "video-size-bytes"
+	metadataVideoDurationMs = "video-duration-ms"
+)
+
 type WriteTrailerQueueTask struct {
 	task.Work
 }
@@ -181,9 +188,9 @@ func (t *writeTrailerTask) Run() (err error) {
 			t.Error("seek fragment file", "err", err)
 			return
 		}
-		t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", size))
+		t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", size))
 		if t.durationMs > 0 {
-			t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+			t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 		}
 		localPath := localMediaPath(t.file)
 		t.handoffToUploadQueue(size, func(cause error) {
@@ -274,12 +281,12 @@ func (t *writeTrailerTask) Run() (err error) {
 
 	// 在最终持久化前设置元数据（文件大小 + 时长）
 	metadata := map[string]string{
-		"video-size-bytes": fmt.Sprintf("%d", expectedSize),
+		metadataVideoSizeBytes: fmt.Sprintf("%d", expectedSize),
 	}
-	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", expectedSize))
+	t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", expectedSize))
 	if t.durationMs > 0 {
-		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
-		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		metadata[metadataVideoDurationMs] = fmt.Sprintf("%d", t.durationMs)
+		t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 	}
 
 	// recoverToPending 把已写好的临时文件登记进补传队列。
@@ -443,7 +450,9 @@ func rewriteIndexRecords(indexPath string, m *Muxer, durationMs uint32) error {
 	if indexPath == "" || m == nil {
 		return nil
 	}
-	old, err := ReadIndex(indexPath)
+	// 只需要头（含 RENAME/SHIFT 扩展的效果）来重建新 sidecar；样本表由
+	// appendMuxerSamples 从 muxer 重新写出，读进来只会白白放大内存。
+	old, err := ReadIndexHeaderAndExtensions(indexPath)
 	if err != nil {
 		return err
 	}
@@ -539,9 +548,9 @@ func (t *writeTrailerTask) handleFailedUpload(mediaPath string, fileSize int64, 
 	for key, value := range metadata {
 		uploadMetadata[key] = value
 	}
-	uploadMetadata["video-size-bytes"] = fmt.Sprintf("%d", fileSize)
+	uploadMetadata[metadataVideoSizeBytes] = fmt.Sprintf("%d", fileSize)
 	if t.durationMs > 0 {
-		uploadMetadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+		uploadMetadata[metadataVideoDurationMs] = fmt.Sprintf("%d", t.durationMs)
 	}
 	registeredPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, mediaPath, t.filePath, t.storageKey,
 		t.streamPath, fileSize, t.durationMs, uploadMetadata, cause)
@@ -665,9 +674,9 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 		}
 	}
 
-	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", uploadSize))
+	t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", uploadSize))
 	if t.durationMs > 0 {
-		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 	}
 
 	// INSERT_RANGE 把 mdat 后移了 insertLen，索引记录也要跟着平移。
@@ -1488,10 +1497,9 @@ func appendIndexOffsetShiftDone(indexPath string) error {
 // removeIndexAfterUpload 是 sidecar 提交式删除的唯一入口。
 // 只在媒体上传成功后调用；失败/pending 分支保留索引供恢复使用。
 func removeIndexAfterUpload(indexPath string) error {
-	if indexPath == "" {
-		return nil
-	}
-	return RemoveIndex(indexPath)
+	// 统一走 RemoveIndexArtifacts：路径是普通 .m7sidx 时行为与单删一致，
+	// 万一是 .recovering 也不会留下 plain 孤儿。
+	return RemoveIndexArtifacts(indexPath)
 }
 
 // removeIndexAfterPendingRegistration 在媒体已成功移入 pending 暂存目录后
@@ -1502,7 +1510,7 @@ func (t *writeTrailerTask) removeIndexAfterPendingRegistration(registered bool) 
 	if !registered || t.indexPath == "" {
 		return
 	}
-	if err := RemoveIndex(t.indexPath); err != nil {
+	if err := RemoveIndexArtifacts(t.indexPath); err != nil {
 		t.Warn("remove index sidecar after pending registration failed",
 			"err", err, "indexPath", t.indexPath)
 	}

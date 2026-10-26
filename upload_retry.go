@@ -48,7 +48,13 @@ func (u *UploadRetryScheduler) Tick(any) {
 	// 日志字段固定为 count/bytes/limit,供现场按 30 天日志检索。
 	// 扫描失败必须显式告警:过去被 `usageErr == nil` 静默吞掉,目录不可读时
 	// 水位告警永久失效且没有任何日志。
-	if usage, usageErr := storage.GetPendingUsage(); usageErr != nil {
+	//
+	// 未配置 size/files 上限时水位判定恒为 false,跳过整目录遍历:默认配置下
+	// 每个 tick 的 WalkDir 只会算出一个用不上的数字(积压上万文件时是数万次
+	// syscall/5min)。
+	if !storage.PendingLimitsConfigured() {
+		u.clearPendingUsageScanFailure()
+	} else if usage, usageErr := storage.GetPendingUsage(); usageErr != nil {
 		u.warnPendingUsageScanFailure(usageErr)
 	} else {
 		u.clearPendingUsageScanFailure()
