@@ -344,8 +344,8 @@ func TestUploadErrorClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := uploadErrorClass(tc.err); got != tc.want {
-				t.Fatalf("uploadErrorClass(%v) = %q, want %q", tc.err, got, tc.want)
+			if got := storage.UploadErrorClass(tc.err); got != tc.want {
+				t.Fatalf("UploadErrorClass(%v) = %q, want %q", tc.err, got, tc.want)
 			}
 		})
 	}

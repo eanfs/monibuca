@@ -123,11 +123,8 @@ func processOne(path string, dryRun bool, fps float64, videoOnly, force bool) fi
 }
 
 func outputPath(input string) string {
-	base := strings.TrimSuffix(input, ".tmp")
-	if base == input {
-		return input + ".recovered.mp4"
-	}
-	return base + ".recovered.mp4"
+	// 非 .tmp 输入时 TrimSuffix 原样返回，行为与“去掉 .tmp 再加后缀”一致。
+	return strings.TrimSuffix(input, ".tmp") + ".recovered.mp4"
 }
 
 func report(results []fileResult, dryRun bool, started time.Time) int {

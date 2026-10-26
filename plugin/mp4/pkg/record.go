@@ -185,12 +185,7 @@ func (t *writeTrailerTask) Run() (err error) {
 		if t.durationMs > 0 {
 			t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
 		}
-		var localPath string
-		if inserter, ok := t.file.(storage.RangeInserter); ok {
-			if fd := inserter.LocalFd(); fd != nil {
-				localPath = fd.Name()
-			}
-		}
+		localPath := localMediaPath(t.file)
 		t.handoffToUploadQueue(size, func(cause error) {
 			t.recoverLocalFile(localPath, size, cause)
 		})
@@ -429,6 +424,26 @@ func localPathExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// appendMuxerSamples 把所有轨道按 id 顺序的样本写进索引记录流，返回写入的
+// 样本数。两条重建路径（INSERT_RANGE 后的重写、崩溃后重建）必须产出完全一致
+// 的记录序列，因此共用这一份实现；错误与清理由各自调用方负责。
+func appendMuxerSamples(w *IndexWriter, m *Muxer) (uint64, error) {
+	var samples uint64
+	for id := uint32(1); id < m.nextTrackId; id++ {
+		track := m.Tracks[id]
+		if track == nil {
+			continue
+		}
+		for _, sample := range track.Samplelist {
+			if err := w.Append(indexRecord(track, sample, sample.Offset)); err != nil {
+				return samples, err
+			}
+			samples++
+		}
+	}
+	return samples, nil
+}
+
 // rewriteIndexRecords 用 muxer 的最终 sample 表重写 sidecar 记录。
 // trailer 重写（moov 前移 / INSERT_RANGE）会把 mdat 整体后移，索引里的旧偏移
 // 随即失效；重建时以 mediaPath 处的实际文件为准，必须同步成 shift 后的偏移。
@@ -451,18 +466,9 @@ func rewriteIndexRecords(indexPath string, m *Muxer, durationMs uint32) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	var samples uint64
-	for id := uint32(1); id < m.nextTrackId; id++ {
-		track := m.Tracks[id]
-		if track == nil {
-			continue
-		}
-		for _, sample := range track.Samplelist {
-			if err := w.Append(indexRecord(track, sample, sample.Offset)); err != nil {
-				return abort(err)
-			}
-			samples++
-		}
+	samples, err := appendMuxerSamples(w, m)
+	if err != nil {
+		return abort(err)
 	}
 	if err := w.Commit(durationMs, samples); err != nil {
 		return abort(err)
@@ -716,10 +722,10 @@ type finalizeUploadTask struct {
 	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
 	onDone func()
 	// size 是待持久化文件的字节数，仅用于结构化日志。
+	//
+	// 队列内的首次尝试没有「已重试次数」这一状态可存：它恒为 0，重试由补传
+	// 调度负责并各自记录次数，因此不再保留 retryCount 字段。
 	size int64
-	// retryCount 是本任务已执行的重试次数（正常队列首次尝试为 0），
-	// 供「上传失败」日志的 retryCount 字段使用。
-	retryCount int
 }
 
 func (u *finalizeUploadTask) Go() (err error) {
@@ -728,29 +734,19 @@ func (u *finalizeUploadTask) Go() (err error) {
 	}
 	if u.prepare != nil {
 		if err = u.prepare(); err != nil {
-			u.logUploadFailure(err)
-			// FinalizeFromTemp 失败时源文件仍归调用方；不调用 Close（实现内部
-			// 句柄已不可用，Close 可能对空句柄上传）。交给 onFail 处理补传。
-			u.file = nil
-			if u.onFail != nil {
-				u.onFail(err)
-			}
+			u.failUpload(err)
 			return
 		}
 	}
 	if err = u.file.Close(); err != nil {
-		u.logUploadFailure(err)
-		u.file = nil
-		if u.onFail != nil {
-			u.onFail(err)
-		}
+		u.failUpload(err)
 		return
 	}
 	u.file = nil
 	u.Info("upload succeeded",
 		"file", u.filePath,
 		"size", u.size,
-		"retryCount", u.retryCount,
+		"retryCount", 0,
 		"streamPath", u.streamPath)
 	// 媒体已完整持久化，sidecar 的使命结束，此时才提交式删除。
 	// 上传失败/pending 分支绝不走到这里，索引保留供恢复使用。
@@ -822,9 +818,17 @@ func (t *writeTrailerTask) logRecordStop(size int64) {
 		"elapsedMs", elapsedMs)
 }
 
-// uploadErrorClass 是 storage.UploadErrorClass 的包内别名，供日志字段使用。
-func uploadErrorClass(err error) string {
-	return storage.UploadErrorClass(err)
+// failUpload 是一次上传失败的统一收尾：记录日志、放弃文件所有权、交给 onFail
+// 处理补传登记。
+//
+// 不调用 Close：失败时实现内部句柄已不可用（FinalizeFromTemp 失败则源文件仍
+// 归调用方），Close 可能对空句柄触发一次上传。
+func (u *finalizeUploadTask) failUpload(cause error) {
+	u.logUploadFailure(cause)
+	u.file = nil
+	if u.onFail != nil {
+		u.onFail(cause)
+	}
 }
 
 // logUploadFailure 输出「上传失败」事件。固定字段（file/size/retryCount/
@@ -833,13 +837,15 @@ func uploadErrorClass(err error) string {
 func (u *finalizeUploadTask) logUploadFailure(cause error) {
 	var nextRetryAt time.Time
 	if u.db != nil {
-		nextRetryAt = m7s.NextUploadRetryAt(u.retryCount)
+		// 队列内首次失败 → 下一次补传是第 1 次重试。
+		nextRetryAt = m7s.NextUploadRetryAt(0)
 	}
 	u.Error("upload failed",
 		"file", u.filePath,
 		"size", u.size,
-		"retryCount", u.retryCount,
-		"errorClass", uploadErrorClass(cause),
+		// 队列内的首次尝试固定为 0；后续重试由补传调度执行并各自记录次数。
+		"retryCount", 0,
+		"errorClass", storage.UploadErrorClass(cause),
 		"nextRetryAt", nextRetryAt,
 		"error", cause,
 		"streamPath", u.streamPath)
@@ -1304,20 +1310,11 @@ func (r *Recorder) rebuildIndex() error {
 		}
 		return err
 	}
-	var samples uint64
-	for id := uint32(1); id < r.muxer.nextTrackId; id++ {
-		track := r.muxer.Tracks[id]
-		if track == nil {
-			continue
-		}
-		for _, sample := range track.Samplelist {
-			if err := w.Append(indexRecord(track, sample, sample.Offset)); err != nil {
-				w.Close()
-				os.Remove(tmpPath)
-				return err
-			}
-			samples++
-		}
+	samples, err := appendMuxerSamples(w, r.muxer)
+	if err != nil {
+		w.Close()
+		os.Remove(tmpPath)
+		return err
 	}
 	if err := w.Close(); err != nil {
 		os.Remove(tmpPath)

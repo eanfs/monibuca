@@ -25,7 +25,8 @@ import (
 //	<media>.m7sidx.recovering 已开始定稿（崩溃后下次启动会重试）
 //	<media>.m7sidx.failed     确定性失败（无可用样本/索引损坏），不再重试
 const (
-	recoveringSuffix = ".recovering"
+	// recoveringSuffix 与 pkg 的上传/清理逻辑共用同一份定义。
+	recoveringSuffix = mp4pkg.IndexRecoveringSuffix
 	failedSuffix     = ".failed"
 )
 
@@ -616,17 +617,8 @@ func (t *IndexRecoveryTask) defaultDirs() []string {
 	if pending := storage.GetPendingDir(); pending != "" {
 		add(pending)
 	}
-	if t.plugin != nil {
-		if common := t.plugin.GetCommonConf(); common != nil {
-			for _, conf := range common.OnPub.Record {
-				if conf.FilePath != "" {
-					add(filepath.Dir(conf.FilePath))
-				}
-			}
-		}
-		if t.plugin.EventRecordFilePath != "" {
-			add(filepath.Dir(t.plugin.EventRecordFilePath))
-		}
+	for _, dir := range t.plugin.recordOutputDirs() {
+		add(dir)
 	}
 	return dirs
 }
@@ -721,31 +713,26 @@ func discoverSidecars(dirs []string, visitedLimit, collectLimit int) (files []st
 				return nil
 			}
 			name := d.Name()
-			switch {
-			case strings.HasSuffix(name, mp4pkg.IndexExtension+recoveringSuffix):
+			// 后缀分类与 /list 共用 recoveryCategoryForName：两个视图对「哪些文件
+			// 待恢复」必须给出同一答案。.m7sidx.tmp 与 .failed 由分类器归为不可
+			// 恢复，因此落到 default 分支被忽略。
+			switch category, ok := recoveryCategoryForName(name); {
+			case ok && category == "recovering":
 				key := strings.TrimSuffix(path, recoveringSuffix)
-				if _, ok := preferred[key]; ok {
-					// 同一媒体的 .recovering 优先于普通 .m7sidx，不新增条目。
-					preferred[key] = path
-					return nil
-				}
-				if len(preferred) >= collectLimit {
+				if _, exists := preferred[key]; !exists && len(preferred) >= collectLimit {
 					truncated = sidecarScanTruncatedCollected
 					return filepath.SkipAll
 				}
+				// 同一媒体的 .recovering 优先于普通 .m7sidx（覆盖已有条目）。
 				preferred[key] = path
-			case strings.HasSuffix(name, mp4pkg.IndexExtension):
-				if _, ok := preferred[path]; ok {
-					return nil
+			case ok && category == "pending":
+				if _, exists := preferred[path]; !exists {
+					if len(preferred) >= collectLimit {
+						truncated = sidecarScanTruncatedCollected
+						return filepath.SkipAll
+					}
+					preferred[path] = path
 				}
-				if len(preferred) >= collectLimit {
-					truncated = sidecarScanTruncatedCollected
-					return filepath.SkipAll
-				}
-				preferred[path] = path
-			case strings.HasSuffix(name, mp4pkg.IndexExtension+".tmp"),
-				strings.HasSuffix(name, mp4pkg.IndexExtension+failedSuffix):
-				// 重写中间态或已判定失败的标记：忽略，避免与恢复队列重复。
 			case strings.HasPrefix(name, "s3writer_") && strings.HasSuffix(name, ".tmp"):
 				if !hasIndexSidecar(path) {
 					bare[path] = true
@@ -856,9 +843,9 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 		// 否则一次抖动就会永久放弃可恢复的录像（Task 9 无重试入口）。
 		if isPermanentIndexError(err) {
 			t.markFailed(sidecar)
-			return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
+		} else {
+			t.Warn("read index failed, will retry on next run", "err", err, "sidecar", sidecar)
 		}
-		t.Warn("read index failed, will retry on next run", "err", err, "sidecar", sidecar)
 		return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
 	}
 

@@ -65,8 +65,9 @@ var ErrRecoveryStorageMismatch = errors.New("mp4: recovery upload storage type m
 // 扫描/崩溃窗口重入时重复上传同一文件。键包含存储类型、对象键与本地产物路径。
 var recoveryUploadsInFlight sync.Map
 
-// recoveryIndexRecoveringSuffix 与 plugin/mp4 的 recoveringSuffix 保持一致。
-const recoveryIndexRecoveringSuffix = ".recovering"
+// IndexRecoveringSuffix 是「已开始定稿」的 sidecar 后缀。plugin/mp4 的
+// recoveringSuffix 直接引用它，跨包只有这一处定义。
+const IndexRecoveringSuffix = ".recovering"
 
 // recoveryUploadSourceMetadataKey 把「本次恢复产物」的路径写进 pending 行
 // metadata。pending 登记会把文件移进 pending 目录、LocalPath 随之改变，
@@ -158,11 +159,8 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		if _, err := os.Stat(upload.OutputPath); err != nil {
 			return fmt.Errorf("mp4: stat recovered local output %s: %w", upload.OutputPath, err)
 		}
-		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
+		if err := commitRecoveredUpload(opts.DB, logger, upload); err != nil {
 			return fmt.Errorf("mp4: update record_streams for recovered local file %s: %w", upload.OutputPath, err)
-		}
-		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
-			logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
 		}
 		return nil
 	}
@@ -198,14 +196,11 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		// 上一次恢复可能已入队但尚未回写（进程在两者之间被杀）。这里补写一次；
 		// 失败必须保留 sidecar：它是「下次启动再回写 record_streams」的唯一线索，
 		// 删掉就等于永久丢失这条录像的 DB 记录。
-		if err := updateRecoveredRecord(opts.DB, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
+		if err := commitRecoveredUpload(opts.DB, logger, upload); err != nil {
 			logger.Error("update record_streams after recovery failed; keeping sidecar",
 				"error", err, "objectKey", objectKey, "output", upload.OutputPath)
 			return fmt.Errorf("mp4: update record_streams for registered recovery upload %s: %w",
 				upload.OutputPath, err)
-		}
-		if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
-			logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
 		}
 		return nil
 	}
@@ -374,6 +369,21 @@ func recoveryResolveStorage(storageType string, resolver RecoveryStorageResolver
 
 // recoveryObjectKey 返回传给 storage.CreateFile 的路径。
 //
+// commitRecoveredUpload 是「不需要上传的恢复产物」的提交式收尾：回写
+// record_streams，成功后才删除 sidecar。
+//
+// 回写失败必须上抛并保留 sidecar——它是下次启动再回写 DB 的唯一线索；删除
+// sidecar 失败只告警（记录已落库，残留 sidecar 下次会被幂等清理）。
+func commitRecoveredUpload(db *gorm.DB, logger *slog.Logger, upload RecoveryUpload) error {
+	if err := updateRecoveredRecord(db, logger, upload.Header, upload.Records, upload.DroppedTrackIDs); err != nil {
+		return err
+	}
+	if err := removeRecoverySidecar(upload.SidecarPath); err != nil {
+		logger.Warn("remove recovery sidecar failed", "err", err, "sidecar", upload.SidecarPath)
+	}
+	return nil
+}
+
 // 优先 FilePath：它是录制时传给 CreateFile 的原始路径，后端会自行追加 prefix。
 // StorageKey 是 File.Name()，S3 场景已含 prefix，再传一次会重复前缀。
 //
@@ -464,7 +474,7 @@ func removeRecoverySidecar(path string) error {
 		return nil
 	}
 	err := RemoveIndex(path)
-	if plain := strings.TrimSuffix(path, recoveryIndexRecoveringSuffix); plain != path {
+	if plain := strings.TrimSuffix(path, IndexRecoveringSuffix); plain != path {
 		if plainErr := RemoveIndex(plain); err == nil {
 			err = plainErr
 		}

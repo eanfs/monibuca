@@ -320,17 +320,6 @@ func (w *IndexWriter) Append(r IndexRecord) error {
 	return nil
 }
 
-// SetFlushInterval 覆盖自动落盘节流间隔。<=0 时保持默认 1s。
-// 只影响之后的 Append 调用；显式 Flush/Commit/Rename/Close 仍然立即落盘。
-func (w *IndexWriter) SetFlushInterval(d time.Duration) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if d <= 0 {
-		d = indexFlushInterval
-	}
-	w.flushInterval = d
-}
-
 // Flush 把缓冲区和文件系统缓存全部落盘。可重复调用。
 func (w *IndexWriter) Flush() error {
 	w.mu.Lock()

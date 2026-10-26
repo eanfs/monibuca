@@ -281,11 +281,22 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		// 无起始时间时只能定位「尚未收尾」的那一行。
 		exact = exact.Where(unclosedRecordPredicate)
 	}
-	findErr := exact.First(&existing).Error
-	switch {
-	case findErr == nil:
-		found = true
-	case !errors.Is(findErr, gorm.ErrRecordNotFound):
+	// findRecord 在给定查询上取第一行：命中或"没有这行"都返回 (found, nil)，
+	// 其余错误（连接/权限）原样上抛——恢复必须能区分"没有记录"和"查不了"。
+	findRecord := func(q *gorm.DB) (bool, error) {
+		err := q.First(&existing).Error
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return false, nil
+		default:
+			return false, err
+		}
+	}
+
+	var findErr error
+	if found, findErr = findRecord(exact); findErr != nil {
 		return findErr
 	}
 
@@ -295,12 +306,8 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		historical := db.WithContext(dbCtx).Where("file_path = ?", filePath).
 			Where("start_time BETWEEN ? AND ?",
 				startTime.Add(-time.Millisecond), startTime.Add(time.Millisecond))
-		historicalErr := historical.First(&existing).Error
-		switch {
-		case historicalErr == nil:
-			found = true
-		case !errors.Is(historicalErr, gorm.ErrRecordNotFound):
-			return historicalErr
+		if found, findErr = findRecord(historical); findErr != nil {
+			return findErr
 		}
 	}
 
@@ -313,12 +320,8 @@ func updateRecoveredRecord(db *gorm.DB, logger *slog.Logger, header IndexHeader,
 		} else {
 			fallback = fallback.Where(unclosedRecordPredicate)
 		}
-		fallbackErr := fallback.First(&existing).Error
-		switch {
-		case fallbackErr == nil:
-			found = true
-		case !errors.Is(fallbackErr, gorm.ErrRecordNotFound):
-			return fallbackErr
+		if found, findErr = findRecord(fallback); findErr != nil {
+			return findErr
 		}
 	}
 

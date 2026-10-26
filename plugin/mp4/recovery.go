@@ -52,6 +52,27 @@ func (t *RecordRecoveryTask) Start() error {
 	return err
 }
 
+// recordOutputDirs 返回配置中的录像输出目录：onpub 各规则的文件目录 + 事件
+// 录像目录。索引定稿扫描（defaultDirs）与 DB 补录（RunBackfill）必须看到同一
+// 组目录，否则两条路径的覆盖范围会静默分叉。
+func (p *MP4Plugin) recordOutputDirs() []string {
+	if p == nil {
+		return nil
+	}
+	var dirs []string
+	if common := p.GetCommonConf(); common != nil {
+		for _, conf := range common.OnPub.Record {
+			if conf.FilePath != "" {
+				dirs = append(dirs, filepath.Dir(conf.FilePath))
+			}
+		}
+	}
+	if p.EventRecordFilePath != "" {
+		dirs = append(dirs, filepath.Dir(p.EventRecordFilePath))
+	}
+	return dirs
+}
+
 // RunBackfill 从文件系统中恢复数据库记录（不处理 sidecar 定稿）。
 // 带伴随索引的 .mp4 由 IndexRecoveryTask 负责：这里的扫描会跳过它们，
 // 避免半成品文件被 demux 失败污染统计。
@@ -60,20 +81,8 @@ func (t *RecordRecoveryTask) RunBackfill() (RecoveryStats, error) {
 		t.Info("No database configured, skipping record DB recovery")
 		return RecoveryStats{}, nil
 	}
-	// 获取所有录像目录
-	var recordDirs []string
-	if t.plugin != nil {
-		if len(t.plugin.GetCommonConf().OnPub.Record) > 0 {
-			for _, conf := range t.plugin.GetCommonConf().OnPub.Record {
-				dirPath := filepath.Dir(conf.FilePath)
-				recordDirs = append(recordDirs, dirPath)
-			}
-		}
-		if t.plugin.EventRecordFilePath != "" {
-			dirPath := filepath.Dir(t.plugin.EventRecordFilePath)
-			recordDirs = append(recordDirs, dirPath)
-		}
-	}
+	// 获取所有录像目录（与索引定稿扫描共用同一份枚举）
+	recordDirs := t.plugin.recordOutputDirs()
 
 	if len(recordDirs) == 0 {
 		t.Info("No record directories configured, skipping recovery")

@@ -56,14 +56,15 @@ type S3StorageConfig struct {
 
 // effectiveTempDir 返回 S3 临时文件应写入的目录。
 // 未配置或仅含空白字符时回退到系统临时目录，保持原有行为。
-func effectiveTempDir(cfg *S3StorageConfig) string {
-	if cfg == nil {
-		return os.TempDir()
+// 第二个返回值表示 tempdir 是否被显式配置：调用方据此决定是否需要创建目录，
+// 「是否配置」这一个判断只有这里一处。
+func effectiveTempDir(cfg *S3StorageConfig) (dir string, configured bool) {
+	if cfg != nil {
+		if d := strings.TrimSpace(cfg.TempDir); d != "" {
+			return d, true
+		}
 	}
-	if dir := strings.TrimSpace(cfg.TempDir); dir != "" {
-		return dir
-	}
-	return os.TempDir()
+	return os.TempDir(), false
 }
 
 func (c *S3StorageConfig) GetType() StorageType {
@@ -529,8 +530,8 @@ func (w *S3File) cleanup(deleteFile bool) {
 // createTempFile 创建临时文件。
 // 配置了 tempdir 时为其创建目录；创建失败直接报错，绝不静默回退到系统临时目录。
 func (w *S3File) createTempFile() error {
-	dir := effectiveTempDir(w.storage.config)
-	if w.storage.config != nil && strings.TrimSpace(w.storage.config.TempDir) != "" {
+	dir, configured := effectiveTempDir(w.storage.config)
+	if configured {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create temp dir %q: %w", dir, err)
 		}

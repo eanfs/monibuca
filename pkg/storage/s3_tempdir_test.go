@@ -11,7 +11,7 @@ import (
 func TestS3CreateTempUsesConfiguredDir(t *testing.T) {
 	dir := t.TempDir()
 	cfg := S3StorageConfig{TempDir: dir}
-	f, err := os.CreateTemp(effectiveTempDir(&cfg), "s3writer_*.tmp")
+	f, err := os.CreateTemp(func() string { d, _ := effectiveTempDir(&cfg); return d }(), "s3writer_*.tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestEffectiveTempDirDefaultsToSystemTemp(t *testing.T) {
 		{name: "whitespace", cfg: &S3StorageConfig{TempDir: "   "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := effectiveTempDir(tc.cfg); got != os.TempDir() {
+			if got, _ := effectiveTempDir(tc.cfg); got != os.TempDir() {
 				t.Fatalf("effectiveTempDir(%v) = %q, want %q", tc.cfg, got, os.TempDir())
 			}
 		})

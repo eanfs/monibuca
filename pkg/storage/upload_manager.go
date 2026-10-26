@@ -267,23 +267,6 @@ func (u PendingUsage) WatermarkExceeded() (exceeded bool, limit int64) {
 	return false, 0
 }
 
-// PendingWatermarkExceeded 检查 pending 目录用量是否达到告警水位（已配置阈值的 80%）。
-// 返回是否超水位及描述;未配置 size/files 阈值时恒返回 false。
-func PendingWatermarkExceeded() (exceeded bool, detail string) {
-	usage, err := GetPendingUsage()
-	if err != nil {
-		return false, ""
-	}
-	exceeded, limit := usage.WatermarkExceeded()
-	if !exceeded {
-		return false, ""
-	}
-	if usage.SizeLimit > 0 && usage.Bytes >= usage.SizeLimit*8/10 {
-		return true, fmt.Sprintf("已用 %d 字节,达上限 %d 的 80%%", usage.Bytes, limit)
-	}
-	return true, fmt.Sprintf("已有 %d 文件,达上限 %d 的 80%%", usage.Count, limit)
-}
-
 // AcquireTrailerSlot 获取一个 trailer 写盘槽位, 阻塞直到有可用槽位或 ctx 取消.
 // 配对 ReleaseTrailerSlot. 调用方通常在 record stop 流程进入 trailer flush 前 acquire,
 // 在 task Dispose / Run 末尾 defer Release.
