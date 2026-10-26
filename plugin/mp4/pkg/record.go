@@ -402,9 +402,9 @@ func (t *writeTrailerTask) rollbackIndexMediaPath(tempPath, originalMediaPath st
 	}
 	target := ""
 	switch {
-	case localPathExists(tempPath):
+	case PathExists(tempPath):
 		target = tempPath
-	case localPathExists(originalMediaPath):
+	case PathExists(originalMediaPath):
 		target = originalMediaPath
 	default:
 		return
@@ -413,15 +413,6 @@ func (t *writeTrailerTask) rollbackIndexMediaPath(tempPath, originalMediaPath st
 		t.Warn("rollback index media path failed", "err", err,
 			"indexPath", t.indexPath, "mediaPath", target)
 	}
-}
-
-// localPathExists 报告路径是否是已存在的普通文件。
-func localPathExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 // appendMuxerSamples 把所有轨道按 id 顺序的样本写进索引记录流，返回写入的

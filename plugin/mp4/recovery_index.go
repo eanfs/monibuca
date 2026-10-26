@@ -33,8 +33,11 @@ const (
 // RecoveryItem 是恢复任务产出的单个文件，也是移交给上传队列的契约。
 // Task 6 负责基于 Header.StorageType 解析上传目标与 pending 语义。
 type RecoveryItem struct {
-	Header     mp4pkg.IndexHeader
-	Records    []mp4pkg.IndexRecord
+	Header mp4pkg.IndexHeader
+	// Records 是恢复所用的索引记录（已按偏移平移）。
+	Records []mp4pkg.IndexRecord
+	// MediaPath 是本次恢复实际读取的源媒体。生产链路用的是 Header.MediaPath，
+	// 但这里记录扫描选中的候选，供测试与排障确认「到底读了哪个文件」。
 	MediaPath  string
 	OutputPath string
 	// SidecarPath 是本次恢复的伴随索引（可能是 .m7sidx 或 .recovering）。
@@ -754,7 +757,7 @@ func discoverSidecars(dirs []string, visitedLimit, collectLimit int) (files []st
 
 func hasIndexSidecar(mediaPath string) bool {
 	index := mediaPath + mp4pkg.IndexExtension
-	if fileExists(index) || fileExists(index+recoveringSuffix) {
+	if mp4pkg.PathExists(index) || mp4pkg.PathExists(index+recoveringSuffix) {
 		return true
 	}
 	return false
@@ -919,7 +922,7 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 
 	if !found {
 		// 崩溃窗口：产物已 rename，但源暂存文件已删除、sidecar 尚未清理。
-		if output != "" && fileExists(output) {
+		if output != "" && mp4pkg.PathExists(output) {
 			if err := t.enqueue(item); err != nil {
 				return recoveryFailed, item, err
 			}
@@ -1227,7 +1230,7 @@ func recoveryMediaCandidates(recorded, sidecar string) []string {
 func locateRecoveryMedia(recorded, sidecar string, guard *recoveryPathGuard) (string, bool, error) {
 	var denied error
 	for _, candidate := range recoveryMediaCandidates(recorded, sidecar) {
-		if !fileExists(candidate) {
+		if !mp4pkg.PathExists(candidate) {
 			continue
 		}
 		allowed, err := guard.allowExisting(candidate, "recovery media")
@@ -1265,11 +1268,6 @@ func recoveryOutputPath(mediaPath string) string {
 
 func isMP4Path(path string) bool {
 	return strings.EqualFold(filepath.Ext(path), ".mp4")
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 // isActiveRecording 报告 sidecar 或其推导出的媒体路径是否被本进程活跃 recorder 持有。

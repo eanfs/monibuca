@@ -26,9 +26,10 @@ import (
 // SidecarPath 是伴随索引路径（可能是 .m7sidx 或 .m7sidx.recovering），
 // 只有在产物上传成功或 pending 登记成功后才允许删除。
 type RecoveryUpload struct {
-	Header      IndexHeader
-	Records     []IndexRecord
-	MediaPath   string
+	Header    IndexHeader
+	Records   []IndexRecord
+	MediaPath string
+	// OutputPath 是已原子 rename、可直接上传的 moov-first MP4。
 	OutputPath  string
 	SidecarPath string
 	// DroppedTrackIDs 是索引头声明、但产物里没有可用样本的轨道。回写

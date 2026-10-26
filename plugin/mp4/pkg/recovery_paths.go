@@ -3,6 +3,7 @@ package mp4
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -158,7 +159,7 @@ func recoveryAbsolutePathBinding(mediaPath, key string) recoveryPathBinding {
 		strings.HasSuffix(media, string(filepath.Separator)+rel) {
 		return recoveryBindingMediaSuffix
 	}
-	if withinRecoveryDir(filepath.Dir(media), keyClean) {
+	if WithinDir(filepath.Dir(media), keyClean) {
 		return recoveryBindingWithinMediaDir
 	}
 	return recoveryBindingNone
@@ -233,8 +234,18 @@ func hasMeaningfulObjectKeySegment(key string) bool {
 	return false
 }
 
-// withinRecoveryDir 判断 target 是否位于 base 目录内（含自身）。
-func withinRecoveryDir(base, target string) bool {
+// PathExists 报告 path 是否是已存在的普通文件（目录不算）。
+func PathExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// WithinDir 判断 target 是否位于 base 目录内（含自身）。恢复 API 的越界检查
+// 与索引路径绑定共用这一份实现——安全敏感的判定不能有第二份拷贝。
+func WithinDir(base, target string) bool {
 	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
 	if err != nil {
 		return false

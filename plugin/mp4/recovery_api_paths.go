@@ -313,22 +313,11 @@ func canonicalExistingDirs(dirs []string) []string {
 // pathWithinAny 判断 target 是否位于任一 allowed 目录内（含自身）。
 func pathWithinAny(allowed []string, target string) bool {
 	for _, base := range allowed {
-		if pathWithin(base, target) {
+		if mp4pkg.WithinDir(base, target) {
 			return true
 		}
 	}
 	return false
-}
-
-func pathWithin(base, target string) bool {
-	rel, err := filepath.Rel(base, target)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // resolveRecoverySidecar 把用户给出的文件解析为可处理的 sidecar。
@@ -336,7 +325,7 @@ func pathWithin(base, target string) bool {
 //
 // 返回非零 status 表示拒绝：403 = 候选是符号链接或解析后越界，
 // 400 = 没有待恢复索引（.failed 不重试）。
-// 候选路径必须重新规范化：仅 fileExists 无法发现“白名单内的链接指向外部”。
+// 候选路径必须重新规范化：仅做存在性检查无法发现“白名单内的链接指向外部”。
 func resolveRecoverySidecar(path string, allowed []string) (sidecar string, status int, message string) {
 	canonical := func(candidate string) (string, int, string) {
 		canon, ok := canonicalRecoveryFile(candidate, allowed)
