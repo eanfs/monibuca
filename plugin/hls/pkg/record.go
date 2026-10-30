@@ -98,6 +98,9 @@ func (r *Recorder) writeTailer(end time.Time) {
 			if st := r.RecordJob.GetStorage(); st != nil {
 				storageKey = st.GetKey()
 			}
+			// 返回值可以安全忽略：本插件没有 sidecar，也没有「删除媒体」的
+			// 分支。登记失败时 RecoverFailedUpload 内部已用 Error 级记录并
+			// 保留媒体（退回原路径），现场可据日志里的 localPath 介入。
 			m7s.RecoverFailedUpload(r.Logger, db, localPath, r.Event.FilePath, storageKey,
 				r.Event.StreamPath, fileSize, r.Event.Duration, nil, closeErr)
 		}

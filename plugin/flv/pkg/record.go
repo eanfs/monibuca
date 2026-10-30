@@ -262,6 +262,9 @@ func (r *Recorder) uploadFailHandler() func(localPath string, fileSize int64, ca
 	streamPath := r.Event.StreamPath
 	durationMs := r.Event.Duration
 	return func(localPath string, fileSize int64, cause error) {
+		// 返回值可以安全忽略：本插件没有 sidecar，也没有「删除媒体」的分支。
+		// 登记失败时 RecoverFailedUpload 内部已用 Error 级记录并保留媒体
+		// （媒体退回原路径），现场可据日志里的 localPath 介入。
 		m7s.RecoverFailedUpload(logger, db, localPath, objectKey, storageKey, streamPath,
 			fileSize, durationMs, nil, cause)
 	}

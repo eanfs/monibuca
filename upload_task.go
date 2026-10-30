@@ -3,6 +3,7 @@ package m7s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -62,11 +63,27 @@ func nextRetryDelay(retryCount int) time.Duration {
 	return 24 * time.Hour
 }
 
-// SaveFailedUpload 保存失败的上传任务到数据库
+// NextUploadRetryAt 返回给定重试次数下补传调度的下次执行时间。
+// 与 SaveFailedUpload / MarkUploadRetryFailed 使用同一套指数退避，
+// 供结构化日志的 nextRetryAt 字段使用，避免日志与真实调度时间漂移。
+func NextUploadRetryAt(retryCount int) time.Time {
+	return time.Now().Add(nextRetryDelay(retryCount))
+}
+
+// ErrUploadRegistrationNoDB 表示没有可用的数据库连接，失败上传无法登记补传。
+// 调用方必须按「未登记」处理：保留媒体与 sidecar，绝不能当成已登记。
+var ErrUploadRegistrationNoDB = errors.New("upload registration requires a database")
+
+// SaveFailedUpload 保存失败的上传任务到数据库。
+//
+// 返回错误表示补传任务没有落库（DB 不可用、SQLite 锁冲突、MySQL 断连、
+// 磁盘满等）。调用方必须保留媒体文件与 sidecar 并记 Error——历史上这里
+// 丢弃了 db.Create 的返回值，INSERT 失败仍显示「已登记补传」，随后 sidecar
+// 被删除，录像永久丢失且无任何告警。
 func SaveFailedUpload(db *gorm.DB, localPath, objectKey, storageType, streamPath string,
-	fileSize int64, durationMs uint32, metadata map[string]string, uploadErr error) {
+	fileSize int64, durationMs uint32, metadata map[string]string, uploadErr error) error {
 	if db == nil {
-		return
+		return ErrUploadRegistrationNoDB
 	}
 	var metaJSON string
 	if len(metadata) > 0 {
@@ -94,7 +111,10 @@ func SaveFailedUpload(db *gorm.DB, localPath, objectKey, storageType, streamPath
 		MaxRetries:   10,
 		NextRetryAt:  time.Now().Add(nextRetryDelay(0)),
 	}
-	db.Create(&task)
+	if err := db.Create(&task).Error; err != nil {
+		return fmt.Errorf("create upload task for %s: %w", localPath, err)
+	}
+	return nil
 }
 
 // QueryPendingUploads 查询待重试的上传任务

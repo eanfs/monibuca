@@ -51,10 +51,28 @@ func (h *LogRotatePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// currentLogPath 返回 rotoslog 正在写入的当前日志文件路径。文件名由
+// FilePrefix + CurrentFileSuffix + FileExt 组成；这里必须跟随配置前缀，
+// 否则默认前缀( m7s- )下会去打开不存在的 current.log。
+func (l *LogRotatePlugin) currentLogPath() string {
+	return filepath.Join(l.Path, l.FilePrefix+currentFileSuffix+logFileExt)
+}
+
+// openCurrentLog 打开当前日志文件用于回放历史内容。打开失败必须记录日志，
+// 不能静默吞掉——否则 trail 只会推新行，使用者无从判断历史为何缺失。
+func (l *LogRotatePlugin) openCurrentLog() (*os.File, error) {
+	path := l.currentLogPath()
+	file, err := os.Open(path)
+	if err != nil {
+		l.Warn("open current log for trail failed", "file", path, "error", err)
+		return nil, err
+	}
+	return file, nil
+}
+
 func (l *LogRotatePlugin) API_trail(w http.ResponseWriter, r *http.Request) {
 	util.NewSSE(w, r.Context(), func(sse *util.SSE) {
-		file, err := os.Open(filepath.Join(l.Path, "current.log"))
-		if err == nil {
+		if file, err := l.openCurrentLog(); err == nil {
 			io.Copy(sse, file)
 			file.Close()
 		}

@@ -125,6 +125,22 @@ type PublishParam struct {
 	Config       *config.Publish
 }
 
+// PublisherStopped 报告 publisher 是否已停止，用于录制任务注册前后判断
+// “把录制任务挂到这个 publisher 上是否还有意义”。
+//
+// 与 pub.GetTask().IsStopped() 的区别：零值 Publisher（测试对象、尚未进入
+// 任务系统的中间态）的 Context 为 nil，直接调 IsStopped() 会解引用空接口
+// panic；这里把它按“未停止”处理。
+func PublisherStopped(pub *Publisher) bool {
+	if pub == nil {
+		return true
+	}
+	if pub.Context == nil {
+		return false
+	}
+	return pub.GetTask().IsStopped()
+}
+
 func (p *Publisher) SubscriberRange(yield func(sub *Subscriber) bool) {
 	p.Subscribers.Range(yield)
 }

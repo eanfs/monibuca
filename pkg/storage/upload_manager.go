@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -133,6 +132,28 @@ func GetMaxConcurrentUploads() int {
 	return maxConcurrent
 }
 
+// MoveLocalFile 把 srcPath 移动到 dstPath：
+// 优先 rename（同文件系统，原子且快），跨设备时 fallback 到 copy + delete。
+//
+// 失败时保证 dstPath 不留半成品：copy 中途出错会删除目标文件，源文件保持不动。
+func MoveLocalFile(srcPath, dstPath string) error {
+	if srcPath == dstPath {
+		return nil
+	}
+	// 尝试 rename
+	if err := os.Rename(srcPath, dstPath); err == nil {
+		return nil
+	}
+
+	// fallback: copy + delete。复用本包的 copyFileContents（它带 Sync，保证
+	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。
+	if err := copyFileContents(srcPath, dstPath); err != nil {
+		os.Remove(dstPath)
+		return err
+	}
+	return os.Remove(srcPath)
+}
+
 // MoveToPendingDir 将文件移动到暂存目录，返回新路径。
 // 优先使用 rename（同文件系统快速），失败时 fallback 到 copy+delete。
 func MoveToPendingDir(srcPath string) (string, error) {
@@ -154,30 +175,9 @@ func MoveToPendingDir(srcPath string) (string, error) {
 			fmt.Sprintf("%s.%d", filepath.Base(srcPath), time.Now().UnixNano()))
 	}
 
-	// 尝试 rename
-	if err := os.Rename(srcPath, dstPath); err == nil {
-		return dstPath, nil
-	}
-
-	// fallback: copy + delete
-	src, err := os.Open(srcPath)
-	if err != nil {
+	if err := MoveLocalFile(srcPath, dstPath); err != nil {
 		return "", err
 	}
-	defer src.Close()
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return "", err
-	}
-	defer dst.Close()
-
-	if _, err = io.Copy(dst, src); err != nil {
-		os.Remove(dstPath)
-		return "", err
-	}
-	src.Close()
-	os.Remove(srcPath)
 	return dstPath, nil
 }
 
@@ -238,23 +238,40 @@ func checkPendingCapacity() error {
 	return nil
 }
 
-// PendingWatermarkExceeded 检查 pending 目录用量是否达到告警水位（已配置阈值的 80%）。
-// 返回是否超水位及描述;未配置 size/files 阈值时恒返回 false。
-func PendingWatermarkExceeded() (exceeded bool, detail string) {
-	if pendingMaxSizeBytes <= 0 && pendingMaxFiles <= 0 {
-		return false, ""
-	}
+// PendingUsage 是 pending 目录当前用量与已配置上限的快照。
+// 上限为 0 表示该维度未配置限制。
+type PendingUsage struct {
+	Bytes     int64
+	Count     int
+	SizeLimit int64 // pendingMaxSizeBytes
+	FileLimit int   // pendingMaxFiles
+}
+
+// GetPendingUsage 统计 pending 目录用量并带上已配置上限。
+func GetPendingUsage() (PendingUsage, error) {
+	usage := PendingUsage{SizeLimit: pendingMaxSizeBytes, FileLimit: pendingMaxFiles}
 	total, count, err := GetPendingDirUsage()
-	if err != nil {
-		return false, ""
+	usage.Bytes, usage.Count = total, count
+	return usage, err
+}
+
+// PendingLimitsConfigured 报告是否配置了 pending 目录的 size/files 上限。
+// 未配置时水位判定恒为 false，调用方应跳过整目录遍历（每次 tick 一次 WalkDir
+// 只为算出一个不会被使用的数字）。
+func PendingLimitsConfigured() bool {
+	return pendingMaxSizeBytes > 0 || pendingMaxFiles > 0
+}
+
+// WatermarkExceeded 返回是否达到告警水位（已配置阈值的 80%）及触发维度的上限。
+// 未配置 size/files 阈值时恒返回 false；size 与 files 同时超标时优先返回 size 上限。
+func (u PendingUsage) WatermarkExceeded() (exceeded bool, limit int64) {
+	if u.SizeLimit > 0 && u.Bytes >= u.SizeLimit*8/10 {
+		return true, u.SizeLimit
 	}
-	if pendingMaxSizeBytes > 0 && total >= pendingMaxSizeBytes*8/10 {
-		return true, fmt.Sprintf("已用 %d 字节,达上限 %d 的 80%%", total, pendingMaxSizeBytes)
+	if u.FileLimit > 0 && u.Count >= u.FileLimit*8/10 {
+		return true, int64(u.FileLimit)
 	}
-	if pendingMaxFiles > 0 && count >= pendingMaxFiles*8/10 {
-		return true, fmt.Sprintf("已有 %d 文件,达上限 %d 的 80%%", count, pendingMaxFiles)
-	}
-	return false, ""
+	return false, 0
 }
 
 // AcquireTrailerSlot 获取一个 trailer 写盘槽位, 阻塞直到有可用槽位或 ctx 取消.

@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,6 +27,13 @@ import (
 
 // progressDBInterval：fmp4 进行中切片周期刷新 EndTime 的节流间隔（REQ-MP4-001 方案 B / M1）
 const progressDBInterval = 10 * time.Second
+
+// 写入对象存储 user metadata 的键名。录制收尾、trailer 与恢复上传三条链路都会
+// 写这组元数据，键名必须一致，否则同一份录像的大小/时长时有时无。
+const (
+	metadataVideoSizeBytes  = "video-size-bytes"
+	metadataVideoDurationMs = "video-duration-ms"
+)
 
 type WriteTrailerQueueTask struct {
 	task.Work
@@ -52,12 +60,40 @@ type writeTrailerTask struct {
 	streamPath string   // 关联流路径（用于失败追踪）
 	storageKey string   // 存储类型 key（s3/oss/cos/local）
 	db         *gorm.DB // 数据库连接（用于保存失败记录）
+	// startedAt 是本段录像开片的墙钟时间，用于「录制结束」日志的 elapsedMs。
+	// 与 durationMs（媒体时长）不同：断流/卡顿期间墙钟继续走，二者可对照排查。
+	startedAt time.Time
 	// dbWrite 在文件完整写入后执行数据库更新，为 nil 时跳过（无 DB 或测试模式）。
 	// 返回 error 表示文件已持久化成功但 record_streams 入库失败（孤儿文件）。
 	dbWrite func(tailJob task.IJob) error
+	// indexPath 是本段录像的伴随索引；上传成功后才删除，失败/pending 保留。
+	indexPath string
+	// indexMediaPath 是 sidecar 头的媒体路径，与 indexPath 一起构成活跃登记
+	// 的键。活跃登记保留到本任务结束（见 releaseActiveIndex）。
+	indexMediaPath string
+}
+
+// releaseActiveIndex 注销本段录像的活跃登记。必须在 Run 结束时（成功或失败）
+// 调用：sidecar 提交之后文件还要经过 trailer 重写，期间恢复扫描必须继续把
+// 它当作「活跃录制」而不是崩溃残留。提前注销会让 mtime 成为唯一判据，
+// GB 级 mdat 的重写很容易超过 minage，正在写的文件就会被覆盖。
+// 可重复调用（UnregisterActiveIndex 只是按键删除）。
+func (t *writeTrailerTask) releaseActiveIndex() {
+	UnregisterActiveIndex(t.indexPath, t.indexMediaPath)
 }
 
 func (task *writeTrailerTask) Start() (err error) {
+	// gotask 只在 Start 成功时才调用 Run()；本任务没有 SetRetry，Start 失败即
+	// 终结（任务被直接移出队列），连 dispose 都不会真正执行（dispose 在
+	// state < TASK_STATE_STARTED 时直接返回），所以 Run 的 defer 与 OnDispose
+	// 都覆盖不到这条路径。不在这里注销，IsActiveRecordingPath 会让恢复扫描在
+	// 本进程余下的生命周期内永久跳过这个 sidecar（相对 commitIndex 同步注销的
+	// 基线是回归）。Start 失败后文件已关闭、不会再有 trailer 重写，注销是安全的。
+	defer func() {
+		if err != nil {
+			task.releaseActiveIndex()
+		}
+	}()
 	task.Info("write trailer start")
 	if err = task.muxer.WriteTrailer(task.file); err != nil {
 		task.Error("write trailer", "err", err)
@@ -72,6 +108,50 @@ func (task *writeTrailerTask) Start() (err error) {
 
 const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 
+// indexFlagKeyFrame 标记索引记录对应一个关键帧（恢复时据此重建 stss）。
+// 其余位当前保留，读取方只应依赖这一位。
+const indexFlagKeyFrame uint8 = 0x01
+
+// IndexFlagKeyFrame 是 indexFlagKeyFrame 的导出别名，供包外恢复路径
+// （无索引 tmp 反向重建）构造 IndexRecord 时使用。
+const IndexFlagKeyFrame = indexFlagKeyFrame
+
+// indexFilePath 返回媒体文件对应的 sidecar 路径：<media>.m7sidx。
+// 不新增 storage.File 接口，路径由录制器已知的本地媒体路径推导。
+func indexFilePath(mediaPath string) string { return mediaPath + IndexExtension }
+
+// absoluteMediaPath 把媒体路径统一成绝对路径。
+//
+// storage.local.path 可以是 "."（默认）或任意相对目录，此时 LocalFile.Name()
+// 是相对路径；若原样写进 sidecar，恢复侧的路径白名单（要求绝对路径）会拒绝，
+// 导致 sidecar 常驻、每次启动重试、永远恢复不了。header.FilePath 保持原样：
+// 它是逻辑录像路径，用于匹配 record_streams / 对象键。
+func absoluteMediaPath(mediaPath string) string {
+	if mediaPath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(mediaPath)
+	if err != nil {
+		return mediaPath
+	}
+	return filepath.Clean(abs)
+}
+
+// localMediaPath 返回 storage.File 当前数据所在的本地路径。
+// 对象存储后端在本地暂存文件（s3writer_*.tmp），sidecar 与它同目录。
+// 不新增 storage.File 接口：LocalFd 已由 RangeInserter 暴露。
+func localMediaPath(f storage.File) string {
+	if f == nil {
+		return ""
+	}
+	if inserter, ok := f.(storage.RangeInserter); ok {
+		if fd := inserter.LocalFd(); fd != nil {
+			return fd.Name()
+		}
+	}
+	return ""
+}
+
 // 将 moov 从文件末尾移动到文件头：先把 [ftyp][moov][mdat] 写入临时文件，
 // 然后让 storage.File 承载这份临时文件。
 //
@@ -79,7 +159,13 @@ const BeforeMdatData = 16 // free box + mdat box header or big mdat box header
 // 直接移交给 storage.File（对象存储=上传源；本地=rename 到目标路径），省去一次
 // 全量回拷。未实现 TempFileFinalizer 的 File 回退到旧的 io.Copy 路径。
 func (t *writeTrailerTask) Run() (err error) {
+	// 活跃登记从 commitIndex 一直保留到这里：trailer 重写窗口内文件仍在被
+	// 改写，恢复扫描必须跳过。无论成功、失败还是提前返回都注销（defer）。
+	defer t.releaseActiveIndex()
 	t.Info("write trailer")
+	// 「录制结束」事件：在 trailer 改写前记录本段录像的最终统计。
+	// size 取改写前的文件长度（已写入的媒体总量），断流/失败路径同样能报出。
+	t.logRecordStop(t.recordedSize())
 
 	// 确保任何错误路径下 t.file 都被关闭
 	defer func() {
@@ -88,6 +174,10 @@ func (t *writeTrailerTask) Run() (err error) {
 			t.file = nil
 		}
 	}()
+
+	// trailer 改写前的媒体本地路径。FinalizeFromTemp 可能把上传源换成另一个
+	// 临时文件（对象存储），此时需要向 sidecar 追加 RENAME 记录。
+	originalMediaPath := localMediaPath(t.file)
 
 	// fMP4(fragment)文件本身已是最终形态 [ftyp][moov(init)][moof/mdat...][mfra]，
 	// 不需要 moov 前移重写；走下方 progressive 全量重写会把它毁掉。
@@ -98,17 +188,12 @@ func (t *writeTrailerTask) Run() (err error) {
 			t.Error("seek fragment file", "err", err)
 			return
 		}
-		t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", size))
+		t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", size))
 		if t.durationMs > 0 {
-			t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+			t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 		}
-		var localPath string
-		if inserter, ok := t.file.(storage.RangeInserter); ok {
-			if fd := inserter.LocalFd(); fd != nil {
-				localPath = fd.Name()
-			}
-		}
-		t.handoffToUploadQueue(func(cause error) {
+		localPath := localMediaPath(t.file)
+		t.handoffToUploadQueue(size, func(cause error) {
 			t.recoverLocalFile(localPath, size, cause)
 		})
 		return
@@ -196,22 +281,20 @@ func (t *writeTrailerTask) Run() (err error) {
 
 	// 在最终持久化前设置元数据（文件大小 + 时长）
 	metadata := map[string]string{
-		"video-size-bytes": fmt.Sprintf("%d", expectedSize),
+		metadataVideoSizeBytes: fmt.Sprintf("%d", expectedSize),
 	}
-	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", expectedSize))
+	t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", expectedSize))
 	if t.durationMs > 0 {
-		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
-		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		metadata[metadataVideoDurationMs] = fmt.Sprintf("%d", t.durationMs)
+		t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 	}
 
-	// recoverToPending 把已写好的临时文件移入 pending 目录并入库，供定时补传。
+	// recoverToPending 把已写好的临时文件登记进补传队列。
 	// 用于 FinalizeFromTemp 失败路径:此刻 tempPath 已是完整的 moov-first MP4,
-	// 绝不能随 defer 一起删掉。db 为 nil 或移动失败时让 defer 按 tempOwned 处理。
+	// 绝不能随 defer 一起删掉。tempOwned 由 recoverTempAfterFinalizeFailure
+	// 决定，只有「明确没有补传队列」时才允许 defer 删除。
 	recoverToPending := func(cause error) {
-		if pendingPath, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath,
-			t.storageKey, t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr == nil && pendingPath != "" {
-			tempOwned = false // 已移走，不需 defer 删除
-		}
+		tempOwned = t.recoverTempAfterFinalizeFailure(tempPath, expectedSize, metadata, cause)
 	}
 
 	// ---- 阶段 2：让 storage.File 承载这份临时文件 ----
@@ -227,6 +310,18 @@ func (t *writeTrailerTask) Run() (err error) {
 		recoverToPending(err)
 		return
 	}
+	// RENAME 必须**先于** finalize 落盘。FinalizeFromTemp 会删掉旧的暂存文件
+	// （对象存储的 s3writer_*.tmp），之后若进程被杀，sidecar 的 MediaPath 就
+	// 指向已删除文件，而真正的产物 tempPath 不在原路径上——恢复扫描永远
+	// 找不到它。先记下 tempPath，至少留下一条指向真实产物的线索。
+	preRecordedMediaPath := ""
+	if renameErr := t.recordIndexMediaPath(tempPath); renameErr != nil {
+		t.Warn("pre-record index rename failed", "err", renameErr,
+			"indexPath", t.indexPath, "mediaPath", tempPath)
+	} else {
+		preRecordedMediaPath = tempPath
+	}
+
 	// 快路径：直接移交 tempPath，省去全量回拷。
 	if err = finalizer.FinalizeFromTemp(tempPath); err != nil {
 		t.Error("finalize from temp", "err", err)
@@ -235,24 +330,158 @@ func (t *writeTrailerTask) Run() (err error) {
 		// 让 err-defer 跳过 Close，并把仍完整的 tempPath 移入 pending 补传。
 		t.file = nil
 		recoverToPending(err)
+		// 失败路径上预写的 RENAME 可能已失效（如本地 rename 成功但 reopen
+		// 失败）：把 sidecar 拉回仍然存在的产物。
+		t.rollbackIndexMediaPath(tempPath, originalMediaPath)
 		return
 	}
 	tempOwned = false // 所有权已移交 t.file
 
+	t.syncIndexMediaPath(preRecordedMediaPath)
+	// moov 前移后 sample 偏移整体右移，同步 sidecar 记录，保证恢复时偏移有效。
+	if idxErr := rewriteIndexRecords(t.indexPath, t.muxer, t.durationMs); idxErr != nil {
+		t.Error("rewrite index records after trailer", "err", idxErr, "indexPath", t.indexPath)
+	}
+
 	// ---- 阶段 3：最终持久化（对象存储=上传）移交独立上传队列,不再阻塞 trailer 队列 ----
 	// 上传失败时:MOOV 重写后的文件仍保留在 tempPath（storage.File 在 Close 失败路径
-	// 均不删除它），移入 pending 补传;无 DB / pending 满时与旧行为一致清理临时文件。
-	t.handoffToUploadQueue(func(cause error) {
-		if t.db == nil {
-			os.Remove(tempPath) // 无 DB 部署:无补传队列可登记,按旧行为清理
+	// 均不删除它），登记补传。
+	//
+	// 唯一允许删除临时文件的场景是「明确无法补传」：无 DB 部署，没有补传队列
+	// 可登记。其余失败（pending 满 / DB 写失败 / 回查失败）一律保留媒体与
+	// sidecar——tempPath 是这份录像的唯一副本。
+	t.handoffToUploadQueue(expectedSize, func(cause error) {
+		if keepMedia, _ := t.handleFailedUpload(tempPath, expectedSize, metadata, cause); keepMedia {
 			return
 		}
-		if _, rerr := m7s.RecoverFailedUpload(t.Logger, t.db, tempPath, t.filePath, t.storageKey,
-			t.streamPath, expectedSize, t.durationMs, metadata, cause); rerr != nil {
-			os.Remove(tempPath) // pending 目录满等异常(已告警):清理避免临时文件堆积
-		}
+		// 明确没有补传队列：按旧行为清理临时文件，避免堆积（已 Warn）。
+		os.Remove(tempPath)
 	})
 	return
+}
+
+// recordIndexMediaPath 向 sidecar 追加一条 RENAME 扩展记录。返回错误供调用方
+// 决定是否继续（sidecar 只是恢复线索，写失败不应中断录制收尾）。
+func (t *writeTrailerTask) recordIndexMediaPath(mediaPath string) error {
+	if t.indexPath == "" || mediaPath == "" {
+		return nil
+	}
+	abs := absoluteMediaPath(mediaPath)
+	if abs == "" {
+		return nil
+	}
+	return appendIndexRename(t.indexPath, abs)
+}
+
+// syncIndexMediaPath 在 FinalizeFromTemp 之后把 sidecar 的 MediaPath 校正为
+// 媒体当前的真实路径。previous 是 finalize 之前**预写**的路径：
+//
+//   - 对象存储：finalize 后本地路径就是预写的 trailer 临时文件 → 无需重复追加；
+//   - 本地存储：finalize 把临时文件 rename 到目标路径 → 必须追加一条指向目标
+//     路径的 RENAME，否则 sidecar 指向已被 rename 走（不存在）的临时文件。
+func (t *writeTrailerTask) syncIndexMediaPath(previous string) {
+	if t.indexPath == "" {
+		return
+	}
+	newMediaPath := absoluteMediaPath(localMediaPath(t.file))
+	if newMediaPath == "" || (previous != "" && newMediaPath == absoluteMediaPath(previous)) {
+		return
+	}
+	if err := appendIndexRename(t.indexPath, newMediaPath); err != nil {
+		t.Error("append index rename record failed", "err", err,
+			"indexPath", t.indexPath, "mediaPath", newMediaPath)
+	}
+}
+
+// rollbackIndexMediaPath 在 FinalizeFromTemp 失败后把 sidecar 的 MediaPath 拉回
+// 一个**真实存在**的媒体文件上（恢复以最后一条 RENAME 为准）：
+//   - tempPath 优先：它已是完整的 moov-first 重写产物，也是失败路径继续
+//     补传/原地登记的同一份文件；
+//   - tempPath 已消失（如本地跨设备拷贝完成后仅 reopen 失败）时退回原路径。
+//
+// sidecar 已被补传登记清理（媒体移入 pending）时什么都不做，避免重建孤儿索引。
+func (t *writeTrailerTask) rollbackIndexMediaPath(tempPath, originalMediaPath string) {
+	if t.indexPath == "" {
+		return
+	}
+	if _, err := os.Stat(t.indexPath); err != nil {
+		return
+	}
+	target := ""
+	switch {
+	case PathExists(tempPath):
+		target = tempPath
+	case PathExists(originalMediaPath):
+		target = originalMediaPath
+	default:
+		return
+	}
+	if err := appendIndexRename(t.indexPath, absoluteMediaPath(target)); err != nil {
+		t.Warn("rollback index media path failed", "err", err,
+			"indexPath", t.indexPath, "mediaPath", target)
+	}
+}
+
+// appendMuxerSamples 把所有轨道按 id 顺序的样本写进索引记录流，返回写入的
+// 样本数。两条重建路径（INSERT_RANGE 后的重写、崩溃后重建）必须产出完全一致
+// 的记录序列，因此共用这一份实现；错误与清理由各自调用方负责。
+func appendMuxerSamples(w *IndexWriter, m *Muxer) (uint64, error) {
+	var samples uint64
+	for id := uint32(1); id < m.nextTrackId; id++ {
+		track := m.Tracks[id]
+		if track == nil {
+			continue
+		}
+		for _, sample := range track.Samplelist {
+			if err := w.Append(indexRecord(track, sample, sample.Offset)); err != nil {
+				return samples, err
+			}
+			samples++
+		}
+	}
+	return samples, nil
+}
+
+// rewriteIndexRecords 用 muxer 的最终 sample 表重写 sidecar 记录。
+// trailer 重写（moov 前移 / INSERT_RANGE）会把 mdat 整体后移，索引里的旧偏移
+// 随即失效；重建时以 mediaPath 处的实际文件为准，必须同步成 shift 后的偏移。
+// 头部（含最终 MediaPath）从现有 sidecar 读取并原样保留。
+func rewriteIndexRecords(indexPath string, m *Muxer, durationMs uint32) error {
+	if indexPath == "" || m == nil {
+		return nil
+	}
+	// 只需要头（含 RENAME/SHIFT 扩展的效果）来重建新 sidecar；样本表由
+	// appendMuxerSamples 从 muxer 重新写出，读进来只会白白放大内存。
+	old, err := ReadIndexHeaderAndExtensions(indexPath)
+	if err != nil {
+		return err
+	}
+	tmpPath := indexPath + ".tmp"
+	w, err := CreateIndex(tmpPath, old.Header)
+	if err != nil {
+		return err
+	}
+	abort := func(err error) error {
+		w.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	samples, err := appendMuxerSamples(w, m)
+	if err != nil {
+		return abort(err)
+	}
+	if err := w.Commit(durationMs, samples); err != nil {
+		return abort(err)
+	}
+	if err := w.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, indexPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // shiftSampleOffsets 把所有 track 的 sample 偏移整体加 delta，
@@ -286,15 +515,71 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 	return nil
 }
 
-// recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记到 pending
-// 目录供定时补传。用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
-func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) {
-	metadata := map[string]string{"video-size-bytes": fmt.Sprintf("%d", fileSize)}
-	if t.durationMs > 0 {
-		metadata["video-duration-ms"] = fmt.Sprintf("%d", t.durationMs)
+// recoverTempAfterFinalizeFailure 处理 FinalizeFromTemp 失败（tempPath 已是一份
+// 完整的 moov-first MP4）：登记补传，并返回 tempPath 是否仍由调用方（defer）
+// 负责删除。
+//
+// 只有「明确没有补传队列」（无 DB / local 存储）时才返回 true。其余情况——
+// 包括 pending 目录满、upload_tasks 写不进去、回查失败——tempPath 都是这份
+// 录像的唯一副本，返回 false，调用方绝不能删除：曾经这里按「移动成功才交还
+// 所有权」判断，移动失败时 defer 会直接删掉唯一副本，而日志还写着
+// "keeping media"，数据静默丢失。
+func (t *writeTrailerTask) recoverTempAfterFinalizeFailure(tempPath string, fileSize int64, metadata map[string]string, cause error) (deleteTemp bool) {
+	keepMedia, _ := t.handleFailedUpload(tempPath, fileSize, metadata, cause)
+	return !keepMedia
+}
+
+// handleFailedUpload 是「上传失败但本地仍有完整媒体」的唯一保命入口：
+// 把 mediaPath 登记进补传队列（优先移入 pending，pending 目录不可用时原地
+// 登记），并按媒体的实际位置决定 sidecar 的去留。
+//
+// 返回值描述调用方必须如何处置 mediaPath：
+//   - keepMedia：mediaPath 仍可能是这份录像的唯一副本，调用方绝不能删除它。
+//     只有「明确没有补传队列」（无 DB / local 存储）时才返回 false。
+//   - movedToPending：媒体已被移入 pending 目录，原路径不再有媒体，
+//     sidecar 已作为孤儿一并清理；false 表示媒体仍在原路径，sidecar 保留
+//     （它仍指向真实媒体，可作为恢复的额外保险）。
+//
+// 登记未确认时媒体与 sidecar 全部保留，等下次恢复扫描重试；错误明细已在
+// m7s.RecoverFailedUpload 内以 Error 级记录（并负责把媒体退回原路径）。
+func (t *writeTrailerTask) handleFailedUpload(mediaPath string, fileSize int64, metadata map[string]string, cause error) (keepMedia, movedToPending bool) {
+	// 复制一份再补字段：调用方传入的 map 可能被复用，这里不修改它。
+	uploadMetadata := make(map[string]string, len(metadata)+2)
+	for key, value := range metadata {
+		uploadMetadata[key] = value
 	}
-	m7s.RecoverFailedUpload(t.Logger, t.db, localPath, t.filePath, t.storageKey,
-		t.streamPath, fileSize, t.durationMs, metadata, cause)
+	uploadMetadata[metadataVideoSizeBytes] = fmt.Sprintf("%d", fileSize)
+	if t.durationMs > 0 {
+		uploadMetadata[metadataVideoDurationMs] = fmt.Sprintf("%d", t.durationMs)
+	}
+	registeredPath, err := m7s.RecoverFailedUpload(t.Logger, t.db, mediaPath, t.filePath, t.storageKey,
+		t.streamPath, fileSize, t.durationMs, uploadMetadata, cause)
+	if err != nil {
+		t.Error("failed upload registration not confirmed; keeping media and index sidecar",
+			"error", err, "cause", cause, "mediaPath", mediaPath,
+			"registeredPath", registeredPath, "filePath", t.filePath)
+		return true, false
+	}
+	if registeredPath == "" {
+		// 无 DB / local 存储：没有补传队列可登记，调用方按旧行为处理临时文件。
+		t.Warn("failed upload has no retry queue; local temp copy will be discarded",
+			"cause", cause, "mediaPath", mediaPath, "filePath", t.filePath)
+		return false, false
+	}
+	movedToPending = registeredPath != mediaPath
+	// 媒体已离开原路径时 sidecar 才是孤儿；原地登记时它仍指向真实媒体。
+	t.removeIndexAfterPendingRegistration(movedToPending)
+	return true, movedToPending
+}
+
+// recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记进补传队列。
+// 用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
+//
+// 返回媒体是否被移入 pending 目录（此时原路径已无媒体，sidecar 已一并清理）；
+// 原地登记或登记失败时返回 false，媒体与 sidecar 都保留。
+func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (movedToPending bool) {
+	_, movedToPending = t.handleFailedUpload(localPath, fileSize, nil, cause)
+	return movedToPending
 }
 
 // runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，
@@ -341,6 +626,17 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 
 	// —— 此后 INSERT_RANGE 改写底层文件 ——
+	// 平移意图必须先于数据移动落盘（writeExtension 内部 Flush+Sync）：
+	// 两步之间被 kill 时，恢复侧靠这条记录 + 文件长度判定到底移位没有；
+	// 没有它就只能产出错位 MP4。写不进去宁可不做原地插入（回退全量重写，
+	// 那条路径会把 payload 复制到新文件，偏移由 rewriteIndexRecords 统一写）。
+	if e := appendIndexOffsetShift(t.indexPath, preLen, insertLen); e != nil {
+		t.Warn("insert-range skipped: cannot persist offset-shift record",
+			"err", e, "indexPath", t.indexPath)
+		t.shiftSampleOffsets(-insertLen)
+		t.muxer.MakeMoov()
+		return false, nil
+	}
 	if e := storage.InsertRange(fd, 0, insertLen); e != nil {
 		t.shiftSampleOffsets(-insertLen)
 		t.muxer.MakeMoov()
@@ -378,13 +674,23 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 		}
 	}
 
-	t.file.SetMetadata("video-size-bytes", fmt.Sprintf("%d", uploadSize))
+	t.file.SetMetadata(metadataVideoSizeBytes, fmt.Sprintf("%d", uploadSize))
 	if t.durationMs > 0 {
-		t.file.SetMetadata("video-duration-ms", fmt.Sprintf("%d", t.durationMs))
+		t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
+	}
+
+	// INSERT_RANGE 把 mdat 后移了 insertLen，索引记录也要跟着平移。
+	// 重写成功才追加 SHIFT_DONE：中途被杀时 sidecar 仍是「旧索引 + SHIFT」，
+	// 恢复侧按文件长度把偏移 +insertLen 后重建。重写失败/回滚分支同样会走到
+	// 这里（muxer 偏移已复原），DONE 记录让恢复侧直接用新索引。
+	if idxErr := rewriteIndexRecords(t.indexPath, t.muxer, t.durationMs); idxErr != nil {
+		t.Error("rewrite index records after insert-range", "err", idxErr, "indexPath", t.indexPath)
+	} else if e := appendIndexOffsetShiftDone(t.indexPath); e != nil {
+		t.Warn("append offset-shift-done record failed", "err", e, "indexPath", t.indexPath)
 	}
 
 	// 持久化（对象存储=上传）移交独立上传队列,不阻塞 trailer 队列。
-	t.handoffToUploadQueue(func(cause error) {
+	t.handoffToUploadQueue(uploadSize, func(cause error) {
 		t.recoverLocalFile(localPath, uploadSize, cause)
 	})
 	t.Info("insert-range fast path done, upload handed off",
@@ -408,19 +714,45 @@ type finalizeUploadTask struct {
 	db         *gorm.DB
 	dbWrite    func(tailJob task.IJob) error
 	onFail     func(cause error)
+	// indexPath 是伴随索引路径；只有上传成功分支才删除它。
+	indexPath string
+	// prepare 在上传前执行。恢复上传用它把已恢复的产物移交给 storage.File；
+	// 正常录制路径为 nil（文件在录制期间已写入）。
+	prepare func() error
+	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
+	onDone func()
+	// size 是待持久化文件的字节数，仅用于结构化日志。
+	//
+	// 队列内的首次尝试没有「已重试次数」这一状态可存：它恒为 0，重试由补传
+	// 调度负责并各自记录次数，因此不再保留 retryCount 字段。
+	size int64
 }
 
 func (u *finalizeUploadTask) Go() (err error) {
-	if err = u.file.Close(); err != nil {
-		u.Error("upload failed after retries", "err", err,
-			"filePath", u.filePath, "streamPath", u.streamPath)
-		u.file = nil
-		if u.onFail != nil {
-			u.onFail(err)
+	if u.onDone != nil {
+		defer u.onDone()
+	}
+	if u.prepare != nil {
+		if err = u.prepare(); err != nil {
+			u.failUpload(err)
+			return
 		}
+	}
+	if err = u.file.Close(); err != nil {
+		u.failUpload(err)
 		return
 	}
 	u.file = nil
+	u.Info("upload succeeded",
+		"file", u.filePath,
+		"size", u.size,
+		"retryCount", 0,
+		"streamPath", u.streamPath)
+	// 媒体已完整持久化，sidecar 的使命结束，此时才提交式删除。
+	// 上传失败/pending 分支绝不走到这里，索引保留供恢复使用。
+	if idxErr := removeIndexAfterUpload(u.indexPath); idxErr != nil {
+		u.Warn("remove index sidecar after upload failed", "err", idxErr, "indexPath", u.indexPath)
+	}
 	// 文件已完整持久化,此时才将记录写入数据库(延迟入库,确保 DB 与可播放文件一致)。
 	if u.dbWrite != nil {
 		if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
@@ -434,9 +766,94 @@ func (u *finalizeUploadTask) Go() (err error) {
 	return
 }
 
+// recordedSize 返回 trailer 改写前已写入的字节数；无法取值时返回 0。
+func (t *writeTrailerTask) recordedSize() int64 {
+	if t.file == nil {
+		return 0
+	}
+	size, err := t.file.Seek(0, io.SeekEnd)
+	if err != nil || size < 0 {
+		return 0
+	}
+	return size
+}
+
+// logRecordStop 输出「录制结束」事件。字段名是现场日志检索契约的一部分
+// （streamPath/file/durationMs/size/samples/tracks/elapsedMs），勿随意改名。
+func (t *writeTrailerTask) logRecordStop(size int64) {
+	tracks, samples := 0, 0
+	samplesSource := "samplelist"
+	if t.muxer != nil {
+		// fragment 模式每个轨道只保留尚未写出的当前一帧，累计量由 muxer 计数，
+		// 否则无论录多久 samples 都只有轨道数（1–2），会被误判为没录到数据。
+		if t.muxer.isFragment() {
+			samplesSource = "fragment"
+			samples = int(t.muxer.fragmentSamples)
+		}
+		for id := uint32(1); id < t.muxer.nextTrackId; id++ {
+			track := t.muxer.Tracks[id]
+			if track == nil {
+				continue
+			}
+			tracks++
+			// progressive: Samplelist 即全部样本；
+			// fragment: Samplelist 是尚未刷出的缓冲帧，计入总量。
+			samples += len(track.Samplelist)
+		}
+	}
+	var elapsedMs int64
+	if !t.startedAt.IsZero() {
+		if elapsed := time.Since(t.startedAt).Milliseconds(); elapsed > 0 {
+			elapsedMs = elapsed
+		}
+	}
+	t.Info("record stopped",
+		"streamPath", t.streamPath,
+		"file", t.filePath,
+		"durationMs", t.durationMs,
+		"size", size,
+		"samples", samples,
+		"samplesSource", samplesSource,
+		"tracks", tracks,
+		"elapsedMs", elapsedMs)
+}
+
+// failUpload 是一次上传失败的统一收尾：记录日志、放弃文件所有权、交给 onFail
+// 处理补传登记。
+//
+// 不调用 Close：失败时实现内部句柄已不可用（FinalizeFromTemp 失败则源文件仍
+// 归调用方），Close 可能对空句柄触发一次上传。
+func (u *finalizeUploadTask) failUpload(cause error) {
+	u.logUploadFailure(cause)
+	u.file = nil
+	if u.onFail != nil {
+		u.onFail(cause)
+	}
+}
+
+// logUploadFailure 输出「上传失败」事件。固定字段（file/size/retryCount/
+// errorClass/nextRetryAt）供现场按日志检索；nextRetryAt 为空表示没有补传
+// 队列可登记（无 DB 部署），该文件不会被自动重试。
+func (u *finalizeUploadTask) logUploadFailure(cause error) {
+	var nextRetryAt time.Time
+	if u.db != nil {
+		// 队列内首次失败 → 下一次补传是第 1 次重试。
+		nextRetryAt = m7s.NextUploadRetryAt(0)
+	}
+	u.Error("upload failed",
+		"file", u.filePath,
+		"size", u.size,
+		// 队列内的首次尝试固定为 0；后续重试由补传调度执行并各自记录次数。
+		"retryCount", 0,
+		"errorClass", storage.UploadErrorClass(cause),
+		"nextRetryAt", nextRetryAt,
+		"error", cause,
+		"streamPath", u.streamPath)
+}
+
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
 // 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
-func (t *writeTrailerTask) handoffToUploadQueue(onFail func(cause error)) {
+func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
 	ft := &finalizeUploadTask{
 		file:       t.file,
 		filePath:   t.filePath,
@@ -444,9 +861,22 @@ func (t *writeTrailerTask) handoffToUploadQueue(onFail func(cause error)) {
 		db:         t.db,
 		dbWrite:    t.dbWrite,
 		onFail:     onFail,
+		indexPath:  t.indexPath,
+		size:       size,
 	}
 	t.file = nil // 所有权移交
+	t.logUploadEnqueued(size)
 	uploadQueueTask.AddTask(ft, t.Logger)
+}
+
+// logUploadEnqueued 输出「上传入队」事件。retryCount 固定为 0：入队即首次
+// 尝试，后续重试由补传调度负责并各自记录 retryCount。
+func (t *writeTrailerTask) logUploadEnqueued(size int64) {
+	t.Info("upload enqueued",
+		"file", t.filePath,
+		"size", size,
+		"retryCount", 0,
+		"streamPath", t.streamPath)
 }
 
 func NewRecorder(conf config.Record) m7s.IRecorder {
@@ -471,9 +901,23 @@ type Recorder struct {
 	videoTrack       *Track
 	lastProgressDB   time.Time // fmp4 上次刷新 EndTime 的墙钟，用于节流
 	progressClosedID uint      // 已交给 writeTrailer 定稿的记录 ID，禁止再被进度刷新回退
+	// recordStartedAt 是本段录像开片的墙钟时间，用于「录制结束」日志的 elapsedMs。
+	recordStartedAt time.Time
 	// lastSampleWriteTime：最后成功写入样本的帧墙钟，Dispose 收尾用它写 EndTime，避免断流读超时把区间拖长。
 	// Confirmed via 寸止: BUG-021 方案 B
 	lastSampleWriteTime time.Time
+
+	// 崩溃恢复伴随索引（progressive MP4 才有）。mediaPath + ".m7sidx"，
+	// 与媒体数据同目录（对象存储=本地暂存文件旁）。
+	index           *IndexWriter
+	indexPath       string
+	indexMediaPath  string
+	indexSamples    uint64
+	indexTrackCount int  // 建索引头时 muxer 的轨道数，用于发现后到的轨道
+	indexWarned     bool // 索引写失败只告警一次，避免每帧刷日志
+	// indexDisabled 表示本段录像的 sidecar 创建失败（如临时目录不可写），
+	// 不再逐帧重试文件操作。下一段录像/下一次 reset 会重新尝试。
+	indexDisabled bool
 }
 
 // maybeFlushProgress 节流更新进行中 fmp4 记录的 EndTime/Duration，供 list/点播查询命中。
@@ -517,6 +961,10 @@ func (r *Recorder) writeTailer(end time.Time) {
 	if r.Event.ID != 0 {
 		r.progressClosedID = r.Event.ID
 	}
+	// 正常收尾只 Commit + Close，不删除 sidecar；删除发生在上传成功之后。
+	// 活跃登记不在这里注销：它要一直保留到 trailer 任务收尾（releaseActiveIndex）。
+	indexMediaPath := r.indexMediaPath
+	indexPath := r.commitIndex()
 	// WriteTailDeferred 仅设置 EndTime 并返回延迟 DB 写入闭包，不立即写库。
 	// DB 写入将在 writeTrailerTask.Run() 成功（包含对象存储上传）后执行，
 	// 确保文件可播放后才入库；本地失败时也不会留下不一致的 DB 记录。
@@ -530,16 +978,33 @@ func (r *Recorder) writeTailer(end time.Time) {
 	if st != nil {
 		storageKey = st.GetKey()
 	}
-	writeTrailerQueueTask.AddTask(&writeTrailerTask{
-		muxer:      r.muxer,
-		file:       r.file,
-		filePath:   r.Event.FilePath,
-		durationMs: r.Event.Duration,
-		streamPath: r.Event.StreamPath,
-		storageKey: storageKey,
-		db:         db,
-		dbWrite:    dbWrite,
-	}, r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
+	trailer := &writeTrailerTask{
+		muxer:          r.muxer,
+		file:           r.file,
+		filePath:       r.Event.FilePath,
+		durationMs:     r.Event.Duration,
+		streamPath:     r.Event.StreamPath,
+		storageKey:     storageKey,
+		db:             db,
+		dbWrite:        dbWrite,
+		indexPath:      indexPath,
+		indexMediaPath: indexMediaPath,
+		startedAt:      r.recordStartedAt,
+	}
+	// OnDispose 必须在 AddTask 之前注册：与 OnStart 相同的 append-only 语义，
+	// 任务启动后再注册的监听器永远不会被消费。正常路径的注销由 Run 的 defer
+	// 完成（覆盖所有提前返回），这里只是任务确实进入 Dispose 时的兜底；
+	// 启动失败路径由 Start 自己注销（gotask 不会为启动失败的任务执行 Dispose）。
+	trailer.GetTask().OnDispose(trailer.releaseActiveIndex)
+	trailerTask := writeTrailerQueueTask.AddTask(trailer,
+		r.Logger.With("filePath", r.Event.FilePath, "streamPath", r.Event.StreamPath))
+	if rejected, reason := m7s.AddTaskRejected(&writeTrailerQueueTask, trailerTask); rejected {
+		// 队列已停止（进程收尾）或通道满：没有人会替我们注销，立刻释放，
+		// 否则这条路径会永久留在活跃集合里。
+		trailer.releaseActiveIndex()
+		r.Warn("write trailer task rejected by task system",
+			"streamPath", r.Event.StreamPath, "filePath", r.Event.FilePath, "reason", reason)
+	}
 }
 
 var CustomFileName = func(job *m7s.RecordJob) string {
@@ -570,6 +1035,7 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 	}
 	r.lastProgressDB = time.Time{}
 	r.lastSampleWriteTime = time.Time{}
+	r.recordStartedAt = time.Now()
 	t0 := time.Now()
 	err = r.CreateStream(start, CustomFileName)
 	r.Info("createStream step1 CreateStream", "elapsed", time.Since(t0))
@@ -625,8 +1091,32 @@ func (r *Recorder) createStream(start time.Time) (err error) {
 		r.Info("createStream step4 WriteMoov", "elapsed", time.Since(t3))
 	}
 	r.Info("createStream total", "elapsed", time.Since(t0))
+	r.logRecordStart(st)
 	r.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
 	return
+}
+
+// logRecordStart 输出「录制开始」事件。固定字段（streamPath/file/type/
+// storageType/codec）是现场日志检索契约的一部分，勿随意改名。
+// codec 优先取视频编码（avc1.64001f 等），纯音频录像回退音频编码。
+func (r *Recorder) logRecordStart(st storage.Storage) {
+	storageType := r.Event.StorageType
+	if st != nil {
+		storageType = st.GetKey()
+	}
+	codecName := r.Event.VideoCodec
+	if codecName == "" {
+		codecName = r.Event.AudioCodec
+	}
+	if codecName == "" {
+		codecName = "unknown"
+	}
+	r.Info("record started",
+		"streamPath", r.Event.StreamPath,
+		"file", r.Event.FilePath,
+		"type", r.Event.Type,
+		"storageType", storageType,
+		"codec", codecName)
 }
 
 // initFragmentTracks 按 Publisher 已就绪轨预置 FMP4 Track，保证 WriteMoov 含全部轨
@@ -683,6 +1173,349 @@ func (r *Recorder) initFragmentTracks() (err error) {
 	return nil
 }
 
+// —— 崩溃恢复伴随索引（sidecar） ——
+//
+// 仅 progressive MP4 需要：fMP4 的 init moov + moof/mdat 自描述，崩溃后无需索引。
+// 写入顺序固定为「先媒体、后索引」，索引永远不超前于已交给存储层的数据。
+// 正常停止只 Commit + Close，不删除；sidecar 保留到上传成功后才由
+// removeIndexAfterUpload 提交式删除。
+
+// indexHeader 按当前 muxer 轨道生成索引头。
+func (r *Recorder) indexHeader(mediaPath string) IndexHeader {
+	h := IndexHeader{
+		Version:    1,
+		StreamPath: r.Event.StreamPath,
+		// MediaPath 必须是绝对路径：恢复侧的路径 guard 只接受绝对路径。
+		MediaPath:  absoluteMediaPath(mediaPath),
+		TargetName: filepath.Base(r.Event.FilePath),
+		FilePath:   r.Event.FilePath,
+		StartTime:  r.Event.StartTime,
+	}
+	if r.file != nil {
+		// LocalFile.Name() 是本地绝对路径；S3File.Name() 是含 prefix 的对象键。
+		h.StorageKey = r.file.Name()
+	}
+	if st := r.RecordJob.GetStorage(); st != nil {
+		h.StorageType = st.GetKey()
+	}
+	for id := uint32(1); id < r.muxer.nextTrackId; id++ {
+		track := r.muxer.Tracks[id]
+		if track == nil || track.ICodecCtx == nil {
+			continue
+		}
+		h.Tracks = append(h.Tracks, newIndexTrack(track))
+	}
+	return h
+}
+
+func newIndexTrack(track *Track) IndexTrack {
+	fourCC := box.GetCodecNameWithCodecId(track.Cid)
+	info := IndexTrack{ID: uint16(track.TrackId), FourCC: string(fourCC[:])}
+	switch ctx := track.ICodecCtx.(type) {
+	case pkg.IVideoCodecCtx:
+		info.Width, info.Height = ctx.Width(), ctx.Height()
+	case pkg.IAudioCodecCtx:
+		info.SampleRate, info.Channels = ctx.GetSampleRate(), ctx.GetChannels()
+	}
+	var buf bytes.Buffer
+	if _, err := box.WriteTo(&buf, track.makeStsd()); err == nil {
+		info.STSD = append([]byte(nil), buf.Bytes()...)
+	}
+	return info
+}
+
+func indexRecord(track *Track, sample box.Sample, offset int64) IndexRecord {
+	var flags uint8
+	if sample.KeyFrame {
+		flags = indexFlagKeyFrame
+	}
+	return IndexRecord{
+		Flags:    flags,
+		TrackID:  uint16(track.TrackId),
+		Size:     uint32(sample.Size),
+		Offset:   uint64(offset),
+		DTS:      sample.Timestamp,
+		Duration: sample.Duration,
+	}
+}
+
+// openIndexAppend 以追加方式打开已有 sidecar，用于追加扩展记录或重建后续写。
+func openIndexAppend(path string) (*IndexWriter, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &IndexWriter{
+		f:             f,
+		buf:           bufio.NewWriterSize(f, indexWriteBufferSize),
+		flushInterval: GetIndexConfig().FlushInterval,
+	}, nil
+}
+
+// ensureIndex 为当前媒体文件创建 sidecar。本地路径未知（自定义 storage.File
+// 未实现 RangeInserter）时静默跳过。
+func (r *Recorder) ensureIndex() error {
+	if !GetIndexConfig().Enable || r.index != nil || r.muxer == nil || r.muxer.isFragment() {
+		return nil
+	}
+	mediaPath := absoluteMediaPath(localMediaPath(r.file))
+	if mediaPath == "" {
+		return nil
+	}
+	h := r.indexHeader(mediaPath)
+	path := indexFilePath(mediaPath)
+	w, err := CreateIndex(path, h)
+	if err != nil {
+		return err
+	}
+	r.index = w
+	r.indexPath = path
+	r.indexMediaPath = mediaPath
+	r.indexSamples = 0
+	r.indexTrackCount = len(r.muxer.Tracks)
+	r.indexWarned = false
+	// 进程级活跃登记：恢复扫描据此跳过仍在录制的文件（先于 mtime 判据）。
+	RegisterActiveIndex(path, mediaPath)
+	r.Info("index sidecar created", "indexPath", path, "tracks", len(h.Tracks))
+	return nil
+}
+
+// maybeRebuildIndex 在轨道数变化时重建索引头。轨道是在首个 sample 到达时才
+// 加入 muxer 的，晚到的第二轨无法再写进已落盘的 JSON 头，只能原子重写整个
+// sidecar（先写 .tmp 再 rename，崩溃时旧文件仍完整）。
+func (r *Recorder) maybeRebuildIndex() error {
+	if r.index == nil || len(r.muxer.Tracks) == r.indexTrackCount {
+		return nil
+	}
+	return r.rebuildIndex()
+}
+
+func (r *Recorder) rebuildIndex() error {
+	if r.index == nil || r.indexMediaPath == "" {
+		return nil
+	}
+	path := r.indexPath
+	if err := r.index.Close(); err != nil {
+		r.Warn("close index before rebuild", "err", err, "indexPath", path)
+	}
+	r.index = nil
+
+	h := r.indexHeader(r.indexMediaPath)
+	tmpPath := path + ".tmp"
+	w, err := CreateIndex(tmpPath, h)
+	if err != nil {
+		// 旧 sidecar 仍然完整，尽量继续追加，避免后续 ensureIndex 截断它。
+		if nw, rerr := openIndexAppend(path); rerr == nil {
+			r.index = nw
+		}
+		return err
+	}
+	samples, err := appendMuxerSamples(w, r.muxer)
+	if err != nil {
+		w.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := w.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		// rename 失败时旧文件未变，恢复写入句柄继续追加。
+		if nw, rerr := openIndexAppend(path); rerr == nil {
+			r.index = nw
+		}
+		return err
+	}
+	nw, err := openIndexAppend(path)
+	if err != nil {
+		return err
+	}
+	r.index = nw
+	r.indexSamples = samples
+	r.indexTrackCount = len(r.muxer.Tracks)
+	r.Info("index sidecar rebuilt for new track",
+		"indexPath", path, "tracks", len(h.Tracks), "samples", samples)
+	return nil
+}
+
+// writeSample 先写媒体数据，成功后才追加索引记录。
+// 偏移必须在 WriteSample 之前取：WriteSample 内部只会修改它的值拷贝。
+func (r *Recorder) writeSample(track *Track, sample box.Sample) error {
+	if err := r.maybeRebuildIndex(); err != nil && !r.indexWarned {
+		r.Warn("rebuild index sidecar", "err", err, "indexPath", r.indexPath)
+		r.indexWarned = true
+	}
+	fragment := r.muxer.isFragment()
+	offset := r.muxer.CurrentOffset
+	if err := r.muxer.WriteSample(r.file, track, sample); err != nil {
+		return err
+	}
+	if fragment {
+		return nil
+	}
+	r.appendIndexRecord(track, sample, offset)
+	return nil
+}
+
+func (r *Recorder) appendIndexRecord(track *Track, sample box.Sample, offset int64) {
+	if !GetIndexConfig().Enable {
+		return
+	}
+	if r.index == nil {
+		// 已有 sidecar 但写句柄不可用（如重建后重开失败）：绝不能重建截断它，
+		// 否则历史记录会静默丢失。
+		if r.indexPath != "" || r.indexDisabled {
+			return
+		}
+		if err := r.ensureIndex(); err != nil {
+			r.indexDisabled = true
+			r.warnIndex(err)
+			return
+		}
+		if r.index == nil {
+			return
+		}
+	}
+	if err := r.index.Append(indexRecord(track, sample, offset)); err != nil {
+		r.warnIndex(err)
+		return
+	}
+	r.indexSamples++
+}
+
+func (r *Recorder) warnIndex(err error) {
+	if r.indexWarned {
+		return
+	}
+	r.indexWarned = true
+	r.logIndexError(err)
+}
+
+// logIndexError 输出「索引写入异常」事件。固定字段（streamPath/file/
+// error/recordsWritten）供现场日志检索；indexPath 为附加定位信息。
+func (r *Recorder) logIndexError(err error) {
+	r.Error("index write failed",
+		"streamPath", r.Event.StreamPath,
+		"file", r.Event.FilePath,
+		"error", err,
+		"recordsWritten", r.indexSamples,
+		"indexPath", r.indexPath)
+}
+
+// resetIndex 复位分片级索引状态。**不**注销活跃登记：commitIndex 的收尾
+// 由 writeTrailerTask 在 trailer 完成后负责（releaseActiveIndex），closeIndex
+// 自己负责。把注销留在这里会让重写窗口内的文件失去保护。
+func (r *Recorder) resetIndex() {
+	r.index = nil
+	r.indexPath = ""
+	r.indexMediaPath = ""
+	r.indexSamples = 0
+	r.indexTrackCount = 0
+	r.indexWarned = false
+	r.indexDisabled = false
+}
+
+// commitIndex 追加 commit 扩展记录并关闭索引，返回 sidecar 路径供后续
+// 上传成功时删除。sidecar 本身保留在磁盘上（崩溃窗口内仍可恢复）。
+//
+// 无论本段是否还持有写句柄都无条件 resetIndex：indexPath/indexDisabled 是
+// 分片级状态，CreateIndex 失败或重建后重开失败都不能残留到下一段——否则
+// 第 1 个分片失败会导致后续所有分片都不再尝试建 sidecar。
+// 句柄为空但 sidecar 已存在时仍返回其路径，让上传成功分支能清理它。
+func (r *Recorder) commitIndex() (indexPath string) {
+	idx, path := r.index, r.indexPath
+	if idx != nil {
+		r.index = nil // 防止重入时重复 Commit
+		if err := idx.Commit(r.Event.Duration, r.indexSamples); err != nil {
+			r.logIndexError(err)
+		}
+		if err := idx.Close(); err != nil {
+			r.Warn("close index sidecar", "err", err, "indexPath", path)
+		}
+	}
+	r.resetIndex()
+	return path
+}
+
+// closeIndex 不写 commit 直接关闭索引（媒体文件被丢弃的分支）。
+// 按提交式删除约定，这里也不删除 sidecar；同样无条件复位分片级索引状态。
+// 这条路径没有 trailer 任务接手，活跃登记必须在这里注销。
+func (r *Recorder) closeIndex() {
+	if r.index != nil {
+		if err := r.index.Close(); err != nil {
+			r.Warn("close index sidecar", "err", err, "indexPath", r.indexPath)
+		}
+	}
+	UnregisterActiveIndex(r.indexPath, r.indexMediaPath)
+	r.resetIndex()
+}
+
+// appendIndexExtension 在已 Committed 的 sidecar 末尾追加一条扩展记录并落盘。
+// indexPath 为空（本段没有 sidecar）时是 no-op。扩展记录只追加、不改历史，
+// 读取端以最后一条为准。
+func appendIndexExtension(indexPath string, write func(*IndexWriter) error) error {
+	if indexPath == "" {
+		return nil
+	}
+	w, err := openIndexAppend(indexPath)
+	if err != nil {
+		return err
+	}
+	err = write(w)
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// appendIndexRename 在已 Committed 的 sidecar 末尾追加 RENAME 扩展记录。
+// 用于 FinalizeFromTemp 把媒体换成另一个本地文件（对象存储上传源）的场景。
+func appendIndexRename(indexPath, mediaPath string) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.Rename(mediaPath)
+	})
+}
+
+// appendIndexOffsetShift 在 fallocate(INSERT_RANGE) 之前记录平移意图：
+// preLen 是插入前的文件长度，insertLen 是即将插入的字节数。写完即落盘，
+// 保证崩溃后恢复侧不会面对「数据已后移、索引还是旧偏移」的静默错位。
+func appendIndexOffsetShift(indexPath string, preLen, insertLen int64) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.OffsetShift(preLen, insertLen)
+	})
+}
+
+// appendIndexOffsetShiftDone 在索引按平移后的偏移重写成功后追加完成标记。
+func appendIndexOffsetShiftDone(indexPath string) error {
+	return appendIndexExtension(indexPath, func(w *IndexWriter) error {
+		return w.OffsetShiftDone()
+	})
+}
+
+// removeIndexAfterUpload 是 sidecar 提交式删除的唯一入口。
+// 只在媒体上传成功后调用；失败/pending 分支保留索引供恢复使用。
+func removeIndexAfterUpload(indexPath string) error {
+	// 统一走 RemoveIndexArtifacts：路径是普通 .m7sidx 时行为与单删一致，
+	// 万一是 .recovering 也不会留下 plain 孤儿。
+	return RemoveIndexArtifacts(indexPath)
+}
+
+// removeIndexAfterPendingRegistration 在媒体已成功移入 pending 暂存目录后
+// 删除 sidecar。此时原路径的媒体已不存在，索引无法再用于恢复，留着只会
+// 成为指向不存在文件的孤儿。pending 登记失败（如 pending 满）时保留，
+// 供后续重试使用。
+func (t *writeTrailerTask) removeIndexAfterPendingRegistration(registered bool) {
+	if !registered || t.indexPath == "" {
+		return
+	}
+	if err := RemoveIndexArtifacts(t.indexPath); err != nil {
+		t.Warn("remove index sidecar after pending registration failed",
+			"err", err, "indexPath", t.indexPath)
+	}
+}
+
 func (r *Recorder) Dispose() {
 	r.audioTrack, r.videoTrack = nil, nil
 	if r.creating {
@@ -693,6 +1526,8 @@ func (r *Recorder) Dispose() {
 		}
 		r.creating = false
 		// goroutine 若成功,r.muxer/r.file 已指向新文件(仅含 init segment)。关闭并丢弃它。
+		// 这个新文件的索引同样不提交：文件没有被最终定稿，按提交式删除约定也不删除。
+		r.closeIndex()
 		if r.muxer != nil && r.file != nil {
 			r.file.Close()
 		}
@@ -713,6 +1548,7 @@ func (r *Recorder) Dispose() {
 		r.muxer = nil
 		r.file = nil
 	} else {
+		r.closeIndex()
 		if r.file != nil {
 			r.file.Close()
 			r.file = nil
@@ -807,7 +1643,7 @@ func (r *Recorder) Run() (err error) {
 						r.audioTrack = audioTrack
 					}
 				}
-				if err := r.muxer.WriteSample(r.file, audioTrack, bs.sample); err != nil {
+				if err := r.writeSample(audioTrack, bs.sample); err != nil {
 					return err
 				}
 			} else {
@@ -827,7 +1663,7 @@ func (r *Recorder) Run() (err error) {
 						r.videoTrack = videoTrack
 					}
 				}
-				if err := r.muxer.WriteSample(r.file, videoTrack, bs.sample); err != nil {
+				if err := r.writeSample(videoTrack, bs.sample); err != nil {
 					return err
 				}
 			}
@@ -922,7 +1758,7 @@ func (r *Recorder) Run() (err error) {
 				return fmt.Errorf("unsupported audio codec for mp4 record: %T", at.ICodecCtx.GetBase())
 			}
 		}
-		if err = r.muxer.WriteSample(r.file, audioTrack, sample); err != nil {
+		if err = r.writeSample(audioTrack, sample); err != nil {
 			return err
 		}
 		r.lastSampleWriteTime = sub.AudioReader.Value.WriteTime
@@ -1096,7 +1932,7 @@ func (r *Recorder) Run() (err error) {
 		//		ar.ResetAbsTime()
 		//	}
 		//}
-		if err = r.muxer.WriteSample(r.file, videoTrack, sample); err != nil {
+		if err = r.writeSample(videoTrack, sample); err != nil {
 			return err
 		}
 		r.lastSampleWriteTime = sub.VideoReader.Value.WriteTime
