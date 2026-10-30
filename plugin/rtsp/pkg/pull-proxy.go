@@ -10,13 +10,17 @@ import (
 	"m7s.live/v5"
 )
 
+// probeFailureLogEvery 探活失败日志除首条外每 N 次告警一次，其余降为 Debug。
+const probeFailureLogEvery = 60
+
 func NewPullProxy() m7s.IPullProxy {
 	return &RTSPPullProxy{}
 }
 
 type RTSPPullProxy struct {
 	m7s.TCPPullProxy
-	conn Stream
+	conn          Stream
+	probeFailures int
 }
 
 func (d *RTSPPullProxy) Start() (err error) {
@@ -47,9 +51,12 @@ func (d *RTSPPullProxy) Start() (err error) {
 }
 
 func (d *RTSPPullProxy) Dispose() {
-	if d.conn.NetConnection != nil && d.conn.NetConnection.Conn != nil {
-		_ = d.conn.Teardown()
-		d.conn.NetConnection.Dispose()
+	if nc := d.conn.NetConnection; nc != nil {
+		if nc.Conn != nil {
+			_ = d.conn.Teardown()
+		}
+		// Conn 可能已被探活失败逻辑关闭并置空，但 BufReader/MemoryAllocator 仍需回收。
+		nc.Dispose()
 		d.conn.NetConnection = nil
 	}
 	d.TCPPullProxy.Dispose()
@@ -98,13 +105,60 @@ func (d *RTSPPullProxy) Tick(any) {
 		// Only perform a passive heartbeat; do NOT reset to Offline on
 		// failure, as that would corrupt the Pulling→Online lifecycle
 		// used by processPullProxyOnDispose/OnStart to track recording state.
-		if d.conn.Conn != nil {
-			t := time.Now()
-			err = d.conn.Options()
-			d.RTT = time.Since(t)
-			if err != nil {
-				d.Info("pull proxy heartbeat failed while pulling (ignored)", "error", err)
-			}
+		// 取局部变量，避免 Dispose 并发把 d.conn.NetConnection 置空后继续解引用。
+		nc := d.conn.NetConnection
+		if nc == nil {
+			return
 		}
+		if nc.Conn == nil {
+			d.reconnectProbe(nc)
+			return
+		}
+		// 用局部副本发 OPTIONS，避免并发 Dispose 把 d.conn.NetConnection 置空后解引用。
+		probe := Stream{NetConnection: nc}
+		t := time.Now()
+		err = probe.Options()
+		d.RTT = time.Since(t)
+		if err != nil {
+			d.closeProbeConn(nc)
+			d.reportProbeFailure(err)
+		} else {
+			d.probeFailures = 0
+		}
+	}
+}
+
+// reconnectProbe 重建被对端关闭的探活连接。
+// 只影响探活，不触碰 PullJob 的媒体连接，也不改变 Pulling 状态。
+func (d *RTSPPullProxy) reconnectProbe(nc *NetConnection) {
+	if d.IsStopped() {
+		return
+	}
+	if err := nc.Connect(d.Context, d.PullProxyConfig.URL); err != nil {
+		d.reportProbeFailure(err)
+		return
+	}
+	if d.probeFailures > 0 {
+		d.Info("pull proxy probe connection recovered", "failures", d.probeFailures)
+	}
+	d.probeFailures = 0
+	d.RTT = 0
+}
+
+func (d *RTSPPullProxy) closeProbeConn(nc *NetConnection) {
+	d.RTT = 0
+	if nc.Conn == nil {
+		return
+	}
+	_ = nc.Conn.Close()
+	nc.Conn = nil
+}
+
+func (d *RTSPPullProxy) reportProbeFailure(err error) {
+	d.probeFailures++
+	if d.probeFailures == 1 || d.probeFailures%probeFailureLogEvery == 0 {
+		d.Warn("pull proxy heartbeat failed, probe connection reset", "error", err, "failures", d.probeFailures)
+	} else {
+		d.Debug("pull proxy heartbeat failed, probe connection reset", "error", err, "failures", d.probeFailures)
 	}
 }

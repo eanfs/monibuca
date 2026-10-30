@@ -8,6 +8,7 @@ import (
 
 	"m7s.live/v5"
 	pkg "m7s.live/v5/pkg"
+	"m7s.live/v5/pkg/util"
 )
 
 // Plugin-specific progress step names for RTSP
@@ -99,7 +100,7 @@ func (c *Client) maybeStopRetryOnAuthFail(err error) error {
 		return err
 	}
 	c.SetRetry(0, 0)
-	c.Warn("auth failed, stop retry", "streamPath", c.pullCtx.StreamPath, "url", c.pullCtx.RemoteURL, "error", err)
+	c.Warn("auth failed, stop retry", "streamPath", c.pullCtx.StreamPath, "url", util.RedactURL(c.pullCtx.RemoteURL), "error", err)
 	return err
 }
 

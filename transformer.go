@@ -66,7 +66,7 @@ func (p *TransformJob) Publish(streamPath string) (err error) {
 	p.Publisher, err = p.Plugin.PublishWithConfig(context.WithValue(p.Transformer, Owner, p.Transformer), streamPath, conf)
 	if err == nil {
 		p.Publisher.OnDispose(func() {
-			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) {
+			if p.Publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, pkg.ErrPublishIdleTimeout, task.ErrStopByUser) {
 				p.Stop(p.Publisher.StopReason())
 			} else {
 				p.Transformer.Stop(p.Publisher.StopReason())
