@@ -454,6 +454,7 @@ Automatic migration is handled for core models including users, proxies, and str
 - Monitor task retry counts and failure reasons in logs
 
 ## Common Pitfalls
+- **拉流代理 `stop_on_idle: false` 必须同时关掉 `publish.idletimeout`（v5.3.9 录像全丢回归，2026-11-05 196 现场）。** `BasePullProxy.Pull()` 过去只把 `DelayCloseTimeout` 置 0，`IdleTimeout` 仍继承全局 `publish.idletimeout`（196 为 600s）；v5.3.9 的 `9b61d32d`（"修复空闲超时重拉循环"）把 `ErrPublishIdleTimeout` 加入 `shouldStopPullJobOnPublishStop`，于是常驻拉流代理在 10 分钟无订阅后被 publisher 空闲超时关闭 → PullJob 结束 → 拉流代理状态机停在 Online/Pulling 且不再 `Pull()` → 流在无人重新订阅前不会自愈（`Server.OnSubscribe` 会重拉已停的 PullJob）。v5.3.7 及更早版本 idle 超时走 `puller.Stop` 重启（有"空闲→重拉"循环，但流会自己回来），所以升级后才暴露。现场表现：课堂开播时 its-server `POST /mp4/api/start/<streamPath>` 大量 500 `not found`、整节课无录像（82 次/2 天，单批成功率 2/27、4/18）。修复：`buildPullPublishConfig` 在 `!StopOnIdle` 时同时清零 `DelayCloseTimeout` 与 `IdleTimeout`，`Pull()` 经 `publishConfig()` 取配置（`pull_proxy.go`）；`UpdatePullProxy` 在 `StopOnIdle` 变化时重建 PullJob（原地改运行中 Publisher 的 timeout 字段与它的 event loop 并发读写；且 false→true 时无法恢复全局 IdleTimeout）。回归钉 `pull_proxy_publish_config_test.go` + `plugin/mp4/api_wait_stream_test.go`。另 `/mp4/api/start` 增加 `mp4.record.waitforpublisher`（默认 10s，仅对本地流生效；集群 APIRoute 下流不在本节点时由路由层先行 404），且 not found→404 / record exists→409 / 同 key 并发→409（不再一律 500），见 `plugin/mp4/api.go`
 - staticcheck 二进制的编译 go 版本低于 go.mod `go 1.26` 时报 "module requires at least go1.26" 拒跑——非代码问题,升级 staticcheck 或跳过
 - gopls/IDE 对 build-tag 门控文件(`//go:build sqlite` 等)报 "No packages found" 是误报,以 `go vet -tags <tag>` 为准
 - Forgetting required build tags for DB/protocol/storage-specific behavior
@@ -473,7 +474,7 @@ Automatic migration is handled for core models including users, proxies, and str
 - mp4 start API 请求体所有字段都是 proto **string**——`duration`/`fragment` 必须传 JSON 字符串(`"900s"`/`"0"`),传数字会被 grpc-gateway 拒绝 **400** `invalid value for string type`。老版本(无该字段)因 `DiscardUnknown` 静默忽略数字字段,升级后才暴露(2026-07-15 196 演示环境 its-server 事故根因,报告见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`)
 - mp4 start 不传 `fragment` 时**默认 1 分钟分片**(`StartRecord` handler 里 `fragment = time.Minute`);要录单文件必须显式 `"fragment":"0"`
 - **指定 `fileName` + fragment>0 = 静默丢数据**:`CustomFileName` 对每个分片返回同一路径,分片轮转反复覆盖同一 S3 对象键/本地文件,最终只剩最后一个分片(见 Known Issues)
-- `duration` 到点后 monibuca 自行停录,之后外部再调 `/mp4/api/stop` 会得 **500 not found**——调用方应把 not-found 当幂等成功
+- `duration` 到点后 monibuca 自行停录,之后外部再调 `/mp4/api/stop` 会得 not found(本修复起为 **HTTP 404**,v5.3.9 及更早为 500)——调用方应把 not-found 当幂等成功
 - Cross-node record on a non-owner node: trigger auto-relay first via a **subscribe**, then record the now-local stream. Whether a subscribe relays or 302-redirects depends on the per-plugin `proxyOnRedirect` flag (`default:"false"` = 302 redirect; set `true` = local pull proxy instead). With `proxyOnRedirect: false` FLV 302-redirects and won't relay — use RTSP/RTMP; with `proxyOnRedirect: true` (the 3-node e2e configs set this on rtsp+flv) FLV/RTSP relay and return 200
 
 ## Known Issues (待其它环境修复)
@@ -490,7 +491,7 @@ Automatic migration is handled for core models including users, proxies, and str
 
 2026-07-15 196 演示环境事故(录制 400、视频未上传 MinIO)结论,详见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`:
 1. `Mp4StartRequest.duration` 需 `Integer`→`String`(发 `"900"` 或 `"900s"`);
-2. stop 收到 500 not-found 应视为幂等成功(duration 到点 monibuca 已自停);
+2. stop 收到 not-found(本修复起为 404;v5.3.9 及更早为 500)应视为幂等成功(duration 到点 monibuca 已自停);
 3. 录单文件需补传 `"fragment":"0"`(否则默认 1 分钟分片,叠加上面 fileName 覆盖缺陷)。
 
 ### gotask 库 `-race` 下 EventLoop 数据竞争

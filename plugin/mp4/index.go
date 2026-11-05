@@ -31,7 +31,11 @@ type MP4Plugin struct {
 	// RecordConfig 是录像相关配置（yaml: mp4.record）。
 	// 字段不能命名为 Record：会遮蔽 Plugin.Record() 方法。
 	RecordConfig struct {
-		Index struct {
+		// WaitForPublisher：录制启动时若流尚未 publish，最多等待该时长。
+		// 拉流刚发起或设备刚重连时 publisher 往往滞后数秒；旧行为立即返回
+		// not found（HTTP 500），调用方（如 its-server）不重试就会整段丢录像。
+		WaitForPublisher time.Duration `default:"10s" desc:"录制启动时等待流上线的最长时间，0 表示不等待；仅对本地流生效（集群 APIRoute 下由路由层先行判定）"`
+		Index            struct {
 			Enable        bool          `default:"true" desc:"是否写伴随索引（崩溃恢复的前提）"`
 			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
 		} `desc:"录像伴随索引配置"`
