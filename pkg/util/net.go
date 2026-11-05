@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -193,6 +194,28 @@ func ReturnFetchValue[T any](fetch func() T, rw http.ResponseWriter, r *http.Req
 			}
 		}
 	}
+}
+
+// RedactURL 隐藏 URL 中的口令，供日志输出使用。
+func RedactURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	// 解析失败时退化为文本脱敏，避免带凭据的畸形 URL 原样进日志。
+	scheme := strings.Index(raw, "://")
+	if scheme < 0 {
+		return raw
+	}
+	rest := raw[scheme+3:]
+	authority := rest
+	if end := strings.IndexByte(rest, '/'); end >= 0 {
+		authority = rest[:end]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return raw
+	}
+	return raw[:scheme+3] + "xxxxx@" + rest[at+1:]
 }
 
 func ListenUDP(address string, networkBuffer int) (*net.UDPConn, error) {

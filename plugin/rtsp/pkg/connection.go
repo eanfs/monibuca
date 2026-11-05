@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net"
 	"net/url"
 	"runtime"
@@ -301,7 +302,13 @@ func (c *NetConnection) Receive(sendMode bool, onReceive func(byte, []byte) erro
 				if res, err = c.ReadResponse(); err != nil {
 					return
 				}
-				c.Warn("response", "res", res.String())
+				// 正常的 2xx 响应（主要是 25s 心跳 OPTIONS 的 200 OK）只记 Debug，
+				// 否则拉流规模一大日志会被心跳响应淹没；非 2xx（含 3xx 重定向）保留 WARN。
+				if res.StatusCode/100 != 2 {
+					c.Warn("response", "status", res.StatusCode, "res", res.String())
+				} else if c.Logger != nil && c.Logger.Enabled(context.Background(), slog.LevelDebug) {
+					c.Debug("response", "status", res.StatusCode, "res", res.String())
+				}
 				// for playing backchannel only after OK response on play
 
 				continue

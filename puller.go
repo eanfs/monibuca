@@ -2,6 +2,7 @@ package m7s
 
 import (
 	"crypto/tls"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -166,7 +167,7 @@ func (p *PullJob) Init(puller IPuller, plugin *Plugin, streamPath string, conf c
 		})
 	}
 
-	plugin.Server.Pulls.AddTask(p, plugin.Logger.With("pullURL", conf.URL, "streamPath", streamPath))
+	plugin.Server.Pulls.AddTask(p, plugin.Logger.With("pullURL", util.RedactURL(conf.URL), "streamPath", streamPath))
 	return p
 }
 
@@ -237,6 +238,15 @@ func (p *PullJob) SetProgressStepsDefs(defs []pkg.StepDef) {
 	}
 }
 
+// shouldStopPullJobOnPublishStop 判断 publisher 停止后应结束还是重启拉流任务。
+// 空闲超时等主动停止若按失败重试，会形成 "空闲→重拉→再空闲" 的无限循环。
+func shouldStopPullJobOnPublishStop(reason error, maxRetry int) bool {
+	return errors.Is(reason, pkg.ErrPublishDelayCloseTimeout) ||
+		errors.Is(reason, pkg.ErrPublishIdleTimeout) ||
+		errors.Is(reason, task.ErrStopByUser) ||
+		maxRetry == 0
+}
+
 func (p *PullJob) Publish() (err error) {
 	if p.TestMode > 0 {
 		return nil
@@ -250,10 +260,11 @@ func (p *PullJob) Publish() (err error) {
 	if err == nil {
 		p.Publisher = publisher
 		publisher.OnDispose(func() {
-			if publisher.StopReasonIs(pkg.ErrPublishDelayCloseTimeout, task.ErrStopByUser) || p.MaxRetry == 0 {
-				p.Stop(publisher.StopReason())
+			reason := publisher.StopReason()
+			if shouldStopPullJobOnPublishStop(reason, p.MaxRetry) {
+				p.Stop(reason)
 			} else {
-				p.puller.Stop(publisher.StopReason())
+				p.puller.Stop(reason)
 			}
 		})
 	}
@@ -283,7 +294,7 @@ func (p *HTTPFilePuller) Start() (err error) {
 
 	p.PullJob.GoToStepConst(pkg.StepConnection)
 	remoteURL := p.PullJob.RemoteURL
-	p.Info("pull", "remoteurl", remoteURL)
+	p.Info("pull", "remoteurl", util.RedactURL(remoteURL))
 	if strings.HasPrefix(remoteURL, "http") {
 		var res *http.Response
 		if res, err = p.PullJob.HTTPClient.Get(remoteURL); err == nil {
