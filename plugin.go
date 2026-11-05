@@ -805,11 +805,25 @@ func (p *Plugin) SubscribeWithConfig(ctx context.Context, streamPath string, con
 		if waitTimeout <= 0 {
 			waitTimeout = 10 * time.Second
 		}
+		waitStart := time.Now()
 		select {
 		case <-subscriber.waitPublishDone:
 			waitAudio := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "audio")
 			waitVideo := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "video")
-			err = subscriber.Publisher.WaitTrack(waitAudio, waitVideo)
+			// 轨道等待同样受 waitTimeout 约束：publisher 已出现但轨道迟迟不就绪
+			// （摄像头重连、publisher 无数据）时，旧实现会一直阻塞到 publisher
+			// 停止，RTSP 客户端表现为几十秒无响应后才收到 400。
+			remaining := waitTimeout - time.Since(waitStart)
+			if remaining <= 0 {
+				remaining = time.Millisecond
+			}
+			trackCtx, cancelTrack := context.WithTimeout(context.Background(), remaining)
+			err = subscriber.Publisher.WaitTrackContext(trackCtx, waitAudio, waitVideo)
+			cancelTrack()
+			if errors.Is(err, context.DeadlineExceeded) {
+				subscriber.Stop(ErrSubscribeTimeout)
+				err = ErrSubscribeTimeout
+			}
 		case <-subscriber.Done():
 			err = subscriber.StopReason()
 		case <-time.After(waitTimeout):

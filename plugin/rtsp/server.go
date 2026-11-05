@@ -155,11 +155,20 @@ func (task *RTSPServer) Go() (err error) {
 					}
 				}
 			}
-			sender.Subscriber, err = task.conf.Subscribe(task, streamPath)
+			subConf := describeSubscribeConfig(task.conf.GetCommonConf().Subscribe, task.conf.WaitTrackTimeout)
+			sender.Subscriber, err = task.conf.SubscribeWithConfig(task, streamPath, subConf)
 			if err != nil {
+				statusCode, statusText, retryAfter := describeErrorResponse(err)
+				header := textproto.MIMEHeader{}
+				if retryAfter > 0 {
+					header.Set("Retry-After", strconv.Itoa(retryAfter))
+				}
+				task.Warn("RTSP describe subscribe failed",
+					"streamPath", streamPath, "status", statusCode, "error", err)
 				res := &util.Response{
-					StatusCode: http.StatusBadRequest,
-					Status:     err.Error(),
+					StatusCode: statusCode,
+					Status:     statusText,
+					Header:     header,
 					Request:    req,
 				}
 				_ = task.WriteResponse(res)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	task "github.com/eanfs/gotask"
 	"m7s.live/v5/pkg/util"
@@ -27,11 +28,16 @@ var _ = m7s.InstallPlugin[RTSPPlugin](m7s.PluginMeta{
 type RTSPPlugin struct {
 	pb.UnimplementedApiServer
 	m7s.Plugin
-	UserName        string             `desc:"用户名"`
-	Password        string             `desc:"密码"`
-	ProxyOnRedirect bool               `default:"false" desc:"当集群启用 apiRoute 时，用本地拉流代理替代 RTSP 302 重定向"`
-	UdpPort         util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
-	udpPorts        chan uint16
+	UserName        string `desc:"用户名"`
+	Password        string `desc:"密码"`
+	ProxyOnRedirect bool   `default:"false" desc:"当集群启用 apiRoute 时，用本地拉流代理替代 RTSP 302 重定向"`
+	// WaitTrackTimeout 限制 RTSP 播放（DESCRIBE）等待轨道就绪的时间：
+	// 轨道未就绪的流（publisher 存在但无数据/无 track，常见于摄像头重连）过去会
+	// 一直等到 publisher 停止才返回 400，AI 等客户端往往在 30s 打开超时后整批失败。
+	// 限制后超时快速返回 503（带 Retry-After），客户端可立即重试。
+	WaitTrackTimeout time.Duration      `default:"3s" desc:"RTSP 播放等待音视频轨道就绪的最长时间；超时返回 503 以便客户端快速重试；0 表示沿用全局 subscribe.waittimeout"`
+	UdpPort          util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
+	udpPorts         chan uint16
 }
 
 func (p *RTSPPlugin) OnTCPConnect(conn net.Conn) task.ITask {
