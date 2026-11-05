@@ -390,7 +390,13 @@ func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 
 		now := time.Now()
 		if cachedTarget, ok := router.cacheGet(streamPath, now); ok && cachedTarget != "" && !apiRouteIsSelfPeer(s.GetCommonConf().TCP.ListenAddr, cachedTarget) {
-			return router.forwardUnary(ctx, info.FullMethod, req, cachedTarget, conf.ForwardTimeout)
+			return router.forwardUnary(ctx, info.FullMethod, req, cachedTarget, apiRouteForwardTimeout(conf, info.FullMethod))
+		}
+
+		// 只有显式注册的方法（如 /mp4.api/StartRecord）才等待流上线；其它方法
+		// 保持一次性探测，不引入任何额外延迟。
+		if apiRouteShouldWaitStream(info.FullMethod, conf.WaitStreamTimeout) {
+			return s.routeUnaryWithStreamWait(ctx, req, info, handler, router, peers, conf, streamPath)
 		}
 
 		target, err := router.resolveStreamTarget(ctx, streamPath, peers, conf.ResolveTimeout)
@@ -401,7 +407,7 @@ func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 		router.cacheSet(streamPath, target, conf.CacheTTL, now)
-		return router.forwardUnary(ctx, info.FullMethod, req, target, conf.ForwardTimeout)
+		return router.forwardUnary(ctx, info.FullMethod, req, target, apiRouteForwardTimeout(conf, info.FullMethod))
 	}
 }
 

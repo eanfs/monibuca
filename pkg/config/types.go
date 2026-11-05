@@ -62,13 +62,14 @@ type (
 	HookType   = string
 
 	APIRoute struct {
-		Enable         bool           `default:"false" desc:"是否启用跨节点 API 路由（控制面）。启用后，当本机没有对应流时，可将指定 gRPC 方法转发到其它节点执行。"`
-		GRPCPeers      []string       `desc:"可路由的 gRPC 节点列表（host:port），例如 localhost:50052。"`
-		Nodes          []APIRouteNode `desc:"节点映射表（推荐）。用于 API 路由与播放重定向：包含每个节点的 gRPC/HTTP/RTSP 地址。"`
-		Methods        []string       `desc:"需要路由的 gRPC FullMethod 列表，例如 /mp4.api/StartRecord。"`
-		ResolveTimeout time.Duration  `default:"800ms" desc:"探测流所在节点的超时时间（通过 /global.api/StreamInfo 探测）。"`
-		ForwardTimeout time.Duration  `default:"10s" desc:"转发执行目标 RPC 的超时时间。"`
-		CacheTTL       time.Duration  `default:"30s" desc:"streamPath->节点 的缓存有效期，用于降低探测开销。"`
+		Enable            bool           `default:"false" desc:"是否启用跨节点 API 路由（控制面）。启用后，当本机没有对应流时，可将指定 gRPC 方法转发到其它节点执行。"`
+		GRPCPeers         []string       `desc:"可路由的 gRPC 节点列表（host:port），例如 localhost:50052。"`
+		Nodes             []APIRouteNode `desc:"节点映射表（推荐）。用于 API 路由与播放重定向：包含每个节点的 gRPC/HTTP/RTSP 地址。"`
+		Methods           []string       `desc:"需要路由的 gRPC FullMethod 列表，例如 /mp4.api/StartRecord。"`
+		ResolveTimeout    time.Duration  `default:"800ms" desc:"探测流所在节点的超时时间（通过 /global.api/StreamInfo 探测）。"`
+		ForwardTimeout    time.Duration  `default:"10s" desc:"转发执行目标 RPC 的超时时间（不含等待窗口）。对等待类方法（如 /mp4.api/StartRecord），实际转发超时为该值 + waitstreamtimeout，确保目标节点自身的等待窗口结束后才判定超时；若目标节点的插件等待窗口（如 mp4.record.waitforpublisher）调得比 waitstreamtimeout 更大，需同步调大本项。"`
+		WaitStreamTimeout time.Duration  `default:"10s" desc:"路由层等待流上线的最长时间，仅对注册了等待的方法生效（当前为 /mp4.api/StartRecord）。窗口内流出现在本机则本地执行、出现在其它节点则转发；窗口用尽返回 404。等待结束后才发起转发并单独计时，因此单次请求阻塞上限 = waitstreamtimeout + forwardtimeout + waitstreamtimeout（默认 30s，已含目标节点自身的等待余量）。0 表示不等待，行为与旧版一致；其它 API 方法不等待。"`
+		CacheTTL          time.Duration  `default:"30s" desc:"streamPath->节点 的缓存有效期，用于降低探测开销。"`
 	}
 
 	APIRouteNode struct {
