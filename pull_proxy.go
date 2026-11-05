@@ -189,10 +189,35 @@ func (d *BasePullProxy) GetPullJob() *PullJob {
 	return d.PullJob
 }
 
+// buildPullPublishConfig 构造拉流代理发布流所使用的发布配置。
+//
+// stop_on_idle=false 是"常驻拉流"语义：既不应在订阅者离开后延迟关闭
+// （DelayCloseTimeout=0），也不应因"从未有订阅者"的空闲超时被关闭
+// （IdleTimeout=0）。后者是 v5.3.9 的回归点：旧实现只清了 DelayCloseTimeout，
+// 拉流 publisher 仍会被全局 publish.idletimeout 关闭；v5.3.7 及更早版本里
+// 空闲超时走 puller 重启（有流可用，代价是"空闲→重拉"的循环），v5.3.9 让
+// idle 超时直接结束 PullJob（见 puller.go shouldStopPullJobOnPublishStop），
+// 而拉流代理状态机会停在 Online/Pulling 且不再 Pull()，流从此永久消失，
+// 依赖该流的录制/订阅全部失败（典型现象：课堂开播时 /mp4/api/start 返回 500）。
+func buildPullPublishConfig(base config.Publish, stopOnIdle, audio bool) config.Publish {
+	base.PubAudio = audio
+	if stopOnIdle {
+		base.DelayCloseTimeout = 5 * time.Second
+		return base
+	}
+	base.DelayCloseTimeout = 0
+	base.IdleTimeout = 0
+	return base
+}
+
+// publishConfig 返回该代理发布流所用的发布配置。
+// Pull() 与测试共用这一个构造点，避免"只测 helper、调用点被绕过"。
+func (d *BasePullProxy) publishConfig() config.Publish {
+	return buildPullPublishConfig(d.Plugin.config.Publish, d.StopOnIdle, d.Audio)
+}
+
 func (d *BasePullProxy) Pull() {
-	var pubConf = d.Plugin.config.Publish
-	pubConf.PubAudio = d.Audio
-	pubConf.DelayCloseTimeout = util.Conditional(d.StopOnIdle, time.Second*5, 0)
+	pubConf := d.publishConfig()
 	// 主动再次拉流时清除鉴权失败标记（例如用户修正密码后 Update/手动拉流）
 	d.authFailed = false
 	job, err := d.Plugin.handler.Pull(d.GetStreamPath(), d.PullProxyConfig.Pull, &pubConf)
@@ -666,7 +691,12 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 			return
 		}
 
-		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath || conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment || conf.Record.Type != target.Record.Type {
+		// StopOnIdle 变化必须重建 PullJob：发布配置（DelayCloseTimeout/IdleTimeout）
+		// 在 Pull() 时固化。原地改运行中 Publisher 的字段会与 publisher 事件循环
+		// 并发读写（数据竞争），且 false→true 时无法把全局 IdleTimeout 恢复回来。
+		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath ||
+			conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment ||
+			conf.Record.Type != target.Record.Type || conf.StopOnIdle != target.StopOnIdle {
 			device.Stop(task.ErrStopByUser)
 			device.WaitStopped()
 			device, err = s.createPullProxy(target)
@@ -682,13 +712,6 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 			conf.StopRetryOnAuthFail = target.StopRetryOnAuthFail
 			if conf.PullOnStart && conf.Status == PullProxyStatusOnline {
 				device.Pull()
-			} else if originalStatus == PullProxyStatusPulling {
-				if pullJob := device.GetPullJob(); pullJob != nil {
-					pullJob.PublishConfig.DelayCloseTimeout = util.Conditional(target.StopOnIdle, time.Second*5, 0)
-					if pullJob.Publisher != nil {
-						pullJob.Publisher.Publish.DelayCloseTimeout = pullJob.PublishConfig.DelayCloseTimeout
-					}
-				}
 			}
 		}
 	} else if !isNowDisabled {
