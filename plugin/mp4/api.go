@@ -3,6 +3,7 @@ package plugin_mp4
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,8 @@ import (
 
 	task "github.com/eanfs/gotask"
 	"github.com/mcuadros/go-defaults"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pb"
@@ -679,7 +682,82 @@ func (p *MP4Plugin) downloadRangeWithResolver(resolve recordStorageResolver, str
 	}
 }
 
+// publisherPollInterval 是等待流上线时的轮询间隔。
+const publisherPollInterval = 100 * time.Millisecond
+
+// waitForPublisher 在 timeout 内按 interval 轮询等待流上线。
+// 拉流刚发起或设备刚重连时，publisher 往往比录制请求晚数秒出现；旧实现
+// 立即返回 not found，调用方拿到错误后不会重试，整段录像即丢失。
+// 返回 false 表示超时、ctx 取消或 timeout<=0。
+func waitForPublisher(ctx context.Context, streamPath string, timeout, interval time.Duration,
+	get func(string) (*m7s.Publisher, bool)) bool {
+	if timeout <= 0 {
+		return false
+	}
+	if _, ok := get(streamPath); ok {
+		return true
+	}
+	if interval <= 0 {
+		interval = publisherPollInterval
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+			if _, ok := get(streamPath); ok {
+				return true
+			}
+		}
+	}
+}
+
+// classifyRecordAPIError 把录制 API 的哨兵错误映射为 gRPC 状态码：
+// not found → 404、record exists → 409。grpc-gateway 对未包装的普通 error
+// 一律返回 500，调用方无法区分"流还没起来（可重试）"与真实故障。
+// 已是状态错误的（限流 503、存储不可用等）原样返回。
+func classifyRecordAPIError(err error) error {
+	var existErr *task.ExistTaskError
+	switch {
+	case errors.Is(err, pkg.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, pkg.ErrRecordExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.As(err, &existErr):
+		// Records 的同一个录制 key（FilePath）已有任务：并发重复 start 的收尾路径。
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+	return err
+}
+
+// waitPublisherBeforeRecord 在配置的等待窗口（mp4.record.waitforpublisher）内等待流上线。
+// 只在流确实不在时才等待，正常路径无额外开销。
+func (p *MP4Plugin) waitPublisherBeforeRecord(ctx context.Context, streamPath string) {
+	timeout := p.RecordConfig.WaitForPublisher
+	if timeout <= 0 {
+		return
+	}
+	if _, ok := p.Server.Streams.SafeGet(streamPath); ok {
+		return
+	}
+	p.Info("recording waits for stream to be published", "streamPath", streamPath, "timeout", timeout)
+	if waitForPublisher(ctx, streamPath, timeout, publisherPollInterval, p.Server.Streams.SafeGet) {
+		p.Info("stream published, continuing recording start", "streamPath", streamPath)
+		return
+	}
+	p.Warn("stream is still not published after waiting", "streamPath", streamPath, "timeout", timeout)
+}
+
 func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) (res *mp4pb.ResponseStartRecord, err error) {
+	defer func() {
+		err = classifyRecordAPIError(err)
+	}()
 	var recordExists bool
 	var filePath = "."
 	var fileName = ""
@@ -703,7 +781,6 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	if req.FileName != "" {
 		fileName = req.FileName
 	}
-
 	p.Debug("mp4 plugin start record", "streamPath", req.StreamPath, "filePath", filePath, "fileName", fileName, "fragment", fragment, "duration", duration)
 	recordType, err := normalizeMP4RecordType(req.GetType())
 	if err != nil {
@@ -725,6 +802,11 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		err = pkg.ErrRecordExists
 		return
 	}
+
+	// 系统拉流/设备重连导致 publisher 滞后时不要立刻失败：等待窗口内流上线即继续录制。
+	// 放在参数校验/重复检查之后、申请录制名额之前：既不让非法或重复请求白等，
+	// 也不在等待期间占用并发名额。
+	p.waitPublisherBeforeRecord(ctx, req.StreamPath)
 
 	// 并发软保护：名额在此取得，成功后在录制任务 dispose 时释放；
 	// 之后任何错误路径都由 defer 归还，保证不泄漏名额。
@@ -770,6 +852,10 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 }
 
 func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (res *mp4pb.ResponseStopRecord, err error) {
+	// 停止一个不存在的录制返回 404（幂等语义），不要再用 500 让调用方误判为服务端故障。
+	defer func() {
+		err = classifyRecordAPIError(err)
+	}()
 	res = &mp4pb.ResponseStopRecord{}
 	var recordJob *m7s.RecordJob
 	recordJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
