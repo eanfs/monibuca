@@ -97,7 +97,21 @@ apiroute:
 ## 已知限制
 
 - `smoke.sh` 当前自动覆盖场景 1, 2, 3, 5b, 5c, 8, 10。其余场景(4 / 5 / 6 / 7 / 9)需要手动 + 看日志验证。
-- **2026-11-06 真机运行结果（3 节点 compose）**：场景 5b 通过（`200`，约 2.4s，流出现后转发执行）、5c 通过（`404`，约 5.0s，等待窗口用尽）。但**场景 3 失败**：node-2 的 cluster-relay 到 node-1 的 RTMP 握手被对端 `EOF`（node-1 日志 `ERR handshake ... EOF`），订阅者 10s 超时；该失败与本 PR 的 APIRoute 改动无关，但会让 `smoke.sh` 在场景 3 中止，5b/5c 需按上面的手动方式单独验证。relay 失败待单独排查。
+### 2026-11-06 三机真机运行结果（172.16.12.131 / .134 / .133）
+
+三节点裸进程部署（consul 在 .133，各节点本地 sqlite，端口 HTTP 19080/19081/19082、gRPC 15051-15053、RTMP 21935-21937、RTSP 11554-11556）：
+
+| 场景 | 结果 |
+|---|---|
+| 1 集群成员 | **PASS** 三节点互相识别 |
+| 2 推流 + Consul KV 属主 | **PASS** owner=node-1，node-2/3 registry 同步 |
+| 3 跨节点订阅（relay） | **修复前 FAIL**（`NetStream.Play.Failed`，订阅者 10s 超时）；**修复后 PASS**（首次订阅即拿到 3s 流数据，node-2 206K / node-3 198K） |
+| 5b StartRecord 先于流发布 | **PASS** `200`，2.21s，日志 `stream appeared on peer, forwarding` |
+| 5c 从未发布的流 | **PASS** `404`，5.00s（等待窗口用尽，非提前 404） |
+| 5c' 流已存在且向远端节点请求 | **PASS** `200`，3.5ms（健康路径无额外等待） |
+| RTSP DESCRIBE 不存在流 | **PASS** 3.00s → `503` + `Retry-After: 1` |
+
+场景 3 的失败是**独立的 relay 缺陷**（已单独修复，见 `fix(cluster): relay 新建 pull-proxy 后立即拉流`）：新建 relay proxy 的初始状态是 Offline，而 `Server.OnSubscribe` 只对 Online 的 proxy 触发 `Pull()`，导致首次订阅必然等满超时、第二次订阅才成功。
 - mp4 录制 API 使用 gRPC-gateway 路径 `/mp4.api/StartRecord`(JSON body),具体响应格式以实际部署为准。
 - gotask 库内部在 `-race` 下有已知数据竞争(framework lifecycle 内部状态);cluster 代码层面无 race。
 - `sample.mp4` 文件不包含在版本库中,需用户自行提供。
