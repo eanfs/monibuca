@@ -127,12 +127,25 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 			proxy.OnDispose(func() {
 				p.removeActiveRelay(streamPath)
 			})
-			if pullNow {
-				proxy.Pull()
-			}
+		}
+		if pullNow {
+			p.pullRelayProxy(proxy, streamPath)
 		}
 	}
 	return err
+}
+
+// pullRelayProxy 执行新建 relay proxy 的首次拉流。
+// relayPullHook 非空时交给注入点（测试可断言触发次数），否则直接 Pull；
+// proxy 为空只可能出现在注入路径，此时静默跳过。
+func (p *ClusterPlugin) pullRelayProxy(proxy m7s.IPullProxy, streamPath string) {
+	if p.relayPullHook != nil {
+		p.relayPullHook(streamPath)
+		return
+	}
+	if proxy != nil {
+		proxy.Pull()
+	}
 }
 
 // relayShouldPullNow 决定 ensureRelay 之后是否立刻发起首次拉流。
