@@ -103,13 +103,15 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 
 	var err error
 	var proxy m7s.IPullProxy
+	var created bool
 	if hook := p.relayHook; hook != nil {
-		_, err = hook(conf)
+		created, err = hook(conf)
 	} else if p.Server != nil {
-		proxy, _, err = p.Server.EnsurePullProxy(conf)
+		proxy, created, err = p.Server.EnsurePullProxy(conf)
 	} else {
 		err = fmt.Errorf("server not attached")
 	}
+	pullNow := relayShouldPullNow(created)
 	if err == nil {
 		p.activeRelaysMu.Lock()
 		if p.activeRelays == nil {
@@ -126,8 +128,40 @@ func (p *ClusterPlugin) ensureRelay(originID, streamPath, proto, fullURL string)
 				p.removeActiveRelay(streamPath)
 			})
 		}
+		if pullNow {
+			p.pullRelayProxy(proxy, streamPath)
+		}
 	}
 	return err
+}
+
+// pullRelayProxy 执行新建 relay proxy 的首次拉流。
+// relayPullHook 非空时交给注入点（测试可断言触发次数），否则直接 Pull；
+// proxy 为空只可能出现在注入路径，此时静默跳过。
+func (p *ClusterPlugin) pullRelayProxy(proxy m7s.IPullProxy, streamPath string) {
+	if p.relayPullHook != nil {
+		p.relayPullHook(streamPath)
+		return
+	}
+	if proxy != nil {
+		proxy.Pull()
+	}
+}
+
+// relayShouldPullNow 决定 ensureRelay 之后是否立刻发起首次拉流。
+//
+// 新建的 relay proxy 必须立刻 Pull：它 PullOnStart/StopOnIdle 都是 false，而
+// Server.OnSubscribe 只对 Status==Online 的 proxy 触发 Pull()，新建 proxy 的状态
+// 是 Offline（要等下一次 Tick 探测才转 Online）。历史行为因此是"首次订阅必然等
+// 到 subscribe timeout，第二次订阅才拉流"——2026-11-06 三机真机复现且 100% 无效
+// （跨节点 relay 拉不到流，订阅者 10s 超时）。
+//
+// 已存在的 proxy（created=false）不在这里 Pull：它的 PullJob 由
+// Server.OnSubscribe 的兜底与 Tick 维护，重复 Pull 会打断正在运行的拉流。
+//
+// 调用点保证在 proxy 非空的分支内使用本判据。
+func relayShouldPullNow(created bool) bool {
+	return created
 }
 
 // removeActiveRelay 从 activeRelays 中移除一条 relay 记录(幂等)。

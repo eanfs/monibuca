@@ -30,6 +30,11 @@ type ClusterPlugin struct {
 	// 默认 nil → ensureRelay 走 p.Server.EnsurePullProxy。测试可 swap。
 	relayHook RelayHook
 
+	// relayPullHook 是"新建 relay proxy 后立即拉流"的执行点。默认 nil → 直接
+	// proxy.Pull()。测试注入它就能断言首发拉流确实被触发(否则只能测判据函数,
+	// 删掉调用点测试也不会红)。
+	relayPullHook func(streamPath string)
+
 	// stopRelayHook 是 Phase 3 Relay 在 origin 失联(§4.2)时 Stop 本节点 cluster-relay
 	// pull-proxy 的注入点。默认 nil → 生产实现走 Server pull-proxy 查找 + Stop。
 	stopRelayHook func(streamPath string, reason error)
