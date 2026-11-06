@@ -145,6 +145,10 @@ func TestClassifyRecordAPIError(t *testing.T) {
 		{"not found", pkg.ErrNotFound, codes.NotFound},
 		{"wrapped not found", fmt.Errorf("start: %w", pkg.ErrNotFound), codes.NotFound},
 		{"record exists", pkg.ErrRecordExists, codes.AlreadyExists},
+		// gotask 的 ExistTaskError 是值类型：重复 start 真实走的是这条路径，
+		// 用指针类型去 errors.As 会漏成 500（2026-11-06 196 真机复现）。
+		{"task exist error (value)", task.ExistTaskError{}, codes.AlreadyExists},
+		{"wrapped task exist error", fmt.Errorf("add record: %w", task.ExistTaskError{}), codes.AlreadyExists},
 		{"status error passes through", unavailable, codes.Unavailable},
 		{"plain error stays unknown", errors.New("boom"), codes.Unknown},
 	}
