@@ -98,18 +98,22 @@ type (
 		Dump              bool
 	}
 	Subscribe struct {
-		MaxCount        int           `default:"0" desc:"最大订阅者数量"` // 最大订阅者数量
-		SubAudio        bool          `default:"true" desc:"是否订阅音频"`
-		SubVideo        bool          `default:"true" desc:"是否订阅视频"`
-		BufferTime      time.Duration `desc:"缓冲时长,从缓冲时长的关键帧开始播放"`
-		SubMode         int           `desc:"订阅模式" enum:"0:实时模式,1:首屏后不进行追赶"`                // 0，实时模式：追赶发布者进度，在播放首屏后等待发布者的下一个关键帧，然后跳到该帧。1、首屏后不进行追赶。2、从缓冲最大的关键帧开始播放，也不追赶，需要发布者配置缓存长度
-		SyncMode        int           `default:"1" desc:"同步模式" enum:"0:采用时间戳同步,1:采用写入时间同步"` // 0，采用时间戳同步，1，采用写入时间同步
-		IFrameOnly      bool          `desc:"只要关键帧"`                                        // 只要关键帧
-		WaitTimeout     time.Duration `default:"10s" desc:"等待流超时时间"`                        // 等待流超时
-		WaitTrack       string        `default:"video" desc:"等待轨道" enum:"audio:等待音频,video:等待视频,all:等待全部"`
-		WriteBufferSize int           `desc:"写缓冲大小"`   // 写缓冲大小
-		Key             string        `desc:"订阅鉴权key"` // 订阅鉴权key
-		SubType         string        `desc:"订阅类型"`    // 订阅类型
+		MaxCount    int           `default:"0" desc:"最大订阅者数量"` // 最大订阅者数量
+		SubAudio    bool          `default:"true" desc:"是否订阅音频"`
+		SubVideo    bool          `default:"true" desc:"是否订阅视频"`
+		BufferTime  time.Duration `desc:"缓冲时长,从缓冲时长的关键帧开始播放"`
+		SubMode     int           `desc:"订阅模式" enum:"0:实时模式,1:首屏后不进行追赶"`                // 0，实时模式：追赶发布者进度，在播放首屏后等待发布者的下一个关键帧，然后跳到该帧。1、首屏后不进行追赶。2、从缓冲最大的关键帧开始播放，也不追赶，需要发布者配置缓存长度
+		SyncMode    int           `default:"1" desc:"同步模式" enum:"0:采用时间戳同步,1:采用写入时间同步"` // 0，采用时间戳同步，1，采用写入时间同步
+		IFrameOnly  bool          `desc:"只要关键帧"`                                        // 只要关键帧
+		WaitTimeout time.Duration `default:"10s" desc:"等待流超时时间"`                        // 等待流超时
+		WaitTrack   string        `default:"video" desc:"等待轨道" enum:"audio:等待音频,video:等待视频,all:等待全部"`
+		// InitialWaitTimeout 只约束「首次订阅」的等待（等 publisher 上线 + 等轨道就绪
+		// 共用），0 表示沿用 WaitTimeout。它不会写回 WaitTimeout，因此不影响订阅建立后
+		// 播放期等流恢复的预算（subscriber.go 的 checkPublishChanged、server.go 的卡死兜底）。
+		InitialWaitTimeout time.Duration `desc:"首次订阅等待上限（等 publisher + 等轨道），0 表示沿用 waittimeout"`
+		WriteBufferSize    int           `desc:"写缓冲大小"`   // 写缓冲大小
+		Key                string        `desc:"订阅鉴权key"` // 订阅鉴权key
+		SubType            string        `desc:"订阅类型"`    // 订阅类型
 	}
 	HTTPValues map[string][]string
 	Pull       struct {

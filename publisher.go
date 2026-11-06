@@ -655,6 +655,13 @@ func (p *Publisher) takeOver(old *Publisher) {
 }
 
 func (p *Publisher) WaitTrack(audio, video bool) error {
+	return p.WaitTrackContext(context.Background(), audio, video)
+}
+
+// WaitTrackContext 与 WaitTrack 语义相同，但受 ctx 约束：ctx 截止/取消时返回
+// ctx.Err()。用于给“publisher 已存在但轨道尚未就绪”的等待设置上限，避免订阅方
+// 无限阻塞（RTSP 客户端在摄像头重连/无数据时表现为几十秒无响应后才收到错误）。
+func (p *Publisher) WaitTrackContext(ctx context.Context, audio, video bool) error {
 	var v, a = ErrNoTrack, ErrNoTrack
 	// wait any track
 	if p.PubAudio && p.PubVideo && !audio && !video {
@@ -669,15 +676,27 @@ func (p *Publisher) WaitTrack(audio, video bool) error {
 			if errors.Is(v, util.ErrResolve) {
 				v = nil
 			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	} else {
 		// need wait video
 		if p.PubVideo && video {
-			v = p.videoReady.Await()
+			select {
+			case <-p.videoReady.Done():
+				v = p.videoReady.Await()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 		// need wait audio
 		if p.PubAudio && audio {
-			a = p.audioReady.Await()
+			select {
+			case <-p.audioReady.Done():
+				a = p.audioReady.Await()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	if v != nil && a != nil {

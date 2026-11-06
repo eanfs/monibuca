@@ -155,14 +155,13 @@ func (task *RTSPServer) Go() (err error) {
 					}
 				}
 			}
-			sender.Subscriber, err = task.conf.Subscribe(task, streamPath)
+			subConf := describeSubscribeConfig(task.conf.GetCommonConf().Subscribe, task.conf.InitialWaitTimeout)
+			sender.Subscriber, err = task.conf.SubscribeWithConfig(task, streamPath, subConf)
 			if err != nil {
-				res := &util.Response{
-					StatusCode: http.StatusBadRequest,
-					Status:     err.Error(),
-					Request:    req,
-				}
-				_ = task.WriteResponse(res)
+				failure := describeErrorFailure(err)
+				task.Warn("RTSP describe subscribe failed",
+					"streamPath", streamPath, "status", failure.StatusCode, "retryAfter", failure.RetryAfter, "error", err)
+				_ = task.WriteResponse(failure.response(req))
 				return
 			}
 			sender.Subscriber.RemoteAddr = task.Conn.RemoteAddr().String()
