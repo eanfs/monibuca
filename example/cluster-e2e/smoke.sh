@@ -78,21 +78,56 @@ echo "PASS (subscriber count check requires server-side metrics, skipping for no
 # Scenarios 5-7: record start via API + verify node_id + list + download
 # Scenario 5: start mp4 record API on node-3 → file should land on node-1
 step "Scenario 5: start record live/foo via node-3 API"
-# gRPC-gateway endpoint: POST /mp4.api/StartRecord  (JSON body)
+# gRPC-gateway endpoint: POST /mp4/api/start/{streamPath=**}（gRPC FullMethod 才是 /mp4.api/StartRecord）
 record_resp=$(curl -fs -X POST \
     -H "Content-Type: application/json" \
-    -d '{"streamPath":"live/foo"}' \
-    http://localhost:8083/mp4.api/StartRecord 2>/dev/null || echo "FAIL")
+    -d '{}' \
+    http://localhost:8083/mp4/api/start/live/foo 2>/dev/null || echo "FAIL")
 echo "record-start response (may be FAIL if API path different): $record_resp"
 # Pause to allow some data to be written
 sleep 3
 
+# Scenario 5b: APIRoute waits for a not-yet-published stream (issue #15).
+# StartRecord 发到 node-3，此时 live/apiroute-wait 还不存在：路由层应先等待
+# (global.apiRoute.waitstreamtimeout)，流在 node-1 发布后再转发执行，而不是立即 404。
+step "Scenario 5b: StartRecord before stream exists — route layer waits then forwards"
+WAIT_STREAM="live/apiroute-wait"
+WAIT_RESULT=$(mktemp)
+WAIT_BODY=$(mktemp)
+curl -s -o "$WAIT_BODY" -w '%{http_code} %{time_total}' \
+    -X POST -H "Content-Type: application/json" -d '{}' \
+    "http://localhost:8083/mp4/api/start/$WAIT_STREAM" > "$WAIT_RESULT" &
+WAIT_PID=$!
+sleep 1.5
+ffmpeg -re -i "$SAMPLE" -c copy -f flv -loglevel error "rtmp://localhost:1935/$WAIT_STREAM" &
+WAIT_FFPID=$!
+wait "$WAIT_PID" || true
+read -r wait_code wait_elapsed < "$WAIT_RESULT"
+echo "StartRecord response: code=$wait_code elapsed=$wait_elapsed body=$(head -c 200 "$WAIT_BODY")"
+[ "$wait_code" = "200" ] || fail "expected 200 after waiting for stream, got $wait_code"
+awk -v e="$wait_elapsed" 'BEGIN{exit !(e >= 1.4)}' || fail "expected route wait >=1.4s, got $wait_elapsed"
+# 流已出现在 node-1，转发后由 node-1 执行录制；清理该录制与推流
+curl -s -X POST -H "Content-Type: application/json" -d '{}' \
+    "http://localhost:8081/mp4/api/stop/$WAIT_STREAM" >/dev/null 2>&1 || true
+kill "$WAIT_FFPID" 2>/dev/null || true
+rm -f "$WAIT_RESULT" "$WAIT_BODY"
+echo "PASS (waited $wait_elapsed s before forwarding)"
+
+# Scenario 5c: wait window exhausted → 404 (not an early millisecond 404).
+step "Scenario 5c: StartRecord for never-published stream returns 404 after wait window"
+NEVER_STREAM="live/apiroute-never"
+never_result=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' \
+    -X POST -H "Content-Type: application/json" -d '{}' \
+    "http://localhost:8083/mp4/api/start/$NEVER_STREAM")
+read -r never_code never_elapsed <<< "$never_result"
+echo "StartRecord response: code=$never_code elapsed=$never_elapsed"
+[ "$never_code" = "404" ] || fail "expected 404 after wait window, got $never_code"
+awk -v e="$never_elapsed" 'BEGIN{exit !(e >= 3.5)}' || fail "expected 404 only after ~5s wait window, got $never_elapsed"
+echo "PASS (404 after $never_elapsed s)"
+
 # Scenario 6: list records from node-2 should include node-1 entry
 step "Scenario 6: list records from node-2"
-records=$(curl -fs -X POST \
-    -H "Content-Type: application/json" \
-    -d '{}' \
-    http://localhost:8082/mp4.api/List 2>/dev/null || echo "[]")
+records=$(curl -fs "http://localhost:8082/mp4/api/list/live/foo" 2>/dev/null || echo "[]")
 echo "records visible from node-2: $records (manual verification — should include nodeid=node-1)"
 
 # Scenarios 7-8 require pickup of record id + 302 inspection.

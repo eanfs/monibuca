@@ -7,6 +7,11 @@ global:
   db:
     dsn: /data/m7s.db
     dbtype: sqlite
+  apiroute:
+    enable: true
+    resolvetimeout: 300ms
+    forwardtimeout: 5s
+    waitstreamtimeout: 5s
   storage:
     s3:
       endpoint: http://minio:9000

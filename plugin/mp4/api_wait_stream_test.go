@@ -121,6 +121,19 @@ func TestStopRecordMissingReturnsNotFound(t *testing.T) {
 	}
 }
 
+// 集群 APIRoute 接线回归：拦截器只对显式注册的方法等待流上线。删除
+// plugin/mp4/index.go 里的 m7s.RegisterAPIRouteWaitStream 调用后本用例会失败，
+// 此时 StartRecord 的等待窗口在 APIRoute 场景下仍会被拦截器提前 404 短路。
+func TestStartRecordRegisteredForAPIRouteStreamWait(t *testing.T) {
+	if !m7s.IsAPIRouteWaitStreamMethod("/mp4.api/StartRecord") {
+		t.Fatal("/mp4.api/StartRecord must be registered via m7s.RegisterAPIRouteWaitStream")
+	}
+	// 其它 API 方法不等待，保持原有路由行为（不得引入额外延迟）。
+	if m7s.IsAPIRouteWaitStreamMethod("/mp4.api/StopRecord") {
+		t.Fatal("/mp4.api/StopRecord must not be registered for stream wait")
+	}
+}
+
 func TestClassifyRecordAPIError(t *testing.T) {
 	unavailable := status.Error(codes.Unavailable, "recording concurrency limit reached")
 	cases := []struct {

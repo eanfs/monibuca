@@ -34,7 +34,7 @@ type MP4Plugin struct {
 		// WaitForPublisher：录制启动时若流尚未 publish，最多等待该时长。
 		// 拉流刚发起或设备刚重连时 publisher 往往滞后数秒；旧行为立即返回
 		// not found（HTTP 500），调用方（如 its-server）不重试就会整段丢录像。
-		WaitForPublisher time.Duration `default:"10s" desc:"录制启动时等待流上线的最长时间，0 表示不等待；仅对本地流生效（集群 APIRoute 下由路由层先行判定）"`
+		WaitForPublisher time.Duration `default:"10s" desc:"录制启动时等待流上线的最长时间，0 表示不等待；仅对本地流生效；集群 APIRoute 下路由层另有 global.apiRoute.waitstreamtimeout 窗口（默认 10s），二者独立生效"`
 		Index            struct {
 			Enable        bool          `default:"true" desc:"是否写伴随索引（崩溃恢复的前提）"`
 			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
@@ -98,6 +98,10 @@ func init() {
 	m7s.RegisterAPIRouteUnary("/mp4.api/EventStart", func() any { return new(mp4pb.ResponseEventRecord) })
 	m7s.RegisterAPIRouteUnary("/mp4.api/StartRecord", func() any { return new(mp4pb.ResponseStartRecord) })
 	m7s.RegisterAPIRouteUnary("/mp4.api/StopRecord", func() any { return new(mp4pb.ResponseStopRecord) })
+	// StartRecord 在流尚未发布时需要等待（拉流刚发起/设备重连）；集群 APIRoute 下
+	// 路由层也必须等待，否则拦截器会在进入插件 handler 前直接 404，插件的
+	// record.waitforpublisher 窗口完全失效。其它 mp4 方法保持原有一次性路由行为。
+	m7s.RegisterAPIRouteWaitStream("/mp4.api/StartRecord")
 }
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {
