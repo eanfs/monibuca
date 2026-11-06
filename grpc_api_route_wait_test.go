@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -370,5 +371,56 @@ func TestRouteInterceptorAPIRouteDisabledSkipsWait(t *testing.T) {
 	}
 	if got := peer.streamInfoCalls.Load(); got != 0 {
 		t.Fatalf("peer probed %d times when APIRoute disabled, want 0", got)
+	}
+}
+
+// 流在等待窗口内出现在本机时应本地执行（AC1 的“本地出现→本地执行”），
+// 而不是继续等 peer、或等窗口用尽后 404。
+func TestRouteInterceptorLocalStreamAppearsWithinWindow(t *testing.T) {
+	peer := startAPIRouteTestPeer(t, apiRouteTestNeverAppear)
+	s := newAPIRouteTestServer(t, peer.addr, 3*time.Second, time.Second)
+
+	// 该用例从另一个 goroutine 模拟 publisher 上线，需要 Collection 的读写走
+	// RWMutex：Streams 在测试里没有子任务，Job.Call 对 Size==0 的调用是内联执行，
+	// 并不串行（生产环境 Streams 有子任务时由事件循环串行）。
+	var mu sync.RWMutex
+	s.Streams.Collection.L = &mu
+
+	pub := &Publisher{}
+	pub.StreamPath = "live/late"
+	appeared := make(chan struct{})
+	go func() {
+		defer close(appeared)
+		time.Sleep(300 * time.Millisecond)
+		s.Streams.Collection.Add(pub)
+	}()
+	defer func() { <-appeared }()
+
+	var localCalls atomic.Int32
+	start := time.Now()
+	res, err := runAPIRouteTestInterceptor(t, s, "/mp4.api/StartRecord",
+		&mp4pb.ReqStartRecord{StreamPath: "live/late"},
+		func(context.Context, any) (any, error) {
+			localCalls.Add(1)
+			return &mp4pb.ResponseStartRecord{Data: 11}, nil
+		})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("RouteInterceptor() error = %v", err)
+	}
+	if localCalls.Load() != 1 {
+		t.Fatalf("local handler called %d times, want 1", localCalls.Load())
+	}
+	if elapsed < 250*time.Millisecond {
+		t.Fatalf("RouteInterceptor() returned in %v, should wait for the stream", elapsed)
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("RouteInterceptor() took %v, should execute locally within the window", elapsed)
+	}
+	if got := res.(*mp4pb.ResponseStartRecord).GetData(); got != 11 {
+		t.Fatalf("local handler response data = %d, want 11", got)
+	}
+	if got := peer.startRecordCalls.Load(); got != 0 {
+		t.Fatalf("peer forwarded %d times, want 0 (stream is local)", got)
 	}
 }
