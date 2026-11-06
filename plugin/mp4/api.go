@@ -723,15 +723,21 @@ func waitForPublisher(ctx context.Context, streamPath string, timeout, interval 
 // 一律返回 500，调用方无法区分"流还没起来（可重试）"与真实故障。
 // 已是状态错误的（限流 503、存储不可用等）原样返回。
 func classifyRecordAPIError(err error) error {
-	var existErr *task.ExistTaskError
+	// gotask 的 ExistTaskError 是【值类型】（func (e ExistTaskError) Error() string），
+	// errors.As 用根类型 *task.ExistTaskError 匹配不到值，于是重复 start 会漏成 500。
+	// 两种形态都要匹配：AddTask 拒绝产出的是值，调用方包装时可能取到指针。
+	var existVal task.ExistTaskError
+	var existPtr *task.ExistTaskError
 	switch {
 	case errors.Is(err, pkg.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, pkg.ErrRecordExists):
 		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.As(err, &existErr):
-		// Records 的同一个录制 key（FilePath）已有任务：并发重复 start 的收尾路径。
-		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.As(err, &existVal), errors.As(err, &existPtr):
+		// Records 的同一个录制 key（FilePath）已有任务：重复/并发 start 的收尾路径。
+		// 用固定文本而不是 err.Error()：ExistTaskError.Error() 取的是任务 key，
+		// 对畸形（Task 为空）实例会 panic，且真实消息是没信息量的 ". exist"。
+		return status.Error(codes.AlreadyExists, "record exists")
 	}
 	return err
 }
