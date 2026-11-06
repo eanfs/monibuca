@@ -75,10 +75,28 @@ Consul UI: http://localhost:8500
 | 8 | kill node-1 → 10-12s 内 `m7s/streams/live/foo` 消失,relay 退出 | 是 | Consul KV 轮询 |
 | 9 | 同 streamPath 同时推 node-1 + node-2 → first-write-wins | 手动 | 需要两个终端并发推流 |
 | 10 | `/api/cluster/lb-suggest` 返回 streams 最少节点 | 是 | 验证 suggested 字段非空 |
+| 5b | 未发布流的 `StartRecord`：路由层在 `waitstreamtimeout` 内等待 → 流出现在 node-1 后转发执行 | 是 | issue #15 真机回归；断言 200 且耗时 ≥1.4s |
+| 5c | 从未发布流的 `StartRecord`：等待窗口用尽 → 404 | 是 | 断言 404 且耗时 ≥3.5s（不是旧版的毫秒级提前 404） |
+
+### APIRoute 等待场景（issue #15）
+
+`config-node-*.yaml` 的 `global.apiroute` 显式开启：
+
+```yaml
+apiroute:
+  enable: true
+  resolvetimeout: 300ms
+  forwardtimeout: 5s
+  waitstreamtimeout: 5s
+```
+
+场景 5b/5c 验证：`/mp4.api/StartRecord` 先于流发布到达 node-3 时，路由层在
+`waitstreamtimeout` 内等流出现在本机或 peer（此处为 node-1），出现后转发执行并返回
+200；窗口用尽才返回 404。健康路径（流已存在）无额外延迟。
 
 ## 已知限制
 
-- `smoke.sh` 当前自动覆盖场景 1, 2, 3, 8, 10。其余场景(4 / 5 / 6 / 7 / 9)需要手动 + 看日志验证。
+- `smoke.sh` 当前自动覆盖场景 1, 2, 3, 5b, 5c, 8, 10。其余场景(4 / 5 / 6 / 7 / 9)需要手动 + 看日志验证。
 - mp4 录制 API 使用 gRPC-gateway 路径 `/mp4.api/StartRecord`(JSON body),具体响应格式以实际部署为准。
 - gotask 库内部在 `-race` 下有已知数据竞争(framework lifecycle 内部状态);cluster 代码层面无 race。
 - `sample.mp4` 文件不包含在版本库中,需用户自行提供。
