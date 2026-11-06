@@ -655,35 +655,7 @@ func (p *Publisher) takeOver(old *Publisher) {
 }
 
 func (p *Publisher) WaitTrack(audio, video bool) error {
-	var v, a = ErrNoTrack, ErrNoTrack
-	// wait any track
-	if p.PubAudio && p.PubVideo && !audio && !video {
-		select {
-		case <-p.videoReady.Done():
-			v = context.Cause(p.videoReady.Context)
-			if errors.Is(v, util.ErrResolve) {
-				v = nil
-			}
-		case <-p.audioReady.Done():
-			v = context.Cause(p.audioReady.Context)
-			if errors.Is(v, util.ErrResolve) {
-				v = nil
-			}
-		}
-	} else {
-		// need wait video
-		if p.PubVideo && video {
-			v = p.videoReady.Await()
-		}
-		// need wait audio
-		if p.PubAudio && audio {
-			a = p.audioReady.Await()
-		}
-	}
-	if v != nil && a != nil {
-		return ErrNoTrack
-	}
-	return nil
+	return p.WaitTrackContext(context.Background(), audio, video)
 }
 
 // WaitTrackContext 与 WaitTrack 语义相同，但受 ctx 约束：ctx 截止/取消时返回

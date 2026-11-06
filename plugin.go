@@ -801,28 +801,23 @@ func (p *Plugin) SubscribeWithConfig(ctx context.Context, streamPath string, con
 		// if CheckSubWaitTimeout is not running (e.g., its Tick panicked and
 		// crashed the Streams event loop). The external checkTimeout is a
 		// secondary safety net; this select timeout is the primary one.
-		waitTimeout := conf.WaitTimeout
-		if waitTimeout <= 0 {
-			waitTimeout = 10 * time.Second
-		}
+		waitTimeout := resolveSubscribeTimeout(conf)
 		waitStart := time.Now()
 		select {
 		case <-subscriber.waitPublishDone:
-			waitAudio := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "audio")
-			waitVideo := conf.WaitTrack == "all" || strings.Contains(conf.WaitTrack, "video")
-			// 轨道等待同样受 waitTimeout 约束：publisher 已出现但轨道迟迟不就绪
-			// （摄像头重连、publisher 无数据）时，旧实现会一直阻塞到 publisher
-			// 停止，RTSP 客户端表现为几十秒无响应后才收到 400。
-			remaining := waitTimeout - time.Since(waitStart)
-			if remaining <= 0 {
-				remaining = time.Millisecond
-			}
-			trackCtx, cancelTrack := context.WithTimeout(context.Background(), remaining)
-			err = subscriber.Publisher.WaitTrackContext(trackCtx, waitAudio, waitVideo)
-			cancelTrack()
-			if errors.Is(err, context.DeadlineExceeded) {
-				subscriber.Stop(ErrSubscribeTimeout)
-				err = ErrSubscribeTimeout
+			// 轨道等待受同一预算约束：publisher 已出现但轨道迟迟不就绪（摄像头重连、
+			// publisher 无数据）时，旧实现会一直阻塞到 publisher 停止，RTSP 客户端
+			// 表现为几十秒无响应后才收到 400。
+			budget := waitTimeout - time.Since(waitStart)
+			err = waitPublisherTracks(ctx, subscriber.Publisher, conf.WaitTrack, budget)
+			if err != nil {
+				if errors.Is(err, ErrSubscribeTimeout) {
+					subscriber.Warn("wait track timeout", "budget", budget,
+						"waitTrack", conf.WaitTrack, "elapsed", time.Since(waitStart))
+				}
+				// 任何错误都意味着调用方拿不到可用的 subscriber：不停止它会让它挂在
+				// publisher / Waiting 队列里占用 MaxCount，直到 WaitTimeout 兜底超时。
+				subscriber.Stop(err)
 			}
 		case <-subscriber.Done():
 			err = subscriber.StopReason()

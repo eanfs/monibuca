@@ -31,13 +31,14 @@ type RTSPPlugin struct {
 	UserName        string `desc:"用户名"`
 	Password        string `desc:"密码"`
 	ProxyOnRedirect bool   `default:"false" desc:"当集群启用 apiRoute 时，用本地拉流代理替代 RTSP 302 重定向"`
-	// WaitTrackTimeout 限制 RTSP 播放（DESCRIBE）等待轨道就绪的时间：
-	// 轨道未就绪的流（publisher 存在但无数据/无 track，常见于摄像头重连）过去会
-	// 一直等到 publisher 停止才返回 400，AI 等客户端往往在 30s 打开超时后整批失败。
+	// InitialWaitTimeout 限制 RTSP 播放（DESCRIBE）从请求到订阅就绪的总等待：
+	// 等 publisher 上线与等音视频轨道就绪共用这一个预算。轨道未就绪的流
+	// （publisher 存在但无数据/无 track，常见于摄像头重连）过去会一直等到
+	// publisher 停止才返回 400，AI 等客户端往往在 30s 打开超时后整批失败。
 	// 限制后超时快速返回 503（带 Retry-After），客户端可立即重试。
-	WaitTrackTimeout time.Duration      `default:"3s" desc:"RTSP 播放等待音视频轨道就绪的最长时间；超时返回 503 以便客户端快速重试；0 表示沿用全局 subscribe.waittimeout"`
-	UdpPort          util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
-	udpPorts         chan uint16
+	InitialWaitTimeout time.Duration      `default:"3s" desc:"RTSP 播放从 DESCRIBE 到订阅就绪的总等待上限；超时返回 503 以便客户端快速重试；0 表示沿用全局 subscribe.waittimeout"`
+	UdpPort            util.Range[uint16] `default:"20001-30000" desc:"媒体端口范围"` //媒体端口范围
+	udpPorts           chan uint16
 }
 
 func (p *RTSPPlugin) OnTCPConnect(conn net.Conn) task.ITask {
