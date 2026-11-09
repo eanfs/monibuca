@@ -5,6 +5,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,4 +102,37 @@ func TestEffectiveTempDirDefaultsToSystemTemp(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestS3RequireTempDirConfig 验证 storage.s3.requiretempdir：开启且未配置
+// tempdir 时必须拒绝，关闭时保持既有"回落系统临时目录"的行为不变。
+// 用 validateAndNormalizeEndpoint 而非 NewS3Storage，避免测试触发真实网络。
+func TestS3RequireTempDirConfig(t *testing.T) {
+	base := func() *S3StorageConfig {
+		return &S3StorageConfig{Endpoint: "127.0.0.1:9000", Bucket: "b", AccessKeyID: "a", SecretAccessKey: "s"}
+	}
+
+	t.Run("requiretempdir=true and empty tempdir fails", func(t *testing.T) {
+		cfg := base()
+		cfg.RequireTempDir = true
+		_, err := cfg.validateAndNormalizeEndpoint()
+		if err == nil || !strings.Contains(err.Error(), "tempdir is required") {
+			t.Fatalf("expect tempdir required error, got %v", err)
+		}
+	})
+
+	t.Run("requiretempdir=true with tempdir passes", func(t *testing.T) {
+		cfg := base()
+		cfg.RequireTempDir = true
+		cfg.TempDir = "/data/tmp"
+		if _, err := cfg.validateAndNormalizeEndpoint(); err != nil {
+			t.Fatalf("expect nil, got %v", err)
+		}
+	})
+
+	t.Run("default keeps empty tempdir allowed", func(t *testing.T) {
+		if _, err := base().validateAndNormalizeEndpoint(); err != nil {
+			t.Fatalf("empty tempdir must stay allowed by default, got %v", err)
+		}
+	})
 }
