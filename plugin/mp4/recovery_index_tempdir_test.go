@@ -1,6 +1,8 @@
 package plugin_mp4
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	m7s "m7s.live/v5"
@@ -67,5 +69,76 @@ func TestDefaultDirsStillExcludeSystemTempDirForNonS3Config(t *testing.T) {
 		if dir == "" {
 			t.Fatal("defaultDirs must not contain empty entries")
 		}
+	}
+}
+
+// TestDescribeRecoveryDirsMarksMissingTempDir 验证"配了但目录不存在"的 tempdir
+// 会被归入 missing 而不是静默忽略：容器忘记挂载时运维必须能从日志看出来。
+func TestDescribeRecoveryDirsMarksMissingTempDir(t *testing.T) {
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = map[string]any{
+		string(storage.StorageTypeS3): map[string]any{"tempdir": "/nonexistent-monibuca-tempdir"},
+	}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	dirs, missing := (&IndexRecoveryTask{plugin: plugin}).describeRecoveryDirs()
+	for _, dir := range dirs {
+		if filepath.Clean(dir) == "/nonexistent-monibuca-tempdir" {
+			t.Fatalf("missing tempdir must not appear in dirs: %v", dirs)
+		}
+	}
+	found := false
+	for _, dir := range missing {
+		if filepath.Clean(dir) == "/nonexistent-monibuca-tempdir" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing tempdir must be reported, got dirs=%v missing=%v", dirs, missing)
+	}
+}
+
+// TestDescribeRecoveryDirsIncludesTempDirWhenNotInDirs 验证即使没显式配置
+// record.recovery.dirs，只要 tempdir 存在也必须进入实际扫描集合（补入语义）。
+func TestDescribeRecoveryDirsIncludesTempDirWhenNotInDirs(t *testing.T) {
+	tempDir := t.TempDir()
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = map[string]any{
+		string(storage.StorageTypeS3): map[string]any{"tempDir": tempDir},
+	}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	dirs, _ := (&IndexRecoveryTask{plugin: plugin}).describeRecoveryDirs()
+	for _, dir := range dirs {
+		if filepath.Clean(dir) == filepath.Clean(tempDir) {
+			return
+		}
+	}
+	t.Fatalf("existing tempdir must be in actual scan dirs, got %v", dirs)
+}
+
+// TestDescribeRecoveryDirsExcludesNonDirectory 验证同名普通文件不算可用目录。
+func TestDescribeRecoveryDirsExcludesNonDirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = map[string]any{
+		string(storage.StorageTypeS3): map[string]any{"tempdir": file},
+	}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	dirs, missing := (&IndexRecoveryTask{plugin: plugin}).describeRecoveryDirs()
+	for _, dir := range dirs {
+		if filepath.Clean(dir) == filepath.Clean(file) {
+			t.Fatalf("regular file must not be treated as scan dir: %v", dirs)
+		}
+	}
+	if len(missing) == 0 {
+		t.Fatal("regular file path should be reported as missing dir")
 	}
 }
