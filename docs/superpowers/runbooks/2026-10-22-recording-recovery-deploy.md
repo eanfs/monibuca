@@ -254,15 +254,54 @@ mp4:
 ```
 
 **检查**（S3 已配置的前提下）：启动日志中**不得**出现上面那条
-`storage.s3.tempdir is not configured: ...` Warn——它的缺席说明 tempdir 已显式配置。
-注意启动 Info `index recovery task started ... dirs=[...]` 打印的是**配置值**
-`record.recovery.dirs`，不是解析后的扫描集合：按上文配 `dirs: []` 时该字段就是
-`dirs=[]`，属正常现象，**不能**据此判断 tempdir 是否在扫描集合内。解析后的集合
-（默认 = tempdir + `pending_uploads` + 录像输出目录）只出现在扫描触达条目上限时的
-Warn `recovery scan truncated at entry limit: remaining entries were not scanned`
-的 `dirs` 字段里；此外 `GET /api/recovery/list` 使用同一套解析目录扫描，返回条目的
-`path` 落在 tempdir 下即说明该目录在扫描集合内（无残留时自然没有条目；配置了不存在
-或不可读的目录时，响应的 `errors` 会点名该目录）。
+`storage.s3.tempdir is not configured: ...` Warn——它的缺席说明 tempdir 已被读到。
+
+自 v5.3.14 起启动 Info 的字段语义已修正（旧版本打印的是配置值，容易误判）：
+
+| 字段 | 含义 |
+|---|---|
+| `configuredDirs` | 配置值 `record.recovery.dirs`（原样，可能是空数组） |
+| `dirs` | **实际可用**的扫描目录（存在且是目录），恢复真正会扫的地方 |
+| `missingDirs` | 配置/推断出但不存在或不是目录的路径（挂载漏了就出现在这里） |
+| `tempdir` | 解析到的 `storage.s3.tempdir`（空 = 未配置） |
+
+判定标准：`dirs` **非空且包含 tempdir** 才算恢复能力生效；`dirs` 为空时新版本会
+输出 Error `no recovery scan dirs available: object-storage crash leftovers will NOT
+be auto-recovered`。两个新开关可把漏配变成启动失败：
+
+```yaml
+global:
+  storage:
+    s3:
+      tempdir: "/monibuca/tmp"     # 必须与 compose 里挂载的容器内路径一致
+      requiretempdir: true         # 未配置 tempdir 时拒绝创建 S3 后端
+mp4:
+  record:
+    index:
+      enable: true                 # 伴随索引是自动恢复的前提
+    recovery:
+      onstart: true
+      requiredirs: true            # 无可用扫描目录时插件启动失败
+      dirs: ["/monibuca/tmp"]      # 显式写出，避免依赖默认集合
+```
+
+**键名写法**：`tempDir` / `tempdir` / `temp_dir` 都能被读取（恢复任务按
+`pkg/config` 同一规则归一化键名），但**模板与文档统一写小写 `tempdir`**，避免运维
+误以为必须照抄某个大小写。
+
+**部署校验**（可直接粘进发布脚本，任一条失败即回滚）：
+
+```bash
+docker exec xde-monibuca sh -c 'test -w /monibuca/tmp'
+docker logs xde-monibuca 2>&1 | grep -q 'index recovery task started'
+! docker logs xde-monibuca 2>&1 | grep -q 'tempdir is not configured'
+! docker logs xde-monibuca 2>&1 | grep -q 'no recovery scan dirs available'
+```
+
+其他排障入口不变：扫描触达条目上限时的 Warn
+`recovery scan truncated at entry limit` 仍带 `dirs`；`GET /api/recovery/list`
+返回条目的 `path` 落在 tempdir 下即说明该目录在扫描集合内（无残留时自然没有条目；
+配置了不存在或不可读的目录时，响应的 `errors` 会点名该目录）。
 
 ---
 

@@ -52,6 +52,11 @@ type S3StorageConfig struct {
 	PartSize        int64         `desc:"multipart 分片大小（字节），默认 64MB" default:"67108864"`
 	ConnectTimeout  time.Duration `desc:"TCP 连接超时" default:"10s"`
 	TempDir         string        `desc:"本地临时文件目录，为空时使用系统临时目录"`
+	// RequireTempDir 开启后，未配置 TempDir 时拒绝创建 S3 后端。
+	// 动机：TempDir 为空会回落到系统 /tmp，而该目录默认不在崩溃恢复扫描集合内
+	// （安全取舍），录像残留将无法自动恢复。生产环境应开启此项，让漏配在部署时
+	// 直接失败而不是静默丢数据。
+	RequireTempDir bool `default:"false" desc:"是否强制要求配置 tempdir（未配置时拒绝启动）"`
 }
 
 // effectiveTempDir 返回 S3 临时文件应写入的目录。
@@ -85,6 +90,9 @@ func (c *S3StorageConfig) validateAndNormalizeEndpoint() (string, error) {
 	}
 	if c.Bucket == "" {
 		return "", fmt.Errorf("%w: bucket is required for S3 storage", ErrInvalidStorageConfig)
+	}
+	if c.RequireTempDir && strings.TrimSpace(c.TempDir) == "" {
+		return "", fmt.Errorf("%w: storage.s3.tempdir is required", ErrInvalidStorageConfig)
 	}
 	return normalizeS3Endpoint(c.Endpoint, c.UseSSL)
 }

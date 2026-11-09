@@ -143,6 +143,10 @@ func (t *IndexRecoveryTask) Start() error {
 			"hint", "set storage.s3.tempdir to a persistent directory and keep it in the scan set: leave record.recovery.dirs empty (tempdir is one of the defaults) or list the tempdir explicitly",
 			"runbook", "docs/superpowers/runbooks/2026-10-22-recording-recovery-deploy.md §2.2")
 	}
+	// 日志必须打印**实际**扫描目录：t.Dirs 只是配置值，默认目录（tempdir /
+	// pending_uploads / 录像输出目录）不体现在其中，运维看到 dirs=[] 会误以为
+	// 恢复功能正常但"没配额外目录"（2026-11-06 196 现场即因此漏检）。
+	dirs, missingDirs := t.describeRecoveryDirs()
 	t.Info("index recovery task started",
 		"concurrency", t.effectiveConcurrency(),
 		"startupMinAge", t.startupMinAge(),
@@ -150,7 +154,19 @@ func (t *IndexRecoveryTask) Start() error {
 		"runOnStart", t.RunOnStart,
 		"runDBBackfill", t.RunDBBackfill,
 		"rerunInterval", t.RerunInterval,
-		"dirs", t.Dirs)
+		"configuredDirs", t.Dirs,
+		"dirs", dirs,
+		"missingDirs", missingDirs,
+		"tempdir", t.mediaTempDir())
+	if len(dirs) == 0 {
+		// 没有可用扫描目录 = 崩溃残留永远不会被自动恢复，必须显式报错而不是
+		// 只留一条 Warn。requiredirs 开启时由插件启动阶段直接拒绝启动。
+		t.Error("no recovery scan dirs available: object-storage crash leftovers will NOT be auto-recovered",
+			"configuredDirs", t.Dirs,
+			"missingDirs", missingDirs,
+			"tempdir", t.mediaTempDir(),
+			"hint", "set storage.s3.tempdir (and/or mp4.record.recovery.dirs) to an existing writable directory")
+	}
 	// 不能在 Start 里等待子任务（会阻塞事件循环）。run task 在自己的
 	// goroutine 中执行，完成后自行记录日志。
 	switch {
@@ -648,15 +664,64 @@ func (t *IndexRecoveryTask) mediaTempDir() string {
 	if t.plugin != nil && t.plugin.Server != nil {
 		if raw, ok := t.plugin.Server.ServerConfig.Storage[string(storage.StorageTypeS3)]; ok {
 			if conf, ok := raw.(map[string]any); ok {
-				// 不引用 storage.S3StorageConfig：s3.go 有 build tag，
-				// 未启用 s3 时该类型不存在。配置键在解析后统一小写。
-				if tempDir, ok := conf["tempdir"].(string); ok && strings.TrimSpace(tempDir) != "" {
-					return tempDir
+				// 不引用 storage.S3StorageConfig：s3.go 有 build tag，未启用 s3 时
+				// 该类型不存在。这里拿到的是**原始 YAML map**（键未被归一化），
+				// 而现场/模板普遍写驼峰 tempDir，因此必须逐键归一化后再比较，否则
+				// 会误判"未配置"、把恢复扫描目录丢掉（2026-11-06 196 真机复现）。
+				for key, value := range conf {
+					if normalizeConfigKey(key) != "tempdir" {
+						continue
+					}
+					if tempDir, ok := value.(string); ok && strings.TrimSpace(tempDir) != "" {
+						return tempDir
+					}
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// normalizeConfigKey 把配置键归一化为小写且去掉 "-"/"_"，与 pkg/config 的
+// ParseUserFile 采用完全一致的规则。恢复任务读的是原始 YAML map（键保留用户
+// 写法），只有用同一规则比较才能与配置解析结果对齐。
+func normalizeConfigKey(key string) string {
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, "_", "")
+	return strings.ToLower(key)
+}
+
+// describeRecoveryDirs 把候选目录分成"实际可用"与"配置/推断出但不可用"两组。
+//
+// 可用 = 路径存在且是目录；不可用含路径不存在、是普通文件。可读性不在这里
+// 判断（真正的读取错误会在扫描时进 errors 并点名目录）。两者都会进启动日志，
+// 运维据此判断恢复能力是否生效（而不是只看配置里的 dirs）。
+func (t *IndexRecoveryTask) describeRecoveryDirs() (dirs, missing []string) {
+	for _, dir := range t.defaultDirs() {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			missing = append(missing, dir)
+			continue
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, missing
+}
+
+// validateRecoveryDirs 在 required=true 时要求至少有一个可用扫描目录。
+//
+// 为什么不在 IndexRecoveryTask.Start() 里返回错误：该任务是 p.AddTask(recoveryTask)
+// 注册的（未 WaitStarted），Start 的 error 不会让插件启动失败，校验会形同虚设。
+// 调用方必须是 MP4Plugin.Start()，且要在注册任务之前。
+func validateRecoveryDirs(dirs, missing []string, required bool) error {
+	if !required || len(dirs) > 0 {
+		return nil
+	}
+	return fmt.Errorf("recovery scan dirs empty (missing: %v): set storage.s3.tempdir and/or mp4.record.recovery.dirs", missing)
 }
 
 // sidecarScanTruncated 说明 discoverSidecars 为何提前结束；空字符串表示未截断。
