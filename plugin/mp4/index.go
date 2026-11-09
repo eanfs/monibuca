@@ -51,7 +51,10 @@ type MP4Plugin struct {
 			Dirs          []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
 			// RequiredDirs 让"恢复能力静默失效"变成启动失败：没有可用扫描目录时
 			// 崩溃残留永远不会被自动恢复，生产环境应开启。
-			RequiredDirs bool `default:"false" desc:"恢复扫描目录为空时是否拒绝启动（防止恢复能力静默失效）"`
+			// yaml tag 必须显式写 requiredirs：m7s 按字段名归一化（RequiredDirs →
+			// requireddirs）匹配配置键，与文档/模板里的 requiredirs 不相等，配置会被
+			// 静默忽略（2026-11-09 51 负向验证复现）。
+			RequiredDirs bool `yaml:"requiredirs" default:"false" desc:"恢复扫描目录为空时是否拒绝启动（防止恢复能力静默失效）"`
 			// AllowUnauthenticated 控制未启用 admin.enablelogin 时
 			// POST /api/recovery/run 是否接受任意来源的请求。默认 false：
 			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。

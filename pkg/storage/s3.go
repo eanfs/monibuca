@@ -56,7 +56,7 @@ type S3StorageConfig struct {
 	// 动机：TempDir 为空会回落到系统 /tmp，而该目录默认不在崩溃恢复扫描集合内
 	// （安全取舍），录像残留将无法自动恢复。生产环境应开启此项，让漏配在部署时
 	// 直接失败而不是静默丢数据。
-	RequireTempDir bool `default:"false" desc:"是否强制要求配置 tempdir（未配置时拒绝启动）"`
+	RequireTempDir bool `yaml:"requiretempdir" default:"false" desc:"是否强制要求配置 tempdir（未配置时拒绝启动）"`
 }
 
 // effectiveTempDir 返回 S3 临时文件应写入的目录。
