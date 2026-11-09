@@ -697,7 +697,14 @@ func normalizeConfigKey(key string) string {
 // 判断（真正的读取错误会在扫描时进 errors 并点名目录）。两者都会进启动日志，
 // 运维据此判断恢复能力是否生效（而不是只看配置里的 dirs）。
 func (t *IndexRecoveryTask) describeRecoveryDirs() (dirs, missing []string) {
-	for _, dir := range t.defaultDirs() {
+	// 候选集合必须与 resolveDirs 同优先级（配置 dirs → 默认集合），否则日志
+	// 显示的"实际扫描目录"与真正扫的地方不是一回事：2026-11-09 51 现场出现
+	// configuredDirs 3 项而 dirs 只有 2 项（默认集合），运维据此会误判。
+	candidates := t.Dirs
+	if len(candidates) == 0 {
+		candidates = t.defaultDirs()
+	}
+	for _, dir := range candidates {
 		dir = strings.TrimSpace(dir)
 		if dir == "" {
 			continue
