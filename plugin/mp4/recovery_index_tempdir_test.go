@@ -171,3 +171,49 @@ func TestValidateRecoveryDirs(t *testing.T) {
 		})
 	}
 }
+
+// TestDescribeRecoveryDirsFollowsConfiguredDirs 钉住"日志字段 = 实际扫描集合"。
+// runRecovery 的目录优先级是 explicit → record.recovery.dirs → defaultDirs()，
+// 因此 describeRecoveryDirs 必须用同一优先级；否则配置了 dirs 时启动日志仍显示
+// 默认集合，运维会看到 configuredDirs 与实际扫描不一致（2026-11-09 51 真机复现：
+// configuredDirs 3 项、dirs 只有 2 项）。
+func TestDescribeRecoveryDirsFollowsConfiguredDirs(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	server := &m7s.Server{}
+	// tempdir 存在但不在配置的 dirs 里：实际扫描不会包含它。
+	server.ServerConfig.Storage = map[string]any{
+		string(storage.StorageTypeS3): map[string]any{"tempdir": t.TempDir()},
+	}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	task := &IndexRecoveryTask{plugin: plugin, Dirs: []string{dirA, dirB}}
+	dirs, missing := task.describeRecoveryDirs()
+	if len(dirs) != 2 || len(missing) != 0 {
+		t.Fatalf("configured dirs must be used as-is, got dirs=%v missing=%v", dirs, missing)
+	}
+	for i, want := range []string{dirA, dirB} {
+		if filepath.Clean(dirs[i]) != filepath.Clean(want) {
+			t.Fatalf("dirs[%d] = %q, want %q (all=%v)", i, dirs[i], want, dirs)
+		}
+	}
+}
+
+// 配置的 dirs 里有不存在的路径时必须进 missing（strict 语义的可见版本）。
+func TestDescribeRecoveryDirsMarksMissingConfiguredDir(t *testing.T) {
+	dir := t.TempDir()
+	server := &m7s.Server{}
+	server.ServerConfig.Storage = map[string]any{}
+	plugin := &MP4Plugin{}
+	plugin.Server = server
+
+	task := &IndexRecoveryTask{plugin: plugin, Dirs: []string{dir, "/nonexistent-configured-dir"}}
+	dirs, missing := task.describeRecoveryDirs()
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 usable dir, got %v", dirs)
+	}
+	if len(missing) != 1 || filepath.Clean(missing[0]) != "/nonexistent-configured-dir" {
+		t.Fatalf("missing configured dir must be reported, got %v", missing)
+	}
+}

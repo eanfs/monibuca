@@ -76,6 +76,12 @@ func InitUploadManager(cfg UploadConfig) {
 	if cfg.PendingDir == "" {
 		cfg.PendingDir = "pending_uploads"
 	}
+	if !pendingDirIsPersistent(cfg.PendingDir) {
+		// 相对路径解析到进程工作目录：容器内通常不是持久卷，重启即丢，
+		// 上传失败的兜底文件等于没有兜底（2026-11-09 51 现场：pendingDir
+		// 显示为 pending_uploads，实际落在 /app/pending_uploads）。
+		log.Printf("[storage] WARNING: pending dir %q is relative (resolves under the process working directory, usually NOT a persistent volume); set upload.pendingdir to an absolute mounted path so failed uploads survive container restarts", cfg.PendingDir)
+	}
 	pendingDir = cfg.PendingDir
 	pendingMaxSizeBytes = int64(cfg.PendingMaxSizeMB) * 1024 * 1024
 	pendingMaxFiles = cfg.PendingMaxFiles
@@ -85,6 +91,14 @@ func InitUploadManager(cfg UploadConfig) {
 	}
 	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
 		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, pendingDir)
+}
+
+// pendingDirIsPersistent 判断暂存目录是否是绝对路径。
+//
+// 只做这一个判断：相对路径在容器里几乎总是落在镜像层或临时层（进程工作目录），
+// 重启即丢；是否存在、是否可写由 MkdirAll 与后续写入各自报错。
+func pendingDirIsPersistent(dir string) bool {
+	return filepath.IsAbs(dir)
 }
 
 // UploadSlotWaitTimeout 等待上传槽位的最长时间。上传 ctx 已与录制 ctx 解耦
