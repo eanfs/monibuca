@@ -711,6 +711,18 @@ func (t *IndexRecoveryTask) describeRecoveryDirs() (dirs, missing []string) {
 	return dirs, missing
 }
 
+// validateRecoveryDirs 在 required=true 时要求至少有一个可用扫描目录。
+//
+// 为什么不在 IndexRecoveryTask.Start() 里返回错误：该任务是 p.AddTask(recoveryTask)
+// 注册的（未 WaitStarted），Start 的 error 不会让插件启动失败，校验会形同虚设。
+// 调用方必须是 MP4Plugin.Start()，且要在注册任务之前。
+func validateRecoveryDirs(dirs, missing []string, required bool) error {
+	if !required || len(dirs) > 0 {
+		return nil
+	}
+	return fmt.Errorf("recovery scan dirs empty (missing: %v): set storage.s3.tempdir and/or mp4.record.recovery.dirs", missing)
+}
+
 // sidecarScanTruncated 说明 discoverSidecars 为何提前结束；空字符串表示未截断。
 type sidecarScanTruncated string
 

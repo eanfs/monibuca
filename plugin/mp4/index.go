@@ -49,6 +49,9 @@ type MP4Plugin struct {
 			// 时不产生逐文件日志与 Info 汇总。仅在 recovery.onstart=true 时生效。
 			RerunInterval time.Duration `default:"10m" desc:"启动自动扫描后的周期重扫间隔：自动重试启动扫描失败的残留 sidecar，0 关闭；仅在 recovery.onstart=true（自动恢复开启）时生效"`
 			Dirs          []string      `desc:"额外的恢复扫描目录，空则使用录制临时目录 + pending_uploads + 录像输出目录"`
+			// RequiredDirs 让"恢复能力静默失效"变成启动失败：没有可用扫描目录时
+			// 崩溃残留永远不会被自动恢复，生产环境应开启。
+			RequiredDirs bool `default:"false" desc:"恢复扫描目录为空时是否拒绝启动（防止恢复能力静默失效）"`
 			// AllowUnauthenticated 控制未启用 admin.enablelogin 时
 			// POST /api/recovery/run 是否接受任意来源的请求。默认 false：
 			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。
@@ -187,6 +190,14 @@ func (p *MP4Plugin) Start() (err error) {
 	// 绝不回落到当前活跃存储（S3 不可用时也不写 local）。
 	if server := p.Server; server != nil {
 		recoveryTask.ResolveUploadStorage = server.GetStorageForType
+	}
+	// 恢复能力校验必须在注册任务之前：任务用 AddTask 注册（未 WaitStarted），
+	// Start() 返回的 error 不会让插件启动失败，只有在这里返回才能阻断带病上线。
+	dirs, missing := recoveryTask.describeRecoveryDirs()
+	if err := validateRecoveryDirs(dirs, missing, p.RecordConfig.Recovery.RequiredDirs); err != nil {
+		p.Error("recovery dirs validation failed",
+			"error", err, "dirs", dirs, "missingDirs", missing, "tempdir", recoveryTask.mediaTempDir())
+		return err
 	}
 	// observer 必须在任务启动前设置（之后只读）。
 	recoveryTask.observer = p.observeRecovery

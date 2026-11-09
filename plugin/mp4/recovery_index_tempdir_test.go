@@ -3,6 +3,7 @@ package plugin_mp4
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	m7s "m7s.live/v5"
@@ -140,5 +141,33 @@ func TestDescribeRecoveryDirsExcludesNonDirectory(t *testing.T) {
 	}
 	if len(missing) == 0 {
 		t.Fatal("regular file path should be reported as missing dir")
+	}
+}
+
+// TestValidateRecoveryDirs 钉住 requiredirs 的判定：开启且无可用目录必须报错，
+// 关闭或无缺失时放行。校验由 MP4Plugin.Start() 在注册 recoveryTask 之前调用
+// （任务用 AddTask 注册且未 WaitStarted，Start() 返回 error 不会传播）。
+func TestValidateRecoveryDirs(t *testing.T) {
+	cases := []struct {
+		name     string
+		dirs     []string
+		missing  []string
+		required bool
+		wantErr  bool
+	}{
+		{"required and empty", nil, []string{"/data/tmp"}, true, true},
+		{"required with dirs", []string{"/data/tmp"}, nil, true, false},
+		{"optional and empty", nil, []string{"/data/tmp"}, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateRecoveryDirs(c.dirs, c.missing, c.required)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("validateRecoveryDirs(%v,%v,%v) err=%v, wantErr=%v", c.dirs, c.missing, c.required, err, c.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "recovery scan dirs empty") {
+				t.Fatalf("error should mention empty scan dirs, got %v", err)
+			}
+		})
 	}
 }
