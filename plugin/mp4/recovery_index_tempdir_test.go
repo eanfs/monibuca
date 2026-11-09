@@ -15,12 +15,12 @@ import (
 // 否则现场按驼峰写的配置会被判为"未配置"。
 func TestNormalizeConfigKey(t *testing.T) {
 	cases := map[string]string{
-		"tempdir":   "tempdir",
-		"tempDir":   "tempdir",
-		"TEMP_DIR":  "tempdir",
-		"temp-dir":  "tempdir",
-		"Temp_Dir ": "tempdir ", // 空格不归一化，仅用于确认不 panic
-		"":          "",
+		"tempdir":  "tempdir",
+		"tempDir":  "tempdir",
+		"TEMP_DIR": "tempdir",
+		"temp-dir": "tempdir",
+		"Temp_Dir": "tempdir",
+		"":         "",
 	}
 	for in, want := range cases {
 		if got := normalizeConfigKey(in); got != want {

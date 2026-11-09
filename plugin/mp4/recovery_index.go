@@ -693,8 +693,9 @@ func normalizeConfigKey(key string) string {
 
 // describeRecoveryDirs 把候选目录分成"实际可用"与"配置/推断出但不可用"两组。
 //
-// 可用 = 存在且是目录；不可用含路径不存在、是普通文件、不可读等。两者都会进
-// 启动日志，运维据此判断恢复能力是否生效（而不是只看配置里的 dirs）。
+// 可用 = 路径存在且是目录；不可用含路径不存在、是普通文件。可读性不在这里
+// 判断（真正的读取错误会在扫描时进 errors 并点名目录）。两者都会进启动日志，
+// 运维据此判断恢复能力是否生效（而不是只看配置里的 dirs）。
 func (t *IndexRecoveryTask) describeRecoveryDirs() (dirs, missing []string) {
 	for _, dir := range t.defaultDirs() {
 		dir = strings.TrimSpace(dir)
