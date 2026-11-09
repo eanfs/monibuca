@@ -648,15 +648,31 @@ func (t *IndexRecoveryTask) mediaTempDir() string {
 	if t.plugin != nil && t.plugin.Server != nil {
 		if raw, ok := t.plugin.Server.ServerConfig.Storage[string(storage.StorageTypeS3)]; ok {
 			if conf, ok := raw.(map[string]any); ok {
-				// 不引用 storage.S3StorageConfig：s3.go 有 build tag，
-				// 未启用 s3 时该类型不存在。配置键在解析后统一小写。
-				if tempDir, ok := conf["tempdir"].(string); ok && strings.TrimSpace(tempDir) != "" {
-					return tempDir
+				// 不引用 storage.S3StorageConfig：s3.go 有 build tag，未启用 s3 时
+				// 该类型不存在。这里拿到的是**原始 YAML map**（键未被归一化），
+				// 而现场/模板普遍写驼峰 tempDir，因此必须逐键归一化后再比较，否则
+				// 会误判"未配置"、把恢复扫描目录丢掉（2026-11-06 196 真机复现）。
+				for key, value := range conf {
+					if normalizeConfigKey(key) != "tempdir" {
+						continue
+					}
+					if tempDir, ok := value.(string); ok && strings.TrimSpace(tempDir) != "" {
+						return tempDir
+					}
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// normalizeConfigKey 把配置键归一化为小写且去掉 "-"/"_"，与 pkg/config 的
+// ParseUserFile 采用完全一致的规则。恢复任务读的是原始 YAML map（键保留用户
+// 写法），只有用同一规则比较才能与配置解析结果对齐。
+func normalizeConfigKey(key string) string {
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, "_", "")
+	return strings.ToLower(key)
 }
 
 // sidecarScanTruncated 说明 discoverSidecars 为何提前结束；空字符串表示未截断。
