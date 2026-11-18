@@ -1,7 +1,9 @@
 # RTSP 拉流兼容性验证（WebRTC 2K@24 升级 Task 5）
 
 - 采集日期：2026-11-18（UTC+8）
-- 被测版本：工作树 `dsh-39c7ba14-fa26`，HEAD `6448b9bf`
+- 被测版本：工作树 `dsh-39c7ba14-fa26`
+  - 首次测量 HEAD `6448b9bf`（后提交为 `724263e3`）
+  - **默认 GCC 复测（Fix round 1）HEAD `170fe160`**
   （pion/webrtc v4.2.26、pion/interceptor v0.1.51，Task 1–4 已合入）
 - 用途：验证 **RTSP 拉流代理 → 2K 流 → WebRTC 播放** 链路，为 A9/A10 提供实测数据。
 - 关联脚本：`rtsp-pull.sh`（本目录）、Task 0 的 `push-2k.sh` / `play-collect.js`。
@@ -11,18 +13,20 @@
 | 项 | 结论 | 证据 |
 |---|---|---|
 | RTSP 拉流代理建立 | **通过** | `pullOnStart=true` 创建后 1–2s 内状态 `Pulling`，输出流 `live/rtsp2k` 为 2560×1440 avc1 |
-| 单路 2K 60s WebRTC 播放 | **通过（需临时关闭 GCC，见 §4）** | avgFps **24.00**、丢帧 0、NACK/PLI 稳态 0、jitter buffer 7.9ms、RTT 1ms |
-| 断流重连（A10 的可用性口径） | **通过（有限口径）** | 源流 216ms 内消失；重启后 0.28s 源流恢复、0.37s 拉流可用；复播 24fps |
+| 单路 2K 60s WebRTC 播放（默认 GCC） | **通过（Fix round 1 复测）** | 复跑 avgFps **23.65**（断言 PASS），丢帧 32、NACK 0、PLI 8、RTT 1ms；稳态（t≥25s）**24.0 fps**，详见 §4.1 |
+| 断流重连（A10 的可用性口径） | **通过（有限口径）** | 源流 217ms 内消失；重启后 0.29s 源流恢复、**0.38s** 拉流可用（默认 GCC） |
 | 10 路并发 / 10 分钟长稳 | **待真机** | 本机为 macOS、单路 x264 编码器，按计划留到 Linux 真机 |
-| 默认配置（GCC 开启）下播放 | **阻断（非 RTSP 问题）** | 所有出包被 pacer 丢弃：`missing transport layer cc header extension`，见 §4 |
+| 默认配置（GCC 开启）下播放 | **通过（原阻断已修复）** | `missing transport layer cc header extension` 计数 **0**（修复前单次累计 73,327），见 §4.1 |
 
 **关键限定：**
 1. 本验证的 RTSP 源与 RTSP 服务是 **同一个 Monibuca 实例**（RTMP 推入 → 同进程
    RTSP 插件作为服务端 → RTSP 拉流代理再拉回），属于控制回路 sanity check，
    **不等价于独立摄像头/GOP/网络环境的真机验收**。
-2. §3 的 WebRTC 指标是在 `WEBRTC_CC_ENABLE=false` 下测得的。默认 `webrtc.cc.enable=true`
-   在本 HEAD 上会让所有出包被 GCC pacer 丢弃（RTSP 拉流和直接 RTMP 推流都复现），
-   这是 Task 5 发现的独立阻断项，**本次未改 Go 代码**，详见 §4。
+2. §5 的 WebRTC 指标是**首次测量时**用 `WEBRTC_CC_ENABLE=false` 隔离出的口径。
+   默认 `webrtc.cc.enable=true` 当时存在出包被 GCC pacer 全部丢弃的阻断项（§4），
+   现已修复（`170fe160`）。**默认 GCC 配置的复测结果见 §4.1**，结论为：视频正常出帧、
+   pacer 错误 0、稳态 24.0 fps；60s 窗口含冷启动时 avgFps 在 22.7–23.65 间波动，
+   原因为 GCC 初始码率 2 Mbps 对 10 Mbps 2K 流的启动排队（见 §4.1.4）。
 
 ## 2. 环境
 
@@ -50,7 +54,8 @@
 ```bash
 cd example/default
 go build -tags sqlite -o /tmp/webrtc-2k-rtsp/m7s-server .
-# GCC 关闭运行（§3 的测量口径；原因见 §4）
+# 首次测量口径：GCC 关闭，隔离当时未修复的 §4 阻断项；
+# 默认 GCC 的复测命令见 §4.1.2。
 RTSP_TCP_LISTENADDR=:8554 RTSP_TCP_LISTENADDRTLS=:8322 WEBRTC_CC_ENABLE=false \
   /tmp/webrtc-2k-rtsp/m7s-server -c config.yaml
 ```
@@ -133,7 +138,10 @@ curl -s -X POST http://127.0.0.1:8080/api/proxy/pull/add \
 播放期间每 2s 用 `ps -o rss= -o %cpu= -p <pid>` 采样服务端与 ffmpeg
 （macOS 的 `%cpu` 是单核百分比，100% = 1 核；为进程生命周期衰减平均值）。
 
-## 4. 阻断项：默认 GCC 开启时 WebRTC 出包全部失败
+## 4. 阻断项：默认 GCC 开启时 WebRTC 出包全部失败（已修复）
+
+> **状态：已修复（Fix round 1，`170fe160`）**。修复与默认 GCC 复测见 §4.1；
+> 下面保留首次发现时的现象与定位作为背景。
 
 **现象（默认配置，`webrtc.cc.enable=true`）：**
 - 播放页 ICE `connected`、收到两个 `ontrack`（视频+音频），但 `video.videoWidth`
@@ -167,7 +175,90 @@ curl -s -X POST http://127.0.0.1:8080/api/proxy/pull/add \
 `插件名_字段路径` 环境变量覆盖，实测该变量生效：pacer ERROR 计数为 0，
 视频满帧）。这只是为了隔离 RTSP 拉流路径，不代表默认配置已验收。
 
-## 5. 结果：单路 RTSP 拉流 2K 60s
+### 4.1 修复与默认 GCC 配置复测（Fix round 1）
+
+#### 4.1.1 代码修复
+
+`plugin/webrtc/pkg/util.go` 的 `createInterceptorRegistry` 在 `cc.enable=true` 分支里，
+`i.Add(ccInterceptor)` 之后、`RegisterDefaultInterceptors` 之前补调用
+`webrtc.ConfigureTWCCHeaderExtensionSender(m, i)`（顺序与 pion
+`bandwidth-estimation-from-disk` 示例一致：cc → TWCC header extension → defaults）。
+该函数注册 `twcc.NewHeaderExtensionInterceptor()`，在出站 RTP 包上写入
+transport-wide-cc 序号；顺序必须在 defaults 之前（`interceptor.Chain` 中
+后注册者包装先注册者，所以 header extension 会先写入扩展，再由 cc pacer 的
+`OnSent` 读取）。`cc.enable=false` 分支不变。
+回归测试 `plugin/webrtc/pkg/util_test.go` 钉住链上为 cc + header extension 两个
+拦截器、位置分别为 `ai[0]`/`ai[1]`，且 `ai[2:]` 与无 cc 链逐项一致。
+
+#### 4.1.2 复测方法
+
+服务端按默认配置启动（**不设** `WEBRTC_CC_ENABLE`，`webrtc.cc.enable=true`、
+`initialbitrate=2000000`、`minbitrate=300000`、`maxbitrate=20000000`）：
+
+```bash
+cd example/default
+RTSP_TCP_LISTENADDR=:8554 RTSP_TCP_LISTENADDRTLS=:8322 go run -tags sqlite main.go
+```
+
+```bash
+cd example/webrtc-2k-perf
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix ./rtsp-pull.sh start
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix PLAY_SECONDS=60 ./rtsp-pull.sh play
+```
+
+#### 4.1.3 复测结果
+
+**默认 GCC 下 60s 播放（`OUT_DIR=/tmp/webrtc-2k-rtsp-fix`）：**
+
+| 运行 | avgFps | 解码帧/span | 丢帧 | NACK | PLI | jitter buffer avg | 断言 |
+|---|---|---|---|---|---|---|---|
+| 首跑（`summary.json`，start 后立即测量） | 17.91 | 985 / 55s | 273 | 0 | 19 | 559 ms | FAIL（冷启动，见 §4.1.4） |
+| **复跑 1（`summary-2.json`）** | **23.65** | 1301 / 55s | 32 | 0 | 8 | 240 ms | **PASS** |
+| 复跑 2（`summary-3.json`） | 22.71 | 1249 / 55s | 100 | 0 | 8 | 388 ms | FAIL |
+| 复跑 3（`summary-4.json`） | 23.24 | 1278 / 55s | 63 | 0 | 7 | 412 ms | FAIL |
+| 复跑 4（`summary-5.json`） | 23.15 | 1273 / 55s | 71 | 0 | 7 | 400 ms | FAIL |
+| 同机 A/B：`WEBRTC_CC_ENABLE=false` | 24.00 | 1320 / 55s | 0 | 0 | 0 | 8.4 ms | PASS |
+
+- 所有默认 GCC 运行的 `packetsLost` 均为 **0**，RTT 0.001–0.002s，接收码率稳态
+  **9.9–10.1 Mbps**（与 cc-off 口径一致）。
+- 以 `t ≥ 25s` 计算稳态帧率：24.00 / 23.83 / 24.14 / 24.09 fps —— **默认 GCC 稳态满帧**。
+- **日志检查（必须两项都为 0）：**
+
+  ```bash
+  grep -c "missing transport layer cc header extension" /tmp/webrtc-2k-rtsp-fix/server.log   # 0
+  grep -c "pacer ERROR" /tmp/webrtc-2k-rtsp-fix/server.log                                   # 0
+  ```
+
+  修复前同一用例单次累计 **73,327** 条；修复后默认 GCC 下累计 **0**，帧可正常解码。
+
+**默认 GCC 下断流重连（`./rtsp-pull.sh reconnect`）：**
+
+| 指标 | 值 |
+|---|---|
+| 源流消失（kill 后） | **217 ms** |
+| 断流总时长（含刻意 5s） | 5.116 s |
+| 源流重新出现 | **0.29 s**（自重启起） |
+| 拉流可用 | **0.38 s**（自重启起，代理始终 `Pulling`） |
+| 恢复后 25s 复播 | 23.0 fps（460 帧 / 20s），丢帧 37，NACK 0，PLI 6，RTT 1ms |
+
+复播 23.0 fps 同样是源重启后的冷启动窗口（见 §4.1.4）；稳态仍在 24 fps 附近。
+
+#### 4.1.4 遗留现象：默认 GCC 的冷启动帧率下探
+
+- 默认 `initialbitrate=2000000`，而 2K@24 源约 **10 Mbps**。新订阅建立时 GCC pacer
+  以 2 Mbps 起步，编码器却立即按 10 Mbps 出帧 → pacer 队列在最初 ~10–20s 积压，
+  浏览器 jitter buffer 延迟升到 0.2–0.7s、触发 PLI 与丢帧；GCC 升到 ~10 Mbps 后
+  （每秒采样显示 10s 内已到 10 Mbps）队列排空，**t≥25s 稳态 24.0 fps、0 丢包**。
+- cc-off A/B 无 pacer，故 60s 全程 24.00 fps、jitter buffer 8.4ms、0 PLI。
+- 这是**配置初值**问题而非 header extension 修复问题；本次未改默认值（Task 2 已把
+  `initialbitrate=2000000` 写进计划与单测）。生产 2K 场景建议把
+  `webrtc.cc.initialbitrate` 提到接近源码率（如 8–10 Mbps），或把会话前 ~20s
+  视为预热窗口；计划中的 10 分钟长稳测试会摊薄该窗口。
+
+## 5. 结果：单路 RTSP 拉流 2K 60s（首次测量，cc-off 隔离口径）
+
+> 本节是首次测量时为隔离 §4 阻断项而用 `WEBRTC_CC_ENABLE=false` 得到的数据。
+> **默认 GCC 配置的复测数据（Fix round 1）以 §4.1.3 为准。**
 
 ### 5.1 WebRTC summary（原始 JSON）
 
@@ -207,7 +298,9 @@ curl -s -X POST http://127.0.0.1:8080/api/proxy/pull/add \
 - 播放结束时浏览器主动断开产生正常的 `rtcp read error ... EOF` / `unsubscribe` WRN。
 - 日志中 `publish.delayclosetimeout` 等与 RTSP 拉流无冲突。
 
-## 6. 结果：断流重连（A10 可用性口径）
+## 6. 结果：断流重连（A10 可用性口径，cc-off 首次测量）
+
+> 默认 GCC 配置下的重连复测见 §4.1.3（0.38s 拉流可用，217ms 源流消失，结果一致）。
 
 执行 `./rtsp-pull.sh reconnect`（杀源 → 等 5s → 重启同一 `live/source2k`）：
 
@@ -243,9 +336,9 @@ curl -s -X POST http://127.0.0.1:8080/api/proxy/pull/add \
 | 项 | 本机限制 | Linux 真机命令 |
 |---|---|---|
 | **10 路并发**（Task 5 Step 3） | macOS 无 `tc`；单路 x264 已占约 0.5 核，10 路源编码会先压垮本机 | 见下方 A |
-| **10 分钟长稳**（Step 2） | 只做了 60s | `PLAY_SECONDS=600 OUT_DIR=/tmp/rtsp-600 ./rtsp-pull.sh play` |
+| **10 分钟长稳**（Step 2） | 只做了 60s；默认 GCC 冷启动窗口（§4.1.4）需靠长窗口摊薄 | `PLAY_SECONDS=600 OUT_DIR=/tmp/rtsp-600 ./rtsp-pull.sh play` |
 | **真实摄像头 / 真实 GOP** | 源是同进程 `testsrc2`，GOP=48 固定，无音频/无网络抖动 | `START_SOURCE=0 RTSP_URL='rtsp://user:pass@cam:554/stream' STREAM_PATH=live/cam2k ./rtsp-pull.sh start` 后 `PLAY_SECONDS=600 ./rtsp-pull.sh play` |
-| **默认配置（GCC 开启）播放** | 当前 HEAD 阻断，见 §4 | 修复后不设 `WEBRTC_CC_ENABLE`，重跑 `start` + `play` |
+| **默认 GCC 冷启动帧率** | 60s 窗口含 2 Mbps→10 Mbps 爬升期，avgFps 22.7–23.65；稳态已 24.0 | 调高 `webrtc.cc.initialbitrate`（如 8–10 Mbps）后复跑 `play`，或接受前 ~20s 预热 |
 | **观众跨断流连续播放** | 本脚本只做恢复后复播 | 后台 `PLAY_SECONDS=120 ./rtsp-pull.sh play &`，20s 后执行 `./rtsp-pull.sh reconnect`，观察播放端是否自行恢复 |
 | **弱网（1%/3% 丢包、RTT 50/150ms）** | macOS 无 `tc netem` | Linux 上用 `tc qdisc add dev lo root netem loss 1%` 后复跑 `play` |
 
@@ -281,31 +374,37 @@ done
 ## 8. 复现命令（本次实际执行）
 
 ```bash
-# 0) 构建并启动（GCC 关闭口径）
+# 0) 构建并启动（默认 GCC 配置，Fix round 1 复测口径；不设 WEBRTC_CC_ENABLE）
 cd example/default
-go build -tags sqlite -o /tmp/webrtc-2k-rtsp/m7s-server .
-RTSP_TCP_LISTENADDR=:8554 RTSP_TCP_LISTENADDRTLS=:8322 WEBRTC_CC_ENABLE=false \
-  /tmp/webrtc-2k-rtsp/m7s-server -c config.yaml
+RTSP_TCP_LISTENADDR=:8554 RTSP_TCP_LISTENADDRTLS=:8322 go run -tags sqlite main.go
 
 # 1) 起源 + 拉流代理
 cd example/webrtc-2k-perf
-./rtsp-pull.sh start
-./rtsp-pull.sh status
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix ./rtsp-pull.sh start
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix ./rtsp-pull.sh status
 
 # 2) 60s 播放 + 断言
-./rtsp-pull.sh play
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix PLAY_SECONDS=60 ./rtsp-pull.sh play
 
 # 3) 断流重连
-./rtsp-pull.sh reconnect
-PLAY_SECONDS=25 \
-  SUMMARY_OUT=/tmp/webrtc-2k-rtsp/summary-post-reconnect.json \
-  SAMPLES_OUT=/tmp/webrtc-2k-rtsp/samples-post-reconnect.jsonl \
-  CONSOLE_LOG=/tmp/webrtc-2k-rtsp/console-post-reconnect.log \
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix ./rtsp-pull.sh reconnect
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix PLAY_SECONDS=25 \
+  SUMMARY_OUT=/tmp/webrtc-2k-rtsp-fix/summary-post-reconnect.json \
+  SAMPLES_OUT=/tmp/webrtc-2k-rtsp-fix/samples-post-reconnect.jsonl \
+  CONSOLE_LOG=/tmp/webrtc-2k-rtsp-fix/console-post-reconnect.log \
   ./rtsp-pull.sh play
 
-# 4) 清理
-./rtsp-pull.sh stop
+# 4) 日志检查（都必须为 0）
+grep -c "missing transport layer cc header extension" /tmp/webrtc-2k-rtsp-fix/server.log
+grep -c "pacer ERROR" /tmp/webrtc-2k-rtsp-fix/server.log
+
+# 5) 清理
+OUT_DIR=/tmp/webrtc-2k-rtsp-fix ./rtsp-pull.sh stop
 ```
+
+> 首次测量时（§4 阻断未修复）用过的隔离命令：
+> `WEBRTC_CC_ENABLE=false RTSP_TCP_LISTENADDR=:8554 RTSP_TCP_LISTENADDRTLS=:8322 go run -tags sqlite main.go`。
+> 修复后无需该覆盖。
 
 脚本行为要点：
 - `start` 会先清理同 `streamPath` 的旧代理；若上次 `start` 的推流进程仍在，会复用其 PID；
@@ -319,17 +418,19 @@ PLAY_SECONDS=25 \
 
 未提交的原始数据（本机 `/tmp`）：
 
-- `/tmp/webrtc-2k-rtsp/summary.json`、`samples.jsonl`、`console.log`：60s 主测量；
-- `/tmp/webrtc-2k-rtsp/summary-post-reconnect.json`、`samples-post-reconnect.jsonl`：恢复后 25s 复播；
-- `/tmp/webrtc-2k-rtsp/reconnect-result.json`：重连计时；
-- `/tmp/webrtc-2k-rtsp/server-cpu.csv`、`streamlist.jsonl`：CPU/RSS 与流状态采样；
-- `/tmp/webrtc-2k-rtsp/server-gcc-on-repro.log`、`gcc-on/console.log`、`gcc-on/direct-console.log`：
-  GCC 默认开启的失败证据；
-- `/tmp/webrtc-2k-rtsp/sdp-dump.log`：offer/answer SDP（含 transport-cc extmap）；
-- `/tmp/webrtc-2k-rtsp/server-gcc-off.log`、`server-final.log`：GCC 关闭运行日志。
+- `/tmp/webrtc-2k-rtsp/`：首次测量（cc-off 口径）的 summary/samples/console、
+  重连计时、CPU/RSS、GCC 开启的失败证据日志、SDP dump；
+- `/tmp/webrtc-2k-rtsp-fix/`（Fix round 1，默认 GCC 复测）：
+  - `summary.json` / `summary-2.json` … `summary-5.json`、`samples*.jsonl`、`console*.log`：
+    5 次 60s 运行（首次 + 4 次复跑）；
+  - `server.log`：默认 GCC 服务端日志（两项错误计数均为 0）；
+  - `reconnect-result.json`、`summary-post-reconnect.json`、`samples-post-reconnect.jsonl`：
+    默认 GCC 的重连与恢复后 25s 复播；
+  - `summary-cc-off-ab.json`、`server-cc-off.log`：同机 A/B（cc-off，24.00 fps 对照）。
 
 清理：已执行 `./rtsp-pull.sh stop`（代理已从 `/api/proxy/pull/list` 消失），
 停止 ffmpeg/Playwright/服务端进程，删除 `example/default` 下的 `m7s.db`、`logs/`、
 `fatal/`、`pending_uploads/`、`shutdown.sh` 及仓库根目录误生成的同类文件；
-`git status` 仅显示本任务新增的 `example/webrtc-2k-perf/rtsp-pull.sh` 与本报告。
-未修改任何 Go 代码、`go.mod`、`docs/` 或 Task 0 脚本。
+`git status` 仅显示本任务的报告修改。
+Fix round 1 修改了 `plugin/webrtc/pkg/util.go` 与 `plugin/webrtc/pkg/util_test.go`
+（提交 `170fe160`），未修改 `go.mod`、`docs/` 或 Task 0 脚本。
