@@ -191,25 +191,15 @@ func (IO *MultipleConnection) Start() (err error) {
 }
 
 // requestKeyFrame 代表本 Publisher 向上游发送一次 PLI（关键帧请求）。
-// 观众侧的 PLI/严重丢包都走这里，由 pliThrottler 统一限速，
-// 因此 N 个观众同时请求也只会按 MinInterval/Fallback 预算发出 PLI。
+// 观众侧的 PLI/严重丢包转发都走这里，由 pliThrottler 统一限速，
+// 因此 N 个观众同时请求也只会按 MinInterval 预算发出 PLI。
+//
+// 生产路径一律使用 Allow(now, now) 的严格窗口：只剩 500ms 硬约束，
+// Fallback 分支不可达。设计决策：brief 的 PLIThrottler.Allow 保留 fallback
+// 语义（接口与测试按 brief 固定），但“距上次关键帧已超过 5s”是调用方
+// （Receive 的逐包无 IDR 检查）的触发条件，不能成为绕过硬窗口的旁路——
+// 否则恶意/高频观众可在无 IDR 期间突破“同一 Publisher 500ms 内最多一次”。
 func (IO *MultipleConnection) requestKeyFrame(now time.Time) {
-	if IO == nil || IO.PeerConnection == nil {
-		return
-	}
-	lastKeyFrame := time.Unix(0, IO.lastKeyFrame.Load())
-	if !IO.pliThrottler.Allow(now, lastKeyFrame) {
-		return
-	}
-	IO.sendPLI()
-}
-
-// requestFallbackKeyFrame 是推流端“长时间无 IDR”兜底检测的入口。
-// 与 requestKeyFrame 的区别：它只受 MinInterval 硬窗口约束，不允许
-// Fallback 分支绕过窗口（传入 now 作为 lastKeyFrame 即禁用该分支）。
-// 该入口每个 RTP 包都会评估，若 Fallback 生效，PLI 速率会随包速率放大成
-// 风暴（约每秒上千次），违背“同一 Publisher 500ms 内最多一次”的硬约束。
-func (IO *MultipleConnection) requestFallbackKeyFrame(now time.Time) {
 	if IO == nil || IO.PeerConnection == nil {
 		return
 	}
@@ -217,6 +207,13 @@ func (IO *MultipleConnection) requestFallbackKeyFrame(now time.Time) {
 		return
 	}
 	IO.sendPLI()
+}
+
+// requestFallbackKeyFrame 是推流端“长时间无 IDR”兜底检测的入口，
+// 与观众驱动路径共用 requestKeyFrame 的严格 500ms 窗口：是否该要关键帧
+// 由 Receive 的逐包检查决定，节流器只负责预算。
+func (IO *MultipleConnection) requestFallbackKeyFrame(now time.Time) {
+	IO.requestKeyFrame(now)
 }
 
 // sendPLI 向推流端发送一次已被节流器放行的关键帧请求。

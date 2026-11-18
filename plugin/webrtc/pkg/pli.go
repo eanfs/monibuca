@@ -48,6 +48,12 @@ func NewPLIThrottler(minInterval, fallback time.Duration) *PLIThrottler {
 //  2. 否则若 Fallback > 0 且距上次关键帧已超过 Fallback → 放行；
 //  3. 其他情况拒绝。
 //
+// Fallback 分支仅为 brief 的接口/测试语义保留：生产中的所有请求路径
+// （观众 PLI / 严重丢包转发、逐包无 IDR 兜底）都以 Allow(now, now) 调用，
+// 只受 MinInterval 约束；5s“无 IDR”是调用方的触发条件，不是绕过 500ms
+// 硬窗口的旁路。这样保证“同一 Publisher 500ms 内最多一次 PLI”的不变量
+// 不会被观众数量或请求频率放大。
+//
 // 接收者为 nil 时视为“未启用节流”，直接放行（Optional）。
 func (p *PLIThrottler) Allow(now, lastKeyFrame time.Time) bool {
 	if p == nil {

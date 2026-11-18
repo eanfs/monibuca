@@ -51,9 +51,26 @@ func TestPLIThrottlerFirstRequest(t *testing.T) {
 
 // TestPLIThrottlerConcurrentViewers 验证节流预算按 Publisher 共享：
 // N 个观众并发请求，窗口内只允许一次（Ruling 7：不许按观众放大 PLI 速率）。
+//
+// 场景取生产最坏情况：Fallback=5s 且 lastKeyFrame 已陈旧（>5s 没见到 IDR），
+// 若调用方误用 Allow(now, lastKeyFrame)，Fallback 分支会让每次请求都绕过
+// 最小间隔；生产路径必须用严格调用 Allow(now, now)，只保留 500ms 硬窗口，
+// 即使长期无关键帧也只放行一次。
 func TestPLIThrottlerConcurrentViewers(t *testing.T) {
 	now := time.Unix(0, 0)
-	p := NewPLIThrottler(time.Hour, 0) // Fallback=0：只保留最小间隔预算
+	staleLastKeyFrame := now.Add(-10 * time.Second) // 兜底条件已成立（> Fallback）
+
+	// 对照：brief 的 Allow(now, lastKeyFrame) 语义在同样状态下会放行兜底。
+	control := NewPLIThrottler(time.Hour, 5*time.Second)
+	if !control.Allow(now, now) {
+		t.Fatal("control: first request must pass")
+	}
+	if !control.Allow(now.Add(time.Second), staleLastKeyFrame) {
+		t.Fatal("control: fallback must fire with stale keyframe (brief semantics)")
+	}
+
+	// 生产路径：Allow(now, now) 使 Fallback 分支不可达。
+	p := NewPLIThrottler(time.Hour, 5*time.Second)
 	var allowed atomic.Int32
 	var wg sync.WaitGroup
 	for range 32 {
