@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	task "github.com/eanfs/gotask"
@@ -67,6 +68,43 @@ type MultipleConnection struct {
 	estimatorMu        sync.Mutex
 	bandwidthEstimator cc.BandwidthEstimator
 	estimatorBound     bool
+
+	// 以下 PLI 状态只对 WebRTC 推流端（Publisher 非空）有意义，
+	// 由该 Publisher 的所有观众共享，确保 PLI 速率不随观众数放大。
+	pliThrottler *PLIThrottler
+	// lastKeyFrame 是最近一次成功写入 Publisher 的 IDR 帧时间（UnixNano）。
+	lastKeyFrame atomic.Int64
+	// videoSSRC 是推流端视频轨道的 SSRC，用于填 PLI 的 MediaSSRC。
+	videoSSRC atomic.Uint32
+}
+
+// publisherKeyFrameRequesters 记录每个 WebRTC 推流 Publisher 对应的 ingest 连接。
+// 观众的 PLI/严重丢包请求经此转发给推流端；非 WebRTC Publisher 不会有条目，
+// 查不到目标时直接跳过（见 pli.go 中 forwardPublisherPLI 的说明）。
+var publisherKeyFrameRequesters sync.Map // map[*m7s.Publisher]*MultipleConnection
+
+func registerPublisherKeyFrameRequester(pub *m7s.Publisher, conn *MultipleConnection) {
+	if pub == nil || conn == nil {
+		return
+	}
+	publisherKeyFrameRequesters.Store(pub, conn)
+}
+
+func unregisterPublisherKeyFrameRequester(pub *m7s.Publisher) {
+	if pub == nil {
+		return
+	}
+	publisherKeyFrameRequesters.Delete(pub)
+}
+
+func lookupPublisherKeyFrameRequester(pub *m7s.Publisher) *MultipleConnection {
+	if pub == nil {
+		return nil
+	}
+	if v, ok := publisherKeyFrameRequesters.Load(pub); ok {
+		return v.(*MultipleConnection)
+	}
+	return nil
 }
 
 // OnBandwidthEstimate 接收本连接专属的带宽估计器。
@@ -107,6 +145,12 @@ func (IO *MultipleConnection) Start() (err error) {
 	if IO.metrics == nil {
 		IO.metrics = &StreamMetrics{}
 	}
+	IO.pliThrottler = NewPLIThrottler(defaultPLIMinInterval, defaultPLIFallback)
+	if IO.Publisher != nil {
+		// 只有 WebRTC 推流端能向源端发 PLI；注册后该 Publisher 的所有观众
+		// 共享本连接的节流预算（Ruling 7）。
+		registerPublisherKeyFrameRequester(IO.Publisher, IO)
+	}
 	IO.bindEstimator()
 	if IO.Publisher != nil {
 		IO.Using(IO.Publisher)
@@ -144,6 +188,47 @@ func (IO *MultipleConnection) Start() (err error) {
 		}
 	})
 	return
+}
+
+// requestKeyFrame 代表本 Publisher 向上游发送一次 PLI（关键帧请求）。
+// 观众侧的 PLI/严重丢包都走这里，由 pliThrottler 统一限速，
+// 因此 N 个观众同时请求也只会按 MinInterval/Fallback 预算发出 PLI。
+func (IO *MultipleConnection) requestKeyFrame(now time.Time) {
+	if IO == nil || IO.PeerConnection == nil {
+		return
+	}
+	lastKeyFrame := time.Unix(0, IO.lastKeyFrame.Load())
+	if !IO.pliThrottler.Allow(now, lastKeyFrame) {
+		return
+	}
+	IO.sendPLI()
+}
+
+// requestFallbackKeyFrame 是推流端“长时间无 IDR”兜底检测的入口。
+// 与 requestKeyFrame 的区别：它只受 MinInterval 硬窗口约束，不允许
+// Fallback 分支绕过窗口（传入 now 作为 lastKeyFrame 即禁用该分支）。
+// 该入口每个 RTP 包都会评估，若 Fallback 生效，PLI 速率会随包速率放大成
+// 风暴（约每秒上千次），违背“同一 Publisher 500ms 内最多一次”的硬约束。
+func (IO *MultipleConnection) requestFallbackKeyFrame(now time.Time) {
+	if IO == nil || IO.PeerConnection == nil {
+		return
+	}
+	if !IO.pliThrottler.Allow(now, now) {
+		return
+	}
+	IO.sendPLI()
+}
+
+// sendPLI 向推流端发送一次已被节流器放行的关键帧请求。
+func (IO *MultipleConnection) sendPLI() {
+	pli := &rtcp.PictureLossIndication{MediaSSRC: IO.videoSSRC.Load()}
+	if err := IO.WriteRTCP([]rtcp.Packet{pli}); err != nil {
+		IO.Debug("write PLI to publisher failed", "error", err)
+		return
+	}
+	if IO.metrics != nil {
+		IO.metrics.PLIRequests.Add(1)
+	}
 }
 
 func (IO *MultipleConnection) Receive() {
@@ -223,7 +308,7 @@ func (IO *MultipleConnection) Receive() {
 			if !puber.PubVideo {
 				return
 			}
-			var lastPLISent time.Time
+			IO.videoSSRC.Store(uint32(track.SSRC()))
 			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
 			writer := m7s.NewPublishVideoWriter[*mrtp.VideoFrame](puber, mem)
@@ -247,12 +332,10 @@ func (IO *MultipleConnection) Receive() {
 			}
 			packet := writer.VideoFrame.Packets.GetNextPointer()
 			for {
-				if time.Since(lastPLISent) > IO.PLI {
-					if rtcpErr := IO.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); rtcpErr != nil {
-						puber.Error("writeRTCP", "error", rtcpErr)
-						return
-					}
-					lastPLISent = time.Now()
+				// 兜底：超过 keyFrameWaitLimit 没有新的 IDR 时主动请求关键帧。
+				// 走兜底入口，实际发送频率被硬限制在 500ms 一次。
+				if time.Since(time.Unix(0, IO.lastKeyFrame.Load())) >= keyFrameWaitLimit {
+					IO.requestFallbackKeyFrame(time.Now())
 				}
 
 				buf := mem.Malloc(mrtp.ReceiveMTU)
@@ -280,9 +363,15 @@ func (IO *MultipleConnection) Receive() {
 					packet = writer.VideoFrame.Packets.GetNextPointer()
 				} else {
 					newFrameFirstPacket := *packet
+					// IDR 由 NextVideo 内部的 Demux 置位，因此先捕获帧引用，
+					// 成功后再读取；调用后 writer.VideoFrame 已切换到下一帧。
+					completed := writer.VideoFrame
 					writer.VideoFrame.Packets.Reduce()
 					if err = writer.NextVideo(); err != nil {
 						return
+					}
+					if completed.IDR {
+						IO.lastKeyFrame.Store(time.Now().UnixNano())
 					}
 					frame := writer.VideoFrame
 					frame.AddRecycleBytes(buf)
@@ -383,9 +472,15 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 						for _, pp := range p {
 							switch pp := pp.(type) {
 							case *rtcp.PictureLossIndication:
-								// Task 4: PLI 节流/关键帧请求
+								// 观众丢包后请求关键帧：转发给该流对应的 WebRTC 推流端，
+								// 由推流端的共享节流器统一限速。
+								forwardPublisherPLI(IO.Subscriber, time.Now())
 							case *rtcp.ReceiverReport:
 								IO.metrics.ObserveReceiverReport(pp)
+								// 严重丢包（>10%）视同 PLI，避免等待观众显式发 PLI。
+								if isSevereLoss(pp) {
+									forwardPublisherPLI(IO.Subscriber, time.Now())
+								}
 							}
 						}
 					}
@@ -568,6 +663,9 @@ func (IO *MultipleConnection) Send() (err error) {
 }
 
 func (IO *MultipleConnection) Dispose() {
+	if IO.Publisher != nil {
+		unregisterPublisherKeyFrameRequester(IO.Publisher)
+	}
 	IO.PeerConnection.Close()
 }
 
@@ -629,9 +727,14 @@ func (r *RemoteStream) Go() (err error) {
 			} else {
 				if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
 					for _, pp := range p {
-						switch pp.(type) {
+						switch pp := pp.(type) {
 						case *rtcp.PictureLossIndication:
-							// fmt.Println("PictureLossIndication")
+							// SingleConnection 场景没有 metrics，只做 PLI 转发。
+							forwardPublisherPLI(r.suber, time.Now())
+						case *rtcp.ReceiverReport:
+							if isSevereLoss(pp) {
+								forwardPublisherPLI(r.suber, time.Now())
+							}
 						}
 					}
 				}
