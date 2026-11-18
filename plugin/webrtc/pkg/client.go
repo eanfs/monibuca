@@ -24,7 +24,7 @@ type Client struct {
 
 func (c *Client) Start() (err error) {
 	var api *API
-	api, err = CreateAPI(nil, SettingEngine{})
+	api, err = CreateAPI(nil, SettingEngine{}, CCConfig{}, nil)
 	if err != nil {
 		return errors.Join(err, errors.New("create api failed"))
 	}

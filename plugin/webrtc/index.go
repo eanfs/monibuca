@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/logging"
 	"github.com/pion/sdp/v3"
 
@@ -38,6 +39,7 @@ type WebRTCPlugin struct {
 	ICEServers []ICEServer   `desc:"ice服务器配置"`
 	Port       string        `default:"tcp:9000" desc:"监听端口"`
 	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"` // 视频流丢包后，发送PLI请求
+	CC         CCConfig      `yaml:"cc" desc:"GCC发送端拥塞控制配置"` // 拥塞控制配置，cc.enable=false 回退到旧行为
 	EnableDC   bool          `desc:"是否启用DataChannel"`        // 在不支持编码格式的情况下是否启用DataChannel传输
 	MimeType   []string      `desc:"MimeType过滤列表，为空则不过滤"`    // MimeType过滤列表，支持的格式如：video/H264, audio/opus
 	s          SettingEngine
@@ -131,7 +133,7 @@ func (p *WebRTCPlugin) CreatePC(sd SessionDescription, conf Configuration) (pc *
 		return
 	}
 	var api *API
-	api, err = CreateAPI(ssd, p.s)
+	api, err = CreateAPI(ssd, p.s, p.CC, p.onBandwidthEstimate)
 	if err != nil {
 		return
 	}
@@ -140,6 +142,15 @@ func (p *WebRTCPlugin) CreatePC(sd SessionDescription, conf Configuration) (pc *
 		err = pc.SetRemoteDescription(sd)
 	}
 	return
+}
+
+// onBandwidthEstimate 接收每个 PeerConnection 的带宽估计器。
+// 本任务先做安全空实现，按连接的指标接入由后续任务完成。
+func (p *WebRTCPlugin) onBandwidthEstimate(estimator cc.BandwidthEstimator) {
+	if estimator == nil {
+		return
+	}
+	p.Debug("webrtc bandwidth estimator created", "targetBitrate", estimator.GetTargetBitrate())
 }
 
 func (p *WebRTCPlugin) Start() (err error) {

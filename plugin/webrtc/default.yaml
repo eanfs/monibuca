@@ -3,3 +3,8 @@ mimetype:
   - video/H265
   - audio/PCMA
   - audio/PCMU
+cc:
+  enable: true
+  initialbitrate: 2000000
+  minbitrate: 300000
+  maxbitrate: 20000000
