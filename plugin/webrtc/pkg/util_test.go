@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/mcuadros/go-defaults"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	pionwebrtc "github.com/pion/webrtc/v4"
@@ -128,26 +129,67 @@ func TestCreateInterceptorRegistryCCFirst(t *testing.T) {
 }
 
 func TestCreateInterceptorRegistryCCEstimatorCallback(t *testing.T) {
-	m := &pionwebrtc.MediaEngine{}
-	registerLegacyCodecs(m)
+	tests := []struct {
+		name        string
+		config      CCConfig
+		wantBitrate int
+	}{
+		{
+			name:        "default config uses 2Mbps initial bitrate",
+			config:      CCConfig{Enable: true},
+			wantBitrate: 2_000_000,
+		},
+		{
+			name:        "custom initial bitrate reaches gcc",
+			config:      CCConfig{Enable: true, InitialBitrate: 4_000_000, MinBitrate: 1_000_000, MaxBitrate: 8_000_000},
+			wantBitrate: 4_000_000,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &pionwebrtc.MediaEngine{}
+			registerLegacyCodecs(m)
 
-	var got cc.BandwidthEstimator
-	registry, err := createInterceptorRegistry(m, CCConfig{Enable: true}, func(e cc.BandwidthEstimator) {
-		got = e
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	built, err := registry.Build("test-pc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer built.Close()
+			var got cc.BandwidthEstimator
+			registry, err := createInterceptorRegistry(m, tt.config, func(e cc.BandwidthEstimator) {
+				got = e
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			built, err := registry.Build("test-pc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer built.Close()
 
-	if got == nil {
-		t.Fatal("onEstimator callback was not invoked when the peer connection chain was built")
+			if got == nil {
+				t.Fatal("onEstimator callback was not invoked when the peer connection chain was built")
+			}
+			// 必须精确等于配置的初始码率：pion gcc 的默认 latestBitrate 是 10000，
+			// 只断言 > 0 无法区分“配置生效”与“配置被丢弃、退回默认值”。
+			if bitrate := got.GetTargetBitrate(); bitrate != tt.wantBitrate {
+				t.Fatalf("estimator target bitrate = %d, want %d", bitrate, tt.wantBitrate)
+			}
+		})
 	}
-	if bitrate := got.GetTargetBitrate(); bitrate <= 0 {
-		t.Fatalf("estimator target bitrate = %d, want > 0", bitrate)
+}
+
+// TestCCConfigStructTags 钉住 CCConfig 的 default struct tag，
+// 防止默认值只存在于常量/默认 yaml 中而配置系统解析出零值。
+func TestCCConfigStructTags(t *testing.T) {
+	var cfg CCConfig
+	defaults.SetDefaults(&cfg)
+	if !cfg.Enable {
+		t.Error("default enable = false, want true")
+	}
+	if cfg.InitialBitrate != 2_000_000 {
+		t.Errorf("default initialbitrate = %d, want 2000000", cfg.InitialBitrate)
+	}
+	if cfg.MinBitrate != 300_000 {
+		t.Errorf("default minbitrate = %d, want 300000", cfg.MinBitrate)
+	}
+	if cfg.MaxBitrate != 20_000_000 {
+		t.Errorf("default maxbitrate = %d, want 20000000", cfg.MaxBitrate)
 	}
 }
