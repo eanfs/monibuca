@@ -69,8 +69,10 @@ AUDIO_RTSP_URL="${AUDIO_RTSP_URL:-rtsp://127.0.0.1:8554/live/source2k-audio}"
 RECORD_SECONDS="${RECORD_SECONDS:-25}"
 AUDIO_RECORD_SECONDS="${AUDIO_RECORD_SECONDS:-18}"
 FRAGMENT="${FRAGMENT:-1m}"
-# 175s：<3 个完整分片边界（60/120/180），停止时正好得到 3 个文件
-# （60s/60s/55s）。录到 190s 会在 180s 处再切一片，得到 4 个文件。
+# 175s：分片按媒体时间在 60/120/180s 边界轮转，175s（<180s）停止时恰好 3 个文件
+# （实测约 60.3s/60.0s/54.8s，最后一片是手动停止的残余）。190s 会跨过 180s 边界
+# 得到 4 个文件，不满足“3 个文件”的验收口径；任务简报的“3 分钟”长录由该
+# 3 文件/175s sanity run 代表，>3 分钟录制仍属 PENDING（见 report-record.md §9）。
 FRAGMENT_SECONDS="${FRAGMENT_SECONDS:-175}"
 STOP_SOURCE_SECONDS="${STOP_SOURCE_SECONDS:-10}"
 STOP_SOURCE_WAIT="${STOP_SOURCE_WAIT:-5}"
@@ -82,6 +84,9 @@ OUT_DIR="${OUT_DIR:-/tmp/webrtc-2k-record/check}"
 STORAGE_ROOT="${STORAGE_ROOT:-/tmp/webrtc-2k-record/local}"
 RTSP_STATE_DIR="$OUT_DIR/rtsp-pull"
 AUDIO_STATE_DIR="$OUT_DIR/rtsp-pull-audio"
+# 本脚本新建的拉流代理 ID（cleanup 只删这些，不按 streamPath 批量删除别人的代理）
+RTSP_PROXY_IDS_FILE="$OUT_DIR/created-proxy-ids-rtsp.txt"
+AUDIO_PROXY_IDS_FILE="$OUT_DIR/created-proxy-ids-audio.txt"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-90}"
 POLL_INTERVAL="${POLL_INTERVAL:-0.5}"
 RTSP_SCRIPT="${RTSP_SCRIPT:-$SCRIPT_DIR/rtsp-pull.sh}"
@@ -137,7 +142,8 @@ api_post_json_check() {
 
 api_ok() {
   local code
-  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$API_BASE/api/stream/list" 2>/dev/null || true)
+  # 与其它 API 调用一致，走 API_TOKEN 鉴权（admin.enablelogin 时裸 curl 会 401/403）
+  code=$(api_curl -o /dev/null -w '%{http_code}' --max-time 5 "$API_BASE/api/stream/list" 2>/dev/null || true)
   [ "$code" = "200" ]
 }
 
@@ -281,6 +287,28 @@ resolve_local_path() {
   esac
 }
 
+# 可移植的文件大小（字节）：GNU stat（Linux）→ BSD/macOS stat → wc -c。
+# 脚本在 macOS 开发机与 Linux 真机都要能跑，不能用单一 stat 方言。
+file_size() {
+  local file="$1"
+  stat -c '%s' "$file" 2>/dev/null \
+    || stat -f '%z' "$file" 2>/dev/null \
+    || wc -c < "$file" | tr -d ' '
+}
+
+# 录制文件名由录制器生成，形如 2026-11-18-21-31-13_785563000.mp4（固定宽度，字典序=时间序）。
+# /mp4/api/list 的返回顺序是“最新在前”（实测 21:33 → 21:32 → 21:31），不能拿来判断
+# 分片先后或“哪一片是手动停止的残余”；统一按 basename 排序成时间顺序后再分配角色。
+sort_paths_chronological() {
+  python3 -c '
+import os, sys
+rows = [line.strip() for line in sys.stdin if line.strip()]
+rows.sort(key=lambda p: os.path.basename(p))
+if rows:
+    sys.stdout.write("\n".join(rows) + "\n")
+'
+}
+
 # 等录制收尾：该前缀的记录都已写入时长（DB duration>0，表示 trailer/入库完成）、
 # 文件存在，且大小连续两次采样不变。仅看文件大小会在 trailer 写入前提前返回。
 # $3 可选：期望的文件数（分片录制用来避免把尚未出现的分片当成全部）。
@@ -303,7 +331,7 @@ wait_record_files() {
           all_ready=0
           break
         fi
-        sz=$(stat -f '%z' "$abs" 2>/dev/null || echo 0)
+        sz=$(file_size "$abs" 2>/dev/null || echo 0)
         size_sig="$size_sig$abs:$sz;"
       done <<< "$rows"
       if [ "$all_ready" = "1" ]; then
@@ -358,6 +386,8 @@ ensure_rtsp_ready() {
   fi
   [ -x "$RTSP_SCRIPT" ] || die "未找到可执行脚本 $RTSP_SCRIPT"
   mkdir -p "$RTSP_STATE_DIR"
+  local before_ids
+  before_ids=$(list_proxy_ids_for_stream "$STREAM_PATH")
   log "启动 RTSP 拉流链路：rtsp-pull.sh start（OUT_DIR=${RTSP_STATE_DIR}）"
   OUT_DIR="$RTSP_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
     "$RTSP_SCRIPT" start >"$OUT_DIR/start.log" 2>&1 || {
@@ -365,6 +395,7 @@ ensure_rtsp_ready() {
       tail -n 20 "$OUT_DIR/start.log" >&2 || true
       return 1
     }
+  record_created_proxies "$STREAM_PATH" "$before_ids" "$RTSP_PROXY_IDS_FILE"
   wait_stream "$STREAM_PATH"
 }
 
@@ -402,10 +433,10 @@ state_value() {
   awk -F= -v k="$key" '$1 == k {print $2}' "$state_file" | tail -n 1
 }
 
-# 按 streamPath 精确匹配删除代理（只删匹配项，不碰其它代理）
-remove_proxies_for_stream() {
-  local stream="$1" ids id code
-  ids=$(api_get /api/proxy/pull/list | python3 -c '
+# 列出某 streamPath 下的全部代理 ID（只读，不删除）
+list_proxy_ids_for_stream() {
+  local stream="$1"
+  api_get /api/proxy/pull/list | python3 -c '
 import json, sys
 path = sys.argv[1]
 try:
@@ -420,15 +451,44 @@ for item in data.get("data") or []:
         except (TypeError, ValueError):
             pass
 print(" ".join(str(i) for i in sorted(set(ids)) if i > 0))
-' "$stream")
+' "$stream"
+}
+
+# 记录 start 前后的 ID 差集（= 本脚本新建的代理）。cleanup 只删这些 ID，
+# 不删除同 streamPath 下早已存在的代理（API 列表顺序不可靠，不能按路径批量删）。
+record_created_proxies() {
+  local stream="$1" before="$2" out_file="$3"
+  local after ids="" id
+  after=$(list_proxy_ids_for_stream "$stream")
+  for id in $after; do
+    case " $before " in
+      *" $id "*) ;;
+      *) ids="$ids $id" ;;
+    esac
+  done
+  ids="${ids# }"
+  if [ -n "$ids" ]; then
+    printf '%s\n' $ids > "$out_file"
+    log "记录本脚本创建的拉流代理：stream=$stream ids=$ids"
+  else
+    warn "未识别到本脚本新建的拉流代理（stream=$stream，start 前=[${before}]，start 后=[${after}]）"
+  fi
+}
+
+# 只删除本脚本记录过的代理 ID
+remove_recorded_proxies() {
+  local file="$1" stream="$2" ids id code
+  [ -f "$file" ] || return 0
+  ids=$(tr ' ' '\n' < "$file" | sed '/^$/d')
   for id in $ids; do
     code=$(api_post_json_check "/api/proxy/pull/remove/$id" '{}' "$OUT_DIR/remove-$id.json")
     if [ "$code" = "200" ]; then
-      log "已删除拉流代理 id=${id}（streamPath=${stream}）"
+      log "已删除本脚本创建的拉流代理 id=${id}（streamPath=${stream}）"
     else
       warn "删除拉流代理 id=$id 失败：HTTP $code $(cat "$OUT_DIR/remove-$id.json" 2>/dev/null || true)"
     fi
   done
+  rm -f "$file"
 }
 
 start_audio_source() {
@@ -473,6 +533,8 @@ ensure_audio_pull_ready() {
   fi
   start_audio_source || return 1
   mkdir -p "$AUDIO_STATE_DIR"
+  local before_ids
+  before_ids=$(list_proxy_ids_for_stream "$AUDIO_STREAM_PATH")
   log "创建音频 RTSP 拉流代理：$AUDIO_RTSP_URL -> $AUDIO_STREAM_PATH"
   START_SOURCE=0 SOURCE_RTMP_URL="$AUDIO_SOURCE_RTMP_URL" RTSP_URL="$AUDIO_RTSP_URL" \
   STREAM_PATH="$AUDIO_STREAM_PATH" OUT_DIR="$AUDIO_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
@@ -481,6 +543,7 @@ ensure_audio_pull_ready() {
       tail -n 20 "$AUDIO_STATE_DIR/start.log" >&2 || true
       return 1
     }
+  record_created_proxies "$AUDIO_STREAM_PATH" "$before_ids" "$AUDIO_PROXY_IDS_FILE"
   wait_stream "$AUDIO_STREAM_PATH"
 }
 
@@ -595,13 +658,18 @@ if a is None:
     print("missing audio stream"); sys.exit(1)
 if a.get("codec_name") != "aac":
     print("audio codec=%s != aac" % a.get("codec_name")); sys.exit(1)
+if str(a.get("sample_rate")) != "48000":
+    print("audio sample_rate=%s != 48000" % a.get("sample_rate")); sys.exit(1)
+if int(a.get("channels") or 0) != 1:
+    print("audio channels=%s != 1" % a.get("channels")); sys.exit(1)
 dur = float(fmt.get("duration") or 0)
 if dur <= 0:
     print("duration=%s <= 0" % fmt.get("duration")); sys.exit(1)
-print("audio=%s sample_rate=%s duration=%.3fs" % (a.get("codec_name"), a.get("sample_rate"), dur))
+print("audio=%s sample_rate=%s channels=%s duration=%.3fs" % (
+    a.get("codec_name"), a.get("sample_rate"), a.get("channels"), dur))
 PY
   then
-    pass "A11 音频：AAC 音轨存在且时长非零（${abs}）"
+    pass "A11 音频：aac 48000Hz 1ch 音轨存在且时长非零（${abs}）"
   else
     fail "A11 音频断言未通过（ffprobe JSON：${probe}）"
   fi
@@ -632,6 +700,9 @@ cmd_fragment() {
     fail "A13 分片：录制停止后未找到完整的文件（filePath=${file_path}）"
     return 1
   fi
+  # 关键：API 列表是最新在前，必须先按文件名（时间戳）排序成时间顺序，
+  # 否则 #1..N 角色会整体反转（曾把最后一片 54.8s 误判成“首片”）。
+  files=$(printf '%s\n' "$files" | sort_paths_chronological)
   count=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
   info "A13 分片文件数=$count files=$(printf '%s ' $files)"
 
@@ -670,14 +741,14 @@ expected = int(sys.argv[1])
 durations = [float(x) for x in sys.argv[2:]]
 if len(durations) != expected:
     sys.exit(1)
+# 入口已按文件名时间排序：durations 为时间顺序（第一片最早，最后一片最晚）。
 full = durations[:-1]
 last = durations[-1]
-# 分片按媒体时间切分；首片会因录制启动时的首个样本时间戳偏移略短（实测 54.5–56.1s），
-# 因此「≈60s」按 48–70s 判定，而不是卡 55–65s。
+# 前 N-1 片是完整分片：分片按媒体时间切分，≈60s，按 48–70s 判定。
 for i, d in enumerate(full):
     if not (48.0 <= d <= 70.0):
         print("fragment #%d duration=%.2fs not ~60s" % (i + 1, d)); sys.exit(1)
-# 最后一片在 190s 处被手动停止，允许 10s..80s（首个分片边界 60s 起算）
+# 最后一片是手动停止时的残余（本次 175s 停止 → 该片只剩约 55s），允许 10s..80s。
 if not (10.0 <= last <= 80.0):
     print("last fragment duration=%.2fs out of [10,80]" % last); sys.exit(1)
 print("durations=" + ",".join("%.2f" % d for d in durations))
@@ -738,7 +809,7 @@ cmd_stop_source() {
   fi
   abs=$(resolve_local_path "$files")
   local size
-  size=$(stat -f '%z' "$abs" 2>/dev/null || echo 0)
+  size=$(file_size "$abs" 2>/dev/null || echo 0)
   probe="$OUT_DIR/probe-stop-source.json"
   if ! probe_json "$abs" > "$probe" 2>"$OUT_DIR/probe-stop-source.err"; then
     fail "停源测试：ffprobe 无法读取 ${abs}（可能是 moov 未收尾）"
@@ -956,9 +1027,10 @@ cmd_whip() {
   count=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
   info "A12 录制文件数=${count}（每文件条目：$(list_records "$WHIP_STREAM_PATH" "$file_path" | tr '\n' ';')）"
 
-  # 取最新一个文件做 ffprobe（其余为录制器拒绝 Opus 后每秒重试产生的碎片）
+  # 取时间上最新的文件做 ffprobe（其余为录制器拒绝 Opus 后每秒重试产生的碎片）。
+  # API 列表是“最新在前”，不能 tail -n 1（那会拿到最旧文件）；按文件名排序后取最后一行。
   local newest
-  newest=$(printf '%s\n' "$files" | tail -n 1)
+  newest=$(printf '%s\n' "$files" | sort_paths_chronological | tail -n 1)
   local abs probe
   abs=$(resolve_local_path "$newest")
   probe="$OUT_DIR/probe-whip.json"
@@ -1202,26 +1274,25 @@ cmd_cleanup() {
   fi
   rm -f "$PLAYBACK_HTTP_PID_FILE"
 
-  if api_ok; then
-    # 音频拉流代理：优先用 rtsp-pull.sh stop（按 OUT_DIR 状态），否则按 streamPath 精确删除
-    if [ -f "$AUDIO_STATE_DIR/state.env" ]; then
-      START_SOURCE=0 SOURCE_RTMP_URL="$AUDIO_SOURCE_RTMP_URL" RTSP_URL="$AUDIO_RTSP_URL" \
-      STREAM_PATH="$AUDIO_STREAM_PATH" OUT_DIR="$AUDIO_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
-        "$RTSP_SCRIPT" stop >"$AUDIO_STATE_DIR/stop.log" 2>&1 || true
-    else
-      remove_proxies_for_stream "$AUDIO_STREAM_PATH"
+  # RTSP 拉流链路的推流源：rtsp-pull.sh 把 PID 记录在 state.env；
+  # 只停该链路自己启动的源（SOURCE_STARTED=1），外部源保持运行。
+  local state_file="$RTSP_STATE_DIR/state.env" src_pid src_started src_url
+  src_pid=$(state_value "$state_file" SOURCE_PID)
+  src_started=$(state_value "$state_file" SOURCE_STARTED)
+  src_url=$(state_value "$state_file" SOURCE_RTMP_URL)
+  if [ "${src_started:-0}" = "1" ] && pid_matches "${src_pid:-}" "${src_url:-rtmp://127.0.0.1/live/source2k}"; then
+    if stop_pid_checked "$src_pid" "${src_url:-rtmp://127.0.0.1/live/source2k}"; then
+      log "已停止 RTSP 链路的推流源 PID=${src_pid}"
     fi
-    remove_proxies_for_stream "$AUDIO_STREAM_PATH"
+  fi
+  rm -f "$RTSP_STATE_DIR/state.env" "$AUDIO_STATE_DIR/state.env"
 
-    # RTSP 拉流链路（源 + 代理）
-    if [ -f "$RTSP_STATE_DIR/state.env" ]; then
-      OUT_DIR="$RTSP_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
-        "$RTSP_SCRIPT" stop >"$RTSP_STATE_DIR/stop.log" 2>&1 || true
-    else
-      remove_proxies_for_stream "$STREAM_PATH"
-    fi
+  if api_ok; then
+    # 只删本脚本新建并记录过 ID 的代理；不按 streamPath 批量删除（会误伤同名的已有代理）
+    remove_recorded_proxies "$AUDIO_PROXY_IDS_FILE" "$AUDIO_STREAM_PATH"
+    remove_recorded_proxies "$RTSP_PROXY_IDS_FILE" "$STREAM_PATH"
   else
-    warn "API 不可达，跳过代理清理（服务恢复后可用 /api/proxy/pull/remove/<id> 手工删除）"
+    warn "API 不可达，跳过已记录代理的清理（服务恢复后可用 /api/proxy/pull/remove/<id> 手工删除）"
   fi
 
   # 临时 runner/探测文件（保留日志与 ffprobe JSON）
@@ -1255,7 +1326,8 @@ print_summary() {
   echo "  - 10 分钟长录：RECORD_SECONDS=600 ./record-check.sh rtsp（或循环调用 /mp4/api/start|stop）"
   echo "  - 真实摄像头 RTSP 源：把 RTSP_URL 指向摄像头，START_SOURCE=0 由外部提供源"
   echo "  - 弱网/丢包（Linux tc）：tc qdisc add dev eth0 root netem loss 1% delay 20ms，再跑 rtsp/whip"
-  echo "  - 10 路并发录制：Linux 上并发调用 /mp4/api/start/<streamPath> 并观察磁盘/CPU"
+  echo "  - 10 路并发录制（Linux）：对 live/stream1..10 并发 POST /mp4/api/start（完整循环模板见"
+  echo "      example/webrtc-2k-perf/report-record.md §9），观察 CPU/磁盘/DB"
 }
 
 usage() {
@@ -1264,7 +1336,8 @@ usage() {
 
   rtsp         A11 视频：live/rtsp2k 单文件录制 + ffprobe 断言（2560x1440/h264/≈24fps）
   audio        A11 音频：起 AAC 2K 源 + RTSP 拉流，录制并断言 AAC + 时长非零
-  fragment     A13 分片：fragment=1m 录 190s，校验分片数/每片可播/≈60s
+  fragment     A13 分片：fragment=1m 录 FRAGMENT_SECONDS（默认 175s → 3 个文件；
+               190s 会跨 180s 边界变 4 个），校验分片数/每片可播/≈60s
   stop-source  录制中只停 RTMP 推流源（按 PID），校验文件可读、非零字节
   whip         A12：Chrome 假设备推 H264+Opus，录制并检查 MP4 音轨 + 播放结论
   playback [f] Opus-in-MP4 播放探测（ffplay/VLC/Chrome；不传文件则用 ffmpeg 生成参照样本）
@@ -1279,6 +1352,13 @@ EOF
 main() {
   mkdir -p "$OUT_DIR"
   case "${1:-}" in
+    rtsp|audio|fragment|stop-source|whip|playback|all)
+      # 任何子命令中途失败/异常退出都清理本脚本启动的后台进程与已记录的代理，
+      # 避免留下 ffmpeg/Playwright/拉流代理（cmd_cleanup 幂等，CLEANED 防止重复执行）。
+      trap 'if [ "$CLEANED" = "0" ]; then cmd_cleanup || true; fi' EXIT
+      ;;
+  esac
+  case "${1:-}" in
     rtsp)        cmd_rtsp ;;
     audio)       cmd_audio ;;
     fragment)    cmd_fragment ;;
@@ -1289,8 +1369,6 @@ main() {
     all)
       need_cmd curl; need_cmd python3
       require_api
-      # 中途 die/异常退出时也清掉本脚本启动的源/代理/浏览器，避免留下后台进程。
-      trap 'if [ "$CLEANED" = "0" ]; then cmd_cleanup || true; fi' EXIT
       cmd_rtsp || true
       cmd_audio || true
       cmd_fragment || true

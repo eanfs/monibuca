@@ -12,7 +12,7 @@
 |---|---|---|
 | A11 RTSP 源录制（视频） | **通过** | 2560×1440 / h264 / avg_frame_rate **24.072** / duration **25.132s** / 31.98MB |
 | A11 RTSP 源录制（音频） | **通过** | 另起 AAC 2K 源 → RTSP 拉流 → 录制：audio=**aac** 48000Hz 1ch，duration **18.049s** |
-| A13 分片录制 | **通过** | `fragment=1m` 录 175s：**3 个文件**，duration **54.832 / 59.957 / 60.300s**，三个文件 ffprobe 均可读、均为 2560×1440 h264 |
+| A13 分片录制 | **通过** | `fragment=1m` 录 175s：**3 个文件**（按时间顺序）duration **60.300 / 59.957 / 54.832s**，三个文件 ffprobe 均可读、均为 2560×1440 h264；最后一片偏短是 175s 手动停止时的残余 |
 | 录制中停止源 | **通过** | 录 10s 后只停 RTMP 源：文件 **13,757,584B**，moov 可读，duration **10.925s**，无零字节文件 |
 | A12 WHIP 推流侧 | **通过** | Chrome 假设备推流成功，服务端流 `live/whip`：video=**avc1** 640×480，audio=**Opus** |
 | A12 录制音频（Opus-in-MP4） | **阻断（实测失败，非脚本问题）** | progressive mp4 录制器拒绝 Opus：`unsupported audio codec for mp4 record: *codec.OPUSCtx`；每次重试生成 1 秒纯视频碎片（本次 16 个），文件内无音轨 |
@@ -209,24 +209,34 @@ ffprobe（`probe-rtsp-audio.json`）：
 
 `fragment:"1m"`，录制 **175s** 后 stop（`FRAGMENT_SECONDS=175`）。
 
-> **关于 190s 的说明：** 任务简报建议录 ~190s 并期望 3 个文件。实测分片边界按媒体时间在
-> 60/120/180s 触发，190s 会得到 **4 个文件**（60/60/60/10s），不满足“3 个文件”的验收口径；
-> 175s（<180s 边界）恰好得到 3 个文件，故最终采用 175s，并在本报告如实记录实际时长。
+> **关于录制时长口径：** 任务简报写的是“~190s / 3 分钟录制约 3 个文件”。实测分片边界
+> 按媒体时间在 60/120/180s 触发，190s 会跨过 180s 边界得到 **4 个文件**（60/60/60/10s），
+> 不满足“3 个文件”的验收口径；175s（<180s）恰好得到 3 个文件，故采用 175s 作为
+> “3 分钟 / 3 文件”的 sanity run 代表。**>3 分钟的连续长录仍列 PENDING（见 §9）**，
+> 未冒充完成。
 
-文件（`filePath=fragment-20261118-213019`，共 3 个）：
+文件（`filePath=fragment-20261118-213019`，共 3 个，**按文件名时间排序**）：
 
 | # | 文件 | duration | size | ffprobe |
 |---|---|---|---|---|
-| 1 | `2026-11-18-21-31-13_785563000.mp4` | **54.832s** | 68,668,791B | h264 2560×1440，可播 |
+| 1 | `2026-11-18-21-31-13_785563000.mp4` | **60.300s** | 75,262,824B | h264 2560×1440，可播 |
 | 2 | `2026-11-18-21-32-14_151630000.mp4` | **59.957s** | 74,997,818B | h264 2560×1440，可播 |
-| 3 | `2026-11-18-21-33-14_149407000.mp4` | **60.300s** | 75,262,824B | h264 2560×1440，可播 |
+| 3 | `2026-11-18-21-33-14_149407000.mp4` | **54.832s** | 68,668,791B | h264 2560×1440，可播 |
 
-三个文件创建时间戳间隔均为 60s（21:31:13 → 21:32:14 → 21:33:14），与 `1m` 分片一致。
-首片媒体时长 54.8s 偏短，原因是录制启动时首个样本时间戳偏移（播放器看到的样本跨度不足 60s），
-非分片周期错误；因此脚本对“≈60s”的判定容忍 48–70s（实测三片都落在该区间）。
+三个文件创建时间戳间隔约 60s（21:31:13 → 21:32:14 → 21:33:14），与 `1m` 分片一致。
+**最后一片偏短（54.8s）是因为录制在 175s 被手动停止**，该片只覆盖了约 55s 的媒体时长；
+三段时长之和 60.300 + 59.957 + 54.832 = **175.089s**，与 `FRAGMENT_SECONDS=175` 吻合，
+前两片（60.3s / 60.0s）则是完整分片。
 
-ffprobe JSON：`/tmp/webrtc-2k-record/check/probe-fragment-{1,2,3}.json`。
-断言：文件数=3 ✓、每个文件可读且 duration>0 ✓、时长约 1 分钟 ✓。
+> **排序注意：** `/mp4/api/list` 返回顺序是“最新在前”（实测 21:33 → 21:32 → 21:31）。
+> 早期草稿按 API 顺序把 54.8s 写成了第 1 片并解释为“首样本时间戳偏移”，**该解释是错的**；
+> 脚本已改为先按文件名时间戳排序再分配“完整片/残余片”角色（见 `record-check.sh`
+> `sort_paths_chronological`），本次复盘以本表（时间顺序）为准。
+
+ffprobe JSON：`/tmp/webrtc-2k-record/check/probe-fragment-{1,2,3}.json`（注意：这三个文件是
+**修复前**运行留下的，编号沿用了 API 顺序，故 1=54.832s、2=59.957s、3=60.300s；按文件名
+对应关系换算后即上表）。
+断言：文件数=3 ✓、每个文件可读且 duration>0 ✓、前两片 48–70s ✓、时间上最后一片在 10–80s ✓。
 
 ## 7. A12：WebRTC/WHIP 推流录制（Opus-in-MP4）
 
@@ -254,7 +264,7 @@ Playwright（Chrome，headless）+ 假设备：
 ### 7.2 录制结果（progressive mp4，默认 `type:"mp4"`）
 
 API 与 A11 相同（`{"duration":"600s","fragment":"0","filePath":"whip-20261118-213019","type":"mp4"}`），
-录 15s 后 stop。结果：**16 个 1 秒文件**，每个 4.5–7.7KB：
+录 15s 后 stop。结果：**16 个 1 秒文件**，每个 **4,503–7,256B**：
 
 ```
 /tmp/webrtc-2k-record/local/whip-20261118-213019/
@@ -270,7 +280,7 @@ API 与 A11 相同（`{"duration":"600s","fragment":"0","filePath":"whip-2026111
 ...
 ```
 
-`grep -c "unsupported audio codec for mp4 record" /tmp/webrtc-2k-record/server.log` → **47**
+`grep -c "unsupported audio codec for mp4 record" /tmp/webrtc-2k-record/server.log` → **63**
 （包含本次及此前调试运行；单次 15s 录制产生 16 次）。
 
 最新文件 ffprobe（`probe-whip.json`）：
@@ -362,9 +372,37 @@ ffprobe（`probe-stop-source.json`）：
 | 10 分钟长录 | 计划要求 600s，本机按“短/可行”原则只跑 25s/18s/175s | `RECORD_SECONDS=600 ./record-check.sh rtsp`（或循环 start/stop） |
 | 真实摄像头 RTSP 源 | 本机无摄像头；现有源与 RTSP 服务同进程 | `RTSP_URL=rtsp://<cam-ip>/... START_SOURCE=0 ./record-check.sh rtsp` |
 | 弱网/丢包 | 本机 macOS 无 tc netem | `tc qdisc add dev eth0 root netem loss 1% delay 20ms` 后跑 `rtsp`/`whip`，结束 `tc qdisc del dev eth0 root` |
-| 10 路并发录制 | 单路 x264 编码器，本机不适合 | Linux 上对 10 个 `live/xxx` 并发 `POST /mp4/api/start/...`，观察 CPU/磁盘/DB |
+| 10 路并发录制 | 单路 x264 编码器，本机不适合 | 见 §9.1 循环模板：先起 `live/stream1..10`，并发 start/stop，观察 CPU/磁盘/DB |
 | 真实 WebRTC 摄像头（非假设备） | Chrome 假设备为 640×480 合成画面 | 真机 Chrome 用真实摄像头推 `live/whip`，重复 `whip` 流程 |
 | A12 Opus 音频通过 | 需修复录制器（本任务禁止修改） | 修复 `plugin/mp4/pkg/record.go` 音频 switch 与 `box/dops.go` 的 dOps 构造后重跑 `./record-check.sh whip` |
+
+### 9.1 10 路并发录制命令模板（Linux）
+
+前置：10 路流已存在（例如用 10 个 ffmpeg 进程推 `live/stream1` … `live/stream10`）。
+以下循环并发开始 10 路录制（每路单文件、600s），期间用 `top` / `iostat` / `df` 观察：
+
+```bash
+for i in $(seq 1 10); do
+  curl -sS -X POST -H 'Content-Type: application/json' \
+    --data-binary "{\"duration\":\"600s\",\"fragment\":\"0\",\"filePath\":\"concurrent-$i\",\"type\":\"mp4\"}" \
+    "http://127.0.0.1:8080/mp4/api/start/live/stream$i" &
+done
+wait
+```
+
+停止（`duration` 到点后再次 stop 会返回 not found / 404，属幂等成功）：
+
+```bash
+for i in $(seq 1 10); do
+  curl -sS -X POST -H 'Content-Type: application/json' --data-binary '{}' \
+    "http://127.0.0.1:8080/mp4/api/stop/live/stream$i" &
+done
+wait
+```
+
+判定：10 路 start 均成功（200 且 API `code=0`），stop 返回 200 或幂等 not-found；
+`/mp4/api/list/live/stream$i` 各有记录且 `duration>0`，ffprobe 可读；全程无 OOM、
+磁盘写满、DB 锁超时。
 
 ## 10. 原始产物路径（未提交，位于 /tmp）
 
@@ -392,7 +430,8 @@ Monibuca 服务端进程也已停止。仓库内未提交任何 /tmp 数据或�
 
 1. **未修改录制器/Go 代码/go.mod/docs/Task 0/5 脚本**；本报告中的阻断项均为实测产品行为。
 2. Stop 的 not-found 幂等：脚本把 HTTP 404（以及旧版 500 + `not found`)视为成功。
-3. 分片录制的最后一片依赖手动 stop 时刻；175s 实测 3 片（54.8/60.0/60.3s），190s 会是 4 片。
+3. 分片录制的最后一片依赖手动 stop 时刻；175s 实测 3 片（按时间 60.3/60.0/54.8s，
+   最后一片是残余），190s 会是 4 片。API 列表是新→旧，脚本已按文件名时间排序后再判定角色。
 4. `filePath` 使用每次运行唯一子目录，避免历史文件/DB 记录干扰断言。
 5. WHIP 假设备为 640×480（Chrome 假设备默认），本任务只验证录制兼容性，不验证 2K WebRTC 性能
    （2K 性能见 Task 4/5 报告）。
