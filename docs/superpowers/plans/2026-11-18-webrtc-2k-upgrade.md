@@ -14,8 +14,10 @@
 | 3 | 可观测性（码率/丢包/PLI） | 2 | `plugin/webrtc/pkg/connection.go`、`index.go` |
 | 4 | PLI 按需转发 + 清理空转 RTCP | 2 | `plugin/webrtc/pkg/connection.go` |
 | 5 | 2K@24 功能与弱网验收 | 2,3,4 | 测试脚本与报告 |
-| 6 | 观众数压测 | 5 | 测试脚本与报告 |
-| 7 | 回归、文档与 PR | 1-6 | README、default.yaml、PR |
+| 6 | RTSP 拉流兼容性 | 1 | 测试脚本与报告 |
+| 7 | 录制兼容性（RTSP 源 + WebRTC 流） | 1 | 测试脚本与报告、可能的录制器/文档微调 |
+| 8 | 观众数压测 | 5 | 测试脚本与报告 |
+| 9 | 回归、文档与 PR | 1-8 | README、default.yaml、PR |
 
 ---
 
@@ -185,7 +187,62 @@ go test ./plugin/webrtc/... -count=1
 
 ---
 
-## Task 6：观众数压测
+## Task 6：RTSP 拉流兼容性
+
+**目标**：升级后 RTSP 拉流（PullProxy）功能不回归，并覆盖 2K 源与重连场景。
+
+**新增/复用**：
+
+- `example/webrtc-2k-perf/rtsp-pull.sh`：起 ffmpeg RTSP 推流（2K@24）或复用现场摄像头。
+- 复用现有拉流代理 API（`/api/proxy/pull/*`）配置拉流。
+
+**步骤**：
+
+1. 单路：RTSP 源（2K@24）→ 服务端拉流代理 → WebRTC 播放，确认转协议直通、帧率正常。
+2. 并发：10 路 RTSP 拉流同时在线，观察服务端 CPU、内存、拉流状态。
+3. 重连：杀掉源 5s 后恢复，确认拉流代理自动重连（`retryinterval`），WebRTC 观众恢复播放。
+4. 清理：停止拉流代理，确认无残留任务/连接（日志与 `/api/proxy/pull/list`）。
+5. 边界：源不存在时拉流代理不崩溃、错误可读。
+
+**验收**：
+
+- 拉流状态稳定，无重连风暴，无 goroutine/连接泄漏；
+- 2K RTSP 源经 WebRTC 播放帧率 ≥ 23.5fps；
+- 报告记录重连耗时与资源占用。
+
+**提交**：`test(webrtc): RTSP 拉流兼容性验证`
+
+---
+
+## Task 7：录制兼容性（RTSP 源 + WebRTC 流）
+
+**目标**：升级后 MP4 录制对 RTSP 拉流源与 WebRTC（WHIP）推流源均可用，覆盖 2K 视频与音频轨。
+
+**新增/复用**：
+
+- `example/webrtc-2k-perf/record-check.sh`：调用 `/mp4/api/start`、`/mp4/api/stop`，ffprobe 校验产物。
+- 录制器已支持 Opus（`plugin/mp4/pkg/record.go:1162`、`track.go:213`），但需实测 Opus-in-MP4 播放器兼容性。
+
+**步骤**：
+
+1. **RTSP 源录制**：2K@24 拉流 → MP4 录制 10 分钟 → `ffprobe` 校验分辨率、帧率、时长、音轨；播放抽查。
+2. **WebRTC 推流录制**：WHIP 推 H264 + Opus 音频 → MP4 录制 5 分钟 → `ffprobe` 校验；记录 Opus-in-MP4 在 VLC/Chrome 的播放结果（若浏览器不支持，记录为已知限制，不改录制器）。
+3. **WebRTC 推 H265**（若客户端支持）→ 录制（可选，失败记录原因）。
+4. **分片录制**：`fragment=1m` 录 3 分钟，确认分片数量与每片可播。
+5. **边界**：录制中停止推流，确认文件正常收尾（moov 写入、无零字节文件）。
+6. **与录制完整性联动**（可选）：强杀进程后重启，确认 sidecar 恢复逻辑对 WebRTC 源录制产物生效。
+
+**验收**：
+
+- `ffprobe` 输出符合预期（分辨率/帧率/时长/音轨），无零字节或损坏文件；
+- 分片数量与时长正确；
+- 报告记录 Opus-in-MP4 的播放器兼容性结论与任何已知限制。
+
+**提交**：`test(mp4): WebRTC/RTSP 源录制兼容性验证`
+
+---
+
+## Task 8：观众数压测
 
 **目标**：A4/A5。
 
@@ -201,7 +258,7 @@ go test ./plugin/webrtc/... -count=1
 
 ---
 
-## Task 7：回归、文档与 PR
+## Task 9：回归、文档与 PR
 
 **目标**：全量回归、文档更新、PR 提交。
 
@@ -215,6 +272,7 @@ go test ./plugin/webrtc/... -count=1
 6. 提交并开 PR（base=main），PR 描述包含：
    - 升级版本表
    - 2K@24 前后对比数据
+   - RTSP 拉流与录制兼容性结论
    - 回滚方式（`cc.enable=false`）
 
 **验收**：
@@ -239,6 +297,11 @@ go test ./plugin/webrtc/... -count=1
 | 回归 | 编码/协议清单 | A6 |
 | 可观测 | 日志 | A7 |
 | 回滚 | `cc.enable=false` | A8 |
+| RTSP 拉流单路 | `rtsp-pull.sh`（2K 源） | A9 |
+| RTSP 拉流重连 | 杀源 5s 后恢复 | A10 |
+| RTSP 源录制 | `record-check.sh` + ffprobe | A11 |
+| WebRTC 流录制 | WHIP 推流 + ffprobe | A12 |
+| 分片录制 | `fragment=1m` | A13 |
 
 ## 风险与应对（执行时）
 

@@ -33,6 +33,7 @@ SCTP RACK（DataChannel 吞吐 +71%）、stats 拦截器等。v5.0.0-rc 是不�
 - G4：弱网可恢复：1% 与 3% 丢包、RTT 50ms/150ms 下，恢复时间 ≤ 3s，不出现永久卡死。
 - G5：可观测：目标码率、实际发送码率、丢包、RTT、关键帧请求次数可量化（日志 + stats）。
 - G6：升级不破坏现有能力：WHIP 推流、WHEP 播放、batchv2 多流、TCP 模式、H264/H265/AV1 直通、AAC→Opus 降级。
+- G7：RTSP 拉流与 MP4 录制（含 RTSP 源与 WebRTC 推流源）在升级后功能不回归。
 
 ### 非目标
 
@@ -138,6 +139,24 @@ v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-c
 4. **压测**：单路 2K + 10/50 观众（batchv2 单 PC 多流与标准模式各一轮），记录服务端 CPU/内存/出向带宽。
 5. **回归**：H264/H265/AV1、AAC→Opus、WHIP 推流、TCP 模式、batchv2 多流。
 
+### 4.6 兼容性测试范围（RTSP 拉流与录制）
+
+升级改动集中在 webrtc 插件的依赖与发送路径，但 WebRTC 播放常与拉流、录制串联，必须覆盖：
+
+1. **RTSP 拉流**：
+   - 2K@24 RTSP 源 → 拉流代理 → WebRTC 播放（直通、帧率正常）；
+   - 10 路并发拉流，观察 CPU/内存/连接状态；
+   - 断流重连：源消失 5s 后恢复，确认拉流代理自动重连、观众恢复。
+2. **录制（RTSP 源）**：
+   - 2K@24 拉流 → MP4 录制 10 分钟 → `ffprobe` 校验分辨率/帧率/时长/音轨；
+   - 分片录制（`fragment=1m`）3 分钟，检查分片数量与每片可播；
+   - 录制中停止源，文件正常收尾（moov 写入、无零字节文件）。
+3. **录制（WebRTC 流）**：
+   - WHIP 推流（H264 + Opus 音频）→ MP4 录制 5 分钟 → `ffprobe` 校验；
+   - 录制器已支持 Opus（`plugin/mp4/pkg/record.go:1162`、`track.go:213`），但 **Opus-in-MP4 在浏览器播放器支持有限**：本次记录 VLC/Chrome 的实际播放结果，若 Chrome 不支持则作为已知限制写入文档，**不修改录制器行为**；
+   - WebRTC 推 H265 → 录制为可选用例（依赖客户端支持，失败记录原因）。
+4. **与录制完整性联动**（可选）：强杀进程后重启，确认 sidecar 恢复逻辑对 WebRTC/RTSP 源录制产物生效。
+
 ## 5. 验收标准
 
 | 编号 | 场景 | 通过条件 |
@@ -150,6 +169,11 @@ v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-c
 | A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 |
 | A7 | 可观测 | 日志能读出目标码率与实际码率，弱网时目标码率下降 |
 | A8 | 回滚 | `cc.enable=false` 后行为与升级前一致 |
+| A9 | RTSP 拉流单路 2K | 拉流状态稳定，WebRTC 播放帧率 ≥ 23.5fps |
+| A10 | RTSP 拉流重连 | 源恢复后 ≤ 5s 重新出流，无重连风暴 |
+| A11 | RTSP 源录制 | ffprobe 分辨率/帧率/时长/音轨正确，文件可播 |
+| A12 | WebRTC 流录制 | WHIP H264+Opus → MP4 ffprobe 正常；Opus-in-MP4 播放器兼容性结论已记录 |
+| A13 | 分片录制 | `fragment=1m` 分片数量与时长正确，每片可播 |
 
 2K 码率假设（写入验收脚本参数，可按实际源调整）：
 
@@ -181,6 +205,8 @@ v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-c
 - 验收以 **本机 + tc netem + Chrome getStats** 为主，真机部署冒烟作为发布前检查。
 - PLI 节流窗口 **500ms**，兜底 **5s**。
 - 不新增对外 stats API，先日志观测。
+- 录制兼容性以“**不回归 + 记录限制**”为目标：若 Opus-in-MP4 在 Chrome 不可播，只记录为已知限制，不为它修改录制器。
+- RTSP 拉流测试复用现有拉流代理与 API，不新增拉流功能。
 
 ## 8. 留给实现者的判断
 
@@ -188,3 +214,5 @@ v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-c
 - 空转 RTCP 循环能否直接移除（需确认 pion 不读 RTCP 是否会导致发送阻塞）。
 - GCC 在 TCP mux 模式下的行为（TCP 不是典型 WebRTC 传输，验收时单独看）。
 - 2K 源的 GOP 长度对恢复时间的影响（编码参数，不在服务端范围）。
+- WebRTC 推流（Opus 音频）录制出的 MP4 在目标客户端的实际可播性（需实测并记录）。
+- RTSP 拉流断流重连时，WebRTC 订阅者是否需要重连（现有语义下应自动恢复，实测确认）。
