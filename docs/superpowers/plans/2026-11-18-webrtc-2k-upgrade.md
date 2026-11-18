@@ -17,6 +17,7 @@
 - 2K 规格：2560×1440@24fps；H264 8–12 Mbps，H265 5–8 Mbps。
 - GCC 默认：`enable=true`、`initialbitrate=2000000`、`minbitrate=300000`、`maxbitrate=20000000`。
 - PLI 节流：最小间隔 500ms，无关键帧兜底 5s。
+- 1080p 帧率保底：正常网络 ≥ 29fps；1%/3% 丢包下平均 ≥ 24fps（前提可用带宽 ≥ 2.5 Mbps）。
 - 点导入仅允许 `. "m7s.live/v5/pkg"`（staticcheck 白名单）；webrtc 包现有 `. "github.com/pion/webrtc/v4"` 保留。
 - 日志使用结构化 kv（`Info("msg", "key", value)`），不新增裸 goroutine。
 - 每个任务结束前：`gofmt -w` 改动文件、`go test <affected package> -count=1` 通过。
@@ -445,12 +446,17 @@ Expected: 无永久卡死，恢复 ≤ 3s，平均帧率 ≥ 22fps（A2）。
 Run: `tc qdisc change dev lo root netem loss 3% delay 150ms`，播放 10 分钟。
 Expected: 恢复 ≤ 5s（A3）。
 
-- [ ] **Step 4: 回归与回滚**
+- [ ] **Step 4: 1080p 保底验证**
+
+Run: ffmpeg 推 1920×1080@30（`-b:v 4M -maxrate 5M`），Chrome 播放 10 分钟。
+Expected: 正常网络平均帧率 ≥ 29fps；切 1%/3% 丢包后平均帧率 ≥ 24fps，且无持续低于 20fps 的区间（A1b/A1c）。
+
+- [ ] **Step 5: 回归与回滚**
 
 - H264/H265/AV1、AAC→Opus、WHIP、TCP 模式、batchv2（A6）。
 - `cc.enable=false` 重启，重复 A1 关键项，行为与基线一致（A8）。
 
-- [ ] **Step 5: 记录并提交**
+- [ ] **Step 6: 记录并提交**
 
 ```bash
 git add example/webrtc-2k-perf/report-after.md
@@ -525,7 +531,7 @@ PR 描述包含：版本表、2K@24 前后对比、RTSP/录制结论、`cc.enabl
 
 ## Self-Review
 
-- **Spec coverage**：G1→Task 1；G2→Task 2；G3→Task 7；G4→Task 7；G5→Task 3；G6→Task 7/9；G7→Task 5/6；4.6 的 RTSP/录制/WebRTC 流录制→Task 5/6；验收 A1–A13→Task 5–8/9。
+- **Spec coverage**：G1→Task 1；G2→Task 2；G3（含 1080p 保底 A1b/A1c）→Task 7；G4→Task 7；G5→Task 3；G6→Task 7/9；G7→Task 5/6；4.6 的 RTSP/录制/WebRTC 流录制→Task 5/6；验收 A1–A13→Task 5–8/9。
 - **Step scan**：代码步骤给到签名/断言；测试步骤给到失败预期；验证任务给到命令与通过条件。
 - **Type consistency**：`CCConfig`、`createInterceptorRegistry`、`StreamMetrics`、`PLIThrottler` 在 Task 2/3/4 内自洽，后续任务只引用其 Interfaces。
 - **Review Focus**：5 条均落到 Task 2/5/6/7/9 的测试或验证步骤。
