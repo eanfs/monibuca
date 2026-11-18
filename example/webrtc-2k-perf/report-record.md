@@ -236,7 +236,9 @@ ffprobe（`probe-rtsp-audio.json`）：
 ffprobe JSON：`/tmp/webrtc-2k-record/check/probe-fragment-{1,2,3}.json`（注意：这三个文件是
 **修复前**运行留下的，编号沿用了 API 顺序，故 1=54.832s、2=59.957s、3=60.300s；按文件名
 对应关系换算后即上表）。
-断言：文件数=3 ✓、每个文件可读且 duration>0 ✓、前两片 48–70s ✓、时间上最后一片在 10–80s ✓。
+断言（Fix round 2 起）：文件数=3 ✓、每个文件可读且 duration>0 ✓、文件名时间戳严格升序 ✓、
+每个完整分片 `start+duration ≈ 下一片 start`（≤5s）✓、前两片 **55–65s** ✓、
+时间上最后一片在 10–80s ✓（详见 §12）。
 
 ## 7. A12：WebRTC/WHIP 推流录制（Opus-in-MP4）
 
@@ -435,3 +437,32 @@ Monibuca 服务端进程也已停止。仓库内未提交任何 /tmp 数据或�
 4. `filePath` 使用每次运行唯一子目录，避免历史文件/DB 记录干扰断言。
 5. WHIP 假设备为 640×480（Chrome 假设备默认），本任务只验证录制兼容性，不验证 2K WebRTC 性能
    （2K 性能见 Task 4/5 报告）。
+
+## 12. Fix round 2（评审修复：分片角色断言的顺序守卫）
+
+评审复现：把反转时长列表 `[54.832, 59.957, 60.300]` 直接喂给旧断言仍会通过
+（旧完整片容差 48–70s 容纳 54.832，残余容差 10–80s 容纳 60.300）。本轮修复：
+
+1. **收紧完整分片容差**：48–70s → **55–65s**（`FULL_MIN/FULL_MAX` 命名常量，含注释）。
+   实测完整分片为 60.300s / 59.957s；最后残余 54.832s 留在 10–80s 残余区间。
+   反转列表的 `full=[54.832, 59.957]` 现在因 `54.832 < 55` 失败。
+2. **新增与时长无关的时间顺序守卫**（`assert_fragment_roles <expected> <rows-file>`）：
+   - 文件名时间戳严格升序；
+   - 每个完整分片 `start + duration` 与下一片 `start` 相差 ≤ 5s（分片边界连续）。
+   生产路径先经 `sort_paths_chronological` 排序再断言；未排序/反转列表立即失败。
+3. **合成自测** `./record-check.sh self-test`（无需服务端）：
+   - 时间顺序 + 正确时长 `[60.300, 59.957, 54.832]` → 通过；
+   - 评审复现的反转时长列表 `[54.832, 59.957, 60.300]` → 失败
+     （`fragment #1 duration=54.832s not in [55,65]`、`start+duration is 5.534s from next start`）；
+   - 反转文件顺序（各时长均落在容差内）→ 失败
+     （`timestamp order violated ...`，只能由顺序守卫发现）。
+   完整输出见 `task-6-report.md`「Fix round 2」。
+4. **真实文件回归**（未重录，使用保留的 3 个分片）：按文件名时间顺序喂给
+   `assert_fragment_roles 3` 返回 `durations=60.300,59.957,54.832`（rc=0）；
+   把时长列表反转为 `[54.832, 59.957, 60.300]` 后返回非零，并按上述两条理由失败。
+5. 两个 Minor：
+   - `remove_recorded_proxies` 删除失败（非 200）的 ID 写回记录文件保留，下次 cleanup 重试；
+   - `rtsp-pull.sh start` 非零退出时仍做 start 前/后 ID 差集快照（并与已有记录合并），
+     已创建的孤儿代理由 EXIT trap 的 cleanup 删除。
+6. 验证：`bash -n` OK；`shellcheck -S warning` 0 警告；`./record-check.sh self-test` 3/3 符合预期、退出 0。
+   **未重录**，未修改 Go/录制器；A13 结论（3 片、均可播、完整片≈60s）不变。

@@ -17,6 +17,7 @@
 #   ./record-check.sh stop-source   # 录制中只停 RTMP 推流源，校验文件收尾
 #   ./record-check.sh whip          # A12：Playwright+Chrome 假设备推 H264+Opus，录 15s
 #   ./record-check.sh playback [f]  # Opus-in-MP4 播放探测（ffplay/VLC/Chrome）
+#   ./record-check.sh self-test     # 分片角色断言合成自测（无需服务端）
 #   ./record-check.sh all           # 依次执行以上后 cleanup 并汇总（失败项不影响后续项）
 #   ./record-check.sh cleanup       # 停止本脚本启动的源/代理/浏览器，删除临时状态
 #
@@ -309,6 +310,78 @@ if rows:
 '
 }
 
+# 分片角色断言：assert_fragment_roles <expected> <rows-file>。
+# rows-file 每行 "<路径>\t<duration>"；调用方须已按文件名时间排序。
+# 除时长区间外还**独立**校验时间顺序，避免“列表反转但各时长仍落在容差内”静默通过：
+#   1) 文件名时间戳严格升序（未排序/反转列表必须失败）；
+#   2) 每个完整分片的 start+duration 与下一片 start 相差 ≤ 5s（分片边界连续）；
+#   3) 前 N-1 片（完整分片）duration ∈ [55,65]s；时间上最后一片（残余）∈ [10,80]s。
+assert_fragment_roles() {
+  local expected="$1" rows_file="$2"
+  python3 - "$expected" "$rows_file" <<'PY'
+import datetime, os, re, sys
+
+expected = int(sys.argv[1])
+# 完整分片按媒体时间 60s 轮转（本次实测 60.300s / 59.957s）。
+# 收紧到 55–65s：若把最后残余 54.832s 误当成完整片（列表反转/未排序）会立刻失败。
+FULL_MIN, FULL_MAX = 55.0, 65.0
+# 时间上最后一片是手动 stop 的残余（175s 运行 → 约 54.8s），允许 10–80s。
+LAST_MIN, LAST_MAX = 10.0, 80.0
+# 分片边界连续性容差：start[i] + duration[i] ≈ start[i+1]（实测偏差 <0.1s）。
+BOUNDARY_TOLERANCE_SECONDS = 5.0
+
+name_re = re.compile(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})_(\d+)")
+rows = []
+with open(sys.argv[2], encoding="utf-8") as rows_file:
+    for line in rows_file:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        path, sep, dur = line.partition("\t")
+        if not sep:
+            print("bad input row (missing tab): %r" % line, file=sys.stderr)
+            sys.exit(1)
+        rows.append((os.path.basename(path), float(dur)))
+
+errors = []
+if len(rows) != expected:
+    errors.append("expected %d fragments, got %d" % (expected, len(rows)))
+
+stamps = []
+for name, _duration in rows:
+    m = name_re.match(name)
+    if m is None:
+        errors.append("cannot parse timestamp from %s" % name)
+        continue
+    year, month, day, hour, minute, second, nanos = (int(x) for x in m.groups())
+    stamps.append(datetime.datetime(year, month, day, hour, minute, second).timestamp() + nanos / 1e9)
+
+if not errors:
+    durations = [duration for _name, duration in rows]
+    for i in range(1, len(stamps)):
+        if stamps[i] <= stamps[i - 1]:
+            errors.append("timestamp order violated at #%d: %s <= %s" % (
+                i + 1, rows[i][0], rows[i - 1][0]))
+    for i, duration in enumerate(durations[:-1]):
+        if not (FULL_MIN <= duration <= FULL_MAX):
+            errors.append("fragment #%d duration=%.3fs not in [%.0f,%.0f]" % (
+                i + 1, duration, FULL_MIN, FULL_MAX))
+        if i + 1 < len(stamps):
+            gap = stamps[i + 1] - (stamps[i] + duration)
+            if abs(gap) > BOUNDARY_TOLERANCE_SECONDS:
+                errors.append("fragment #%d start+duration is %.3fs from next start" % (i + 1, gap))
+    last = durations[-1]
+    if not (LAST_MIN <= last <= LAST_MAX):
+        errors.append("last fragment duration=%.3fs out of [%.0f,%.0f]" % (last, LAST_MIN, LAST_MAX))
+
+if errors:
+    for err in errors:
+        print(err, file=sys.stderr)
+    sys.exit(1)
+print("durations=" + ",".join("%.3f" % duration for _name, duration in rows))
+PY
+}
+
 # 等录制收尾：该前缀的记录都已写入时长（DB duration>0，表示 trailer/入库完成）、
 # 文件存在，且大小连续两次采样不变。仅看文件大小会在 trailer 写入前提前返回。
 # $3 可选：期望的文件数（分片录制用来避免把尚未出现的分片当成全部）。
@@ -389,12 +462,15 @@ ensure_rtsp_ready() {
   local before_ids
   before_ids=$(list_proxy_ids_for_stream "$STREAM_PATH")
   log "启动 RTSP 拉流链路：rtsp-pull.sh start（OUT_DIR=${RTSP_STATE_DIR}）"
-  OUT_DIR="$RTSP_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
-    "$RTSP_SCRIPT" start >"$OUT_DIR/start.log" 2>&1 || {
-      warn "rtsp-pull.sh start 失败，日志尾部："
-      tail -n 20 "$OUT_DIR/start.log" >&2 || true
-      return 1
-    }
+  if ! OUT_DIR="$RTSP_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
+    "$RTSP_SCRIPT" start >"$OUT_DIR/start.log" 2>&1; then
+    warn "rtsp-pull.sh start 失败，日志尾部："
+    tail -n 20 "$OUT_DIR/start.log" >&2 || true
+    # start 可能已创建代理但随后失败（例如建完代理后等流超时）。
+    # 仍做前后差集快照并记入 cleanup 清单，让 EXIT trap 删除孤儿代理。
+    record_created_proxies "$STREAM_PATH" "$before_ids" "$RTSP_PROXY_IDS_FILE" || true
+    return 1
+  fi
   record_created_proxies "$STREAM_PATH" "$before_ids" "$RTSP_PROXY_IDS_FILE"
   wait_stream "$STREAM_PATH"
 }
@@ -456,9 +532,10 @@ print(" ".join(str(i) for i in sorted(set(ids)) if i > 0))
 
 # 记录 start 前后的 ID 差集（= 本脚本新建的代理）。cleanup 只删这些 ID，
 # 不删除同 streamPath 下早已存在的代理（API 列表顺序不可靠，不能按路径批量删）。
+# 与记录文件中已有的 ID 合并：同一次运行内多次 start（含失败重试）不能丢先前记录。
 record_created_proxies() {
   local stream="$1" before="$2" out_file="$3"
-  local after ids="" id
+  local after ids="" id existing_ids
   after=$(list_proxy_ids_for_stream "$stream")
   for id in $after; do
     case " $before " in
@@ -466,6 +543,15 @@ record_created_proxies() {
       *) ids="$ids $id" ;;
     esac
   done
+  if [ -f "$out_file" ]; then
+    existing_ids=$(tr ' ' '\n' < "$out_file" | sed '/^$/d')
+    for id in $existing_ids; do
+      case " $ids " in
+        *" $id "*) ;;
+        *) ids="$ids $id" ;;
+      esac
+    done
+  fi
   ids="${ids# }"
   if [ -n "$ids" ]; then
     printf '%s\n' $ids > "$out_file"
@@ -475,9 +561,10 @@ record_created_proxies() {
   fi
 }
 
-# 只删除本脚本记录过的代理 ID
+# 只删除本脚本记录过的代理 ID。删除失败（非 200）的 ID 写回记录文件保留，
+# 不随 cleanup 一起丢弃；服务恢复后再执行 cleanup 会重试删除。
 remove_recorded_proxies() {
-  local file="$1" stream="$2" ids id code
+  local file="$1" stream="$2" ids id code failed=""
   [ -f "$file" ] || return 0
   ids=$(tr ' ' '\n' < "$file" | sed '/^$/d')
   for id in $ids; do
@@ -485,10 +572,17 @@ remove_recorded_proxies() {
     if [ "$code" = "200" ]; then
       log "已删除本脚本创建的拉流代理 id=${id}（streamPath=${stream}）"
     else
-      warn "删除拉流代理 id=$id 失败：HTTP $code $(cat "$OUT_DIR/remove-$id.json" 2>/dev/null || true)"
+      warn "删除拉流代理 id=$id 失败：HTTP $code $(cat "$OUT_DIR/remove-$id.json" 2>/dev/null || true)（ID 已保留，稍后可重试 cleanup）"
+      failed="$failed $id"
     fi
   done
-  rm -f "$file"
+  failed="${failed# }"
+  if [ -n "$failed" ]; then
+    printf '%s\n' $failed > "$file"
+    warn "仍有拉流代理未删除：streamPath=${stream} ids=${failed}（记录文件 ${file}）"
+  else
+    rm -f "$file"
+  fi
 }
 
 start_audio_source() {
@@ -536,13 +630,15 @@ ensure_audio_pull_ready() {
   local before_ids
   before_ids=$(list_proxy_ids_for_stream "$AUDIO_STREAM_PATH")
   log "创建音频 RTSP 拉流代理：$AUDIO_RTSP_URL -> $AUDIO_STREAM_PATH"
-  START_SOURCE=0 SOURCE_RTMP_URL="$AUDIO_SOURCE_RTMP_URL" RTSP_URL="$AUDIO_RTSP_URL" \
-  STREAM_PATH="$AUDIO_STREAM_PATH" OUT_DIR="$AUDIO_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
-    "$RTSP_SCRIPT" start >"$AUDIO_STATE_DIR/start.log" 2>&1 || {
-      warn "音频拉流代理创建失败，日志尾部："
-      tail -n 20 "$AUDIO_STATE_DIR/start.log" >&2 || true
-      return 1
-    }
+  if ! START_SOURCE=0 SOURCE_RTMP_URL="$AUDIO_SOURCE_RTMP_URL" RTSP_URL="$AUDIO_RTSP_URL" \
+    STREAM_PATH="$AUDIO_STREAM_PATH" OUT_DIR="$AUDIO_STATE_DIR" API_BASE="$API_BASE" API_TOKEN="$API_TOKEN" \
+    "$RTSP_SCRIPT" start >"$AUDIO_STATE_DIR/start.log" 2>&1; then
+    warn "音频拉流代理创建失败，日志尾部："
+    tail -n 20 "$AUDIO_STATE_DIR/start.log" >&2 || true
+    # 与 ensure_rtsp_ready 同理：start 非零退出前可能已建好代理，仍做快照供 cleanup 删除。
+    record_created_proxies "$AUDIO_STREAM_PATH" "$before_ids" "$AUDIO_PROXY_IDS_FILE" || true
+    return 1
+  fi
   record_created_proxies "$AUDIO_STREAM_PATH" "$before_ids" "$AUDIO_PROXY_IDS_FILE"
   wait_stream "$AUDIO_STREAM_PATH"
 }
@@ -712,7 +808,7 @@ cmd_fragment() {
     fail "A13 分片数量：实际 ${count}，期望 ${expected}（fragment=${FRAGMENT}，录制 ${FRAGMENT_SECONDS}s）"
   fi
 
-  local path abs probe durations=() idx=0 bad=0
+  local path abs probe durations=() rows="" idx=0 bad=0
   for path in $files; do
     idx=$((idx + 1))
     abs=$(resolve_local_path "$path")
@@ -725,6 +821,7 @@ cmd_fragment() {
     local dur
     dur=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("format") or {}).get("duration", "0"))' "$probe")
     durations+=("$dur")
+    rows+="$path"$'\t'"$dur"$'\n'
     info "A13 分片 #${idx}：duration=${dur}s $(probe_summary "$probe")"
     if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$dur"; then
       :
@@ -735,31 +832,66 @@ cmd_fragment() {
   done
 
   if [ "$bad" = "0" ]; then
-    if python3 - "$expected" "${durations[@]}" <<'PY'
-import sys
-expected = int(sys.argv[1])
-durations = [float(x) for x in sys.argv[2:]]
-if len(durations) != expected:
-    sys.exit(1)
-# 入口已按文件名时间排序：durations 为时间顺序（第一片最早，最后一片最晚）。
-full = durations[:-1]
-last = durations[-1]
-# 前 N-1 片是完整分片：分片按媒体时间切分，≈60s，按 48–70s 判定。
-for i, d in enumerate(full):
-    if not (48.0 <= d <= 70.0):
-        print("fragment #%d duration=%.2fs not ~60s" % (i + 1, d)); sys.exit(1)
-# 最后一片是手动停止时的残余（本次 175s 停止 → 该片只剩约 55s），允许 10s..80s。
-if not (10.0 <= last <= 80.0):
-    print("last fragment duration=%.2fs out of [10,80]" % last); sys.exit(1)
-print("durations=" + ",".join("%.2f" % d for d in durations))
-PY
-    then
-      pass "A13 分片：$count 个文件均可播，时长约 1 分钟（durations=$(printf '%s ' "${durations[@]}")）"
+    # 角色断言独立校验时间顺序（详见 assert_fragment_roles）：
+    # 反转列表即使时长都落在容差内也会因时间戳降序/边界不连续而失败。
+    local assert_out rows_file
+    rows_file="$OUT_DIR/fragment-rows.txt"
+    printf '%s' "$rows" > "$rows_file"
+    if assert_out=$(assert_fragment_roles "$expected" "$rows_file"); then
+      pass "A13 分片：$count 个文件均可播，时间顺序与角色正确（${assert_out}）"
     else
-      fail "A13 分片时长断言未通过：durations=$(printf '%s ' "${durations[@]}")"
+      fail "A13 分片断言未通过：durations=$(printf '%s ' "${durations[@]}")"
     fi
   fi
   return 0
+}
+
+# 合成自测（无需服务端）：用真实 175s 运行的文件名/时长验证 assert_fragment_roles。
+# 期望：时间顺序 + 正确时长 → 通过；反转时长列表 → 失败；
+#       反转文件顺序（各时长均在容差内）→ 失败（只能由时间顺序守卫发现）。
+run_self_case() {
+  local expect="$1" label="$2" rows="$3" err rc=0
+  err="$OUT_DIR/self-test.err"
+  printf '%s\n' "$rows" > "$OUT_DIR/self-test-rows.txt"
+  assert_fragment_roles 3 "$OUT_DIR/self-test-rows.txt" >/dev/null 2>"$err" || rc=$?
+  if [ "$rc" = "0" ]; then
+    if [ "$expect" = "pass" ]; then
+      pass "self-test：${label}（预期通过 → 实际通过）"
+    else
+      fail "self-test：${label}（预期失败 → 实际通过，守卫失效）"
+    fi
+  else
+    local reason
+    reason=$(tr '\n' ';' < "$err" | sed 's/;$//')
+    if [ "$expect" = "fail" ]; then
+      pass "self-test：${label}（预期失败 → 实际失败：${reason}）"
+    else
+      fail "self-test：${label}（预期通过 → 实际失败：${reason}）"
+    fi
+  fi
+}
+
+cmd_self_test() {
+  need_cmd python3
+  mkdir -p "$OUT_DIR"
+  local f1="fragment-2026-11-18/2026-11-18-21-31-13_785563000.mp4"
+  local f2="fragment-2026-11-18/2026-11-18-21-32-14_151630000.mp4"
+  local f3="fragment-2026-11-18/2026-11-18-21-33-14_149407000.mp4"
+  local rows_sorted rows_reversed_durations rows_reversed_order
+
+  rows_sorted=$(printf '%s\t%s\n' "$f1" 60.300
+                printf '%s\t%s\n' "$f2" 59.957
+                printf '%s\t%s\n' "$f3" 54.832)
+  rows_reversed_durations=$(printf '%s\t%s\n' "$f1" 54.832
+                            printf '%s\t%s\n' "$f2" 59.957
+                            printf '%s\t%s\n' "$f3" 60.300)
+  rows_reversed_order=$(printf '%s\t%s\n' "$f3" 60.300
+                        printf '%s\t%s\n' "$f2" 59.957
+                        printf '%s\t%s\n' "$f1" 54.832)
+
+  run_self_case pass "时间顺序 + 正确时长 [60.300,59.957,54.832]" "$rows_sorted"
+  run_self_case fail "反转时长列表 [54.832,59.957,60.300]（评审复现）" "$rows_reversed_durations"
+  run_self_case fail "反转文件顺序（时长均落在容差内，仅顺序守卫能发现）" "$rows_reversed_order"
 }
 
 cmd_stop_source() {
@@ -1332,7 +1464,7 @@ print_summary() {
 
 usage() {
   cat <<'EOF'
-用法: ./record-check.sh <rtsp|audio|fragment|stop-source|whip|playback|all|cleanup>
+用法: ./record-check.sh <rtsp|audio|fragment|stop-source|whip|playback|self-test|all|cleanup>
 
   rtsp         A11 视频：live/rtsp2k 单文件录制 + ffprobe 断言（2560x1440/h264/≈24fps）
   audio        A11 音频：起 AAC 2K 源 + RTSP 拉流，录制并断言 AAC + 时长非零
@@ -1341,6 +1473,7 @@ usage() {
   stop-source  录制中只停 RTMP 推流源（按 PID），校验文件可读、非零字节
   whip         A12：Chrome 假设备推 H264+Opus，录制并检查 MP4 音轨 + 播放结论
   playback [f] Opus-in-MP4 播放探测（ffplay/VLC/Chrome；不传文件则用 ffmpeg 生成参照样本）
+  self-test    分片角色断言合成自测（无需服务端）：时间顺序 PASS、反转时长/顺序 FAIL
   all          依次执行 rtsp/audio/fragment/stop-source/whip，然后 cleanup 并汇总
   cleanup      停止本脚本启动的源/浏览器/HTTP 服务并删除代理，保留日志与 ffprobe JSON
 
@@ -1365,6 +1498,7 @@ main() {
     stop-source) cmd_stop_source ;;
     whip)        cmd_whip ;;
     playback)    shift || true; cmd_playback "${1:-}" ;;
+    self-test)   cmd_self_test ;;
     cleanup)     cmd_cleanup ;;
     all)
       need_cmd curl; need_cmd python3
