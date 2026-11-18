@@ -127,13 +127,24 @@ func (p *WebRTCPlugin) configurePort() error {
 }
 
 func (p *WebRTCPlugin) CreatePC(sd SessionDescription, conf Configuration) (pc *PeerConnection, err error) {
+	// batchv2 等旧的批量通路仍使用插件级空实现，保持既有行为。
+	return p.createPC(sd, conf, p.onBandwidthEstimate)
+}
+
+// CreatePCWithEstimator 创建 PeerConnection，并把该连接专属的带宽估计器交给 onEstimator。
+// servePlay/servePush 用它让每个观众/推流端拥有独立的 GCC 目标码率指标。
+func (p *WebRTCPlugin) CreatePCWithEstimator(sd SessionDescription, conf Configuration, onEstimator func(cc.BandwidthEstimator)) (pc *PeerConnection, err error) {
+	return p.createPC(sd, conf, onEstimator)
+}
+
+func (p *WebRTCPlugin) createPC(sd SessionDescription, conf Configuration, onEstimator func(cc.BandwidthEstimator)) (pc *PeerConnection, err error) {
 	var ssd *sdp.SessionDescription
 	ssd, err = sd.Unmarshal()
 	if err != nil {
 		return
 	}
 	var api *API
-	api, err = CreateAPI(ssd, p.s, p.CC, p.onBandwidthEstimate)
+	api, err = CreateAPI(ssd, p.s, p.CC, onEstimator)
 	if err != nil {
 		return
 	}

@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	task "github.com/eanfs/gotask"
 	"github.com/langhuihui/gomem"
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/rtcp"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
@@ -57,9 +59,55 @@ type MultipleConnection struct {
 	Subscriber *m7s.Subscriber
 	EnableDC   bool
 	PLI        time.Duration
+
+	// metrics 为按连接（每个观众/推流端）独立的发送端指标。
+	metrics *StreamMetrics
+	// bandwidthEstimator 由 GCC 拦截器在 NewPeerConnection 时回调注入；
+	// 回调可能早于 Start（metrics 尚未初始化），因此在 Start 时补绑定。
+	estimatorMu        sync.Mutex
+	bandwidthEstimator cc.BandwidthEstimator
+	estimatorBound     bool
+}
+
+// OnBandwidthEstimate 接收本连接专属的带宽估计器。
+// 允许在 Start 之前调用：先保存，等 metrics 就绪后再绑定。
+func (IO *MultipleConnection) OnBandwidthEstimate(estimator cc.BandwidthEstimator) {
+	if estimator == nil {
+		return
+	}
+	IO.estimatorMu.Lock()
+	IO.bandwidthEstimator = estimator
+	IO.estimatorMu.Unlock()
+	IO.bindEstimator()
+}
+
+// bindEstimator 把估计器的当前目标码率与后续变化写入 metrics，幂等。
+func (IO *MultipleConnection) bindEstimator() {
+	IO.estimatorMu.Lock()
+	defer IO.estimatorMu.Unlock()
+	if IO.estimatorBound || IO.bandwidthEstimator == nil || IO.metrics == nil {
+		return
+	}
+	IO.estimatorBound = true
+	IO.metrics.TargetBitrate.Store(int64(IO.bandwidthEstimator.GetTargetBitrate()))
+	IO.bandwidthEstimator.OnTargetBitrateChange(func(bitrate int) {
+		IO.metrics.TargetBitrate.Store(int64(bitrate))
+	})
+}
+
+// addSent 记录一个成功写出的 RTP 包，nil 安全。
+func (IO *MultipleConnection) addSent(payloadBytes int) {
+	if IO.metrics == nil {
+		return
+	}
+	IO.metrics.AddSent(payloadBytes)
 }
 
 func (IO *MultipleConnection) Start() (err error) {
+	if IO.metrics == nil {
+		IO.metrics = &StreamMetrics{}
+	}
+	IO.bindEstimator()
 	if IO.Publisher != nil {
 		IO.Using(IO.Publisher)
 		IO.Publisher.Using(IO)
@@ -333,9 +381,11 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 				} else {
 					if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
 						for _, pp := range p {
-							switch pp.(type) {
+							switch pp := pp.(type) {
 							case *rtcp.PictureLossIndication:
-								// fmt.Println("PictureLossIndication")
+								// Task 4: PLI 节流/关键帧请求
+							case *rtcp.ReceiverReport:
+								IO.metrics.ObserveReceiverReport(pp)
 							}
 						}
 					}
@@ -442,6 +492,8 @@ audioDone:
 		if videoSender == nil {
 			subscriber.SubVideo = false
 		}
+		lastLog := time.Now()
+		var prevBytes uint64
 		go m7s.PlayBlock(subscriber, func(frame *mrtp.AudioFrame) (err error) {
 			if audioTLSRTP == nil {
 				return nil
@@ -470,6 +522,7 @@ audioDone:
 						if err = audioTLSRTP.WriteRTP(pkt); err != nil {
 							return
 						}
+						IO.addSent(len(pkt.Payload))
 					}
 				}
 				return
@@ -479,6 +532,7 @@ audioDone:
 				if err = audioTLSRTP.WriteRTP(p); err != nil {
 					return
 				}
+				IO.addSent(len(p.Payload))
 			}
 			return
 		}, func(frame *mrtp.VideoFrame) error {
@@ -486,6 +540,19 @@ audioDone:
 				if err := videoTLSRTP.WriteRTP(p); err != nil {
 					return err
 				}
+				IO.addSent(len(p.Payload))
+			}
+			if IO.metrics == nil {
+				return nil
+			}
+			// 仅在视频帧流动时每 10s 输出一次发送端指标。
+			now := time.Now()
+			if elapsed := now.Sub(lastLog); elapsed >= 10*time.Second {
+				bytes := IO.metrics.BytesSent.Load()
+				IO.metrics.SendBitrate.Store(int64((bytes - prevBytes) * 8 * 1000 / uint64(elapsed.Milliseconds())))
+				prevBytes = bytes
+				lastLog = now
+				IO.Debug("webrtc stats", "metrics", IO.metrics.Snapshot().LogLine())
 			}
 			return nil
 		})

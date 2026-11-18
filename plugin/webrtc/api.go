@@ -46,12 +46,12 @@ func (conf *WebRTCPlugin) servePush(w http.ResponseWriter, r *http.Request) {
 	conn.SDP = string(bytes)
 	conn.Logger = conf.Logger
 
-	if conn.PeerConnection, err = conf.CreatePC(SessionDescription{
+	if conn.PeerConnection, err = conf.CreatePCWithEstimator(SessionDescription{
 		Type: SDPTypeOffer,
 		SDP:  conn.SDP,
 	}, Configuration{
 		ICEServers: conf.ICEServers,
-	}); err != nil {
+	}, conn.OnBandwidthEstimate); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -101,12 +101,12 @@ func (conf *WebRTCPlugin) servePlay(w http.ResponseWriter, r *http.Request) {
 		conn.SupportsH265 = true
 	}
 
-	conn.PeerConnection, err = conf.CreatePC(SessionDescription{
+	conn.PeerConnection, err = conf.CreatePCWithEstimator(SessionDescription{
 		Type: SDPTypeOffer,
 		SDP:  conn.SDP,
 	}, Configuration{
 		ICEServers: conf.ICEServers,
-	})
+	}, conn.OnBandwidthEstimate)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
