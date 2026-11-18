@@ -76,6 +76,13 @@ func createInterceptorRegistry(m *MediaEngine, ccConfig CCConfig, onEstimator fu
 			})
 		}
 		i.Add(ccInterceptor)
+		// GCC 在 OnSent 中读取发送侧 transport-cc 扩展，缺少本拦截器的写入时
+		// feedbackAdapter.OnSent 返回 "missing transport layer cc header extension"，
+		// pacer 直接丢包，默认配置下 WebRTC 完全不出帧。
+		// 必须紧跟 cc 注册：它要在 gcc 的 OnSent 读取前把扩展写进包。
+		if err := ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
+			return nil, err
+		}
 	}
 	// 注册默认拦截器（NACK / RTCP report / TWCC sender / stats）
 	if err := RegisterDefaultInterceptors(m, i); err != nil {

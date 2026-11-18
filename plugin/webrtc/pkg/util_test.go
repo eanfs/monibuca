@@ -7,6 +7,7 @@ import (
 	"github.com/mcuadros/go-defaults"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/twcc"
 	pionwebrtc "github.com/pion/webrtc/v4"
 )
 
@@ -63,8 +64,9 @@ func TestCreateInterceptorRegistryCCEnabled(t *testing.T) {
 
 	ai := chainInterceptorTypes(t, a)
 	bi := chainInterceptorTypes(t, b)
-	if len(ai) != len(bi)+1 {
-		t.Fatalf("cc enabled should add exactly one interceptor: got %d vs %d", len(ai), len(bi))
+	// cc 启用时链上多两个拦截器：cc 本体 + 写 transport-cc 扩展的 header extension
+	if len(ai) != len(bi)+2 {
+		t.Fatalf("cc enabled should add exactly two interceptors (cc + twcc header extension): got %d vs %d", len(ai), len(bi))
 	}
 }
 
@@ -108,15 +110,20 @@ func TestCreateInterceptorRegistryCCFirst(t *testing.T) {
 
 	ai := chainInterceptorTypes(t, a)
 	bi := chainInterceptorTypes(t, b)
-	if len(ai) != len(bi)+1 {
-		t.Fatalf("cc enabled should add exactly one interceptor: got %d vs %d", len(ai), len(bi))
+	// cc 启用时链上多两个拦截器：cc 本体 + twcc header extension
+	if len(ai) != len(bi)+2 {
+		t.Fatalf("cc enabled should add exactly two interceptors (cc + twcc header extension): got %d vs %d", len(ai), len(bi))
 	}
 
 	ccType := reflect.TypeOf((*cc.Interceptor)(nil))
+	twccType := reflect.TypeOf((*twcc.HeaderExtensionInterceptor)(nil))
 	if got := ai[0]; got != ccType {
 		t.Fatalf("cc interceptor must be first in Build order, got %v", got)
 	}
-	for n, wp := range ai[1:] {
+	if got := ai[1]; got != twccType {
+		t.Fatalf("twcc header extension interceptor must be second (after cc, before defaults), got %v", got)
+	}
+	for n, wp := range ai[2:] {
 		if bp := bi[n]; wp != bp {
 			t.Fatalf("interceptor %d mismatch: with cc %v, without cc %v", n, wp, bp)
 		}
@@ -124,6 +131,9 @@ func TestCreateInterceptorRegistryCCFirst(t *testing.T) {
 	for n, it := range bi {
 		if it == ccType {
 			t.Fatalf("cc interceptor registered at index %d although cc.enable=false", n)
+		}
+		if it == twccType {
+			t.Fatalf("twcc header extension interceptor registered at index %d although cc.enable=false", n)
 		}
 	}
 }
