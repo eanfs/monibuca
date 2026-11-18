@@ -155,8 +155,9 @@ func (p *WebRTCPlugin) createPC(sd SessionDescription, conf Configuration, onEst
 	return
 }
 
-// onBandwidthEstimate 接收每个 PeerConnection 的带宽估计器。
-// 本任务先做安全空实现，按连接的指标接入由后续任务完成。
+// onBandwidthEstimate 是插件级带宽估计器回调，仅打印一条 debug 日志，不落按连接指标。
+// batchv2/旧批量通路经 CreatePC 使用它，保持既有行为；
+// servePlay/servePush 走 CreatePCWithEstimator，把估计器绑定到各自的 MultipleConnection 指标。
 func (p *WebRTCPlugin) onBandwidthEstimate(estimator cc.BandwidthEstimator) {
 	if estimator == nil {
 		return

@@ -177,7 +177,7 @@ interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 tran
 | A3 | 单观众 2K@24，3% 丢包，10 分钟 | 无永久卡死；恢复 ≤ 5s；画面可辨（允许短暂花屏） | **PENDING**：同上 |
 | A4 | 10 观众同看一路 2K | 服务端 CPU（16 核基准）≤ 50%；每观众出向 ≈ 码率 | **PARTIAL**：10 观众短测（2×60s）服务端 **≈0.50 核**（12 逻辑核的 4.2%）、出向 **101 Mbps**、订阅者恒 10、NACK 0；16 核真机 ≤50% 与观众分机 PENDING（`report-load.md`） |
 | A5 | 50 观众（batchv2） | 无连接崩溃；CPU 可接受；日志无错误风暴 | **PENDING**：仅完成 batchv2 2 路流 sanity（通路可用）；50 观众需真机 + 分布式客户端 |
-| A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 | **PARTIAL**：H264 2K 播放通过；WHIP H264+Opus 推流通过（Task 6）；AAC→Opus **不可用**（缺 `aac_opus_transcode` 标签与 `3rd/ffmpeg6` 库）；H265/AV1/TCP/WHEP/batchv2 **未测**（功能与性能均未验证） |
+| A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 | **PARTIAL**：H264 2K 播放通过；WHIP H264+Opus 推流通过（Task 6）；AAC→Opus **不可用**（缺 `aac_opus_transcode` 标签与 `3rd/ffmpeg6` 库）；batchv2 仅 2 路流 sanity（通路可用，性能未验证）；H265/AV1/TCP/WHEP **未测**（功能与性能均未验证） |
 | A7 | 可观测 | 日志能读出目标码率与实际码率，弱网时目标码率下降 | **PARTIAL**：`global.loglevel: debug` 每 10s 输出 `webrtc stats`（target/send bitrate 等）已实测；弱网 target 下降 PENDING |
 | A8 | 回滚 | `cc.enable=false` 后行为与升级前一致 | **MEASURED**：60s **24.00fps / 0 丢帧 / 0 NACK/PLI / jitter 8.5ms**，与升级前基线一致；运行时 `target_bitrate=0`；30min cc-off 长稳未做 |
 | A9 | RTSP 拉流单路 2K | 拉流状态稳定，WebRTC 播放帧率 ≥ 23.5fps | **MEASURED（短测）**：默认 GCC 5 次 60s 运行——首跑 17.91fps（start 后立即测量的冷启动，§4.1.4），4 次复跑 **22.71–23.65fps**（最好 23.65fps、1301 帧/55s）；t≥25s 稳态 **24.0fps**（四次复跑 23.83–24.14）、0 包丢失；10 路并发 / 10 分钟 PENDING（`report-rtsp-pull.md` §4.1.3） |

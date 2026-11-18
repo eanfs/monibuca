@@ -152,8 +152,9 @@ PLI（Picture Loss Indication）用于在视频丢包时请求关键帧。旧配
 
 - 同一 Publisher 两次 PLI 至少间隔 **500ms**（硬约束）；节流状态在所有观众之间共享，
   观众数不会放大 PLI 频率；
-- 长时间收不到关键帧（无 IDR ≥ **5s**）时，服务端会主动向上游请求一次关键帧；
-  5s 是触发条件，不绕过 500ms 硬窗口；
+- 长时间收不到关键帧（无 IDR ≥ **5s**）期间，服务端会持续向上游请求关键帧，
+  但每个 500ms 窗口最多一次（即最多 2Hz），直到收到 IDR；5s 只是触发条件，
+  不绕过 500ms 硬窗口；
 - 观众侧 PLI 与严重丢包（`FractionLost` > 约 10%）在通过节流后转发给 WebRTC 推流端；
   非 WebRTC 源（RTMP 推流、RTSP 拉流代理等）没有 PLI 通道，静默跳过。
 
@@ -288,7 +289,10 @@ webrtc:
 
 ### 可观测性
 
-将 `global.loglevel` 设为 `debug` 后，每个 WebRTC 连接在有视频帧流动时每 **10 秒**输出一条：
+将 `global.loglevel` 设为 `debug` 后，标准拉流通路（`servePlay`，即 WHEP 播放的每个订阅端
+`MultipleConnection`）在有视频帧流动时每 **10 秒**输出一条；WHIP 推流（`/webrtc/push`）与
+batchv2 `RemoteStream` 不输出该日志。`send_bitrate` 按 RTP **有效载荷**字节计算（不含 RTP 头
+与 NACK 重传），`packets_sent` 也只统计正常写出的 RTP 包（不含 NACK 重传）。
 
 ```
 DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bitrate=9812258 packets_sent=17207 packets_lost=212 pli_requests=0
@@ -297,8 +301,8 @@ DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bit
 | 字段 | 含义 |
 |---|---|
 | `target_bitrate` | GCC 当前目标码率（bps）；`0` 表示 GCC 未启用 |
-| `send_bitrate` | 最近一个统计窗口的实际发送码率（bps，有效载荷口径） |
-| `packets_sent` | 累计已发送 RTP 包数 |
+| `send_bitrate` | 最近一个统计窗口的实际发送码率（bps，仅 RTP 有效载荷，不含 RTP 头与 NACK 重传） |
+| `packets_sent` | 累计已发送 RTP 包数（不含 NACK 重传） |
 | `packets_lost` | 对端 RTCP ReceiverReport 报告的累计丢包（按 SSRC 取最新值求和） |
 | `pli_requests` | 服务端向推流端发出的 PLI（关键帧请求）次数 |
 

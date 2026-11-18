@@ -157,6 +157,75 @@ func TestStreamMetricsLossLatest(t *testing.T) {
 	}
 }
 
+// TestStreamMetricsLossNegativeClamped 钉住 RFC 3550 的 24-bit signed 语义：
+// TotalLost 高位置 1 表示负丢包（重复包），pion 按 uint32 解码后是 ~1677 万，
+// 这类报告块必须被忽略，不能计入 PacketsLost；正常正值报告仍需生效。
+func TestStreamMetricsLossNegativeClamped(t *testing.T) {
+	m := &StreamMetrics{}
+	m.ObserveReceiverReport(&rtcp.ReceiverReport{
+		Reports: []rtcp.ReceptionReport{{SSRC: 1, TotalLost: 5}},
+	})
+	if got := m.Snapshot().PacketsLost; got != 5 {
+		t.Fatalf("PacketsLost after normal report = %d, want 5", got)
+	}
+
+	for _, negative := range []uint32{1 << 23, 1<<24 - 1} {
+		m.ObserveReceiverReport(&rtcp.ReceiverReport{
+			Reports: []rtcp.ReceptionReport{{SSRC: 1, TotalLost: negative}},
+		})
+		if got := m.Snapshot().PacketsLost; got != 5 {
+			t.Fatalf("PacketsLost after negative TotalLost %d = %d, want 5", negative, got)
+		}
+	}
+
+	// 上限内的正值（含最大值 1<<23-1）仍应正常累计。
+	m.ObserveReceiverReport(&rtcp.ReceiverReport{
+		Reports: []rtcp.ReceptionReport{{SSRC: 2, TotalLost: maxReportableLost}},
+	})
+	if got, want := m.Snapshot().PacketsLost, uint64(5+maxReportableLost); got != want {
+		t.Fatalf("PacketsLost after max positive report = %d, want %d", got, want)
+	}
+}
+
+// TestStreamMetricsLossSSRCCap 钉住 SSRC 追踪上限：异常客户端持续引入新 SSRC 时
+// latestLost 不能无界增长；已达上限后未知 SSRC 被忽略，已追踪 SSRC 的更新仍生效。
+func TestStreamMetricsLossSSRCCap(t *testing.T) {
+	m := &StreamMetrics{}
+	for i := uint32(1); i <= maxLostSSRC; i++ {
+		m.ObserveReceiverReport(&rtcp.ReceiverReport{
+			Reports: []rtcp.ReceptionReport{{SSRC: i, TotalLost: 1}},
+		})
+	}
+	if got := len(m.latestLost); got != maxLostSSRC {
+		t.Fatalf("latestLost size = %d, want %d", got, maxLostSSRC)
+	}
+
+	// 第 17 个 SSRC：忽略报告块，map 不增长，也不计入 PacketsLost。
+	m.ObserveReceiverReport(&rtcp.ReceiverReport{
+		Reports: []rtcp.ReceptionReport{{SSRC: 100, TotalLost: 1000}},
+	})
+	if got := len(m.latestLost); got != maxLostSSRC {
+		t.Fatalf("latestLost size after new SSRC = %d, want %d", got, maxLostSSRC)
+	}
+	if _, ok := m.latestLost[100]; ok {
+		t.Fatal("new SSRC should be ignored once latestLost is full")
+	}
+	if got, want := m.Snapshot().PacketsLost, uint64(maxLostSSRC); got != want {
+		t.Fatalf("PacketsLost with ignored SSRC = %d, want %d", got, want)
+	}
+
+	// 已追踪 SSRC 的更新不受上限影响。
+	m.ObserveReceiverReport(&rtcp.ReceiverReport{
+		Reports: []rtcp.ReceptionReport{{SSRC: 1, TotalLost: 7}},
+	})
+	if got := m.latestLost[1]; got != 7 {
+		t.Fatalf("known SSRC update = %d, want 7", got)
+	}
+	if got, want := m.Snapshot().PacketsLost, uint64(maxLostSSRC-1+7); got != want {
+		t.Fatalf("PacketsLost after known SSRC update = %d, want %d", got, want)
+	}
+}
+
 // TestMultipleConnectionBindsEstimator 钉住 Ruling 4：
 // 估计器回调可能早于 Start（metrics 尚未创建）触发，Start 时补绑定；
 // 已绑定后重复调用应幂等，且目标码率变化要写入指标。
