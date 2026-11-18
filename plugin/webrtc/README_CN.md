@@ -5,6 +5,7 @@
 - [WebRTC 简介](#webrtc-简介)
 - [插件概述](#插件概述)
 - [配置说明](#配置说明)
+- [2K 高码率与拥塞控制（GCC）](#2k-高码率与拥塞控制gcc)
 - [基本使用](#基本使用)
 - [推流（Publish）](#推流publish)
 - [拉流（Play）](#拉流play)
@@ -97,13 +98,21 @@ webrtc:
   # - udp:10000-20000 (UDP 端口范围)
   port: tcp:9000
   
-  # PLI 请求间隔（视频丢包后请求关键帧）
-  pli: 2s
+  # 发送端拥塞控制（GCC），默认开启；cc.enable=false 可回滚到升级前行为
+  cc:
+    enable: true
+    initialbitrate: 2000000   # 初始目标码率（bps），2K 高码率源见下文起播说明
+    minbitrate: 300000        # 目标码率下限（bps）
+    maxbitrate: 20000000      # 目标码率上限（bps）
+
+  # PLI 请求间隔（已废弃：字段仅为兼容旧配置保留，不再生效；当前按 Publisher 自动节流）
+  # pli: 2s
   
   # 是否启用 DataChannel（用于不支持编码格式时的备用传输）
   enabledc: false
   
   # MimeType 过滤列表（为空则不过滤）
+  # 注意：默认不含 audio/opus，标准 Chrome WHIP 推流需要手动加入（见下文）
   mimetype:
     - video/H264
     - video/H265
@@ -136,9 +145,17 @@ webrtc:
    port: udp:10000-20000
    ```
 
-#### PLI 间隔（PLI）
+#### PLI 行为（`pli` 配置已废弃）
 
-PLI（Picture Loss Indication）用于在视频丢包时请求关键帧。默认 2 秒发送一次 PLI 请求。
+PLI（Picture Loss Indication）用于在视频丢包时请求关键帧。旧配置项 `webrtc.pli`（默认每 2 秒定时请求）
+**已废弃**：字段仅为兼容旧配置文件保留，**不再生效**。当前按 Publisher 统一节流：
+
+- 同一 Publisher 两次 PLI 至少间隔 **500ms**（硬约束）；节流状态在所有观众之间共享，
+  观众数不会放大 PLI 频率；
+- 长时间收不到关键帧（无 IDR ≥ **5s**）时，服务端会主动向上游请求一次关键帧；
+  5s 是触发条件，不绕过 500ms 硬窗口；
+- 观众侧 PLI 与严重丢包（`FractionLost` > 约 10%）在通过节流后转发给 WebRTC 推流端；
+  非 WebRTC 源（RTMP 推流、RTSP 拉流代理等）没有 PLI 通道，静默跳过。
 
 #### DataChannel（EnableDC）
 
@@ -215,6 +232,108 @@ webrtc:
 2. **IP 地址准确性**：确保配置的公网 IP 是服务器实际对外的公网 IP
 3. **端口映射**：如果使用 Docker 或端口转发，确保公网端口已正确映射
 4. **IPv6 支持**：如果服务器有 IPv6 地址，可以同时配置 `publicipv6`
+
+## 2K 高码率与拥塞控制（GCC）
+
+本节说明 2K（2560×1440）@24fps 等高码率场景下的发送端拥塞控制、PLI 节流、可观测性与已知限制。
+
+### 依赖版本与拦截器顺序
+
+发送端拥塞控制要求 **`github.com/pion/webrtc/v4 v4.2.26`**（配套 `pion/interceptor v0.1.51`、
+`pion/rtp v1.10.6`、`pion/rtcp v1.2.20`）。拦截器注册顺序（`plugin/webrtc/pkg/util.go` 的
+`createInterceptorRegistry`）必须保持：
+
+1. `cc.NewInterceptor(...)`：GCC 带宽估计器 + pacer；
+2. TWCC header extension sender（`ConfigureTWCCHeaderExtensionSender`）：在每个出站 RTP 包写入
+   transport-wide-cc 序号；
+3. `RegisterDefaultInterceptors`：NACK / RTCP report / stats 等默认拦截器。
+
+缺少第 2 步或顺序颠倒时，GCC pacer 会以 `missing transport layer cc header extension`
+丢弃所有出站包——表现为 ICE 已连接、收到 track，但画面完全不出帧。修改拦截器链时
+**不要删除 TWCC header extension 注册**（`cc.enable=false` 分支不注册 cc/TWCC，行为与升级前一致）。
+
+### `cc` 配置
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `webrtc.cc.enable` | `true` | 是否启用 GCC 发送端拥塞控制 |
+| `webrtc.cc.initialbitrate` | `2000000` | 初始目标码率（bps） |
+| `webrtc.cc.minbitrate` | `300000` | 目标码率下限（bps），防止完全停发 |
+| `webrtc.cc.maxbitrate` | `20000000` | 目标码率上限（bps），覆盖 2K H264 8–12 Mbps 并留余量 |
+
+```yaml
+webrtc:
+  cc:
+    enable: true
+    initialbitrate: 2000000
+    minbitrate: 300000
+    maxbitrate: 20000000
+```
+
+也可用环境变量覆盖，例如 `WEBRTC_CC_ENABLE=false`（优先级高于配置文件）。
+
+### 回滚
+
+`cc.enable=false` 即回退到升级前的发送行为（拦截器链不含 cc/TWCC 拦截器，代码路径与
+pion v4.1.4 时期一致），无需回滚版本。回滚后服务端 `webrtc stats` 日志中的
+`target_bitrate` 恒为 `0`，可据此确认 GCC 未参与。
+
+### 可观测性
+
+将 `global.loglevel` 设为 `debug` 后，每个 WebRTC 连接在有视频帧流动时每 **10 秒**输出一条：
+
+```
+DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bitrate=9812258 packets_sent=17207 packets_lost=212 pli_requests=0
+```
+
+| 字段 | 含义 |
+|---|---|
+| `target_bitrate` | GCC 当前目标码率（bps）；`0` 表示 GCC 未启用 |
+| `send_bitrate` | 最近一个统计窗口的实际发送码率（bps，有效载荷口径） |
+| `packets_sent` | 累计已发送 RTP 包数 |
+| `packets_lost` | 对端 RTCP ReceiverReport 报告的累计丢包（按 SSRC 取最新值求和） |
+| `pli_requests` | 服务端向推流端发出的 PLI（关键帧请求）次数 |
+
+### 2K 起播冷启动说明
+
+默认 `initialbitrate=2000000`（2 Mbps）对 2K@24 约 10 Mbps 的高码率源明显偏低：新订阅建立时
+pacer 从 2 Mbps 起步，会在最初一段时间积压，表现为起播阶段帧率下探、jitter buffer 升高与
+PLI/丢帧，GCC 收敛到源码率后才恢复满帧。本机实测（2560×1440@24、10 Mbps 合成源、回环）：
+
+- 直连 RTMP → WebRTC：约 **80 秒**才回到 23.9 fps 稳态；
+- RTSP 拉流 → WebRTC：约 **20–25 秒**回到 24.0 fps 稳态。
+
+生产 2K 场景可评估把 `initialbitrate` 提到接近源码率（如 **8–10 Mbps**）以缩短起播窗口；
+代价是弱网/低带宽接入时起播更激进，可能带来更多早期丢包与延迟，需结合真实网络验证。
+**默认值保持 2 Mbps 不变**，长稳验收（30 分钟）会摊薄该窗口。
+
+### WHIP 推流音频（Opus）
+
+默认 `webrtc.mimetype` 只包含 `video/H264`、`video/H265`、`audio/PCMA`、`audio/PCMU`。
+标准 Chrome WHIP 推流默认使用 **Opus** 音频；若保持默认过滤，服务端将不接受 Opus 音轨。
+需要浏览器标准 WHIP 音频时，显式加入 `audio/opus`：
+
+```yaml
+webrtc:
+  mimetype:
+    - video/H264
+    - audio/opus
+```
+
+`mimetype` 为空表示不过滤（允许全部已注册编解码器）。
+
+### 已知限制
+
+- **MP4 录制暂不支持 Opus 音频（A12 产品阻断）**：WebRTC/WHIP 推流（H264 + Opus）本身可用，
+  但录制到 MP4 时 progressive 模式拒绝 Opus
+  （`unsupported audio codec for mp4 record: *codec.OPUSCtx`，每秒生成一个约 1 秒的纯视频碎片），
+  fMP4 模式在 `CreateOpusSpecificBox`/`ParseExtranData` panic。录制列表里的
+  `audioCodec:"opus"` 来自 publisher 元数据，不代表文件内真的有音轨。播放端
+  （ffplay/VLC/Chrome）本身支持 Opus-in-MP4，阻塞点在 Monibuca 录制器封装。
+- **AAC → Opus 拉流转码需要构建支持**：需带 `aac_opus_transcode` 构建标签并具备
+  `3rd/ffmpeg6` 预编译库；默认构建只命中 stub，日志提示
+  `AAC->Opus transcode unavailable, WebRTC video only ... error=aac_opus_transcode build tag not enabled`，
+  此时 WebRTC 只出视频。
 
 ## 基本使用
 
@@ -954,6 +1073,9 @@ webrtc:
   - 在编码端改用 Opus；
   - 启用 DataChannel（`enabledc: true`），通过 DataChannel 传输 FLV 封装的 AAC 音频；
   - 在推流前进行音频转码（如通过其他插件或外部转码流程）。
+- 若需要服务端 AAC→Opus 转码，构建时需带 `aac_opus_transcode` 构建标签并具备 `3rd/ffmpeg6`
+  预编译库；默认构建只命中 stub，日志会提示 `AAC->Opus transcode unavailable, WebRTC video only`。
+  详见「2K 高码率与拥塞控制（GCC）」的已知限制。
 
 ## 总结
 
