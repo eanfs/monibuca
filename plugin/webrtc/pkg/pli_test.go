@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pion/rtcp"
+	pion "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
 )
 
@@ -123,18 +124,114 @@ func TestPublisherKeyFrameRequesterRegistry(t *testing.T) {
 		t.Fatalf("lookup after register = %p, want %p", got, conn)
 	}
 
-	unregisterPublisherKeyFrameRequester(pub)
+	unregisterPublisherKeyFrameRequester(pub, conn)
 	if got := lookupPublisherKeyFrameRequester(pub); got != nil {
 		t.Fatalf("lookup after unregister = %p, want nil", got)
 	}
 
+	// 旧连接注销不得删除同一 Publisher 上新注册的连接条目。
+	newConn := &MultipleConnection{}
+	registerPublisherKeyFrameRequester(pub, conn)
+	registerPublisherKeyFrameRequester(pub, newConn)
+	unregisterPublisherKeyFrameRequester(pub, conn)
+	if got := lookupPublisherKeyFrameRequester(pub); got != newConn {
+		t.Fatalf("stale unregister removed newer entry: got %p, want %p", got, newConn)
+	}
+	unregisterPublisherKeyFrameRequester(pub, newConn)
+
 	// 非法输入不应改变注册表
 	registerPublisherKeyFrameRequester(nil, conn)
 	registerPublisherKeyFrameRequester(pub, nil)
+	unregisterPublisherKeyFrameRequester(nil, conn)
+	unregisterPublisherKeyFrameRequester(pub, nil)
 	if got := lookupPublisherKeyFrameRequester(pub); got != nil {
 		t.Fatalf("nil guard failed: lookup = %p, want nil", got)
 	}
 	if got := lookupPublisherKeyFrameRequester(nil); got != nil {
 		t.Fatalf("nil publisher lookup = %p, want nil", got)
+	}
+}
+
+// TestEnsurePLIThrottlerIdempotent 验证 ensurePLIThrottler 幂等：
+// 重复调用返回同一实例，且创建的是生产默认窗口的节流器。
+func TestEnsurePLIThrottlerIdempotent(t *testing.T) {
+	conn := &MultipleConnection{}
+	first := conn.ensurePLIThrottler()
+	if first == nil {
+		t.Fatal("ensurePLIThrottler must create a throttler")
+	}
+	if first.MinInterval != defaultPLIMinInterval || first.Fallback != defaultPLIFallback {
+		t.Fatalf("throttler = (%v, %v), want (%v, %v)",
+			first.MinInterval, first.Fallback, defaultPLIMinInterval, defaultPLIFallback)
+	}
+	for i := 0; i < 3; i++ {
+		if got := conn.ensurePLIThrottler(); got != first {
+			t.Fatalf("ensure call #%d = %p, want same instance %p", i+2, got, first)
+		}
+	}
+	if conn.pliThrottler != first {
+		t.Fatalf("pliThrottler = %p, want %p", conn.pliThrottler, first)
+	}
+
+	var nilConn *MultipleConnection
+	if got := nilConn.ensurePLIThrottler(); got != nil {
+		t.Fatalf("nil connection ensure = %p, want nil", got)
+	}
+}
+
+// TestCanRequestKeyFrameNilThrottler 验证节流器缺失时失败关闭：
+// 即使 PeerConnection 已就绪也不放行，且 requestKeyFrame 不 panic、不发送。
+// 这钉住 CFClient 等绕过 MultipleConnection.Start 的路径不会退化为
+// 无节流的按包速率 PLI。
+func TestCanRequestKeyFrameNilThrottler(t *testing.T) {
+	now := time.Unix(0, 0)
+
+	// 连接未建立：失败关闭。
+	conn := &MultipleConnection{}
+	if conn.canRequestKeyFrame(now) {
+		t.Fatal("connection without peer connection must not allow keyframe request")
+	}
+	conn.requestKeyFrame(now) // 不得 panic
+
+	// PeerConnection 就绪但节流器缺失：同样失败关闭。
+	pc, err := pion.NewPeerConnection(pion.Configuration{})
+	if err != nil {
+		t.Fatalf("create peer connection: %v", err)
+	}
+	defer pc.Close()
+	conn = &MultipleConnection{Connection: Connection{PeerConnection: pc}}
+	if conn.canRequestKeyFrame(now) {
+		t.Fatal("nil throttler must fail closed even with peer connection")
+	}
+	conn.requestKeyFrame(now) // 不得 panic / 不得发送 PLI
+
+	var nilConn *MultipleConnection
+	if nilConn.canRequestKeyFrame(now) {
+		t.Fatal("nil connection must not allow keyframe request")
+	}
+	nilConn.requestKeyFrame(now) // 不得 panic
+}
+
+// TestCanRequestKeyFrameUsesThrottlerWindow 验证初始化后的判定入口
+// 与生产 PLI 路径共用 500ms 硬窗口。
+func TestCanRequestKeyFrameUsesThrottlerWindow(t *testing.T) {
+	pc, err := pion.NewPeerConnection(pion.Configuration{})
+	if err != nil {
+		t.Fatalf("create peer connection: %v", err)
+	}
+	defer pc.Close()
+	conn := &MultipleConnection{Connection: Connection{PeerConnection: pc}}
+	if conn.ensurePLIThrottler() == nil {
+		t.Fatal("ensurePLIThrottler must create a throttler")
+	}
+	now := time.Unix(0, 0)
+	if !conn.canRequestKeyFrame(now) {
+		t.Fatal("first request after ensure must pass")
+	}
+	if conn.canRequestKeyFrame(now.Add(100 * time.Millisecond)) {
+		t.Fatal("request inside 500ms window must be blocked")
+	}
+	if !conn.canRequestKeyFrame(now.Add(600 * time.Millisecond)) {
+		t.Fatal("request after window must pass")
 	}
 }

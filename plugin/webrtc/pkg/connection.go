@@ -71,6 +71,9 @@ type MultipleConnection struct {
 
 	// 以下 PLI 状态只对 WebRTC 推流端（Publisher 非空）有意义，
 	// 由该 Publisher 的所有观众共享，确保 PLI 速率不随观众数放大。
+	// pliThrottler 由 ensurePLIThrottler 幂等创建：正常路径在 Start 初始化，
+	// Cloudflare 拉流（CFClient.Start 直接调用 Receive）则在 Receive 入口初始化。
+	pliOnce      sync.Once
 	pliThrottler *PLIThrottler
 	// lastKeyFrame 是最近一次成功写入 Publisher 的 IDR 帧时间（UnixNano）。
 	lastKeyFrame atomic.Int64
@@ -90,11 +93,13 @@ func registerPublisherKeyFrameRequester(pub *m7s.Publisher, conn *MultipleConnec
 	publisherKeyFrameRequesters.Store(pub, conn)
 }
 
-func unregisterPublisherKeyFrameRequester(pub *m7s.Publisher) {
-	if pub == nil {
+// unregisterPublisherKeyFrameRequester 只删除 conn 自己注册的条目：
+// 同一 Publisher 的新 ingest 连接已重新注册时，旧连接的 Dispose 不能误删新条目。
+func unregisterPublisherKeyFrameRequester(pub *m7s.Publisher, conn *MultipleConnection) {
+	if pub == nil || conn == nil {
 		return
 	}
-	publisherKeyFrameRequesters.Delete(pub)
+	publisherKeyFrameRequesters.CompareAndDelete(pub, conn)
 }
 
 func lookupPublisherKeyFrameRequester(pub *m7s.Publisher) *MultipleConnection {
@@ -141,11 +146,25 @@ func (IO *MultipleConnection) addSent(payloadBytes int) {
 	IO.metrics.AddSent(payloadBytes)
 }
 
+// ensurePLIThrottler 幂等地创建本 Publisher 共享的 PLI 节流器。
+// 正常路径由 Start 调用；Cloudflare 拉流客户端（CFClient.Start）绕过
+// MultipleConnection.Start 直接调用 Receive，因此 Receive 入口也必须调用，
+// 否则逐包兜底检测会在无节流器状态下按包速率发送 PLI。
+func (IO *MultipleConnection) ensurePLIThrottler() *PLIThrottler {
+	if IO == nil {
+		return nil
+	}
+	IO.pliOnce.Do(func() {
+		IO.pliThrottler = NewPLIThrottler(defaultPLIMinInterval, defaultPLIFallback)
+	})
+	return IO.pliThrottler
+}
+
 func (IO *MultipleConnection) Start() (err error) {
 	if IO.metrics == nil {
 		IO.metrics = &StreamMetrics{}
 	}
-	IO.pliThrottler = NewPLIThrottler(defaultPLIMinInterval, defaultPLIFallback)
+	IO.ensurePLIThrottler()
 	if IO.Publisher != nil {
 		// 只有 WebRTC 推流端能向源端发 PLI；注册后该 Publisher 的所有观众
 		// 共享本连接的节流预算（Ruling 7）。
@@ -199,14 +218,23 @@ func (IO *MultipleConnection) Start() (err error) {
 // 语义（接口与测试按 brief 固定），但“距上次关键帧已超过 5s”是调用方
 // （Receive 的逐包无 IDR 检查）的触发条件，不能成为绕过硬窗口的旁路——
 // 否则恶意/高频观众可在无 IDR 期间突破“同一 Publisher 500ms 内最多一次”。
+//
+// 节流器缺失时失败关闭（见 canRequestKeyFrame）：逐包兜底检测是高频
+// 调用点，宁可少发一次 PLI，也不能在无节流状态下退化成按包速率的 PLI 风暴。
 func (IO *MultipleConnection) requestKeyFrame(now time.Time) {
-	if IO == nil || IO.PeerConnection == nil {
-		return
-	}
-	if !IO.pliThrottler.Allow(now, now) {
+	if !IO.canRequestKeyFrame(now) {
 		return
 	}
 	IO.sendPLI()
+}
+
+// canRequestKeyFrame 判断此刻是否允许发送一次 PLI。
+// 连接未就绪或节流器缺失时返回 false（失败关闭）。
+func (IO *MultipleConnection) canRequestKeyFrame(now time.Time) bool {
+	if IO == nil || IO.PeerConnection == nil || IO.pliThrottler == nil {
+		return false
+	}
+	return IO.pliThrottler.Allow(now, now)
 }
 
 // requestFallbackKeyFrame 是推流端“长时间无 IDR”兜底检测的入口，
@@ -229,6 +257,9 @@ func (IO *MultipleConnection) sendPLI() {
 }
 
 func (IO *MultipleConnection) Receive() {
+	// CFClient.Start 不经过 MultipleConnection.Start，必须在此初始化节流器，
+	// 否则 Receive 中的逐包兜底会在 nil 节流器下按包速率触发 PLI。
+	IO.ensurePLIThrottler()
 	puber := IO.Publisher
 	IO.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
 		codecParameters := track.Codec()
@@ -661,7 +692,7 @@ func (IO *MultipleConnection) Send() (err error) {
 
 func (IO *MultipleConnection) Dispose() {
 	if IO.Publisher != nil {
-		unregisterPublisherKeyFrameRequester(IO.Publisher)
+		unregisterPublisherKeyFrameRequester(IO.Publisher, IO)
 	}
 	IO.PeerConnection.Close()
 }
