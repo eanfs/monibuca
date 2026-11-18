@@ -83,16 +83,19 @@ SCTP RACK（DataChannel 吞吐 +71%）、stats 拦截器等。v5.0.0-rc 是不�
 
 ### 4.2 启用 GCC 拥塞控制（G2）
 
-v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-cc 扩展 + feedback 注册 + sender interceptor），
-但**不含带宽估计与 pacer**。需要额外接入 `pion/interceptor/pkg/cc` + `gcc`。
+v4.2.26 的 `RegisterDefaultInterceptors` 会注册 TWCC 的 SDP 能力/feedback 处理与发送侧 sender
+interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 transport-cc header extension**，
+也**不含带宽估计与 pacer**。头扩展写入需要单独调用 `ConfigureTWCCHeaderExtensionSender`
+（否则 pacer 丢包，见下方实现修正），带宽估计与 pacer 则需接入 `pion/interceptor/pkg/cc` + `gcc`。
 
 设计：
 
 - 在 [plugin/webrtc/pkg/util.go](plugin/webrtc/pkg/util.go) 的 `CreateAPI` 中改为自定义注册顺序：
 
 ```
-1. cc.NewInterceptor(gcc.NewSendSideBWE)   // GCC，必须在 NACK 之前
-2. RegisterDefaultInterceptors(m, i)        // NACK / RTCP report / TWCC sender / stats
+1. cc.NewInterceptor(gcc.NewSendSideBWE)    // GCC，必须在 NACK 之前
+2. ConfigureTWCCHeaderExtensionSender(m, i) // 写入 transport-cc 头扩展（pacer 依赖）
+3. RegisterDefaultInterceptors(m, i)        // NACK / RTCP report / TWCC sender / stats
 ```
 
 - GCC 配置项（新增到 `WebRTCPlugin`，YAML 小写）：
@@ -174,10 +177,10 @@ v4.2.26 的 `RegisterDefaultInterceptors` 已包含 TWCC 发送侧（transport-c
 | A3 | 单观众 2K@24，3% 丢包，10 分钟 | 无永久卡死；恢复 ≤ 5s；画面可辨（允许短暂花屏） | **PENDING**：同上 |
 | A4 | 10 观众同看一路 2K | 服务端 CPU（16 核基准）≤ 50%；每观众出向 ≈ 码率 | **PARTIAL**：10 观众短测（2×60s）服务端 **≈0.50 核**（12 逻辑核的 4.2%）、出向 **101 Mbps**、订阅者恒 10、NACK 0；16 核真机 ≤50% 与观众分机 PENDING（`report-load.md`） |
 | A5 | 50 观众（batchv2） | 无连接崩溃；CPU 可接受；日志无错误风暴 | **PENDING**：仅完成 batchv2 2 路流 sanity（通路可用）；50 观众需真机 + 分布式客户端 |
-| A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 | **PARTIAL**：H264 2K 播放通过；WHIP H264+Opus 推流通过（Task 6）；AAC→Opus **不可用**（缺 `aac_opus_transcode` 标签与 `3rd/ffmpeg6` 库）；H265/AV1/TCP/WHEP/batchv2 性能 PENDING |
+| A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 | **PARTIAL**：H264 2K 播放通过；WHIP H264+Opus 推流通过（Task 6）；AAC→Opus **不可用**（缺 `aac_opus_transcode` 标签与 `3rd/ffmpeg6` 库）；H265/AV1/TCP/WHEP/batchv2 **未测**（功能与性能均未验证） |
 | A7 | 可观测 | 日志能读出目标码率与实际码率，弱网时目标码率下降 | **PARTIAL**：`global.loglevel: debug` 每 10s 输出 `webrtc stats`（target/send bitrate 等）已实测；弱网 target 下降 PENDING |
 | A8 | 回滚 | `cc.enable=false` 后行为与升级前一致 | **MEASURED**：60s **24.00fps / 0 丢帧 / 0 NACK/PLI / jitter 8.5ms**，与升级前基线一致；运行时 `target_bitrate=0`；30min cc-off 长稳未做 |
-| A9 | RTSP 拉流单路 2K | 拉流状态稳定，WebRTC 播放帧率 ≥ 23.5fps | **MEASURED（短测）**：默认 GCC 60s 平均 **23.65fps**（1301 帧/55s），t≥25s 稳态 **24.0fps**、0 包丢失；10 路并发 / 10 分钟 PENDING（`report-rtsp-pull.md`） |
+| A9 | RTSP 拉流单路 2K | 拉流状态稳定，WebRTC 播放帧率 ≥ 23.5fps | **MEASURED（短测）**：默认 GCC 5 次 60s 运行——首跑 17.91fps（start 后立即测量的冷启动，§4.1.4），4 次复跑 **22.71–23.65fps**（最好 23.65fps、1301 帧/55s）；t≥25s 稳态 **24.0fps**（四次复跑 23.83–24.14）、0 包丢失；10 路并发 / 10 分钟 PENDING（`report-rtsp-pull.md` §4.1.3） |
 | A10 | RTSP 拉流重连 | 源恢复后 ≤ 5s 重新出流，无重连风暴 | **MEASURED（短测）**：源恢复后 **0.38s** 拉流可用、代理始终 Pulling；观众跨断流连续性 PENDING |
 | A11 | RTSP 源录制 | ffprobe 分辨率/帧率/时长/音轨正确，文件可播 | **PASS**：视频 2560×1440 h264 **24.072fps** / **25.132s**；AAC 音轨 48000Hz / 18.049s（`report-record.md`） |
 | A12 | WebRTC 流录制 | WHIP H264+Opus → MP4 ffprobe 正常；Opus-in-MP4 播放器兼容性结论已记录 | **BLOCKED（录制端）**：WHIP H264+Opus 推流通过；MP4 录制 Opus 失败——progressive 报 `unsupported audio codec for mp4 record: *codec.OPUSCtx`（每秒 1 个纯视频碎片），fMP4 在 `CreateOpusSpecificBox` panic；播放端（ffplay/VLC/Chrome）对合成 Opus-in-MP4 样本可播，瓶颈在 Monibuca 封装 |

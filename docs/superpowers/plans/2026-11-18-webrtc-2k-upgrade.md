@@ -540,7 +540,7 @@ PR 描述包含：版本表、2K@24 前后对比、RTSP/录制结论、`cc.enabl
 | 2 GCC 拥塞控制 | `96be596a`、`241517a0` | DONE | `CCConfig` + `cc.enable` 开关；`default.yaml` 默认 2M/300k/20M；单测钉住注册顺序与非零默认值 |
 | 3 发送端可观测性 | `ebc1503c` | DONE | `StreamMetrics`、每连接 estimator、每 10s `webrtc stats`；`metrics_test.go` |
 | 4 PLI 按需转发 + 清理空转 RTCP | `5bec3f37`、`4df526c5`、`6448b9bf` | DONE | 按 Publisher 的 `PLIThrottler`（500ms 硬窗口 + 5s 无 IDR 调用方触发）；观众 PLI/严重丢包转发；旧固定 2s PLI 删除；`pli_test.go` |
-| 5 RTSP 拉流兼容性 | `724263e3`、`170fe160`、`f59bb3ac` | DONE_WITH_CONCERNS | 单路 2K 默认 GCC 23.65fps（稳态 24.0）、重连 0.38s；TWCC header extension 修复（默认 GCC 出包阻断）；**10 路并发 / 10 分钟 / 真实摄像头 PENDING** |
+| 5 RTSP 拉流兼容性 | `724263e3`、`170fe160`、`f59bb3ac` | DONE_WITH_CONCERNS | 单路 2K 默认 GCC 5 次 60s 运行：4 次复跑 **22.71–23.65fps**（首跑为冷启动）、稳态 24.0、重连 0.38s；TWCC header extension 修复（默认 GCC 出包阻断）；**10 路并发 / 10 分钟 / 真实摄像头 PENDING** |
 | 6 录制兼容性 | `4bb6a03c`、`53e06d6b`、`db205192` | DONE_WITH_CONCERNS | A11 PASS、A13 PASS（3 片 60.300/59.957/54.832s）；**A12 录制端 Opus 阻断**（progressive 拒绝 `*codec.OPUSCtx`、fMP4 panic）；长录/真实摄像头/弱网/10 路并发 PENDING |
 | 7 2K@24 功能与弱网验收 | `fa63c113` | DONE_WITH_CONCERNS | 本机短测：A1 120s 平均 20.70fps（t≥80s 23.88）、A1b 30.00fps/60s、A8 24.00fps/0 丢帧、A7 日志通过；**A1 30min、A1c/A2/A3 弱网、A6 AAC→Opus、P95 延迟 PENDING** |
 | 8 观众数压测 | `f24f93b8` | DONE_WITH_CONCERNS | 10 观众：服务端 ≈0.50 核、出向 101 Mbps、订阅者恒 10、NACK 0；**A4 16 核口径 / A5 50 观众 PENDING**；发现既有 `/api/metrics` 视频-only 流 panic |
@@ -550,7 +550,7 @@ PR 描述包含：版本表、2K@24 前后对比、RTSP/录制结论、`cc.enabl
 
 **已知阻断 / 边界（必须与验收结论一起读）**：
 
-- **A12（产品阻断，本期不修）**：Monibuca MP4 录制器不能写 Opus 音轨——progressive 报 `unsupported audio codec for mp4 record: *codec.OPUSCtx` 并每秒重试（只得到 1s 纯视频碎片），fMP4 在 `CreateOpusSpecificBox → ParseExtranData` panic；DB 列表误报 `audioCodec:"opus"`。WHIP H264+Opus 推流本身通过；Opus-in-MP4 播放能力仅用 ffmpeg 合成样本验证（ffplay/VLC/Chrome 可播），修复方向见设计文档 §6。
+- **Ruling 10（A12 产品阻断，本期不改录制器）**：Monibuca MP4 录制器不能写 Opus 音轨——progressive 报 `unsupported audio codec for mp4 record: *codec.OPUSCtx` 并每秒重试（只得到 1s 纯视频碎片），fMP4 在 `CreateOpusSpecificBox → ParseExtranData` panic；DB 列表误报 `audioCodec:"opus"`。WHIP H264+Opus 推流本身通过；Opus-in-MP4 播放能力仅用 ffmpeg 合成样本验证（ffplay/VLC/Chrome 可播），修复方向见设计文档 §6。
 - **Ruling 11（既有缺陷，本期不改代码）**：`/api/metrics` 对视频-only 流（`AudioTrack == nil`）在 `prometheus.go:82` 解引用 `stream.AudioTrack.AVTrack.BPS` 触发 nil pointer panic，Prometheus 抓取会杀死整个进程；崩溃样本 `/tmp/webrtc-2k-load/fatal/2026-11-18 22:38:10.log`。该缺陷先于本次升级存在，建议单独任务加 nil 判空 + 单测，压测期间改用 `/api/stream/list`。
 
 ## Self-Review

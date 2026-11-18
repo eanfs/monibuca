@@ -98,7 +98,7 @@ webrtc:
   # - udp:10000-20000 (UDP 端口范围)
   port: tcp:9000
   
-  # 发送端拥塞控制（GCC），默认开启；cc.enable=false 可回滚到升级前行为
+  # 发送端拥塞控制（GCC），默认开启；cc.enable=false 可关闭 GCC（见下文回滚小节）
   cc:
     enable: true
     initialbitrate: 2000000   # 初始目标码率（bps），2K 高码率源见下文起播说明
@@ -246,11 +246,12 @@ webrtc:
 1. `cc.NewInterceptor(...)`：GCC 带宽估计器 + pacer；
 2. TWCC header extension sender（`ConfigureTWCCHeaderExtensionSender`）：在每个出站 RTP 包写入
    transport-wide-cc 序号；
-3. `RegisterDefaultInterceptors`：NACK / RTCP report / stats 等默认拦截器。
+3. `RegisterDefaultInterceptors`：NACK / RTCP report / TWCC sender / stats 等默认拦截器。
 
 缺少第 2 步或顺序颠倒时，GCC pacer 会以 `missing transport layer cc header extension`
 丢弃所有出站包——表现为 ICE 已连接、收到 track，但画面完全不出帧。修改拦截器链时
-**不要删除 TWCC header extension 注册**（`cc.enable=false` 分支不注册 cc/TWCC，行为与升级前一致）。
+**不要删除 TWCC header extension 注册**（`cc.enable=false` 分支只跳过 GCC 拦截器与 TWCC
+header extension writer，其余默认拦截器仍随 pion v4.2.26 注册）。
 
 ### `cc` 配置
 
@@ -274,9 +275,16 @@ webrtc:
 
 ### 回滚
 
-`cc.enable=false` 即回退到升级前的发送行为（拦截器链不含 cc/TWCC 拦截器，代码路径与
-pion v4.1.4 时期一致），无需回滚版本。回滚后服务端 `webrtc stats` 日志中的
-`target_bitrate` 恒为 `0`，可据此确认 GCC 未参与。
+`cc.enable=false` 会跳过 GCC 拦截器（带宽估计与 pacer）以及 TWCC header extension writer
+（`ConfigureTWCCHeaderExtensionSender`），但**其余默认拦截器仍由 pion v4.2.26 的
+`RegisterDefaultInterceptors` 注册**（TWCC sender/feedback、stats、NACK/RTP report），
+**并非 pion v4.1.4 时期代码路径**。发送行为等价性目前由 A8 本机 60s 短测支持
+（24.00fps / 0 丢帧 / jitter 8.5ms，`target_bitrate=0` 佐证 GCC 未参与）；
+30 分钟 cc-off 长稳尚未执行，如需完全复刻升级前链路应整体回滚依赖版本。
+回滚后服务端 `webrtc stats` 日志中的 `target_bitrate` 恒为 `0`，可据此确认 GCC 未参与。
+
+`webrtc.cc.enable` 在插件启动期读取，修改后需**重启进程**才生效；也可在启动前用
+`WEBRTC_CC_ENABLE=false` 环境变量覆盖。该开关不支持热更新。
 
 ### 可观测性
 
@@ -329,7 +337,8 @@ webrtc:
   （`unsupported audio codec for mp4 record: *codec.OPUSCtx`，每秒生成一个约 1 秒的纯视频碎片），
   fMP4 模式在 `CreateOpusSpecificBox`/`ParseExtranData` panic。录制列表里的
   `audioCodec:"opus"` 来自 publisher 元数据，不代表文件内真的有音轨。播放端
-  （ffplay/VLC/Chrome）本身支持 Opus-in-MP4，阻塞点在 Monibuca 录制器封装。
+  （ffplay/VLC/Chrome）可播 Opus-in-MP4 的结论**仅来自 ffmpeg 合成的 Opus-in-MP4 样本，
+  不是 Monibuca 录制产物**；Monibuca 当前无法产出带 Opus 音轨的可播 MP4，阻塞点在录制器封装。
 - **AAC → Opus 拉流转码需要构建支持**：需带 `aac_opus_transcode` 构建标签并具备
   `3rd/ffmpeg6` 预编译库；默认构建只命中 stub，日志提示
   `AAC->Opus transcode unavailable, WebRTC video only ... error=aac_opus_transcode build tag not enabled`，
