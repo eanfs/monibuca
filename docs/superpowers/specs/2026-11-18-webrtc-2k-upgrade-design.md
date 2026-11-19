@@ -205,7 +205,7 @@ interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 tran
 | PLI 无节流/多观众放大 | 关键帧风暴，浪费带宽并放大卡顿 | 按 Publisher 共享 `PLIThrottler`：500ms 硬窗口；5s 无 IDR 是调用方触发条件，不绕过硬窗口；非 WebRTC Publisher 无 PLI 通道时静默跳过 |
 | 2K 起播冷启动（默认 initialbitrate 2 Mbps vs 源 ~10 Mbps） | 起播阶段帧率下探、jitter buffer 升高；直连 RTMP 实测约 80s 才回稳态（RTSP 路径约 20–25s） | 生产 2K 可评估 `initialbitrate` 8–10 Mbps（注意弱网权衡）；默认值不变；30 分钟长稳验收摊薄该窗口 |
 | A12：MP4 录制不支持 Opus | WHIP H264+Opus 流无法录出带音轨的 MP4；progressive 每秒生成 1s 纯视频碎片，fMP4 panic；DB 元数据误报 `audioCodec=opus` | 本期不改录制器，记录为已知限制；录制端 Opus 支持另开任务（修 `record.go` 音频分支与 `box/dops.go` dOps 构造）；修复前调用方不要把 `audioCodec` 当真 |
-| 既有缺陷：`/api/metrics` 在视频-only 流上 panic | `prometheus.go:82` 访问 nil 的 `AudioTrack.AVTrack.BPS`，Prometheus 抓取线程 panic 会杀死整个进程 | Ruling 11：该缺陷先于本次升级存在、不在 A1–A13 范围，本期不修；部署中避免对视频-only 流抓取 `/api/metrics`；建议单独任务加 nil 判空 + 单测 |
+| 既有缺陷：`/api/metrics` 在视频-only/音频-only 流上 panic | 过去 `prometheus.go` 直接解引用另一侧为 nil 的 `AVTracks.AVTrack.BPS`，Prometheus 抓取线程 panic 会杀死整个进程 | **已修（2026-11-19 三轴 review 后）**：对 Video/Audio 两侧 AVTrack 做 nil 判空，新增 `prometheus_test.go` 回归；不再需要规避 `/api/metrics` |
 
 回滚策略：
 
@@ -228,7 +228,7 @@ interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 tran
 - **PLI 节流按 Publisher 共享**：500ms 硬最小间隔；5s 无 IDR 是调用方触发条件，不是绕过 500ms 的旁路。旧 `webrtc.pli` 配置字段保留兼容但已废弃、不再生效。
 - **2K 默认 `initialbitrate` 保持 2 Mbps**：生产可评估 8–10 Mbps 缩短起播，但弱网表现需实测；A1 的 30 分钟长稳仍待真机验收。
 - **A12 录制端 Opus 阻断记录为已知限制**：本期不改录制器；修复前不宣称 WHIP Opus 可录制，Opus-in-MP4 播放能力仅按合成样本记录。
-- **`/api/metrics` 视频-only 流 panic 属升级前既有缺陷（Ruling 11）**：不在本期范围、不修改 `prometheus.go`；仅记录精确位置/复现并建议独立 nil-guard 修复任务。
+- **`/api/metrics` 视频-only/音频-only 流 panic 属升级前既有缺陷**：三轴 review 后已补 nil 判空与回归测试，不再作为已知限制。
 
 ## 8. 留给实现者的判断
 

@@ -286,7 +286,7 @@ m7s.live/v5.(*Server).Collect(...)
 github.com/prometheus/client_golang/prometheus.(*Registry).Gather.func1()
 ```
 
-崩溃日志保留在 `/tmp/webrtc-2k-load/fatal/2026-11-18 22:38:10.log`。原因是 `prometheus.go:82` 直接访问 `stream.AudioTrack.AVTrack.BPS`，视频-only 流的 `AudioTrack` 为 nil；Prometheus 抓取线程 panic 会杀死整个进程。**本报告全部数据来自重启后的新进程（PID 86643），压测过程未再访问 `/api/metrics`。** 修复方向：`Collect` 内对 `VideoTrack/AudioTrack` 判空（一行防护 + 单测），建议另开任务处理。
+崩溃日志保留在 `/tmp/webrtc-2k-load/fatal/2026-11-18 22:38:10.log`。原因是旧 `prometheus.go:82` 直接访问 `stream.AudioTrack.AVTrack.BPS`，视频-only 流的 `AudioTrack` 为 nil；Prometheus 抓取线程 panic 会杀死整个进程。**本报告全部数据来自重启后的新进程（PID 86643），压测过程未再访问 `/api/metrics`。** 后续三轴 review 已补 `VideoTrack/AudioTrack` 两侧 AVTrack 判空与 `prometheus_test.go` 回归，不再需要规避该端点。
 
 ### 7.2 日志噪声（无功能影响）
 

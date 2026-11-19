@@ -551,7 +551,7 @@ PR 描述包含：版本表、2K@24 前后对比、RTSP/录制结论、`cc.enabl
 **已知阻断 / 边界（必须与验收结论一起读）**：
 
 - **Ruling 10（A12 产品阻断，本期不改录制器）**：Monibuca MP4 录制器不能写 Opus 音轨——progressive 报 `unsupported audio codec for mp4 record: *codec.OPUSCtx` 并每秒重试（只得到 1s 纯视频碎片），fMP4 在 `CreateOpusSpecificBox → ParseExtranData` panic；DB 列表误报 `audioCodec:"opus"`。WHIP H264+Opus 推流本身通过；Opus-in-MP4 播放能力仅用 ffmpeg 合成样本验证（ffplay/VLC/Chrome 可播），修复方向见设计文档 §6。
-- **Ruling 11（既有缺陷，本期不改代码）**：`/api/metrics` 对视频-only 流（`AudioTrack == nil`）在 `prometheus.go:82` 解引用 `stream.AudioTrack.AVTrack.BPS` 触发 nil pointer panic，Prometheus 抓取会杀死整个进程；崩溃样本 `/tmp/webrtc-2k-load/fatal/2026-11-18 22:38:10.log`。该缺陷先于本次升级存在，建议单独任务加 nil 判空 + 单测，压测期间改用 `/api/stream/list`。
+- **Ruling 11（既有缺陷，已在三轴 review 后修复）**：`/api/metrics` 对视频-only/音频-only 流曾在 `prometheus.go:82` 解引用另一侧为 nil 的 `AVTracks.AVTrack` 触发 nil pointer panic；已补两侧 AVTrack nil 判空与 `prometheus_test.go` 回归，不再需要规避 `/api/metrics`。
 
 ## Self-Review
 
