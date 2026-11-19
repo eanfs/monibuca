@@ -77,9 +77,15 @@ func (s *Server) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 	for stream := range s.Streams.Range {
-		ch <- prometheus.MustNewConstMetric(s.prometheusDesc.BPS, prometheus.GaugeValue, float64(stream.VideoTrack.AVTrack.BPS), stream.StreamPath, stream.Plugin.Meta.Name, "video")
-		ch <- prometheus.MustNewConstMetric(s.prometheusDesc.FPS, prometheus.GaugeValue, float64(stream.VideoTrack.AVTrack.FPS), stream.StreamPath, stream.Plugin.Meta.Name, "video")
-		ch <- prometheus.MustNewConstMetric(s.prometheusDesc.BPS, prometheus.GaugeValue, float64(stream.AudioTrack.AVTrack.BPS), stream.StreamPath, stream.Plugin.Meta.Name, "audio")
-		ch <- prometheus.MustNewConstMetric(s.prometheusDesc.FPS, prometheus.GaugeValue, float64(stream.AudioTrack.AVTrack.FPS), stream.StreamPath, stream.Plugin.Meta.Name, "audio")
+		// 视频-only / 音频-only 流的一侧 AVTracks.AVTrack 为 nil；
+		// 直接解引用会让 Prometheus 抓取线程 panic 并杀死整个进程。
+		if video := stream.VideoTrack.AVTrack; video != nil {
+			ch <- prometheus.MustNewConstMetric(s.prometheusDesc.BPS, prometheus.GaugeValue, float64(video.BPS), stream.StreamPath, stream.Plugin.Meta.Name, "video")
+			ch <- prometheus.MustNewConstMetric(s.prometheusDesc.FPS, prometheus.GaugeValue, float64(video.FPS), stream.StreamPath, stream.Plugin.Meta.Name, "video")
+		}
+		if audio := stream.AudioTrack.AVTrack; audio != nil {
+			ch <- prometheus.MustNewConstMetric(s.prometheusDesc.BPS, prometheus.GaugeValue, float64(audio.BPS), stream.StreamPath, stream.Plugin.Meta.Name, "audio")
+			ch <- prometheus.MustNewConstMetric(s.prometheusDesc.FPS, prometheus.GaugeValue, float64(audio.FPS), stream.StreamPath, stream.Plugin.Meta.Name, "audio")
+		}
 	}
 }

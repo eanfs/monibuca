@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	task "github.com/eanfs/gotask"
 	"github.com/langhuihui/gomem"
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/rtcp"
 	. "github.com/pion/webrtc/v4"
 	"m7s.live/v5"
@@ -56,10 +59,124 @@ type MultipleConnection struct {
 	// LocalSDP *sdp.SessionDescription
 	Subscriber *m7s.Subscriber
 	EnableDC   bool
-	PLI        time.Duration
+
+	// metrics 为按连接（每个观众/推流端）独立的发送端指标。
+	metrics *StreamMetrics
+	// bandwidthEstimator 由 GCC 拦截器在 NewPeerConnection 时回调注入；
+	// 回调可能早于 Start（metrics 尚未初始化），因此在 Start 时补绑定。
+	estimatorMu        sync.Mutex
+	bandwidthEstimator cc.BandwidthEstimator
+	estimatorBound     bool
+
+	// 以下 PLI 状态只对 WebRTC 推流端（Publisher 非空）有意义，
+	// 由该 Publisher 的所有观众共享，确保 PLI 速率不随观众数放大。
+	// pliThrottler 由 ensurePLIThrottler 幂等创建：正常路径在 Start 初始化，
+	// Cloudflare 拉流（CFClient.Start 直接调用 Receive）则在 Receive 入口初始化。
+	pliOnce      sync.Once
+	pliThrottler *PLIThrottler
+	// lastKeyFrame 是最近一次成功写入 Publisher 的 IDR 帧时间（UnixNano）。
+	lastKeyFrame atomic.Int64
+	// videoSSRC 是推流端视频轨道的 SSRC，用于填 PLI 的 MediaSSRC。
+	videoSSRC atomic.Uint32
+}
+
+// publisherKeyFrameRequesters 记录每个 WebRTC 推流 Publisher 对应的 ingest 连接。
+// 观众的 PLI/严重丢包请求经此转发给推流端；非 WebRTC Publisher 不会有条目，
+// 查不到目标时直接跳过（见 pli.go 中 forwardPublisherPLI 的说明）。
+var publisherKeyFrameRequesters sync.Map // map[*m7s.Publisher]*MultipleConnection
+
+func registerPublisherKeyFrameRequester(pub *m7s.Publisher, conn *MultipleConnection) {
+	if pub == nil || conn == nil {
+		return
+	}
+	publisherKeyFrameRequesters.Store(pub, conn)
+}
+
+// unregisterPublisherKeyFrameRequester 只删除 conn 自己注册的条目：
+// 同一 Publisher 的新 ingest 连接已重新注册时，旧连接的 Dispose 不能误删新条目。
+func unregisterPublisherKeyFrameRequester(pub *m7s.Publisher, conn *MultipleConnection) {
+	if pub == nil || conn == nil {
+		return
+	}
+	publisherKeyFrameRequesters.CompareAndDelete(pub, conn)
+}
+
+func lookupPublisherKeyFrameRequester(pub *m7s.Publisher) *MultipleConnection {
+	if pub == nil {
+		return nil
+	}
+	if v, ok := publisherKeyFrameRequesters.Load(pub); ok {
+		return v.(*MultipleConnection)
+	}
+	return nil
+}
+
+// OnBandwidthEstimate 接收本连接专属的带宽估计器。
+// 允许在 Start 之前调用：先保存，等 metrics 就绪后再绑定。
+func (IO *MultipleConnection) OnBandwidthEstimate(estimator cc.BandwidthEstimator) {
+	if estimator == nil {
+		return
+	}
+	IO.estimatorMu.Lock()
+	IO.bandwidthEstimator = estimator
+	IO.estimatorMu.Unlock()
+	IO.bindEstimator()
+}
+
+// bindEstimator 把估计器的当前目标码率与后续变化写入 metrics，幂等。
+func (IO *MultipleConnection) bindEstimator() {
+	IO.estimatorMu.Lock()
+	defer IO.estimatorMu.Unlock()
+	if IO.estimatorBound || IO.bandwidthEstimator == nil || IO.metrics == nil {
+		return
+	}
+	IO.estimatorBound = true
+	IO.metrics.TargetBitrate.Store(int64(IO.bandwidthEstimator.GetTargetBitrate()))
+	IO.bandwidthEstimator.OnTargetBitrateChange(func(bitrate int) {
+		IO.metrics.TargetBitrate.Store(int64(bitrate))
+	})
+}
+
+// collectRemoteInboundStats 从发送侧 PC 的 stats 中读取 RTT/抖动（毫秒）。
+// 只在 10s 日志点调用，避免高频 GetStats 影响转发循环。
+func (IO *MultipleConnection) collectRemoteInboundStats() {
+	if IO == nil || IO.PeerConnection == nil || IO.metrics == nil {
+		return
+	}
+	for _, s := range IO.PeerConnection.GetStats() {
+		if remote, ok := s.(RemoteInboundRTPStreamStats); ok {
+			IO.metrics.RTT.Store(int64(remote.RoundTripTime * 1000))
+			IO.metrics.Jitter.Store(int64(remote.Jitter * 1000))
+			return
+		}
+	}
+}
+
+// ensurePLIThrottler 幂等地创建本 Publisher 共享的 PLI 节流器。
+// 正常路径由 Start 调用；Cloudflare 拉流客户端（CFClient.Start）绕过
+// MultipleConnection.Start 直接调用 Receive，因此 Receive 入口也必须调用，
+// 否则逐包兜底检测会在无节流器状态下按包速率发送 PLI。
+func (IO *MultipleConnection) ensurePLIThrottler() *PLIThrottler {
+	if IO == nil {
+		return nil
+	}
+	IO.pliOnce.Do(func() {
+		IO.pliThrottler = NewPLIThrottler(defaultPLIMinInterval, defaultPLIFallback)
+	})
+	return IO.pliThrottler
 }
 
 func (IO *MultipleConnection) Start() (err error) {
+	if IO.metrics == nil {
+		IO.metrics = &StreamMetrics{}
+	}
+	IO.ensurePLIThrottler()
+	if IO.Publisher != nil {
+		// 只有 WebRTC 推流端能向源端发 PLI；注册后该 Publisher 的所有观众
+		// 共享本连接的节流预算（Ruling 7）。
+		registerPublisherKeyFrameRequester(IO.Publisher, IO)
+	}
+	IO.bindEstimator()
 	if IO.Publisher != nil {
 		IO.Using(IO.Publisher)
 		IO.Publisher.Using(IO)
@@ -98,7 +215,52 @@ func (IO *MultipleConnection) Start() (err error) {
 	return
 }
 
+// requestKeyFrame 代表本 Publisher 向上游发送一次 PLI（关键帧请求）。
+// 观众侧的 PLI/严重丢包转发都走这里，由 pliThrottler 统一限速，
+// 因此 N 个观众同时请求也只会按 MinInterval 预算发出 PLI。
+//
+// 生产路径一律使用 Allow(now, now) 的严格窗口：只剩 500ms 硬约束，
+// Fallback 分支不可达。设计决策：brief 的 PLIThrottler.Allow 保留 fallback
+// 语义（接口与测试按 brief 固定），但“距上次关键帧已超过 5s”是调用方
+// （Receive 的逐包无 IDR 检查）的触发条件，不能成为绕过硬窗口的旁路——
+// 否则恶意/高频观众可在无 IDR 期间突破“同一 Publisher 500ms 内最多一次”。
+//
+// 节流器缺失时失败关闭（见 canRequestKeyFrame）：逐包兜底检测是高频
+// 调用点，宁可少发一次 PLI，也不能在无节流状态下退化成按包速率的 PLI 风暴。
+func (IO *MultipleConnection) requestKeyFrame(now time.Time) bool {
+	if !IO.canRequestKeyFrame(now) {
+		return false
+	}
+	return IO.sendPLI()
+}
+
+// canRequestKeyFrame 判断此刻是否允许发送一次 PLI。
+// 连接未就绪或节流器缺失时返回 false（失败关闭）。
+func (IO *MultipleConnection) canRequestKeyFrame(now time.Time) bool {
+	if IO == nil || IO.PeerConnection == nil || IO.pliThrottler == nil {
+		return false
+	}
+	return IO.pliThrottler.Allow(now, now)
+}
+
+// sendPLI 向推流端发送一次已被节流器放行的关键帧请求。
+func (IO *MultipleConnection) sendPLI() bool {
+	pli := &rtcp.PictureLossIndication{MediaSSRC: IO.videoSSRC.Load()}
+	if err := IO.WriteRTCP([]rtcp.Packet{pli}); err != nil {
+		IO.Debug("write PLI to publisher failed", "error", err)
+		return false
+	}
+	if IO.metrics != nil {
+		IO.metrics.PLIRequests.Add(1)
+		IO.Debug("webrtc PLI sent", "pli_requests", IO.metrics.Snapshot().PLIRequests, "ssrc", IO.videoSSRC.Load())
+	}
+	return true
+}
+
 func (IO *MultipleConnection) Receive() {
+	// CFClient.Start 不经过 MultipleConnection.Start，必须在此初始化节流器，
+	// 否则 Receive 中的逐包兜底会在 nil 节流器下按包速率触发 PLI。
+	IO.ensurePLIThrottler()
 	puber := IO.Publisher
 	IO.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
 		codecParameters := track.Codec()
@@ -175,7 +337,7 @@ func (IO *MultipleConnection) Receive() {
 			if !puber.PubVideo {
 				return
 			}
-			var lastPLISent time.Time
+			IO.videoSSRC.Store(uint32(track.SSRC()))
 			mem := gomem.NewScalableMemoryAllocator(1 << 12)
 			defer mem.Recycle()
 			writer := m7s.NewPublishVideoWriter[*mrtp.VideoFrame](puber, mem)
@@ -199,12 +361,10 @@ func (IO *MultipleConnection) Receive() {
 			}
 			packet := writer.VideoFrame.Packets.GetNextPointer()
 			for {
-				if time.Since(lastPLISent) > IO.PLI {
-					if rtcpErr := IO.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); rtcpErr != nil {
-						puber.Error("writeRTCP", "error", rtcpErr)
-						return
-					}
-					lastPLISent = time.Now()
+				// 兜底：超过 keyFrameWaitLimit 没有新的 IDR 时主动请求关键帧。
+				// 走兜底入口，实际发送频率被硬限制在 500ms 一次。
+				if time.Since(time.Unix(0, IO.lastKeyFrame.Load())) >= keyFrameWaitLimit {
+					IO.requestKeyFrame(time.Now())
 				}
 
 				buf := mem.Malloc(mrtp.ReceiveMTU)
@@ -232,9 +392,15 @@ func (IO *MultipleConnection) Receive() {
 					packet = writer.VideoFrame.Packets.GetNextPointer()
 				} else {
 					newFrameFirstPacket := *packet
+					// IDR 由 NextVideo 内部的 Demux 置位，因此先捕获帧引用，
+					// 成功后再读取；调用后 writer.VideoFrame 已切换到下一帧。
+					completed := writer.VideoFrame
 					writer.VideoFrame.Packets.Reduce()
 					if err = writer.NextVideo(); err != nil {
 						return
+					}
+					if completed.IDR {
+						IO.lastKeyFrame.Store(time.Now().UnixNano())
 					}
 					frame := writer.VideoFrame
 					frame.AddRecycleBytes(buf)
@@ -332,12 +498,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 					return
 				} else {
 					if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
-						for _, pp := range p {
-							switch pp.(type) {
-							case *rtcp.PictureLossIndication:
-								// fmt.Println("PictureLossIndication")
-							}
-						}
+						handleViewerRTCP(IO.Subscriber, p, IO.metrics)
 					}
 				}
 			}
@@ -442,6 +603,8 @@ audioDone:
 		if videoSender == nil {
 			subscriber.SubVideo = false
 		}
+		lastLog := time.Now()
+		var prevBytes uint64
 		go m7s.PlayBlock(subscriber, func(frame *mrtp.AudioFrame) (err error) {
 			if audioTLSRTP == nil {
 				return nil
@@ -470,6 +633,7 @@ audioDone:
 						if err = audioTLSRTP.WriteRTP(pkt); err != nil {
 							return
 						}
+						IO.metrics.AddSent(len(pkt.Payload))
 					}
 				}
 				return
@@ -479,6 +643,7 @@ audioDone:
 				if err = audioTLSRTP.WriteRTP(p); err != nil {
 					return
 				}
+				IO.metrics.AddSent(len(p.Payload))
 			}
 			return
 		}, func(frame *mrtp.VideoFrame) error {
@@ -486,6 +651,20 @@ audioDone:
 				if err := videoTLSRTP.WriteRTP(p); err != nil {
 					return err
 				}
+				IO.metrics.AddSent(len(p.Payload))
+			}
+			if IO.metrics == nil {
+				return nil
+			}
+			// 仅在视频帧流动时每 10s 输出一次发送端指标。
+			now := time.Now()
+			if elapsed := now.Sub(lastLog); elapsed >= 10*time.Second {
+				bytes := IO.metrics.BytesSent.Load()
+				IO.metrics.SendBitrate.Store(int64((bytes - prevBytes) * 8 * 1000 / uint64(elapsed.Milliseconds())))
+				prevBytes = bytes
+				lastLog = now
+				IO.collectRemoteInboundStats()
+				IO.Debug("webrtc stats", "metrics", IO.metrics.Snapshot().LogLine())
 			}
 			return nil
 		})
@@ -501,6 +680,9 @@ func (IO *MultipleConnection) Send() (err error) {
 }
 
 func (IO *MultipleConnection) Dispose() {
+	if IO.Publisher != nil {
+		unregisterPublisherKeyFrameRequester(IO.Publisher, IO)
+	}
 	IO.PeerConnection.Close()
 }
 
@@ -561,12 +743,7 @@ func (r *RemoteStream) Go() (err error) {
 				return
 			} else {
 				if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
-					for _, pp := range p {
-						switch pp.(type) {
-						case *rtcp.PictureLossIndication:
-							// fmt.Println("PictureLossIndication")
-						}
-					}
+					handleViewerRTCP(r.suber, p, nil)
 				}
 			}
 		}

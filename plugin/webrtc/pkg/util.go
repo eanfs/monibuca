@@ -5,12 +5,86 @@ import (
 	"strings"
 
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/sdp/v3"
 	. "github.com/pion/webrtc/v4"
 )
 
 var MimeTypes []string
 var ICEServers []ICEServer
+
+// GCC 目标码率默认值（bps），与 default.yaml 中的 cc 段保持一致。
+const (
+	defaultCCInitialBitrate = 2000000
+	defaultCCMinBitrate     = 300000
+	defaultCCMaxBitrate     = 20000000
+)
+
+// CCConfig 配置 GCC 发送端拥塞控制。
+type CCConfig struct {
+	Enable         bool `yaml:"enable" default:"true" desc:"是否启用GCC发送端拥塞控制"`
+	InitialBitrate int  `yaml:"initialbitrate" default:"2000000" desc:"初始目标码率(bps)"`
+	MinBitrate     int  `yaml:"minbitrate" default:"300000" desc:"目标码率下限(bps)"`
+	MaxBitrate     int  `yaml:"maxbitrate" default:"20000000" desc:"目标码率上限(bps)"`
+}
+
+// withDefaults 将未配置（0 或负数）的码率补齐为默认值，避免把 0 传给 GCC 选项。
+func (c CCConfig) withDefaults() CCConfig {
+	if c.InitialBitrate <= 0 {
+		c.InitialBitrate = defaultCCInitialBitrate
+	}
+	if c.MinBitrate <= 0 {
+		c.MinBitrate = defaultCCMinBitrate
+	}
+	if c.MaxBitrate <= 0 {
+		c.MaxBitrate = defaultCCMaxBitrate
+	}
+	return c
+}
+
+// ccOptions 生成 gcc 选项。调用方必须先经 withDefaults 归一化，
+// 因此这里不再重复做零值判断。
+func ccOptions(c CCConfig) []gcc.Option {
+	return []gcc.Option{
+		gcc.SendSideBWEInitialBitrate(c.InitialBitrate),
+		gcc.SendSideBWEMinBitrate(c.MinBitrate),
+		gcc.SendSideBWEMaxBitrate(c.MaxBitrate),
+	}
+}
+
+// createInterceptorRegistry 创建拦截器注册表。
+// GCC 必须在默认拦截器（含 NACK responder）之前注册，NACK 重传限速才能读到 target bitrate。
+func createInterceptorRegistry(m *MediaEngine, ccConfig CCConfig, onEstimator func(cc.BandwidthEstimator)) (*interceptor.Registry, error) {
+	i := &interceptor.Registry{}
+	if ccConfig.Enable {
+		normalized := ccConfig.withDefaults()
+		ccInterceptor, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+			return gcc.NewSendSideBWE(ccOptions(normalized)...)
+		})
+		if err != nil {
+			return nil, err
+		}
+		if onEstimator != nil {
+			ccInterceptor.OnNewPeerConnection(func(_ string, estimator cc.BandwidthEstimator) {
+				onEstimator(estimator)
+			})
+		}
+		i.Add(ccInterceptor)
+		// GCC 在 OnSent 中读取发送侧 transport-cc 扩展，缺少本拦截器的写入时
+		// feedbackAdapter.OnSent 返回 "missing transport layer cc header extension"，
+		// pacer 直接丢包，默认配置下 WebRTC 完全不出帧。
+		// 必须紧跟 cc 注册：它要在 gcc 的 OnSent 读取前把扩展写进包。
+		if err := ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
+			return nil, err
+		}
+	}
+	// 注册默认拦截器（NACK / RTCP report / TWCC sender / stats）
+	if err := RegisterDefaultInterceptors(m, i); err != nil {
+		return nil, err
+	}
+	return i, nil
+}
 
 // registerLegacyCodecs 注册传统方式的编解码器（向后兼容）
 func registerLegacyCodecs(m *MediaEngine) {
@@ -49,14 +123,11 @@ func createMediaEngine(ssd *sdp.SessionDescription) *MediaEngine {
 	return m
 }
 
-// createAPI 创建新的API实例
-func CreateAPI(ssd *sdp.SessionDescription, s SettingEngine) (api *API, err error) {
+// CreateAPI 创建新的API实例
+func CreateAPI(ssd *sdp.SessionDescription, s SettingEngine, ccConfig CCConfig, onEstimator func(cc.BandwidthEstimator)) (api *API, err error) {
 	m := createMediaEngine(ssd)
-	i := &interceptor.Registry{}
-
-	// 注册默认拦截器
-	if err := RegisterDefaultInterceptors(m, i); err != nil {
-		// p.Error("register default interceptors error", "error", err)
+	i, err := createInterceptorRegistry(m, ccConfig, onEstimator)
+	if err != nil {
 		return nil, err
 	}
 

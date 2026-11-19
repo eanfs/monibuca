@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/logging"
 	"github.com/pion/sdp/v3"
 
@@ -38,6 +39,7 @@ type WebRTCPlugin struct {
 	ICEServers []ICEServer   `desc:"ice服务器配置"`
 	Port       string        `default:"tcp:9000" desc:"监听端口"`
 	PLI        time.Duration `default:"2s" desc:"发送PLI请求间隔"` // 视频流丢包后，发送PLI请求
+	CC         CCConfig      `yaml:"cc" desc:"GCC发送端拥塞控制配置"` // 拥塞控制配置，cc.enable=false 回退到旧行为
 	EnableDC   bool          `desc:"是否启用DataChannel"`        // 在不支持编码格式的情况下是否启用DataChannel传输
 	MimeType   []string      `desc:"MimeType过滤列表，为空则不过滤"`    // MimeType过滤列表，支持的格式如：video/H264, audio/opus
 	s          SettingEngine
@@ -125,13 +127,24 @@ func (p *WebRTCPlugin) configurePort() error {
 }
 
 func (p *WebRTCPlugin) CreatePC(sd SessionDescription, conf Configuration) (pc *PeerConnection, err error) {
+	// batchv2 等旧的批量通路仍使用插件级空实现，保持既有行为。
+	return p.createPC(sd, conf, p.onBandwidthEstimate)
+}
+
+// CreatePCWithEstimator 创建 PeerConnection，并把该连接专属的带宽估计器交给 onEstimator。
+// servePlay/servePush 用它让每个观众/推流端拥有独立的 GCC 目标码率指标。
+func (p *WebRTCPlugin) CreatePCWithEstimator(sd SessionDescription, conf Configuration, onEstimator func(cc.BandwidthEstimator)) (pc *PeerConnection, err error) {
+	return p.createPC(sd, conf, onEstimator)
+}
+
+func (p *WebRTCPlugin) createPC(sd SessionDescription, conf Configuration, onEstimator func(cc.BandwidthEstimator)) (pc *PeerConnection, err error) {
 	var ssd *sdp.SessionDescription
 	ssd, err = sd.Unmarshal()
 	if err != nil {
 		return
 	}
 	var api *API
-	api, err = CreateAPI(ssd, p.s)
+	api, err = CreateAPI(ssd, p.s, p.CC, onEstimator)
 	if err != nil {
 		return
 	}
@@ -140,6 +153,16 @@ func (p *WebRTCPlugin) CreatePC(sd SessionDescription, conf Configuration) (pc *
 		err = pc.SetRemoteDescription(sd)
 	}
 	return
+}
+
+// onBandwidthEstimate 是插件级带宽估计器回调，仅打印一条 debug 日志，不落按连接指标。
+// batchv2/旧批量通路经 CreatePC 使用它，保持既有行为；
+// servePlay/servePush 走 CreatePCWithEstimator，把估计器绑定到各自的 MultipleConnection 指标。
+func (p *WebRTCPlugin) onBandwidthEstimate(estimator cc.BandwidthEstimator) {
+	if estimator == nil {
+		return
+	}
+	p.Debug("webrtc bandwidth estimator created", "target_bitrate", estimator.GetTargetBitrate())
 }
 
 func (p *WebRTCPlugin) Start() (err error) {
