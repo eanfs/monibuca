@@ -288,7 +288,7 @@ Task 5（提交 `f59bb3ac`，报告 `example/webrtc-2k-perf/report-rtsp-pull.md`
 | **A2** | 2K@24，1% 丢包 10 分钟；无永久卡死、恢复 ≤ 3s、平均 ≥ 22 fps | **PENDING** | — | 同上 |
 | **A3** | 2K@24，3% 丢包 10 分钟；无永久卡死、恢复 ≤ 5s、画面可辨 | **PENDING** | — | 同上 |
 | **A6** | 既有功能回归：WHIP/WHEP/batchv2/TCP/H265/H264/AV1（含 AAC→Opus） | **PARTIAL** | H264 2K 播放 24.00 fps（AAC 源同测 30 s）；AAC→Opus **转码器不可用**（answer 拒绝音频、无 inbound audio、stub 警告）；WHIP H264+Opus 推流由 Task 6 实测通过 | AAC→Opus 因构建标签/三方库缺失为 PENDING；H265/AV1/TCP/WHEP/batchv2 按 Ruling 3 PENDING |
-| **A7** | 日志能读出目标码率与实际码率；弱网时目标码率下降 | **PARTIAL（可观测性 PASS；弱网下降 PENDING）** | A1 窗口 12 条 10 s stats 行；默认 GCC `target 4.5→11.9→20 Mbps`、`send 9.8–10.1 Mbps`；cc-off `target=0`、`send≈9.8–10.2 Mbps` | 弱网需 `tc netem`，见 §6 |
+| **A7** | 日志能读出目标码率与实际码率；弱网时目标码率下降 | **PARTIAL（target/send PASS；RTT/jitter/PLI 字段后续补齐；弱网下降 PENDING）** | A1 窗口 12 条 10 s stats 行；默认 GCC `target 4.5→11.9→20 Mbps`、`send 9.8–10.1 Mbps`；cc-off `target=0`、`send≈9.8–10.2 Mbps`。审查修复后同一日志行新增 `rtt/jitter/pli_requests`，本次 Task 7 测量未重跑 | 弱网需 `tc netem`，见 §6 |
 | **A8** | `cc.enable=false` 后行为与升级前一致 | **MEASURED（60 s）** | 24.00 fps、0 丢帧、0 NACK/PLI、jitter 8.5 ms、9.87 Mbps；与升级前基线（24.00 / 0 / 8.0 ms / 9.97 Mbps）一致；运行时 `target_bitrate=0` | 30 分钟 cc-off 长稳未做；代码路径一致性由 Task 2 单测钉住 |
 
 ## 6. PENDING 清单与 Linux 真机命令（Ruling 3）

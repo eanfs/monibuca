@@ -40,9 +40,7 @@ func (conf *WebRTCPlugin) servePush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	conn := MultipleConnection{
-		PLI: conf.PLI,
-	}
+	conn := MultipleConnection{}
 	conn.SDP = string(bytes)
 	conn.Logger = conf.Logger
 

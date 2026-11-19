@@ -122,9 +122,9 @@ interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 tran
 1. **PLI 按需转发**（替代固定 2s）：
    - 接收侧不再无条件发 PLI；把订阅者的 PLI / 严重丢包（NACK 失败）转成对 Publisher 的关键帧请求。
    - 合并与节流：同一 Publisher 500ms 内最多一次 PLI，避免多观众同时请求造成关键帧风暴。
-   - 保留一个兜底：长时间无关键帧（> 5s）时才强制请求一次。
-2. **移除空转 RTCP goroutine**：
-   - 现有 `videoSender.Read(rtcpBuf)` 循环空 switch；改为集中处理或直接移除（pion 内部已有 RTCP 需要消费的路径时，需确认不读是否会阻塞——实现时先验证，若必须读则合并到既有任务中）。
+   - 保留一个兜底：长时间无关键帧（> 5s）时持续请求关键帧，但受同一 Publisher 500ms 硬窗口约束（最多 2Hz），直到收到 IDR；5s 只是触发条件。
+2. **集中处理 RTCP 循环**：
+   - 现有 `videoSender.Read(rtcpBuf)` 循环的空 switch 已改为 `handleViewerRTCP`（PLI / 严重丢包转发 + 标准播放侧指标），标准播放与 batchv2 两处共用；循环保留用于持续消费 RTCP（删除会丢失观众 PLI），不再空转。
 3. **NACK 重传**：使用 v4.2.26 默认 NACK responder，确认 GOGC/缓冲默认值；2K 关键帧较大，验证重传不会造成内存尖峰。
 4. **不做**：不调大 pion 发送缓冲来换“稳定”（违反反目标）。
 
@@ -178,11 +178,11 @@ interceptor（另含 stats、NACK、RTCP report），但**不写 RTP 包的 tran
 | A4 | 10 观众同看一路 2K | 服务端 CPU（16 核基准）≤ 50%；每观众出向 ≈ 码率 | **PARTIAL**：10 观众短测（2×60s）服务端 **≈0.50 核**（12 逻辑核的 4.2%）、出向 **101 Mbps**、订阅者恒 10、NACK 0；16 核真机 ≤50% 与观众分机 PENDING（`report-load.md`） |
 | A5 | 50 观众（batchv2） | 无连接崩溃；CPU 可接受；日志无错误风暴 | **PENDING**：仅完成 batchv2 2 路流 sanity（通路可用）；50 观众需真机 + 分布式客户端 |
 | A6 | 既有功能回归 | WHIP/WHEP/batchv2/TCP/H265/H264/AV1 全部可用 | **PARTIAL**：H264 2K 播放通过；WHIP H264+Opus 推流通过（Task 6）；AAC→Opus **不可用**（缺 `aac_opus_transcode` 标签与 `3rd/ffmpeg6` 库）；batchv2 仅 2 路流 sanity（通路可用，性能未验证）；H265/AV1/TCP/WHEP **未测**（功能与性能均未验证） |
-| A7 | 可观测 | 日志能读出目标码率与实际码率，弱网时目标码率下降 | **PARTIAL**：`global.loglevel: debug` 每 10s 输出 `webrtc stats`（target/send bitrate 等）已实测；弱网 target 下降 PENDING |
+| A7 | 可观测 | 日志能读出目标码率与实际码率，弱网时目标码率下降 | **PARTIAL**：`global.loglevel: debug` 每 10s 输出 `webrtc stats`（target/send bitrate、packets/lost、rtt/jitter、pli_requests）；Task 7 短测验证了 target/send，RTT/jitter 与逐 PLI 计数已补齐；弱网 target 下降 PENDING |
 | A8 | 回滚 | `cc.enable=false` 后行为与升级前一致 | **MEASURED**：60s **24.00fps / 0 丢帧 / 0 NACK/PLI / jitter 8.5ms**，与升级前基线一致；运行时 `target_bitrate=0`；30min cc-off 长稳未做 |
 | A9 | RTSP 拉流单路 2K | 拉流状态稳定，WebRTC 播放帧率 ≥ 23.5fps | **MEASURED（短测）**：默认 GCC 5 次 60s 运行——首跑 17.91fps（start 后立即测量的冷启动，§4.1.4），4 次复跑 **22.71–23.65fps**（最好 23.65fps、1301 帧/55s）；t≥25s 稳态 **24.0fps**（四次复跑 23.83–24.14）、0 包丢失；10 路并发 / 10 分钟 PENDING（`report-rtsp-pull.md` §4.1.3） |
 | A10 | RTSP 拉流重连 | 源恢复后 ≤ 5s 重新出流，无重连风暴 | **MEASURED（短测）**：源恢复后 **0.38s** 拉流可用、代理始终 Pulling；观众跨断流连续性 PENDING |
-| A11 | RTSP 源录制 | ffprobe 分辨率/帧率/时长/音轨正确，文件可播 | **PASS**：视频 2560×1440 h264 **24.072fps** / **25.132s**；AAC 音轨 48000Hz / 18.049s（`report-record.md`） |
+| A11 | RTSP 源录制 | ffprobe 分辨率/帧率/时长/音轨正确，文件可播 | **PASS（短测）**：视频 2560×1440 h264 **24.072fps** / **25.132s**；AAC 音轨 48000Hz / 18.049s（`report-record.md`）；10 分钟长录 PENDING |
 | A12 | WebRTC 流录制 | WHIP H264+Opus → MP4 ffprobe 正常；Opus-in-MP4 播放器兼容性结论已记录 | **BLOCKED（录制端）**：WHIP H264+Opus 推流通过；MP4 录制 Opus 失败——progressive 报 `unsupported audio codec for mp4 record: *codec.OPUSCtx`（每秒 1 个纯视频碎片），fMP4 在 `CreateOpusSpecificBox` panic；播放端（ffplay/VLC/Chrome）对合成 Opus-in-MP4 样本可播，瓶颈在 Monibuca 封装 |
 | A13 | 分片录制 | `fragment=1m` 分片数量与时长正确，每片可播 | **PASS**：175s → **3 片**（按时间 **60.300 / 59.957 / 54.832s**），逐片 ffprobe 可读；最后一片为手动停止的残余（合计 175.089s） |
 

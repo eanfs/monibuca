@@ -38,32 +38,34 @@ func chainInterceptorTypes(t *testing.T, i interceptor.Interceptor) []reflect.Ty
 	return types
 }
 
-func TestCreateInterceptorRegistryCCEnabled(t *testing.T) {
-	m := &pionwebrtc.MediaEngine{}
-	registerLegacyCodecs(m)
-
-	withCC, err := createInterceptorRegistry(m, CCConfig{Enable: true}, nil)
+func buildCCChainTypes(t *testing.T, m *pionwebrtc.MediaEngine) (withCC, withoutCC []reflect.Type) {
+	t.Helper()
+	withReg, err := createInterceptorRegistry(m, CCConfig{Enable: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	withoutCC, err := createInterceptorRegistry(m, CCConfig{Enable: false}, nil)
+	withoutReg, err := createInterceptorRegistry(m, CCConfig{Enable: false}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	a, err := withCC.Build("test")
+	a, err := withReg.Build("test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	b, err := withoutCC.Build("test")
+	b, err := withoutReg.Build("test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
+	return chainInterceptorTypes(t, a), chainInterceptorTypes(t, b)
+}
 
-	ai := chainInterceptorTypes(t, a)
-	bi := chainInterceptorTypes(t, b)
+func TestCreateInterceptorRegistryCCEnabled(t *testing.T) {
+	m := &pionwebrtc.MediaEngine{}
+	registerLegacyCodecs(m)
+
+	ai, bi := buildCCChainTypes(t, m)
 	// cc 启用时链上多两个拦截器：cc 本体 + 写 transport-cc 扩展的 header extension
 	if len(ai) != len(bi)+2 {
 		t.Fatalf("cc enabled should add exactly two interceptors (cc + twcc header extension): got %d vs %d", len(ai), len(bi))
@@ -88,28 +90,7 @@ func TestCreateInterceptorRegistryCCFirst(t *testing.T) {
 	m := &pionwebrtc.MediaEngine{}
 	registerLegacyCodecs(m)
 
-	withCC, err := createInterceptorRegistry(m, CCConfig{Enable: true}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	withoutCC, err := createInterceptorRegistry(m, CCConfig{Enable: false}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	a, err := withCC.Build("test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	b, err := withoutCC.Build("test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-
-	ai := chainInterceptorTypes(t, a)
-	bi := chainInterceptorTypes(t, b)
+	ai, bi := buildCCChainTypes(t, m)
 	// cc 启用时链上多两个拦截器：cc 本体 + twcc header extension
 	if len(ai) != len(bi)+2 {
 		t.Fatalf("cc enabled should add exactly two interceptors (cc + twcc header extension): got %d vs %d", len(ai), len(bi))

@@ -92,13 +92,32 @@ func isSevereLoss(report *rtcp.ReceiverReport) bool {
 // 只有 WebRTC 推流（带 Publisher 的 MultipleConnection）会在
 // publisherKeyFrameRequesters 中注册目标。非 WebRTC 的 Publisher（RTMP 推流、
 // RTSP 拉流代理等）没有 PLI 通道，查不到目标时直接跳过，不做任何降级处理。
-func forwardPublisherPLI(suber *m7s.Subscriber, now time.Time) {
+func forwardPublisherPLI(suber *m7s.Subscriber, now time.Time) bool {
 	if suber == nil || suber.Publisher == nil {
-		return
+		return false
 	}
 	target := lookupPublisherKeyFrameRequester(suber.Publisher)
 	if target == nil {
-		return
+		return false
 	}
-	target.requestKeyFrame(now)
+	return target.requestKeyFrame(now)
+}
+
+// handleViewerRTCP 统一处理观众侧的 PLI 与严重丢包报告。
+// 标准播放连接传入自己的 metrics，用于累计"本观众触发并成功转发"的 PLI；
+// batchv2 RemoteStream 没有 metrics，传 nil 即可。
+func handleViewerRTCP(suber *m7s.Subscriber, pkts []rtcp.Packet, metrics *StreamMetrics) {
+	for _, pp := range pkts {
+		switch pp := pp.(type) {
+		case *rtcp.PictureLossIndication:
+			if forwardPublisherPLI(suber, time.Now()) && metrics != nil {
+				metrics.PLIRequests.Add(1)
+			}
+		case *rtcp.ReceiverReport:
+			metrics.ObserveReceiverReport(pp)
+			if isSevereLoss(pp) && forwardPublisherPLI(suber, time.Now()) && metrics != nil {
+				metrics.PLIRequests.Add(1)
+			}
+		}
+	}
 }

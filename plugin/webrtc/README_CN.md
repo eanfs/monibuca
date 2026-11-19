@@ -287,6 +287,10 @@ webrtc:
 `webrtc.cc.enable` 在插件启动期读取，修改后需**重启进程**才生效；也可在启动前用
 `WEBRTC_CC_ENABLE=false` 环境变量覆盖。该开关不支持热更新。
 
+每次推流端实际发出 PLI（含 5s 无 IDR 兜底与观众转发）时，`global.loglevel: debug`
+还会输出一条 `webrtc PLI sent`，字段 `pli_requests` 是该 Publisher 的累计 PLI 次数，
+`ssrc` 是视频轨 SSRC；用于观测兜底请求。
+
 ### 可观测性
 
 将 `global.loglevel` 设为 `debug` 后，标准拉流通路（`servePlay`，即 WHEP 播放的每个订阅端
@@ -295,7 +299,7 @@ batchv2 `RemoteStream` 不输出该日志。`send_bitrate` 按 RTP **有效载�
 与 NACK 重传），`packets_sent` 也只统计正常写出的 RTP 包（不含 NACK 重传）。
 
 ```
-DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bitrate=9812258 packets_sent=17207 packets_lost=212 pli_requests=0
+DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bitrate=9812258 packets_sent=17207 packets_lost=212 pli_requests=0 rtt=1 jitter=8
 ```
 
 | 字段 | 含义 |
@@ -304,7 +308,9 @@ DBG webrtc stats server=5 plugin=WebRTC metrics=target_bitrate=11945974 send_bit
 | `send_bitrate` | 最近一个统计窗口的实际发送码率（bps，仅 RTP 有效载荷，不含 RTP 头与 NACK 重传） |
 | `packets_sent` | 累计已发送 RTP 包数（不含 NACK 重传） |
 | `packets_lost` | 对端 RTCP ReceiverReport 报告的累计丢包（按 SSRC 取最新值求和） |
-| `pli_requests` | 服务端向推流端发出的 PLI（关键帧请求）次数 |
+| `pli_requests` | 本订阅端触发并成功转发给推流端的 PLI 次数；推流端自身兜底请求另由 `webrtc PLI sent` Debug 日志累计 |
+| `rtt` | 发送侧 `RemoteInboundRTPStreamStats` 的 RTT（毫秒），取不到时为 0 |
+| `jitter` | 发送侧 `RemoteInboundRTPStreamStats` 的抖动（毫秒），取不到时为 0 |
 
 ### 2K 起播冷启动说明
 

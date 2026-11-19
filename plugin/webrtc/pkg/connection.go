@@ -59,7 +59,6 @@ type MultipleConnection struct {
 	// LocalSDP *sdp.SessionDescription
 	Subscriber *m7s.Subscriber
 	EnableDC   bool
-	PLI        time.Duration
 
 	// metrics 为按连接（每个观众/推流端）独立的发送端指标。
 	metrics *StreamMetrics
@@ -138,12 +137,19 @@ func (IO *MultipleConnection) bindEstimator() {
 	})
 }
 
-// addSent 记录一个成功写出的 RTP 包，nil 安全。
-func (IO *MultipleConnection) addSent(payloadBytes int) {
-	if IO.metrics == nil {
+// collectRemoteInboundStats 从发送侧 PC 的 stats 中读取 RTT/抖动（毫秒）。
+// 只在 10s 日志点调用，避免高频 GetStats 影响转发循环。
+func (IO *MultipleConnection) collectRemoteInboundStats() {
+	if IO == nil || IO.PeerConnection == nil || IO.metrics == nil {
 		return
 	}
-	IO.metrics.AddSent(payloadBytes)
+	for _, s := range IO.PeerConnection.GetStats() {
+		if remote, ok := s.(RemoteInboundRTPStreamStats); ok {
+			IO.metrics.RTT.Store(int64(remote.RoundTripTime * 1000))
+			IO.metrics.Jitter.Store(int64(remote.Jitter * 1000))
+			return
+		}
+	}
 }
 
 // ensurePLIThrottler 幂等地创建本 Publisher 共享的 PLI 节流器。
@@ -221,11 +227,11 @@ func (IO *MultipleConnection) Start() (err error) {
 //
 // 节流器缺失时失败关闭（见 canRequestKeyFrame）：逐包兜底检测是高频
 // 调用点，宁可少发一次 PLI，也不能在无节流状态下退化成按包速率的 PLI 风暴。
-func (IO *MultipleConnection) requestKeyFrame(now time.Time) {
+func (IO *MultipleConnection) requestKeyFrame(now time.Time) bool {
 	if !IO.canRequestKeyFrame(now) {
-		return
+		return false
 	}
-	IO.sendPLI()
+	return IO.sendPLI()
 }
 
 // canRequestKeyFrame 判断此刻是否允许发送一次 PLI。
@@ -237,23 +243,18 @@ func (IO *MultipleConnection) canRequestKeyFrame(now time.Time) bool {
 	return IO.pliThrottler.Allow(now, now)
 }
 
-// requestFallbackKeyFrame 是推流端“长时间无 IDR”兜底检测的入口，
-// 与观众驱动路径共用 requestKeyFrame 的严格 500ms 窗口：是否该要关键帧
-// 由 Receive 的逐包检查决定，节流器只负责预算。
-func (IO *MultipleConnection) requestFallbackKeyFrame(now time.Time) {
-	IO.requestKeyFrame(now)
-}
-
 // sendPLI 向推流端发送一次已被节流器放行的关键帧请求。
-func (IO *MultipleConnection) sendPLI() {
+func (IO *MultipleConnection) sendPLI() bool {
 	pli := &rtcp.PictureLossIndication{MediaSSRC: IO.videoSSRC.Load()}
 	if err := IO.WriteRTCP([]rtcp.Packet{pli}); err != nil {
 		IO.Debug("write PLI to publisher failed", "error", err)
-		return
+		return false
 	}
 	if IO.metrics != nil {
 		IO.metrics.PLIRequests.Add(1)
+		IO.Debug("webrtc PLI sent", "pli_requests", IO.metrics.Snapshot().PLIRequests, "ssrc", IO.videoSSRC.Load())
 	}
+	return true
 }
 
 func (IO *MultipleConnection) Receive() {
@@ -363,7 +364,7 @@ func (IO *MultipleConnection) Receive() {
 				// 兜底：超过 keyFrameWaitLimit 没有新的 IDR 时主动请求关键帧。
 				// 走兜底入口，实际发送频率被硬限制在 500ms 一次。
 				if time.Since(time.Unix(0, IO.lastKeyFrame.Load())) >= keyFrameWaitLimit {
-					IO.requestFallbackKeyFrame(time.Now())
+					IO.requestKeyFrame(time.Now())
 				}
 
 				buf := mem.Malloc(mrtp.ReceiveMTU)
@@ -497,20 +498,7 @@ func (IO *MultipleConnection) SendSubscriber(subscriber *m7s.Subscriber) (audioS
 					return
 				} else {
 					if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
-						for _, pp := range p {
-							switch pp := pp.(type) {
-							case *rtcp.PictureLossIndication:
-								// 观众丢包后请求关键帧：转发给该流对应的 WebRTC 推流端，
-								// 由推流端的共享节流器统一限速。
-								forwardPublisherPLI(IO.Subscriber, time.Now())
-							case *rtcp.ReceiverReport:
-								IO.metrics.ObserveReceiverReport(pp)
-								// 严重丢包（>10%）视同 PLI，避免等待观众显式发 PLI。
-								if isSevereLoss(pp) {
-									forwardPublisherPLI(IO.Subscriber, time.Now())
-								}
-							}
-						}
+						handleViewerRTCP(IO.Subscriber, p, IO.metrics)
 					}
 				}
 			}
@@ -645,7 +633,7 @@ audioDone:
 						if err = audioTLSRTP.WriteRTP(pkt); err != nil {
 							return
 						}
-						IO.addSent(len(pkt.Payload))
+						IO.metrics.AddSent(len(pkt.Payload))
 					}
 				}
 				return
@@ -655,7 +643,7 @@ audioDone:
 				if err = audioTLSRTP.WriteRTP(p); err != nil {
 					return
 				}
-				IO.addSent(len(p.Payload))
+				IO.metrics.AddSent(len(p.Payload))
 			}
 			return
 		}, func(frame *mrtp.VideoFrame) error {
@@ -663,7 +651,7 @@ audioDone:
 				if err := videoTLSRTP.WriteRTP(p); err != nil {
 					return err
 				}
-				IO.addSent(len(p.Payload))
+				IO.metrics.AddSent(len(p.Payload))
 			}
 			if IO.metrics == nil {
 				return nil
@@ -675,6 +663,7 @@ audioDone:
 				IO.metrics.SendBitrate.Store(int64((bytes - prevBytes) * 8 * 1000 / uint64(elapsed.Milliseconds())))
 				prevBytes = bytes
 				lastLog = now
+				IO.collectRemoteInboundStats()
 				IO.Debug("webrtc stats", "metrics", IO.metrics.Snapshot().LogLine())
 			}
 			return nil
@@ -754,17 +743,7 @@ func (r *RemoteStream) Go() (err error) {
 				return
 			} else {
 				if p, err := rtcp.Unmarshal(rtcpBuf[:n]); err == nil {
-					for _, pp := range p {
-						switch pp := pp.(type) {
-						case *rtcp.PictureLossIndication:
-							// SingleConnection 场景没有 metrics，只做 PLI 转发。
-							forwardPublisherPLI(r.suber, time.Now())
-						case *rtcp.ReceiverReport:
-							if isSevereLoss(pp) {
-								forwardPublisherPLI(r.suber, time.Now())
-							}
-						}
-					}
+					handleViewerRTCP(r.suber, p, nil)
 				}
 			}
 		}

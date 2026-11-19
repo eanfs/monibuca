@@ -43,19 +43,14 @@ func (c CCConfig) withDefaults() CCConfig {
 	return c
 }
 
-// ccOptions 仅为非零码率生成 gcc 选项。
+// ccOptions 生成 gcc 选项。调用方必须先经 withDefaults 归一化，
+// 因此这里不再重复做零值判断。
 func ccOptions(c CCConfig) []gcc.Option {
-	opts := make([]gcc.Option, 0, 3)
-	if c.InitialBitrate > 0 {
-		opts = append(opts, gcc.SendSideBWEInitialBitrate(c.InitialBitrate))
+	return []gcc.Option{
+		gcc.SendSideBWEInitialBitrate(c.InitialBitrate),
+		gcc.SendSideBWEMinBitrate(c.MinBitrate),
+		gcc.SendSideBWEMaxBitrate(c.MaxBitrate),
 	}
-	if c.MinBitrate > 0 {
-		opts = append(opts, gcc.SendSideBWEMinBitrate(c.MinBitrate))
-	}
-	if c.MaxBitrate > 0 {
-		opts = append(opts, gcc.SendSideBWEMaxBitrate(c.MaxBitrate))
-	}
-	return opts
 }
 
 // createInterceptorRegistry 创建拦截器注册表。

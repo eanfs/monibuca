@@ -29,6 +29,9 @@ type StreamMetrics struct {
 	PLIRequests   atomic.Uint64
 	TargetBitrate atomic.Int64
 	SendBitrate   atomic.Int64
+	// RTT/Jitter 来自发送侧 PC 的 RemoteInboundRTPStreamStats，单位毫秒。
+	RTT    atomic.Int64
+	Jitter atomic.Int64
 
 	// lostMu 保护 latestLost；ReceiverReport.TotalLost 是累计值，
 	// 同一 SSRC 只保留最新一次报告的数值，避免重复累加。
@@ -44,6 +47,8 @@ type MetricsSnapshot struct {
 	PLIRequests   uint64
 	TargetBitrate int64
 	SendBitrate   int64
+	RTT           int64
+	Jitter        int64
 }
 
 // AddSent 记录一个成功写出的 RTP 包。
@@ -100,13 +105,15 @@ func (m *StreamMetrics) Snapshot() MetricsSnapshot {
 		PLIRequests:   m.PLIRequests.Load(),
 		TargetBitrate: m.TargetBitrate.Load(),
 		SendBitrate:   m.SendBitrate.Load(),
+		RTT:           m.RTT.Load(),
+		Jitter:        m.Jitter.Load(),
 	}
 }
 
 // LogLine 输出单行 key=value 形式的指标，便于日志检索。
 func (s MetricsSnapshot) LogLine() string {
 	return fmt.Sprintf(
-		"target_bitrate=%d send_bitrate=%d packets_sent=%d packets_lost=%d pli_requests=%d",
-		s.TargetBitrate, s.SendBitrate, s.PacketsSent, s.PacketsLost, s.PLIRequests,
+		"target_bitrate=%d send_bitrate=%d packets_sent=%d packets_lost=%d pli_requests=%d rtt=%d jitter=%d",
+		s.TargetBitrate, s.SendBitrate, s.PacketsSent, s.PacketsLost, s.PLIRequests, s.RTT, s.Jitter,
 	)
 }

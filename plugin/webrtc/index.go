@@ -162,7 +162,7 @@ func (p *WebRTCPlugin) onBandwidthEstimate(estimator cc.BandwidthEstimator) {
 	if estimator == nil {
 		return
 	}
-	p.Debug("webrtc bandwidth estimator created", "targetBitrate", estimator.GetTargetBitrate())
+	p.Debug("webrtc bandwidth estimator created", "target_bitrate", estimator.GetTargetBitrate())
 }
 
 func (p *WebRTCPlugin) Start() (err error) {

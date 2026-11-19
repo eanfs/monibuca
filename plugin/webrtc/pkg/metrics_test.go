@@ -73,6 +73,8 @@ func TestStreamMetrics(t *testing.T) {
 	m.TargetBitrate.Store(2_000_000)
 	m.SendBitrate.Store(1_500_000)
 	m.PLIRequests.Store(3)
+	m.RTT.Store(42)
+	m.Jitter.Store(7)
 
 	snap := m.Snapshot()
 	if snap.PacketsSent != 2 {
@@ -90,6 +92,12 @@ func TestStreamMetrics(t *testing.T) {
 	if snap.PLIRequests != 3 {
 		t.Errorf("PLIRequests = %d, want 3", snap.PLIRequests)
 	}
+	if snap.RTT != 42 {
+		t.Errorf("RTT = %d, want 42", snap.RTT)
+	}
+	if snap.Jitter != 7 {
+		t.Errorf("Jitter = %d, want 7", snap.Jitter)
+	}
 
 	line := snap.LogLine()
 	for _, key := range []string{
@@ -98,11 +106,30 @@ func TestStreamMetrics(t *testing.T) {
 		"packets_sent=2",
 		"packets_lost=0",
 		"pli_requests=3",
+		"rtt=42",
+		"jitter=7",
 	} {
 		if !strings.Contains(line, key) {
 			t.Errorf("LogLine() = %q, missing %q", line, key)
 		}
 	}
+}
+
+// TestHandleViewerRTCP 钉住两处 RTCP 读循环共用的处理函数：
+// 无 Publisher 目标时不 panic、不虚增 PLI；ReceiverReport 仍写入 metrics。
+func TestHandleViewerRTCP(t *testing.T) {
+	m := &StreamMetrics{}
+	handleViewerRTCP(nil, []rtcp.Packet{
+		&rtcp.PictureLossIndication{},
+		&rtcp.ReceiverReport{Reports: []rtcp.ReceptionReport{{SSRC: 1, TotalLost: 9}}},
+	}, m)
+	if got := m.Snapshot().PacketsLost; got != 9 {
+		t.Fatalf("PacketsLost = %d, want 9", got)
+	}
+	if got := m.Snapshot().PLIRequests; got != 0 {
+		t.Fatalf("PLIRequests = %d, want 0 without a publisher target", got)
+	}
+	handleViewerRTCP(nil, []rtcp.Packet{&rtcp.PictureLossIndication{}}, nil)
 }
 
 // TestStreamMetricsNilSafe 保证未初始化/空指标不会 panic（埋点路径可能早于 Start）。

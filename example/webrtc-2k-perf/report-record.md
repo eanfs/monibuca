@@ -10,8 +10,8 @@
 
 | 项 | 结论 | 关键证据 |
 |---|---|---|
-| A11 RTSP 源录制（视频） | **通过** | 2560×1440 / h264 / avg_frame_rate **24.072** / duration **25.132s** / 31.98MB |
-| A11 RTSP 源录制（音频） | **通过** | 另起 AAC 2K 源 → RTSP 拉流 → 录制：audio=**aac** 48000Hz 1ch，duration **18.049s** |
+| A11 RTSP 源录制（视频） | **通过（短测；10 分钟 PENDING）** | 2560×1440 / h264 / avg_frame_rate **24.072** / duration **25.132s** / 31.98MB |
+| A11 RTSP 源录制（音频） | **通过（短测；10 分钟 PENDING）** | 另起 AAC 2K 源 → RTSP 拉流 → 录制：audio=**aac** 48000Hz 1ch，duration **18.049s** |
 | A13 分片录制 | **通过** | `fragment=1m` 录 175s：**3 个文件**（按时间顺序）duration **60.300 / 59.957 / 54.832s**，三个文件 ffprobe 均可读、均为 2560×1440 h264；最后一片偏短是 175s 手动停止时的残余 |
 | 录制中停止源 | **通过** | 录 10s 后只停 RTMP 源：文件 **13,757,584B**，moov 可读，duration **10.925s**，无零字节文件 |
 | A12 WHIP 推流侧 | **通过** | Chrome 假设备推流成功，服务端流 `live/whip`：video=**avc1** 640×480，audio=**Opus** |
