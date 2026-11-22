@@ -627,9 +627,12 @@ func (w *S3File) uploadTempFile() error {
 			defer cancel()
 
 			uploadInput := &s3manager.UploadInput{
-				Bucket:      aws.String(w.storage.config.Bucket),
-				Key:         aws.String(w.objectKey),
-				Body:        w.tempFile,
+				Bucket: aws.String(w.storage.config.Bucket),
+				Key:    aws.String(w.objectKey),
+				// Throttle disk reads so concurrent uploads cannot starve recording
+				// writes. Use the per-attempt ctx, not uploadCtx: uploadCtx is
+				// WithoutCancel and would let a limiter wait outlive the attempt timeout.
+				Body:        NewUploadThrottledReadSeeker(ctx, w.tempFile),
 				ContentType: aws.String("application/octet-stream"),
 			}
 			if len(w.metadata) > 0 {

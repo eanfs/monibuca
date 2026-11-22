@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -45,6 +47,7 @@ var ErrPendingDirFull = errors.New("pending dir full")
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
+	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent upload disk reads so they cannot starve recording writes; 0 = unlimited (default)" default:"0"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
@@ -73,6 +76,24 @@ func InitUploadManager(cfg UploadConfig) {
 		trailerWriteBytesPerSec.Store(0)
 	}
 
+	// Upload read throttling: the opposite direction of the trailer write limit.
+	// Unthrottled concurrent upload reads would sit in the disk queue ahead of
+	// recording writes (31 concurrent recordings on one box). The burst must be at
+	// least maxThrottleChunk so a chunk-sized WaitN always fits in the bucket.
+	if cfg.UploadReadRateMBps > 0 {
+		bytesPerSec := int64(cfg.UploadReadRateMBps) * 1024 * 1024
+		burst := bytesPerSec / 4 // 250 ms of headroom
+		if burst < 1<<20 {
+			burst = 1 << 20
+		}
+		if burst > 32<<20 {
+			burst = 32 << 20
+		}
+		uploadReadLimiter = rate.NewLimiter(rate.Limit(bytesPerSec), int(burst))
+	} else {
+		uploadReadLimiter = nil
+	}
+
 	if cfg.PendingDir == "" {
 		cfg.PendingDir = "pending_uploads"
 	}
@@ -89,8 +110,8 @@ func InitUploadManager(cfg UploadConfig) {
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
-	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, pendingDir)
+	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, readRate=%dMB/s, pendingDir=%s",
+		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, cfg.UploadReadRateMBps, pendingDir)
 }
 
 // pendingDirIsPersistent 判断暂存目录是否是绝对路径。
