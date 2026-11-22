@@ -20,7 +20,6 @@ import (
 	"m7s.live/v5/pb"
 	"m7s.live/v5/pkg"
 	"m7s.live/v5/pkg/config"
-	"m7s.live/v5/pkg/util"
 )
 
 const (
@@ -68,7 +67,8 @@ type (
 		CheckInterval                  time.Duration `default:"10s"`
 		// ReadTimeout：RTSP 等媒体 TCP 读/拨号超时（BufReader.SetTimeout）；0 表示用默认 10s。
 		// Confirmed via 寸止: BUG-021 R1
-		// 优先级：代理显式值 > global.pullreadtimeout > 内置默认 10s（见 effectivePullReadTimeout）。
+		// global.pullreadtimeout 是全局下限：小于它的代理取值会被提升，更大的取值保留
+		// （见 effectivePullReadTimeout）。
 		ReadTimeout time.Duration `default:"10s" gorm:"comment:拉流读超时"`
 		RTT         time.Duration
 	}
@@ -164,24 +164,28 @@ func (d *BasePullProxy) Dispose() {
 // DefaultReadTimeout 保持一致（核心包不能反向依赖协议插件，故各自定义）。
 const defaultPullProxyReadTimeout = time.Second * 10
 
-// effectivePullReadTimeout 解析拉流代理实际使用的读超时，优先级：
-// 代理显式配置 > global.pullreadtimeout > 内置默认 10s。
+// effectivePullReadTimeout 解析拉流代理实际使用的读超时：
+// global.pullreadtimeout 是全局下限，小于它的代理取值会被提升；更大的代理取值保留；
+// 未配置全局时沿用代理取值，代理为 0 再回落内置 10s。
 //
-// 为什么需要全局默认：拉流代理的 ReadTimeout 存在 DB（历史数据多为 0），
-// 0 会让 RTSP 连接回落到内置 10s——10 秒级网络抖动即断开 -> unpublish ->
-// 录制终止。现场不便逐个改 DB/API 时，用一条 global.pullreadtimeout 统一放宽。
+// 为什么是下限而不是"仅代理未配置时生效"：ReadTimeout 存在 DB，旧版 API 在请求
+// 未指定 readtimeout 时会把内置默认 10s 直接写进库（edd093bd 起），加载时无法区分
+// "用户显式要 10s" 与 "服务端写入的默认值"。按显式值优先处理的话，现场只加一条
+// global.pullreadtimeout 对存量代理完全不生效，10 秒级网络抖动仍会打断拉流 ->
+// unpublish -> 挂在该 publisher 上的录制终止（2026-11-21 现场 36 路 60 分钟录制
+// 中断即由此触发）。需要单个代理更短超时时，请调小/不设全局值。
 func (s *Server) effectivePullReadTimeout(explicit time.Duration) time.Duration {
+	if s != nil && s.PullReadTimeout > 0 && explicit < s.PullReadTimeout {
+		return s.PullReadTimeout
+	}
 	if explicit > 0 {
 		return explicit
-	}
-	if s != nil && s.PullReadTimeout > 0 {
-		return s.PullReadTimeout
 	}
 	return defaultPullProxyReadTimeout
 }
 
 func (d *PullProxyConfig) InitializeWithServer(s *Server) {
-	// 未显式配置读超时的代理（含 DB 历史数据 read_timeout=0）统一取全局默认。
+	// 把全局下限应用到所有代理（含 DB 历史数据里被旧 API 写死的 10s）。
 	// 放在 Type 推断之前：Type 推断失败会提前 return，不能因此漏掉超时填充。
 	d.ReadTimeout = s.effectivePullReadTimeout(d.ReadTimeout)
 	if d.Type == "" {
@@ -453,7 +457,7 @@ func (s *Server) GetPullProxyList(ctx context.Context, req *emptypb.Empty) (res 
 			StreamPath:          conf.GetStreamPath(),
 			StopRetryOnAuthFail: conf.StopRetryOnAuthFail,
 			CheckInterval:       durationpb.New(conf.CheckInterval),
-			ReadTimeout:         durationpb.New(util.Conditional(conf.ReadTimeout > 0, conf.ReadTimeout, time.Second*10)),
+			ReadTimeout:         durationpb.New(s.effectivePullReadTimeout(conf.ReadTimeout)),
 		}
 		// 如果内存中有对应的设备，获取实时状态
 		if device, ok := s.PullProxies.Get(conf.ID); ok {
@@ -536,7 +540,7 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	if req.ReadTimeout != nil {
 		pullProxyConfig.ReadTimeout = req.ReadTimeout.AsDuration()
 	}
-	// 未显式指定时取 global.pullreadtimeout，未配置再回落内置 10s
+	// global.pullreadtimeout 作为下限，提升小于它的值；未配置再回落内置 10s
 	pullProxyConfig.ReadTimeout = s.effectivePullReadTimeout(pullProxyConfig.ReadTimeout)
 	if s.DB == nil {
 		err = pkg.ErrNoDB
@@ -667,7 +671,7 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	if req.ReadTimeout != nil {
 		target.ReadTimeout = req.ReadTimeout.AsDuration()
 	}
-	// 未显式指定时取 global.pullreadtimeout，未配置再回落内置 10s
+	// global.pullreadtimeout 作为下限，提升小于它的值（含库里旧版 API 写入的 10s）
 	target.ReadTimeout = s.effectivePullReadTimeout(target.ReadTimeout)
 	if req.StopRetryOnAuthFail != nil {
 		if strings.EqualFold(target.Type, "rtsp") {
@@ -713,12 +717,14 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 			return
 		}
 
-		// StopOnIdle 变化必须重建 PullJob：发布配置（DelayCloseTimeout/IdleTimeout）
-		// 在 Pull() 时固化。原地改运行中 Publisher 的字段会与 publisher 事件循环
-		// 并发读写（数据竞争），且 false→true 时无法把全局 IdleTimeout 恢复回来。
+		// StopOnIdle / ReadTimeout 变化必须重建 PullJob：发布配置（DelayCloseTimeout/
+		// IdleTimeout）在 Pull() 时固化，读超时在连接建立时固化。原地改运行中
+		// Publisher/连接的字段会与事件循环并发读写（数据竞争），且 false→true 时
+		// 无法把全局 IdleTimeout 恢复回来。
 		if target.URL != conf.URL || conf.Audio != target.Audio || conf.StreamPath != target.StreamPath ||
 			conf.Record.FilePath != target.Record.FilePath || conf.Record.Fragment != target.Record.Fragment ||
-			conf.Record.Type != target.Record.Type || conf.StopOnIdle != target.StopOnIdle {
+			conf.Record.Type != target.Record.Type || conf.StopOnIdle != target.StopOnIdle ||
+			conf.ReadTimeout != target.ReadTimeout {
 			device.Stop(task.ErrStopByUser)
 			device.WaitStopped()
 			device, err = s.createPullProxy(target)

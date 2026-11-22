@@ -719,8 +719,10 @@ func waitForPublisher(ctx context.Context, streamPath string, timeout, interval 
 }
 
 // classifyRecordAPIError 把录制 API 的哨兵错误映射为 gRPC 状态码：
-// not found → 404、record exists → 409。grpc-gateway 对未包装的普通 error
-// 一律返回 500，调用方无法区分"流还没起来（可重试）"与真实故障。
+// not found → 404、同 key 并发注册 → 409。已在录制的重复 start 在 StartRecord
+// 里按幂等成功返回（200 + 已有 task），409 只剩 Records.AddTask 的并发拒绝
+// 路径；ErrRecordExists 映射保留以兼容其它调用路径。grpc-gateway 对未包装的
+// 普通 error 一律返回 500，调用方无法区分"流还没起来（可重试）"与真实故障。
 // 已是状态错误的（限流 503、存储不可用等）原样返回。
 func classifyRecordAPIError(err error) error {
 	// gotask 的 ExistTaskError 是【值类型】（func (e ExistTaskError) Error() string），
@@ -760,11 +762,18 @@ func (p *MP4Plugin) waitPublisherBeforeRecord(ctx context.Context, streamPath st
 	p.Warn("stream is still not published after waiting", "streamPath", streamPath, "timeout", timeout)
 }
 
+// validateRecordingStorage 走可注入的校验入口（见 MP4Plugin.storageValidator）。
+func (p *MP4Plugin) validateRecordingStorage() error {
+	if p.storageValidator != nil {
+		return p.storageValidator()
+	}
+	return p.Server.ValidateRecordingStorage()
+}
+
 func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) (res *mp4pb.ResponseStartRecord, err error) {
 	defer func() {
 		err = classifyRecordAPIError(err)
 	}()
-	var recordExists bool
 	var filePath = "."
 	var fileName = ""
 	var fragment = time.Minute
@@ -793,19 +802,29 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		return nil, err
 	}
 	res = &mp4pb.ResponseStartRecord{}
-	_, recordExists = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
+	recordJob, recordExists := p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		if job.StreamPath != req.StreamPath {
 			return false
 		}
 		// 如果两者都指定了文件名，需要完全匹配
 		if req.FileName != "" && job.RecConf.FileName != "" {
-			return job.RecConf.FilePath == req.FilePath && job.RecConf.FileName == req.FileName
+			return job.RecConf.FilePath == filePath && job.RecConf.FileName == req.FileName
 		}
-		// 如果只有路径匹配，也认为是同一个录制任务
-		return job.RecConf.FilePath == req.FilePath
+		// 如果只有路径匹配，也认为是同一个录制任务。
+		// 必须用补全默认值后的 filePath：调用方通常不传 filePath（默认 "."），
+		// 直接用 req.FilePath 会永远匹配不到，重复 start 仍会落到 AddTask 的 409。
+		return job.RecConf.FilePath == filePath
 	})
 	if recordExists {
-		err = pkg.ErrRecordExists
+		// 同一目标已在录制（可能是自动续录刚拉起的新段）：按幂等成功返回已有任务。
+		// 自动续录默认开启后，业务补偿 /mp4/api/start 很可能撞上刚续录的任务；
+		// 返回 409 会让调用方误判失败并重试/告警。返回已有 task 指针，调用方
+		// 按「确保录制在跑」处理即可。
+		if recordJob != nil {
+			res.Data = uint64(recordJob.GetTaskPointer())
+		}
+		p.Info("record already running, returning existing task",
+			"streamPath", req.StreamPath, "filePath", filePath)
 		return
 	}
 
@@ -843,7 +862,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		err = pkg.ErrNotFound
 		return
 	}
-	if err = p.Server.ValidateRecordingStorage(); err != nil {
+	if err = p.validateRecordingStorage(); err != nil {
 		return nil, err
 	}
 	// 名额所有权移交给录制任务：任务 dispose（含启动失败）时释放一次。
@@ -856,7 +875,7 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 	slotHeld = false
 	// 登记「断流自动续录」意图：仅 mp4.record.autoresume.enable 且指定了
 	// duration 的连续录制生效；duration=0 的无限录制不登记（避免无限续录）。
-	p.registerResumeIntent(req.StreamPath, recordConf, duration)
+	p.registerResumeIntent(req.StreamPath, recordConf)
 	return
 }
 
@@ -868,7 +887,7 @@ func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (r
 	res = &mp4pb.ResponseStopRecord{}
 	// 用户显式停止：先取消自动续录意图，避免停录后又被看护任务拉起。
 	// 放在查找任务之前：即使任务已自然结束（not found 路径）也要清掉意图。
-	p.forgetResumeIntent(req.StreamPath)
+	clearedIntent := p.forgetResumeIntent(req.StreamPath)
 	var recordJob *m7s.RecordJob
 	recordJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == req.StreamPath
@@ -879,6 +898,12 @@ func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (r
 			res.Data = uint64(uintptr(unsafe.Pointer(t)))
 			t.Stop(task.ErrStopByUser)
 		}
+		return
+	}
+	if clearedIntent {
+		// 录制已结束（断流后 RecordJob 已 dispose），但自动续录意图仍在：本次
+		// stop 取消了待续录。按成功返回，否则调用方收到 404 却看到流恢复后又被拉起。
+		p.Info("auto resume intent cancelled by stop", "streamPath", req.StreamPath)
 		return
 	}
 	err = pkg.ErrNotFound

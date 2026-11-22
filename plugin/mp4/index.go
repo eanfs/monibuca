@@ -64,9 +64,16 @@ type MP4Plugin struct {
 		// duration 的连续录制，因流中断（publisher 销毁/重建）结束时，在流恢复后
 		// 自动重新开录，无需业务系统补偿调用。事件录像、GB28181 下载录像不参与。
 		// 续录会开启新文件（progressive MP4 无法跨连接续写同一文件）。
+		//
+		// 默认开启：录制任务的所有权挂在 publisher 上，断流即终止，只靠业务系统
+		// 补偿不可靠——2026-11-21 现场补偿滞后约 9 分钟，60 分钟录制只落下
+		// 12–16 分钟；16:47–17:05 摄像头会话回收后更是整场未再续录。关闭请显式
+		// 配置 enable: false。
 		AutoResume struct {
-			Enable      bool          `default:"false" desc:"录制因流中断结束时是否自动续录（仅对 /mp4/api/start 启动且指定 duration 的连续录制生效）"`
-			MaxWait     time.Duration `default:"5m" desc:"流中断后等待其恢复的最长时间，超时放弃续录并告警"`
+			Enable bool `default:"true" desc:"录制因流中断结束时是否自动续录（仅对 /mp4/api/start 启动且指定 duration 的连续录制生效）"`
+			// MaxWait 默认 10m：现场断流后部分流 5m40s 才恢复，5m 会在恢复前放弃。
+			// 0 表示一直等到录制 duration 用尽（意图本身有 deadline 兜底，不会永久驻留）。
+			MaxWait     time.Duration `default:"10m" desc:"流中断后等待其恢复的最长时间，超时放弃续录并告警；0 表示等到录制 duration 用尽"`
 			Interval    time.Duration `default:"5s" desc:"续录看护的检查间隔"`
 			MaxSegments int           `default:"0" desc:"单个录制最多产生的段数（首段计入），0 表示不限制"`
 		} `desc:"录制断流自动恢复配置"`
@@ -84,6 +91,11 @@ type MP4Plugin struct {
 	// resumeStore 保存可自动续录的录制意图（mp4.record.autoresume）。
 	// 零值可用；仅在 AutoResume.Enable 时被写入。
 	resumeStore autoResumeStore
+
+	// storageValidator 是录制存储校验的测试注入点；生产为 nil，走
+	// Server.ValidateRecordingStorage。API 接线测试不启动完整存储子系统，
+	// 但必须验证 StartRecord/StopRecord 对意图表的真实副作用。
+	storageValidator func() error
 
 	// recoveryTask 供 /api/recovery/* 手动触发与状态查询；Start 时存入。
 	// 用 atomic 是因为 HTTP handler 可能先于/并发于插件启动被调用。
@@ -122,6 +134,10 @@ func init() {
 	// 路由层也必须等待，否则拦截器会在进入插件 handler 前直接 404，插件的
 	// record.waitforpublisher 窗口完全失效。其它 mp4 方法保持原有一次性路由行为。
 	m7s.RegisterAPIRouteWaitStream("/mp4.api/StartRecord")
+	// StopRecord 的副作用对象是节点内存态（录制任务/自动续录意图）：流断线或迁移后，
+	// 集群无法按 streamPath 寻址到持有意图的节点，stop 必须广播到所有节点才能保证
+	// 「显式 stop 优先于自动续录」。
+	m7s.RegisterAPIRouteBroadcastOnNotFound("/mp4.api/StopRecord")
 }
 
 func (p *MP4Plugin) RegisterHandler() map[string]http.HandlerFunc {

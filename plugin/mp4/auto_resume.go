@@ -2,6 +2,7 @@ package plugin_mp4
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // 本文件不改 publisher 生命周期语义，而是在插件层维护「录制意图」：
 //  1. /mp4/api/start 成功时登记意图（streamPath + 录制参数 + 绝对截止时间）；
 //  2. 看护 Tick 周期性判断该 streamPath 是否还有活跃录制：
-//     - 活跃（含收尾中的 trailer/upload）→ 等待；
+//     - 活跃（Server.Records 中尚未进入 disposing）→ 等待，避免同一段素材并行写两份；
 //     - 不活跃且流已恢复、截止时间未到 → 重新启动录制（**新文件**，因为
 //       progressive MP4 无法跨连接续写同一 mdat）；
 //     - 截止时间到 / 等待超时 / 段数上限 → 放弃并清理意图。
@@ -44,7 +45,9 @@ type resumeIntent struct {
 }
 
 // autoResumeStore 是按 streamPath 索引的意图表（并发安全）。
-// 记录由 HTTP API（Start/StopRecord）与看护 Tick 并发访问。
+// 记录由 HTTP API（Start/StopRecord）与看护 Tick 并发访问。锁只保护 map 成员
+// （增删/查找）；resumeIntent 的字段由看护 Tick 单 goroutine 写入，HTTP API
+// 只整体替换或删除条目，不原地修改已登记意图的字段。
 type autoResumeStore struct {
 	mu sync.Mutex
 	m  map[string]*resumeIntent
@@ -82,6 +85,18 @@ func (s *autoResumeStore) snapshot() []*resumeIntent {
 	return out
 }
 
+// isCurrent 报告 it 是否仍是该 streamPath 的最新意图。
+//
+// 看护 Tick 先 snapshot 再决策，期间 /mp4/api/stop 可能已删除意图，或
+// /mp4/api/start 已用新意图替换旧意图。若不加校验，正在收尾的旧快照会把用户
+// 刚停掉的录制重新拉起——显式 stop 必须能压过自动续录。
+func (s *autoResumeStore) isCurrent(it *resumeIntent) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.m[it.streamPath]
+	return ok && cur == it
+}
+
 // resumeAction 是看护轮次对单个意图的处置。
 type resumeAction int
 
@@ -94,17 +109,22 @@ const (
 	resumeActionGiveUp
 )
 
+// resumeReasonDeadlineReached 表示录制时长已正常用尽——这是预期结束，不是异常，
+// 不要用 Warn 刷日志（每场 36 路录制正常结束会各刷一条）。
+const resumeReasonDeadlineReached = "duration deadline reached"
+
 // decideResume 是续录决策的纯函数（便于单测，不触碰 Server/任务系统）。
 //
-//   - active：该 streamPath 当前是否仍有活跃录制任务（含收尾中的）；
+//   - active：该 streamPath 当前是否仍有运行中的录制任务（Server.Records 只暴露
+//     未进入 disposing 的任务；trailer 收尾与上传交接不阻塞续录）；
 //   - streamUp：该 streamPath 的 publisher 当前是否在线且未停止；
 //   - maxWait<=0 表示不限等待；maxSegments<=0 表示不限段数。
 func decideResume(it *resumeIntent, active, streamUp bool, now time.Time, maxWait time.Duration, maxSegments int) (resumeAction, string) {
 	// 1) 原请求的总时长已用尽：不再续录（无论流是否还在）。
 	if !it.deadline.IsZero() && !now.Before(it.deadline) {
-		return resumeActionGiveUp, "duration deadline reached"
+		return resumeActionGiveUp, resumeReasonDeadlineReached
 	}
-	// 2) 录制仍活跃（可能正在写 trailer/上传）：等它收尾，绝不并发开第二段。
+	// 2) 录制仍活跃：等它结束，避免同一段素材被重复写两份。
 	if active {
 		return resumeActionWait, ""
 	}
@@ -138,9 +158,13 @@ func effectiveInterval(d time.Duration) time.Duration {
 	return d
 }
 
-// autoResumeTask 是续录看护任务（TickTask）：周期性检查意图表并决策。
+// autoResumeTask 是续录看护任务（AsyncTickTask）：周期性检查意图表并决策。
+//
+// Tick 必须跑在独立 goroutine（AsyncTickTask）：它要访问 Server.Records /
+// Server.Streams，并可能同步等待续录任务启动（WaitStarted 最长 10s）。内联
+// 在 MP4 插件的事件循环里会阻塞插件的全部任务调度。
 type autoResumeTask struct {
-	task.TickTask
+	task.AsyncTickTask
 	plugin *MP4Plugin
 }
 
@@ -149,6 +173,12 @@ func (t *autoResumeTask) GetTickInterval() time.Duration {
 }
 
 func (t *autoResumeTask) Tick(any) {
+	// 单轮 panic 不能杀掉看护任务本身（否则自动续录静默失效）。
+	defer func() {
+		if r := recover(); r != nil {
+			t.Error("auto resume tick panic", "panic", r)
+		}
+	}()
 	if t.plugin == nil || !t.plugin.RecordConfig.AutoResume.Enable {
 		return
 	}
@@ -161,8 +191,9 @@ func (t *autoResumeTask) Tick(any) {
 }
 
 // registerResumeIntent 在 API 启动录制成功后登记意图。
-// duration<=0（无限录制）或未开启 autoResume 时不登记。
-func (p *MP4Plugin) registerResumeIntent(streamPath string, conf config.Record, duration time.Duration) {
+// 录制参数里的 Duration<=0（无限录制）或未开启 autoResume 时不登记。
+func (p *MP4Plugin) registerResumeIntent(streamPath string, conf config.Record) {
+	duration := conf.Duration
 	if !p.RecordConfig.AutoResume.Enable || duration <= 0 {
 		return
 	}
@@ -172,15 +203,27 @@ func (p *MP4Plugin) registerResumeIntent(streamPath string, conf config.Record, 
 		deadline:   time.Now().Add(duration),
 		segments:   1,
 	})
-	p.Debug("auto resume intent registered", "streamPath", streamPath, "duration", duration)
+	p.Info("auto resume intent registered", "streamPath", streamPath, "duration", duration)
 }
 
 // forgetResumeIntent 删除意图（用户主动 stop 或录制正常结束时调用）。
-func (p *MP4Plugin) forgetResumeIntent(streamPath string) {
-	if p.resumeStore.remove(streamPath) {
+// 返回是否确实删除了意图，供 StopRecord 区分「无录制但取消了待续录」与「完全
+// 不存在」两种情况。
+func (p *MP4Plugin) forgetResumeIntent(streamPath string) bool {
+	removed := p.resumeStore.remove(streamPath)
+	if removed {
 		p.Debug("auto resume intent removed", "streamPath", streamPath)
 	}
+	return removed
 }
+
+// OnRecordTaskStopped 实现 m7s.IRecordTaskStopHook：通用任务接口 /api/task/stop
+// 直接 Stop RecordJob，不会经过 /mp4/api/stop；这里补清意图，保证显式 stop 优先。
+func (p *MP4Plugin) OnRecordTaskStopped(streamPath string) {
+	p.forgetResumeIntent(streamPath)
+}
+
+var _ m7s.IRecordTaskStopHook = (*MP4Plugin)(nil)
 
 // autoResumeTickWith 是看护的一轮逻辑；依赖以参数注入，便于单测。
 func (p *MP4Plugin) autoResumeTickWith(
@@ -199,27 +242,40 @@ func (p *MP4Plugin) autoResumeTickWith(
 		} else if it.waitingSince.IsZero() {
 			it.waitingSince = now
 		}
-		up := streamUp != nil && streamUp(it.streamPath)
+		// 录制活跃时 decideResume 只会走到「等待」或 deadline 到期的「放弃」，
+		// 不读 streamUp；跳过探测，避免活跃期间每 tick 每意图都查一次
+		// Server.Streams（36 路录制约 2.6 万次/小时）。
+		var up bool
+		if !active {
+			up = streamUp != nil && streamUp(it.streamPath)
+		}
 		action, reason := decideResume(it, active, up, now, maxWait, cfg.MaxSegments)
 		switch action {
 		case resumeActionWait:
 			continue
 		case resumeActionResume:
-			if resume != nil {
+			// 意图可能在 snapshot 之后被 stop 删除或被新 start 替换，只有仍是最新
+			// 意图时才续录（见 isCurrent）。
+			if resume != nil && p.resumeStore.isCurrent(it) {
 				resume(it)
 			}
 		case resumeActionGiveUp:
 			if p.resumeStore.remove(it.streamPath) {
-				p.Warn("auto resume stopped",
-					"streamPath", it.streamPath, "reason", reason, "segments", it.segments)
+				if reason == resumeReasonDeadlineReached {
+					p.Debug("auto resume finished",
+						"streamPath", it.streamPath, "reason", reason, "segments", it.segments)
+				} else {
+					p.Warn("auto resume stopped",
+						"streamPath", it.streamPath, "reason", reason, "segments", it.segments)
+				}
 			}
 		}
 	}
 }
 
-// hasActiveRecording 报告该 streamPath 当前是否仍有录制任务（含 dispose 收尾中）。
-// 录制任务在完成 trailer 改写与上传交接后才离开 Server.Records，因此这里为真
-// 期间绝不续录，避免同一段素材被重复写两份。
+// hasActiveRecording 报告该 streamPath 当前是否仍有运行中的录制任务。
+// Server.Records 的 Find/Range 会过滤掉已进入 disposing 的任务，因此 trailer
+// 收尾与上传交接期间这里为 false；此时续录会写新文件，不会覆盖旧段。
 func (p *MP4Plugin) hasActiveRecording(streamPath string) bool {
 	if p.Server == nil {
 		return false
@@ -230,16 +286,22 @@ func (p *MP4Plugin) hasActiveRecording(streamPath string) bool {
 	return ok
 }
 
-// streamOnline 报告该 streamPath 的 publisher 是否在线且未停止。
-func (p *MP4Plugin) streamOnline(streamPath string) bool {
+// livePublisher 返回在线且未停止的 publisher；流不存在、publisher 已停止或
+// Server 尚未就绪时返回 nil。
+func (p *MP4Plugin) livePublisher(streamPath string) *m7s.Publisher {
 	if p.Server == nil {
-		return false
+		return nil
 	}
 	pub, ok := p.Server.Streams.SafeGet(streamPath)
-	if !ok {
-		return false
+	if !ok || m7s.PublisherStopped(pub) {
+		return nil
 	}
-	return !m7s.PublisherStopped(pub)
+	return pub
+}
+
+// streamOnline 报告该 streamPath 的 publisher 是否在线且未停止。
+func (p *MP4Plugin) streamOnline(streamPath string) bool {
+	return p.livePublisher(streamPath) != nil
 }
 
 // resumeRecording 为意图启动新的一段录制。
@@ -258,8 +320,8 @@ func (p *MP4Plugin) resumeRecording(it *resumeIntent) {
 		p.forgetResumeIntent(it.streamPath)
 		return
 	}
-	pub, ok := p.Server.Streams.SafeGet(it.streamPath)
-	if !ok || m7s.PublisherStopped(pub) {
+	pub := p.livePublisher(it.streamPath)
+	if pub == nil {
 		// 流在这轮检查与启动之间又消失：保持意图，下轮再看。
 		return
 	}
@@ -268,7 +330,8 @@ func (p *MP4Plugin) resumeRecording(it *resumeIntent) {
 	release, err := p.acquireRecordingSlot(ctx)
 	if err != nil {
 		// 名额不足：保持意图，下轮重试（超过 MaxWait 自然放弃）。
-		p.Warn("auto resume skipped: recording slot unavailable",
+		// 限流饱和时每 5s 每意图都会走到这里，Warn 会刷屏，降为 Debug。
+		p.Debug("auto resume skipped: recording slot unavailable",
 			"streamPath", it.streamPath, "error", err)
 		return
 	}
@@ -284,7 +347,29 @@ func (p *MP4Plugin) resumeRecording(it *resumeIntent) {
 		if release != nil {
 			release()
 		}
+		if _, ok := errors.AsType[task.ExistTaskError](err); ok {
+			// 上一段的 RecordJob 仍在 Records 中做 trailer/上传交接，同 key 注册被拒。
+			// 这是正常收尾而非故障：保持意图，下个 tick 再试，不要把收尾刷成 Error。
+			p.Debug("auto resume deferred: previous recording still finishing",
+				"streamPath", it.streamPath, "error", err)
+			return
+		}
 		p.Error("auto resume failed to start", "streamPath", it.streamPath, "error", err)
+		return
+	}
+	// 启动期间用户可能已 /mp4/api/stop：StopRecord 先删意图、再查 Records，
+	// 若它查询时本任务尚未注册就会被漏停。这里补一次校验，尊重显式 stop。
+	if !p.resumeStore.isCurrent(it) {
+		job.GetTask().Stop(task.ErrStopByUser)
+		p.Debug("auto resume abandoned: intent replaced or stopped during start",
+			"streamPath", it.streamPath)
+		return
+	}
+	// publisher 可能在注册与 WaitStarted 返回之间停止，任务随即被连带 Stop——此时
+	// 没有真正录到数据。不能计段、不能报续录成功，保留意图等下一轮重新决策。
+	if job.GetTask().IsStopped() {
+		p.Debug("auto resume job stopped before recording, keep intent",
+			"streamPath", it.streamPath, "reason", job.GetTask().StopReason())
 		return
 	}
 	it.segments++

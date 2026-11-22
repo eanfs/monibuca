@@ -389,8 +389,12 @@ func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 		}
 
 		now := time.Now()
-		if cachedTarget, ok := router.cacheGet(streamPath, now); ok && cachedTarget != "" && !apiRouteIsSelfPeer(s.GetCommonConf().TCP.ListenAddr, cachedTarget) {
-			return router.forwardUnary(ctx, info.FullMethod, req, cachedTarget, apiRouteForwardTimeout(conf, info.FullMethod))
+		// 广播方法不能走缓存：缓存里的目标节点可能在流迁移后已不再持有录制状态，
+		// 转发失败会直接返回而漏掉持有意图的节点。跳过缓存，寻址失败即广播。
+		if !apiRouteShouldBroadcastOnNotFound(info.FullMethod) {
+			if cachedTarget, ok := router.cacheGet(streamPath, now); ok && cachedTarget != "" && !apiRouteIsSelfPeer(s.GetCommonConf().TCP.ListenAddr, cachedTarget) {
+				return router.forwardUnary(ctx, info.FullMethod, req, cachedTarget, apiRouteForwardTimeout(conf, info.FullMethod))
+			}
 		}
 
 		// 只有显式注册的方法（如 /mp4.api/StartRecord）才等待流上线；其它方法
@@ -401,6 +405,11 @@ func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 
 		target, err := router.resolveStreamTarget(ctx, streamPath, peers, conf.ResolveTimeout)
 		if err != nil || target == "" {
+			// 录制意图/元数据是节点内存态：流已断或已迁移时，集群里没有任何节点
+			// 能按 streamPath 被寻址到，但持有意图的节点仍需收到 stop。
+			if apiRouteShouldBroadcastOnNotFound(info.FullMethod) {
+				return s.broadcastUnaryOnNotFound(ctx, req, info, handler, router, peers, conf)
+			}
 			return nil, status.Errorf(codes.NotFound, "stream not found in cluster: %s", streamPath)
 		}
 		if apiRouteIsSelfPeer(s.GetCommonConf().TCP.ListenAddr, target) {
@@ -409,6 +418,35 @@ func (s *Server) RouteInterceptor() grpc.UnaryServerInterceptor {
 		router.cacheSet(streamPath, target, conf.CacheTTL, now)
 		return router.forwardUnary(ctx, info.FullMethod, req, target, apiRouteForwardTimeout(conf, info.FullMethod))
 	}
+}
+
+// broadcastUnaryOnNotFound delivers a stream-addressed method to every node when
+// the stream cannot be resolved anywhere in the cluster.
+//
+// It runs the local handler first, then forwards the same request to every peer.
+// Any successful handler counts as success; if all fail, the local error is
+// returned (usually 404). Forwarded requests carry the routing metadata, so a
+// peer executes its handler directly and never re-broadcasts.
+func (s *Server) broadcastUnaryOnNotFound(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler, router *apiRouter, peers []string, conf cfg.APIRoute) (any, error) {
+	localResp, localErr := handler(ctx, req)
+	firstResp := localResp
+	anyOK := localErr == nil
+	timeout := apiRouteForwardTimeout(conf, info.FullMethod)
+	localAddr := s.GetCommonConf().TCP.ListenAddr
+	for _, peer := range peers {
+		if peer == "" || apiRouteIsSelfPeer(localAddr, peer) {
+			continue
+		}
+		resp, err := router.forwardUnary(ctx, info.FullMethod, req, peer, timeout)
+		if err == nil && !anyOK {
+			firstResp, anyOK = resp, true
+		}
+	}
+	if anyOK {
+		return firstResp, nil
+	}
+	return nil, localErr
 }
 
 func (r *apiRouter) resolveStreamTarget(ctx context.Context, streamPath string, peers []string, timeout time.Duration) (string, error) {

@@ -26,7 +26,9 @@ func init() {
 	// 生产环境中由各插件 init 注册；根包测试不加载插件包，这里等价注册。
 	RegisterAPIRouteUnary("/mp4.api/StartRecord", func() any { return new(mp4pb.ResponseStartRecord) })
 	RegisterAPIRouteUnary("/mp4.api/StopRecord", func() any { return new(mp4pb.ResponseStopRecord) })
+	RegisterAPIRouteUnary("/mp4.api/EventStart", func() any { return new(mp4pb.ResponseEventRecord) })
 	RegisterAPIRouteWaitStream("/mp4.api/StartRecord")
+	RegisterAPIRouteBroadcastOnNotFound("/mp4.api/StopRecord")
 }
 
 const apiRouteTestNeverAppear int32 = 1 << 30
@@ -39,6 +41,7 @@ type apiRouteTestPeer struct {
 	appearAfter      atomic.Int32
 	streamInfoCalls  atomic.Int32
 	startRecordCalls atomic.Int32
+	stopRecordCalls  atomic.Int32
 	lastStreamPath   atomic.Value
 }
 
@@ -58,6 +61,12 @@ func (s *apiRouteTestMP4Server) StartRecord(_ context.Context, req *mp4pb.ReqSta
 	s.peer.startRecordCalls.Add(1)
 	s.peer.lastStreamPath.Store(req.GetStreamPath())
 	return &mp4pb.ResponseStartRecord{Data: 42}, nil
+}
+
+func (s *apiRouteTestMP4Server) StopRecord(_ context.Context, req *mp4pb.ReqStopRecord) (*mp4pb.ResponseStopRecord, error) {
+	s.peer.stopRecordCalls.Add(1)
+	s.peer.lastStreamPath.Store(req.GetStreamPath())
+	return &mp4pb.ResponseStopRecord{Data: 7}, nil
 }
 
 func startAPIRouteTestPeer(t *testing.T, appearAfter int32) *apiRouteTestPeer {
@@ -318,17 +327,18 @@ func TestRouteInterceptorStartRecordWaitWindowExpires(t *testing.T) {
 }
 
 // 非 StartRecord 方法不得等待：保持原逻辑（探测一次后 404），不引入额外延迟。
+// 用 EventStart 作样本：StopRecord 现在注册了 stream-not-found 广播，不再走 404。
 func TestRouteInterceptorNonWaitMethodDoesNotWait(t *testing.T) {
 	peer := startAPIRouteTestPeer(t, apiRouteTestNeverAppear)
 	s := newAPIRouteTestServer(t, peer.addr, 5*time.Second, time.Second)
 
 	var localCalls atomic.Int32
 	start := time.Now()
-	_, err := runAPIRouteTestInterceptor(t, s, "/mp4.api/StopRecord",
-		&mp4pb.ReqStopRecord{StreamPath: "live/missing"},
+	_, err := runAPIRouteTestInterceptor(t, s, "/mp4.api/EventStart",
+		&mp4pb.ReqEventRecord{StreamPath: "live/missing"},
 		func(context.Context, any) (any, error) {
 			localCalls.Add(1)
-			return &mp4pb.ResponseStopRecord{}, nil
+			return &mp4pb.ResponseEventRecord{}, nil
 		})
 	elapsed := time.Since(start)
 	if code := status.Code(err); code != codes.NotFound {
@@ -422,5 +432,53 @@ func TestRouteInterceptorLocalStreamAppearsWithinWindow(t *testing.T) {
 	}
 	if got := peer.startRecordCalls.Load(); got != 0 {
 		t.Fatalf("peer forwarded %d times, want 0 (stream is local)", got)
+	}
+}
+
+// 流不在集群中任何节点时，StopRecord 也必须广播到各节点：自动续录意图是节点
+// 内存态，按 streamPath 寻址不到持有意图的节点，不广播就无法实现「stop 优先」。
+func TestRouteInterceptorStopRecordBroadcastsWhenStreamNotFound(t *testing.T) {
+	peer := startAPIRouteTestPeer(t, apiRouteTestNeverAppear)
+	s := newAPIRouteTestServer(t, peer.addr, 0, time.Second)
+
+	var localCalls atomic.Int32
+	res, err := runAPIRouteTestInterceptor(t, s, "/mp4.api/StopRecord",
+		&mp4pb.ReqStopRecord{StreamPath: "live/gone"},
+		func(context.Context, any) (any, error) {
+			localCalls.Add(1)
+			return nil, status.Error(codes.NotFound, "no local record")
+		})
+	if err != nil {
+		t.Fatalf("StopRecord broadcast = %v, want success from peer", err)
+	}
+	if got := res.(*mp4pb.ResponseStopRecord).GetData(); got != 7 {
+		t.Fatalf("peer response data = %d, want 7", got)
+	}
+	if localCalls.Load() != 1 {
+		t.Fatalf("local handler called %d times, want 1", localCalls.Load())
+	}
+	if got := peer.stopRecordCalls.Load(); got != 1 {
+		t.Fatalf("peer StopRecord calls = %d, want 1", got)
+	}
+}
+
+// 本地成功也要广播：流已迁移时旧节点可能仍持有待续录意图，必须一并清除。
+func TestRouteInterceptorStopRecordLocalSuccessStillBroadcasts(t *testing.T) {
+	peer := startAPIRouteTestPeer(t, apiRouteTestNeverAppear)
+	s := newAPIRouteTestServer(t, peer.addr, 0, time.Second)
+
+	res, err := runAPIRouteTestInterceptor(t, s, "/mp4.api/StopRecord",
+		&mp4pb.ReqStopRecord{StreamPath: "live/moved"},
+		func(context.Context, any) (any, error) {
+			return &mp4pb.ResponseStopRecord{Data: 5}, nil
+		})
+	if err != nil {
+		t.Fatalf("StopRecord broadcast = %v", err)
+	}
+	if got := res.(*mp4pb.ResponseStopRecord).GetData(); got != 5 {
+		t.Fatalf("response data = %d, want local 5", got)
+	}
+	if got := peer.stopRecordCalls.Load(); got != 1 {
+		t.Fatalf("peer StopRecord calls = %d, want 1", got)
 	}
 }
