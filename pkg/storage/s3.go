@@ -50,6 +50,7 @@ type S3StorageConfig struct {
 	MaxRetries      int           `desc:"上传失败最大重试次数" default:"3"`
 	RetryInterval   time.Duration `desc:"重试基础间隔（指数退避）" default:"5s"`
 	PartSize        int64         `desc:"multipart 分片大小（字节），默认 64MB" default:"67108864"`
+	Concurrency     int           `desc:"number of concurrent multipart part uploads; lower values reduce concurrent disk read pressure" default:"2"`
 	ConnectTimeout  time.Duration `desc:"TCP 连接超时" default:"10s"`
 	TempDir         string        `desc:"本地临时文件目录，为空时使用系统临时目录"`
 	// RequireTempDir 开启后，未配置 TempDir 时拒绝创建 S3 后端。
@@ -208,12 +209,8 @@ func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
 		return nil, fmt.Errorf("S3 connection test failed: %w", err)
 	}
 
-	// 创建 uploader，配置 PartSize
-	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
-		if cfg.PartSize > 0 {
-			u.PartSize = cfg.PartSize
-		}
-	})
+	// Create the uploader with the configured part size and concurrency.
+	uploader := newS3Uploader(sess, cfg)
 
 	return &S3Storage{
 		config:     cfg,
@@ -222,6 +219,25 @@ func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
 		downloader: s3manager.NewDownloader(sess),
 	}, nil
 }
+
+// newS3Uploader builds the S3 uploader. PartSize and Concurrency only override
+// the SDK defaults when positive. A negative Concurrency is clamped to 1: the
+// SDK panics or stalls on a non-positive concurrency.
+// Note: the runtime default of 2 comes from the `default:"2"` struct tag, applied
+// by the config system; a zero here means "keep the SDK default (5)".
+func newS3Uploader(sess *session.Session, cfg *S3StorageConfig) *s3manager.Uploader {
+	return s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		if cfg.PartSize > 0 {
+			u.PartSize = cfg.PartSize
+		}
+		if cfg.Concurrency > 0 {
+			u.Concurrency = cfg.Concurrency
+		} else if cfg.Concurrency < 0 {
+			u.Concurrency = 1
+		}
+	})
+}
+
 func (s *S3Storage) GetKey() string {
 	return "s3"
 }
