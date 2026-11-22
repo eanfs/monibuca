@@ -47,7 +47,7 @@ var ErrPendingDirFull = errors.New("pending dir full")
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent upload disk reads so they cannot starve recording writes; 0 = unlimited (default)" default:"0"`
+	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent upload disk reads so they cannot starve recording writes; 0 = unlimited (default)" default:"0" yaml:"readratembps"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`

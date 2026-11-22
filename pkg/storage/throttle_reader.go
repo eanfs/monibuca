@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"io"
 
 	"golang.org/x/time/rate"
@@ -20,25 +19,35 @@ var uploadReadLimiter *rate.Limiter
 // NewUploadThrottledReadSeeker wraps rs with the global upload read limiter.
 // With no limiter configured it returns rs unchanged (zero overhead).
 //
-// The static return type is io.ReadSeeker, but the dynamic type keeps ReadAt
-// when rs supports it: the AWS SDK only uses concurrent io.NewSectionReader
-// range reads for a Body implementing both io.ReaderAt and io.ReadSeeker.
-// Returning a plain ReadSeeker would silently serialize multipart reads.
+// The limiter is captured once per wrapper, so Read/ReadAt never touch the
+// global variable: re-initialising the upload manager cannot swap a nil limiter
+// under a wrapper that is mid-upload.
+//
+// The static return type is io.ReadSeeker, and the dynamic type adds ReadAt only
+// when rs supports it: the AWS SDK switches to concurrent io.NewSectionReader
+// range reads only for a Body implementing both io.ReaderAt and io.ReadSeeker.
+// Hiding ReadAt for capable sources would silently serialize multipart reads;
+// advertising it for sources that lack it would hand the SDK a ReaderAt it
+// cannot honour.
 func NewUploadThrottledReadSeeker(ctx context.Context, rs io.ReadSeeker) io.ReadSeeker {
-	if uploadReadLimiter == nil {
+	lim := uploadReadLimiter
+	if lim == nil {
 		return rs
 	}
-	w := &uploadThrottledReadSeeker{ctx: ctx, rs: rs}
+	w := &uploadThrottledReadSeeker{ctx: ctx, lim: lim, rs: rs}
 	if ra, ok := rs.(io.ReaderAt); ok {
-		w.ra = ra
+		return &uploadThrottledReadSeekerAt{uploadThrottledReadSeeker: w, ra: ra}
 	}
 	return w
 }
 
+// uploadThrottledReadSeeker paces reads through a shared token bucket.
+// It deliberately does not implement io.ReaderAt; uploadThrottledReadSeekerAt
+// does, for sources that support it.
 type uploadThrottledReadSeeker struct {
 	ctx context.Context
+	lim *rate.Limiter
 	rs  io.ReadSeeker
-	ra  io.ReaderAt // nil when the source cannot read at offsets
 }
 
 func (r *uploadThrottledReadSeeker) Read(p []byte) (int, error) {
@@ -48,7 +57,7 @@ func (r *uploadThrottledReadSeeker) Read(p []byte) (int, error) {
 		if chunk > maxThrottleChunk {
 			chunk = maxThrottleChunk
 		}
-		if err := uploadReadLimiter.WaitN(r.ctx, chunk); err != nil {
+		if err := r.lim.WaitN(r.ctx, chunk); err != nil {
 			return total, err
 		}
 		n, err := r.rs.Read(p[total : total+chunk])
@@ -63,17 +72,24 @@ func (r *uploadThrottledReadSeeker) Read(p []byte) (int, error) {
 	return total, nil
 }
 
-func (r *uploadThrottledReadSeeker) ReadAt(p []byte, off int64) (int, error) {
-	if r.ra == nil {
-		return 0, errors.New("storage: source does not support ReadAt")
-	}
+func (r *uploadThrottledReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	return r.rs.Seek(offset, whence)
+}
+
+// uploadThrottledReadSeekerAt adds ReadAt for sources that implement it.
+type uploadThrottledReadSeekerAt struct {
+	*uploadThrottledReadSeeker
+	ra io.ReaderAt
+}
+
+func (r *uploadThrottledReadSeekerAt) ReadAt(p []byte, off int64) (int, error) {
 	total := 0
 	for total < len(p) {
 		chunk := len(p) - total
 		if chunk > maxThrottleChunk {
 			chunk = maxThrottleChunk
 		}
-		if err := uploadReadLimiter.WaitN(r.ctx, chunk); err != nil {
+		if err := r.lim.WaitN(r.ctx, chunk); err != nil {
 			return total, err
 		}
 		n, err := r.ra.ReadAt(p[total:total+chunk], off+int64(total))
@@ -86,8 +102,4 @@ func (r *uploadThrottledReadSeeker) ReadAt(p []byte, off int64) (int, error) {
 		}
 	}
 	return total, nil
-}
-
-func (r *uploadThrottledReadSeeker) Seek(offset int64, whence int) (int64, error) {
-	return r.rs.Seek(offset, whence)
 }
