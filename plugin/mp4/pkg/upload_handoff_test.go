@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	task "github.com/eanfs/gotask"
 )
@@ -84,5 +85,76 @@ func TestFinalizeUploadTaskSuccess(t *testing.T) {
 	}
 	if onFailCalled {
 		t.Fatal("onFail must not be called on success")
+	}
+}
+
+type fakeFinalizeFile struct{ closed bool }
+
+func (f *fakeFinalizeFile) Write(p []byte) (int, error)                  { return len(p), nil }
+func (f *fakeFinalizeFile) WriteAt(p []byte, off int64) (int, error)     { return len(p), nil }
+func (f *fakeFinalizeFile) Read(p []byte) (int, error)                   { return 0, io.EOF }
+func (f *fakeFinalizeFile) ReadAt(p []byte, off int64) (int, error)      { return 0, io.EOF }
+func (f *fakeFinalizeFile) Seek(offset int64, whence int) (int64, error) { return 0, nil }
+func (f *fakeFinalizeFile) Sync() error                                  { return nil }
+func (f *fakeFinalizeFile) Close() error                                 { f.closed = true; return nil }
+func (f *fakeFinalizeFile) Stat() (os.FileInfo, error)                   { return nil, nil }
+func (f *fakeFinalizeFile) Name() string                                 { return "fake" }
+func (f *fakeFinalizeFile) SetMetadata(key, value string)                {}
+
+func newInlineFinalizeTask(t *testing.T) (*finalizeUploadTask, *fakeFinalizeFile, <-chan struct{}) {
+	t.Helper()
+	file := &fakeFinalizeFile{}
+	done := make(chan struct{})
+	ft := &finalizeUploadTask{file: file, filePath: "live/ch1/fixed.mp4", size: 1}
+	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	ft.onDone = func() { close(done) }
+	return ft, file, done
+}
+
+func TestFinalizeRunsInlineWhenUploadQueueRejected(t *testing.T) {
+	queue := newStoppedUploadQueue(t)
+	ft, file, done := newInlineFinalizeTask(t)
+	if !enqueueFinalizeOrRunInline(queue, ft, ft.Logger) {
+		t.Fatal("expected inline fallback when the upload queue rejects the task")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("finalize did not run inline; the recording would be silently dropped")
+	}
+	if !file.closed {
+		t.Fatal("inline finalize must close (flush + upload) the file")
+	}
+	if ft.file != nil {
+		t.Fatal("file ownership must be released after inline finalize")
+	}
+}
+
+func TestFinalizeStaysQueuedWhenUploadQueueAccepts(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping under -race: starting/stopping a gotask Work triggers the upstream v1.0.5 EventLoop race (CLAUDE.md Known Issues)")
+	}
+	var root task.RootManager[uint32, task.ManagerItem[uint32]]
+	root.Init()
+	queue := &UploadQueueTask{}
+	if err := root.AddTask(queue).WaitStarted(); err != nil {
+		t.Fatalf("start upload queue: %v", err)
+	}
+	t.Cleanup(func() {
+		queue.Stop(errors.New("test done"))
+		_ = queue.WaitStopped()
+	})
+
+	ft, file, done := newInlineFinalizeTask(t)
+	if enqueueFinalizeOrRunInline(queue, ft, ft.Logger) {
+		t.Fatal("accepted task must not run inline")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued finalize did not run")
+	}
+	if !file.closed {
+		t.Fatal("queued finalize must close (flush + upload) the file")
 	}
 }

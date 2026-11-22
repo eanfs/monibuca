@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -866,7 +867,25 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 	}
 	t.file = nil // 所有权移交
 	t.logUploadEnqueued(size)
-	uploadQueueTask.AddTask(ft, t.Logger)
+	enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger)
+}
+
+// enqueueFinalizeOrRunInline hands the finalize task to the upload queue and,
+// when the queue rejects it synchronously, runs ft.Go() inline. A rejection
+// means file ownership already moved but nobody will execute the task
+// (shutdown, or a full event-loop channel); not running it would silently drop
+// the recording. The inline path also keeps flush/upload/index/DB side effects
+// in one implementation — do not copy Go()'s body.
+func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger *slog.Logger) (inline bool) {
+	if err := enqueueUploadTask(queue, ft, logger); err != nil {
+		ft.Warn("upload queue rejected task; running finalize inline",
+			"file", ft.filePath, "size", ft.size, "error", err)
+		inline = true
+		if goErr := ft.Go(); goErr != nil {
+			ft.Error("inline finalize failed", "file", ft.filePath, "err", goErr)
+		}
+	}
+	return
 }
 
 // logUploadEnqueued 输出「上传入队」事件。retryCount 固定为 0：入队即首次
