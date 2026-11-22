@@ -60,6 +60,16 @@ type MP4Plugin struct {
 			// 仅允许本地回环请求，避免任意本机进程借无鉴权端点触发恢复。
 			AllowUnauthenticated bool `default:"false" desc:"未启用 admin.enablelogin 时是否允许任意来源调用 POST /api/recovery/run；false 时仅允许本地回环请求"`
 		} `desc:"录像崩溃恢复配置"`
+		// AutoResume 是「录制断流自动恢复」配置：/mp4/api/start 启动且指定了
+		// duration 的连续录制，因流中断（publisher 销毁/重建）结束时，在流恢复后
+		// 自动重新开录，无需业务系统补偿调用。事件录像、GB28181 下载录像不参与。
+		// 续录会开启新文件（progressive MP4 无法跨连接续写同一文件）。
+		AutoResume struct {
+			Enable      bool          `default:"false" desc:"录制因流中断结束时是否自动续录（仅对 /mp4/api/start 启动且指定 duration 的连续录制生效）"`
+			MaxWait     time.Duration `default:"5m" desc:"流中断后等待其恢复的最长时间，超时放弃续录并告警"`
+			Interval    time.Duration `default:"5s" desc:"续录看护的检查间隔"`
+			MaxSegments int           `default:"0" desc:"单个录制最多产生的段数（首段计入），0 表示不限制"`
+		} `desc:"录制断流自动恢复配置"`
 	} `yaml:"record" desc:"录像配置"`
 
 	// Limits 是录制资源软保护配置（yaml: mp4.limits）。
@@ -70,6 +80,10 @@ type MP4Plugin struct {
 
 	// recordLimiter 在 Start 时按 Limits 初始化；为 nil 时按不限制处理。
 	recordLimiter atomic.Pointer[RecordLimiter]
+
+	// resumeStore 保存可自动续录的录制意图（mp4.record.autoresume）。
+	// 零值可用；仅在 AutoResume.Enable 时被写入。
+	resumeStore autoResumeStore
 
 	// recoveryTask 供 /api/recovery/* 手动触发与状态查询；Start 时存入。
 	// 用 atomic 是因为 HTTP handler 可能先于/并发于插件启动被调用。
@@ -206,6 +220,12 @@ func (p *MP4Plugin) Start() (err error) {
 	recoveryTask.observer = p.observeRecovery
 	p.recoveryTask.Store(recoveryTask)
 	p.AddTask(recoveryTask)
+
+	// 录制断流自动恢复看护：仅开启时注册（空闲 Tick 也有开销）。
+	// 独立于 recoveryTask：前者只管崩溃残留定稿，这里管"流恢复后自动续录"。
+	if p.RecordConfig.AutoResume.Enable {
+		p.AddTask(&autoResumeTask{plugin: p})
+	}
 	// go func() { //处理所有异常，录像中断异常、录像读取异常、录像导出文件中断、磁盘容量低于阈值异常、磁盘异常
 	// 	for exception := range exceptionChannel {
 	// 		p.SendToThirdPartyAPI(exception)
