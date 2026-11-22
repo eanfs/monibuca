@@ -222,7 +222,7 @@ func NewS3Storage(cfg *S3StorageConfig) (*S3Storage, error) {
 
 // newS3Uploader builds the S3 uploader. PartSize and Concurrency only override
 // the SDK defaults when positive. A negative Concurrency is clamped to 1: the
-// SDK panics or stalls on a non-positive concurrency.
+// SDK panics on a negative concurrency (zero is reset to the SDK default).
 // Note: the runtime default of 2 comes from the `default:"2"` struct tag, applied
 // by the config system; a zero here means "keep the SDK default (5)".
 func newS3Uploader(sess *session.Session, cfg *S3StorageConfig) *s3manager.Uploader {
