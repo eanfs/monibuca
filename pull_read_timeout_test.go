@@ -50,10 +50,30 @@ func TestEffectivePullReadTimeoutUsesGlobalConfig(t *testing.T) {
 	}
 }
 
-// TestEffectivePullReadTimeoutExplicitWins 代理显式值优先于全局默认。
-func TestEffectivePullReadTimeoutExplicitWins(t *testing.T) {
+// TestEffectivePullReadTimeoutGlobalIsFloor 全局值是下限：比它小的代理取值
+// （含旧版 API 写进 DB 的内置默认 10s）必须被提升。
+func TestEffectivePullReadTimeoutGlobalIsFloor(t *testing.T) {
 	s := &Server{}
 	s.PullReadTimeout = 30 * time.Second
+	for _, explicit := range []time.Duration{0, 5 * time.Second, 10 * time.Second} {
+		if got := s.effectivePullReadTimeout(explicit); got != 30*time.Second {
+			t.Fatalf("effectivePullReadTimeout(%v) = %v, want floor 30s", explicit, got)
+		}
+	}
+}
+
+// TestEffectivePullReadTimeoutLargerExplicitWins 代理配置大于全局下限时保留自身值。
+func TestEffectivePullReadTimeoutLargerExplicitWins(t *testing.T) {
+	s := &Server{}
+	s.PullReadTimeout = 30 * time.Second
+	if got := s.effectivePullReadTimeout(60 * time.Second); got != 60*time.Second {
+		t.Fatalf("effectivePullReadTimeout(60s) = %v, want explicit 60s", got)
+	}
+}
+
+// TestEffectivePullReadTimeoutNoGlobalKeepsExplicit 未配置全局下限时不改变既有行为。
+func TestEffectivePullReadTimeoutNoGlobalKeepsExplicit(t *testing.T) {
+	s := &Server{}
 	if got := s.effectivePullReadTimeout(5 * time.Second); got != 5*time.Second {
 		t.Fatalf("effectivePullReadTimeout(5s) = %v, want explicit 5s", got)
 	}
@@ -92,14 +112,27 @@ func TestInitializeWithServerAppliesGlobalReadTimeout(t *testing.T) {
 	}
 }
 
-// TestInitializeWithServerKeepsExplicitReadTimeout 代理已有的显式值不得被全局默认覆盖。
-func TestInitializeWithServerKeepsExplicitReadTimeout(t *testing.T) {
+// TestInitializeWithServerAppliesGlobalFloorToLegacyDBTimeout 现场关键路径：
+// 旧版 API 在请求未指定 readtimeout 时会把内置 10s 写进 DB，加载时必须被全局下限
+// 提升，否则 global.pullreadtimeout 对存量代理完全不生效（2026-11-21 现场即如此）。
+func TestInitializeWithServerAppliesGlobalFloorToLegacyDBTimeout(t *testing.T) {
 	s := &Server{}
 	s.PullReadTimeout = 30 * time.Second
-	proxy := &PullProxyConfig{Type: "rtsp", ReadTimeout: 5 * time.Second}
+	proxy := &PullProxyConfig{Type: "rtsp", ReadTimeout: 10 * time.Second}
 	proxy.InitializeWithServer(s)
-	if proxy.ReadTimeout != 5*time.Second {
-		t.Fatalf("proxy.ReadTimeout = %v, want explicit 5s", proxy.ReadTimeout)
+	if proxy.ReadTimeout != 30*time.Second {
+		t.Fatalf("legacy DB read_timeout 10s = %v, want global floor 30s", proxy.ReadTimeout)
+	}
+}
+
+// TestInitializeWithServerKeepsLargerExplicitReadTimeout 大于全局下限的代理值不被覆盖。
+func TestInitializeWithServerKeepsLargerExplicitReadTimeout(t *testing.T) {
+	s := &Server{}
+	s.PullReadTimeout = 30 * time.Second
+	proxy := &PullProxyConfig{Type: "rtsp", ReadTimeout: 60 * time.Second}
+	proxy.InitializeWithServer(s)
+	if proxy.ReadTimeout != 60*time.Second {
+		t.Fatalf("proxy.ReadTimeout = %v, want explicit 60s", proxy.ReadTimeout)
 	}
 }
 

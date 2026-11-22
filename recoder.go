@@ -29,6 +29,12 @@ type (
 		task.ITask
 		GetRecordJob() *RecordJob
 	}
+	// IRecordTaskStopHook 由维护插件层录制状态（如 mp4 自动续录意图）的插件实现。
+	// 通用任务接口 /api/task/stop 直接 Stop RecordJob，插件状态不会随之清理，
+	// 必须由插件在这里自行清理。
+	IRecordTaskStopHook interface {
+		OnRecordTaskStopped(streamPath string)
+	}
 	RecorderFactory = func(config.Record) IRecorder
 	// RecordEvent 包含录像事件的公共字段
 

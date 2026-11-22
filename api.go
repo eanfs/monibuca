@@ -264,8 +264,36 @@ func (s *Server) StopTask(ctx context.Context, req *pb.RequestWithId64) (resp *p
 	if t == nil {
 		return nil, pkg.ErrNotFound
 	}
+	// 在 Stop 之前取 streamPath：RecordJob 一进入 disposing 就会从 Records 的
+	// active 视图消失，之后无法再定位到它对应的录制插件状态。
+	streamPath := s.recordStreamPathOfTask(t)
 	t.Stop(task.ErrStopByUser)
+	if streamPath != "" {
+		s.notifyRecordTaskStopped(streamPath)
+	}
 	return &pb.SuccessResponse{}, nil
+}
+
+// recordStreamPathOfTask 返回该任务所属录制流的 streamPath；不是录制任务时为空。
+func (s *Server) recordStreamPathOfTask(t *task.Task) string {
+	job, ok := s.Records.Find(func(job *RecordJob) bool {
+		return job.GetTask() == t
+	})
+	if !ok || job == nil {
+		return ""
+	}
+	return job.StreamPath
+}
+
+// notifyRecordTaskStopped 通知各插件：某个录制任务被通用任务接口停止。
+// 插件层状态（如 mp4 的自动续录意图）不随 RecordJob 销毁，必须由插件自行清理，
+// 否则看护任务会在 5s 内把用户显式停掉的录制重新拉起。
+func (s *Server) notifyRecordTaskStopped(streamPath string) {
+	for plugin := range s.Plugins.Range {
+		if hook, ok := plugin.GetHandler().(IRecordTaskStopHook); ok {
+			hook.OnRecordTaskStopped(streamPath)
+		}
+	}
 }
 
 func (s *Server) RestartTask(ctx context.Context, req *pb.RequestWithId64) (resp *pb.SuccessResponse, err error) {

@@ -67,12 +67,15 @@ type (
 		StreamAlias   map[config.Regexp]string `desc:"流别名"`
 		Location      map[config.Regexp]string `desc:"HTTP路由转发规则,key为正则表达式,value为目标地址"`
 		PullProxy     []*PullProxyConfig
-		// PullReadTimeout 是拉流代理的默认读超时（yaml: global.pullreadtimeout）：
-		// 拉流代理自身未显式配置 readtimeout 时使用；0 表示沿用内置默认 10s。
+		// PullReadTimeout 是拉流代理读超时的全局下限（yaml: global.pullreadtimeout）：
+		// 小于它的代理取值会被提升，更大的代理取值保留；0 表示不设下限，代理未配置
+		// 时沿用内置默认 10s。
 		// 动机：RTSP 拉流内置 10s 读超时，网络秒级抖动即断开 -> unpublish ->
 		// 挂在该 publisher 上的录制终止（60 分钟长录被切成多段甚至彻底停录）。
-		// 现场可在 yaml 写 global.pullreadtimeout: 30s 统一放宽所有拉流代理。
-		PullReadTimeout time.Duration `desc:"拉流代理默认读超时（代理未显式配置 readtimeout 时使用）；0 表示沿用内置默认 10s"`
+		// 现场可在 yaml 写 global.pullreadtimeout: 30s 统一放宽所有拉流代理；
+		// 旧版 API 会把未指定的 readtimeout 写成 10s 存入 DB，因此这里必须是下限，
+		// 否则存量代理不受影响。
+		PullReadTimeout time.Duration `desc:"拉流代理读超时的全局下限；小于它的代理取值会被提升，0 表示不设下限"`
 		PushProxy       []*PushProxyConfig
 		Admin           struct {
 			zipReader      *zip.ReadCloser

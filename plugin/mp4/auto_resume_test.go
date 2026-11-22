@@ -36,7 +36,7 @@ func TestDecideResume(t *testing.T) {
 			streamUp: true, want: resumeActionGiveUp,
 		},
 		{
-			name:   "录制仍活跃 -> 等待（含 trailer/upload 收尾）",
+			name:   "录制仍活跃 -> 等待（不并行续录）",
 			intent: base, active: true, streamUp: true, want: resumeActionWait,
 		},
 		{
@@ -78,18 +78,50 @@ func TestDecideResume(t *testing.T) {
 // 意图表并发安全 + 基本增删语义。
 func TestAutoResumeStore(t *testing.T) {
 	var s autoResumeStore
-	s.put(&resumeIntent{streamPath: "live/a", segments: 1})
+	it := &resumeIntent{streamPath: "live/a", segments: 1}
+	s.put(it)
 	if got := len(s.snapshot()); got != 1 {
 		t.Fatalf("snapshot len = %d, want 1", got)
 	}
+	if !s.isCurrent(it) {
+		t.Fatal("isCurrent(just put) = false, want true")
+	}
 	if !s.remove("live/a") {
 		t.Fatal("remove(existing) = false, want true")
+	}
+	if s.isCurrent(it) {
+		t.Fatal("isCurrent(removed) = true, want false")
 	}
 	if s.remove("live/a") {
 		t.Fatal("remove(absent) = true, want false")
 	}
 	if got := len(s.snapshot()); got != 0 {
 		t.Fatalf("snapshot len after remove = %d, want 0", got)
+	}
+}
+
+// 看护 Tick 的 snapshot 过期后（用户已 stop 或已重新 start），isCurrent 必须否定
+// 旧意图，否则正在收尾的旧快照会把用户刚停掉的录制重新拉起。
+func TestAutoResumeStoreIsCurrent(t *testing.T) {
+	var s autoResumeStore
+	oldIt := &resumeIntent{streamPath: "live/a", deadline: time.Now().Add(time.Hour), segments: 1}
+	s.put(oldIt)
+	if !s.isCurrent(oldIt) {
+		t.Fatal("isCurrent(just put) = false, want true")
+	}
+	// /mp4/api/start 用新意图替换旧意图。
+	newIt := &resumeIntent{streamPath: "live/a", deadline: time.Now().Add(2 * time.Hour), segments: 1}
+	s.put(newIt)
+	if s.isCurrent(oldIt) {
+		t.Fatal("isCurrent(replaced) = true, want false")
+	}
+	if !s.isCurrent(newIt) {
+		t.Fatal("isCurrent(new) = false, want true")
+	}
+	// /mp4/api/stop 删除意图。
+	s.remove("live/a")
+	if s.isCurrent(newIt) {
+		t.Fatal("isCurrent(removed) = true, want false")
 	}
 }
 
@@ -104,14 +136,17 @@ func TestAutoResumeTickWith(t *testing.T) {
 		return p
 	}
 
-	t.Run("录制活跃 -> 不续录且清零等待计时", func(t *testing.T) {
+	t.Run("录制活跃 -> 不续录、清零等待计时且不探测流状态", func(t *testing.T) {
 		p := newPlugin()
 		p.resumeStore.put(&resumeIntent{streamPath: "live/a", deadline: now.Add(time.Hour), segments: 1,
 			waitingSince: now.Add(-time.Minute)})
 		var resumed int
 		p.autoResumeTickWith(
 			func(string) bool { return true }, // 活跃
-			func(string) bool { return true }, // 流在线
+			func(string) bool { // 录制活跃时决策不依赖流状态，探测纯属浪费
+				t.Fatal("must not probe stream state while recording is active")
+				return true
+			},
 			func(*resumeIntent) { resumed++ },
 			now,
 		)
@@ -174,21 +209,21 @@ func TestAutoResumeTickWith(t *testing.T) {
 // 登记规则：未开启不登记；开启但 duration=0（无限录制）不登记；正常登记 segments=1 且 deadline 正确。
 func TestRegisterResumeIntent(t *testing.T) {
 	p := newAutoResumeTestPlugin()
-	conf := config.Record{FilePath: "."}
+	conf := config.Record{FilePath: ".", Duration: time.Minute}
 
-	p.registerResumeIntent("live/off", conf, time.Minute)
+	p.registerResumeIntent("live/off", conf)
 	if n := len(p.resumeStore.snapshot()); n != 0 {
 		t.Fatalf("intent registered while disabled: %d", n)
 	}
 
 	p.RecordConfig.AutoResume.Enable = true
-	p.registerResumeIntent("live/infinite", conf, 0)
+	p.registerResumeIntent("live/infinite", config.Record{FilePath: "."})
 	if n := len(p.resumeStore.snapshot()); n != 0 {
 		t.Fatalf("intent registered for duration=0: %d", n)
 	}
 
 	before := time.Now()
-	p.registerResumeIntent("live/a", conf, time.Minute)
+	p.registerResumeIntent("live/a", conf)
 	snap := p.resumeStore.snapshot()
 	if len(snap) != 1 || snap[0].streamPath != "live/a" {
 		t.Fatalf("intent not registered: %+v", snap)
@@ -219,5 +254,107 @@ func TestAutoResumeConfigFallback(t *testing.T) {
 	}
 	if got := effectiveMaxWait(-time.Second); got != 0 {
 		t.Fatalf("effectiveMaxWait(-1s) = %v, want 0", got)
+	}
+}
+
+// TestAutoResumeConfigDefaults 钉住默认值：自动续录默认开启、等待窗口默认 10m。
+//
+// 默认开启是刻意的：录制任务挂在 publisher 上，断流即终止，业务补偿不可靠
+// （2026-11-21 现场补偿滞后约 9 分钟）。MaxWait 必须是 10m 而不是 5m：现场
+// 断流后部分流 5m40s 才恢复，5m 会在恢复前放弃续录。
+func TestAutoResumeConfigDefaults(t *testing.T) {
+	p := &MP4Plugin{}
+	config.Parse(p, nil)
+	got := p.RecordConfig.AutoResume
+	if !got.Enable {
+		t.Fatal("autoresume.enable default = false, want true")
+	}
+	if got.MaxWait != 10*time.Minute {
+		t.Fatalf("autoresume.maxwait default = %v, want 10m", got.MaxWait)
+	}
+	if got.Interval != 5*time.Second {
+		t.Fatalf("autoresume.interval default = %v, want 5s", got.Interval)
+	}
+	if got.MaxSegments != 0 {
+		t.Fatalf("autoresume.maxsegments default = %d, want 0", got.MaxSegments)
+	}
+}
+
+// 看护 Tick 决策期间用户 stop（删除意图）时，本轮不得再拉起录制。
+// 用 streamUp 回调模拟这段并发窗口。
+func TestAutoResumeTickSkipsIntentRemovedDuringTick(t *testing.T) {
+	p := newAutoResumeTestPlugin()
+	p.RecordConfig.AutoResume.Enable = true
+	now := time.Now()
+	p.resumeStore.put(&resumeIntent{streamPath: "live/a", deadline: now.Add(time.Hour), segments: 1})
+	p.autoResumeTickWith(
+		func(string) bool { return false }, // 录制已结束
+		func(string) bool { // 模拟 /mp4/api/stop 在 tick 决策期间删除意图
+			p.forgetResumeIntent("live/a")
+			return true
+		},
+		func(*resumeIntent) { t.Fatal("intent removed during tick must not be resumed") },
+		now,
+	)
+}
+
+// TestAutoResumeConfigBinding 钉住 yaml 键 mp4.record.autoresume.{enable,maxwait}
+// 的绑定：默认开启后，现场必须能显式 enable: false 关掉。
+func TestAutoResumeConfigBinding(t *testing.T) {
+	p := &MP4Plugin{}
+	config.Parse(p, map[string]any{
+		"record": map[string]any{
+			"autoresume": map[string]any{
+				"enable":  false,
+				"maxwait": "2m",
+			},
+		},
+	})
+	if p.RecordConfig.AutoResume.Enable {
+		t.Fatal("autoresume.enable: false not bound")
+	}
+	if p.RecordConfig.AutoResume.MaxWait != 2*time.Minute {
+		t.Fatalf("autoresume.maxwait = %v, want 2m", p.RecordConfig.AutoResume.MaxWait)
+	}
+}
+
+// TestAutoResumeSlowRecoveryWithinMaxWait 复现现场时序：录制结束后流 5m40s 才恢复。
+// 默认 MaxWait=10m 时期间必须保持等待，恢复后立即续录；若默认退回 5m 本用例会失败。
+func TestAutoResumeSlowRecoveryWithinMaxWait(t *testing.T) {
+	p := &MP4Plugin{}
+	config.Parse(p, nil)
+	start := time.Now()
+	p.registerResumeIntent("live/slow", config.Record{FilePath: ".", Duration: time.Hour})
+	snap := p.resumeStore.snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("intent not registered: %+v", snap)
+	}
+	it := snap[0]
+	// 录制在 start+1m 结束，之后流一直不在线。
+	it.waitingSince = start.Add(time.Minute)
+
+	var resumed int
+	p.autoResumeTickWith(
+		func(string) bool { return false }, // 录制已结束
+		func(string) bool { return false }, // 流仍未恢复
+		func(*resumeIntent) { resumed++ },
+		start.Add(time.Minute+5*time.Minute+40*time.Second), // 断流 5m40s
+	)
+	if resumed != 0 {
+		t.Fatal("resumed while stream was down")
+	}
+	if n := len(p.resumeStore.snapshot()); n != 1 {
+		t.Fatalf("intent dropped after 5m40s wait (want keep for default 10m): %d left", n)
+	}
+
+	// 流恢复后下一轮必须续录。
+	p.autoResumeTickWith(
+		func(string) bool { return false },
+		func(string) bool { return true },
+		func(*resumeIntent) { resumed++ },
+		start.Add(7*time.Minute),
+	)
+	if resumed != 1 {
+		t.Fatalf("resumed = %d after stream recovered, want 1", resumed)
 	}
 }
