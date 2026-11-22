@@ -103,3 +103,28 @@ func TestCreateStreamKeepsTimestampNamingWhenFileNameEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateStreamReusesNextNameAfterLaterSegmentFailure(t *testing.T) {
+	local, err := storage.NewLocalStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := newSegmentTestRecorder(t, "rec-1.mp4", local, StorageStatus{DesiredType: "local", ActiveType: "local"})
+	if err := rec.CreateStream(time.Now(), fixedName); err != nil {
+		t.Fatalf("first segment: %v", err)
+	}
+	// The second segment's storage resolution fails; it must not consume -001.
+	rec.RecordJob.Plugin.Server.activateStorage(storage.NewUnavailableStorage("s3"),
+		StorageStatus{DesiredType: "s3", ActiveType: "s3", Degraded: true})
+	if err := rec.CreateStream(time.Now(), fixedName); err == nil {
+		t.Fatal("expected a storage error on the second segment")
+	}
+	// Recovered: the next successful segment is still -001, not -002.
+	rec.RecordJob.Plugin.Server.activateStorage(local, StorageStatus{DesiredType: "local", ActiveType: "local"})
+	if err := rec.CreateStream(time.Now(), fixedName); err != nil {
+		t.Fatalf("third segment: %v", err)
+	}
+	if got := filepath.Base(rec.Event.FilePath); got != "rec-1-001.mp4" {
+		t.Fatalf("after failed second segment path=%q, want %q", got, "rec-1-001.mp4")
+	}
+}

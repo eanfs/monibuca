@@ -94,7 +94,7 @@ func TestRecoveryAfterKill(t *testing.T) {
 	})
 
 	// ---- 段 1：启动 server，推流并开录 ----
-	first := startRecoveryServer(t, root, storageBase, recordDir, beforeKillLog)
+	first := startRecoveryServer(t, root, storageBase, recordDir, beforeKillLog, "^TestRecoveryAfterKill$")
 	httpPort, rtmpPort := first.httpPort, first.rtmpPort
 
 	ffmpeg := startFFmpeg(t, root, source, rtmpPort)
@@ -159,7 +159,7 @@ func TestRecoveryAfterKill(t *testing.T) {
 
 	// ---- 段 3：重启 server，等待启动恢复自动完成 ----
 	// 重启同样走端口重试：kill 后旧端口可能处于 TIME_WAIT，或被其他进程抢占。
-	startRecoveryServer(t, root, storageBase, recordDir, afterRestartLog)
+	startRecoveryServer(t, root, storageBase, recordDir, afterRestartLog, "^TestRecoveryAfterKill$")
 
 	waitFor(t, 90*time.Second, 500*time.Millisecond, "automatic recovery", func() error {
 		for _, leftover := range []string{sidecar, sidecar + ".recovering"} {
@@ -262,7 +262,7 @@ type recoveryServer struct {
 // freePort 先监听 :0 再立即 Close，与子进程真正 bind 之间存在 TOCTOU 窗口：
 // 端口可能被其他进程抢走，或两次 freePort 撞在同一端口。启动失败时换一组端口
 // 重试，最终失败时把子进程日志带回错误信息。
-func startRecoveryServer(t *testing.T, root, storageBase, recordDir, logName string) *recoveryServer {
+func startRecoveryServer(t *testing.T, root, storageBase, recordDir, logName, runPattern string) *recoveryServer {
 	t.Helper()
 	const attempts = 3
 	var lastErr error
@@ -277,7 +277,7 @@ func startRecoveryServer(t *testing.T, root, storageBase, recordDir, logName str
 		if err := os.WriteFile(s.cfgPath, []byte(cfg), 0o644); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
-		startRecoveryChild(t, root, s, logName)
+		startRecoveryChild(t, root, s, logName, runPattern)
 		if err := waitServerPorts(s, 20*time.Second); err != nil {
 			lastErr = err
 			s.stop()
@@ -350,7 +350,7 @@ func waitServerPorts(s *recoveryServer, timeout time.Duration) error {
 }
 
 // startRecoveryChild 以 helper 模式重新执行测试二进制，启动真实 server。
-func startRecoveryChild(t *testing.T, dir string, s *recoveryServer, logName string) {
+func startRecoveryChild(t *testing.T, dir string, s *recoveryServer, logName, runPattern string) {
 	cfgPath := s.cfgPath
 	t.Helper()
 	bin, err := filepath.Abs(os.Args[0])
@@ -361,7 +361,7 @@ func startRecoveryChild(t *testing.T, dir string, s *recoveryServer, logName str
 	if err != nil {
 		t.Fatalf("create child log: %v", err)
 	}
-	cmd := exec.Command(bin, "-test.run=^TestRecoveryAfterKill$", "-test.v")
+	cmd := exec.Command(bin, "-test.run="+runPattern, "-test.v")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), recoveryChildEnv+"=1", recoveryConfigEnv+"="+cfgPath)
 	cmd.Stdout = logFile

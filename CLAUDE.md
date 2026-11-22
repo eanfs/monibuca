@@ -496,7 +496,9 @@ Automatic migration is handled for core models including users, proxies, and str
   rotation) gets `-001`, `-002`, ... appended before the extension, e.g.
   `rec-1.mp4` -> `rec-1-001.mp4`. This applies to mp4, flv and hls recorders.
 - The segment counter advances only after the segment's storage is resolved, so a
-  failed first attempt does not consume the requested name.
+  failure during that resolution does not consume the requested name. A failure
+  after `CreateStream` returns (for example in the plugin's `CreateFile`) does
+  advance the counter: the next attempt starts at `-001`.
 - `fragment` still defaults to 1 minute on the API; callers that want a single
   file must still send `"fragment":"0"`.
 
@@ -505,7 +507,8 @@ Automatic migration is handled for core models including users, proxies, and str
 2026-07-15 196 演示环境事故(录制 400、视频未上传 MinIO)结论,详见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`:
 1. `Mp4StartRequest.duration` 需 `Integer`→`String`(发 `"900"` 或 `"900s"`);
 2. stop 收到 not-found(本修复起为 404;v5.3.9 及更早为 500)应视为幂等成功(duration 到点 monibuca 已自停);
-3. 录单文件需补传 `"fragment":"0"`(否则默认 1 分钟分片,叠加上面 fileName 覆盖缺陷)。
+3. single-file recordings must still send `"fragment":"0"` (the API defaults to
+   1-minute fragments); the fileName overwrite bug above is fixed.
 
 ### gotask 库 `-race` 下 EventLoop 数据竞争
 
