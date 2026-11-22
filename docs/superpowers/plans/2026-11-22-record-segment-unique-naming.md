@@ -565,15 +565,19 @@ git commit -m "test(record): pin segment naming and counter scope"
 ### Task 4: Run the upload finalize step inline when the upload queue rejects the task
 
 **Files:**
-- Modify: `plugin/mp4/pkg/record.go:856-872` (`handoffToUploadQueue`)
-- Create: `plugin/mp4/pkg/upload_handoff_test.go`
+- Modify: `plugin/mp4/pkg/record.go` (`handoffToUploadQueue` and the helper below it)
+- Modify: `plugin/mp4/pkg/upload_handoff_test.go` (append; this file already
+  exists at HEAD and defines `fakeStorageFile` for other tests — preserve it)
+- Create: `plugin/mp4/pkg/race_enabled_test.go`, `plugin/mp4/pkg/race_disabled_test.go`
 
 **Interfaces:**
 - Consumes: the **existing** helper
   `func enqueueUploadTask(queue task.IJob, u *finalizeUploadTask, logger *slog.Logger) error`
   (`plugin/mp4/pkg/recovery_upload.go:285`, already returns an error on
-  `m7s.AddTaskRejected`), `finalizeUploadTask.Go() (err error)`, and the existing
-  test helper `newStoppedUploadQueue(t)` (`plugin/mp4/pkg/recovery_upload_test.go:19`).
+  `m7s.AddTaskRejected`), `finalizeUploadTask.Go() (err error)`, the existing
+  test helper `newStoppedUploadQueue(t)` (`plugin/mp4/pkg/recovery_upload_test.go:19`),
+  and the `raceEnabled` build-tag convention already used by
+  `plugin/mp4/race_enabled_test.go`.
 - Produces: `func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger *slog.Logger) (inline bool)` in package `mp4`.
 
 **Why:** `handoffToUploadQueue` transfers file ownership to `ft` before calling
@@ -584,24 +588,14 @@ When the queue rejects the task — parent `Work` stopped during shutdown, or th
 silently lost. The recovery-upload path already solved this with
 `enqueueUploadTask`; the recording handoff must use it too.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Create `plugin/mp4/pkg/upload_handoff_test.go`:
+Append to `plugin/mp4/pkg/upload_handoff_test.go` (the file already exists and
+defines `fakeStorageFile` plus two recovery-upload tests; append below them and
+merge the `time` import into the existing import block — do not replace the
+file):
 
 ```go
-package mp4
-
-import (
-	"errors"
-	"io"
-	"log/slog"
-	"os"
-	"testing"
-	"time"
-
-	task "github.com/eanfs/gotask"
-)
-
 type fakeFinalizeFile struct{ closed bool }
 
 func (f *fakeFinalizeFile) Write(p []byte) (int, error)                  { return len(p), nil }
@@ -645,6 +639,9 @@ func TestFinalizeRunsInlineWhenUploadQueueRejected(t *testing.T) {
 }
 
 func TestFinalizeStaysQueuedWhenUploadQueueAccepts(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping under -race: starting/stopping a gotask Work triggers the upstream v1.0.5 EventLoop race (CLAUDE.md Known Issues)")
+	}
 	var root task.RootManager[uint32, task.ManagerItem[uint32]]
 	root.Init()
 	queue := &UploadQueueTask{}
@@ -671,6 +668,39 @@ func TestFinalizeStaysQueuedWhenUploadQueueAccepts(t *testing.T) {
 }
 ```
 
+Also create the race build-tag pair in the same package.
+
+`plugin/mp4/pkg/race_enabled_test.go`:
+
+```go
+//go:build race
+
+package mp4
+
+// raceEnabled reports whether tests are compiled with the race detector. It is
+// used to skip cases that trigger the known gotask v1.0.5 EventLoop data race
+// (CLAUDE.md Known Issues), matching plugin/mp4/race_enabled_test.go.
+const raceEnabled = true
+```
+
+`plugin/mp4/pkg/race_disabled_test.go`:
+
+```go
+//go:build !race
+
+package mp4
+
+// raceEnabled reports whether tests are compiled with the race detector
+// (see race_enabled_test.go).
+const raceEnabled = false
+```
+
+The accept-path test starts and stops a gotask `Work`; under `-race` it
+deterministically reports the upstream v1.0.5 EventLoop race already documented
+in CLAUDE.md. `plugin/mp4` ships the identical `raceEnabled` pattern
+(`limits_slot_leak_test.go:300`); this task extends it to `plugin/mp4/pkg`
+rather than weakening the non-race assertion or accepting a red `-race` gate.
+
 - [ ] **Step 2: Run it and verify it fails**
 
 Run: `go test ./plugin/mp4/pkg -run '^TestFinalize(RunsInline|StaysQueued)' -count=1`
@@ -683,10 +713,12 @@ existing `enqueueUploadTask` helper; `queue` is a parameter so tests can pass a
 stopped queue without touching the global one:
 
 ```go
-// enqueueFinalizeOrRunInline 把最终持久化任务交给上传队列；队列同步拒绝时就地
-// 执行 ft.Go()。拒绝意味着文件所有权已移交却没人执行（shutdown 或事件循环
-// 通道满），不就地执行会静默丢失录像；内联路径同时保证 flush/上传/索引/DB
-// 副作用只走一份实现，不要复制 Go() 的函数体。
+// enqueueFinalizeOrRunInline hands the finalize task to the upload queue and,
+// when the queue rejects it synchronously, runs ft.Go() inline. A rejection
+// means file ownership already moved but nobody will execute the task
+// (shutdown, or a full event-loop channel); not running it would silently drop
+// the recording. The inline path also keeps flush/upload/index/DB side effects
+// in one implementation — do not copy Go()'s body.
 func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger *slog.Logger) (inline bool) {
 	if err := enqueueUploadTask(queue, ft, logger); err != nil {
 		ft.Warn("upload queue rejected task; running finalize inline",
@@ -713,25 +745,31 @@ channel, where preserving the recording outweighs trailer-queue throughput.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
-Run: `go test -race ./plugin/mp4/pkg -run '^TestFinalize(RunsInline|StaysQueued)' -count=1`
-Expected: PASS.
+Run: `go test ./plugin/mp4/pkg -run '^TestFinalize(RunsInline|StaysQueued)' -count=1 -v`
+Expected: PASS; both tests run and pass without the race detector.
+
+Run: `go test -race ./plugin/mp4/pkg -run '^TestFinalize(RunsInline|StaysQueued)' -count=1 -v`
+Expected: PASS; the inline test runs, the accept test is SKIPPED because it
+starts and stops a gotask `Work`, which reproduces the documented upstream
+EventLoop race.
 
 - [ ] **Step 5: Verify the full package and the call site**
 
 Run:
 
 ```bash
-gofmt -l plugin/mp4/pkg/record.go plugin/mp4/pkg/upload_handoff_test.go
+gofmt -l plugin/mp4/pkg/record.go plugin/mp4/pkg/upload_handoff_test.go plugin/mp4/pkg/race_enabled_test.go plugin/mp4/pkg/race_disabled_test.go
 go vet ./plugin/mp4/...
 go test -race ./plugin/mp4/... -count=1
 ```
 
-Expected: `gofmt -l` prints nothing; all commands PASS.
+Expected: `gofmt -l` prints nothing; all commands PASS (the accept test skips
+under `-race` only).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add plugin/mp4/pkg/record.go plugin/mp4/pkg/upload_handoff_test.go
+git add plugin/mp4/pkg/record.go plugin/mp4/pkg/upload_handoff_test.go plugin/mp4/pkg/race_enabled_test.go plugin/mp4/pkg/race_disabled_test.go
 git commit -m "fix(mp4): never drop a recording when the upload queue rejects the finalize task"
 ```
 
