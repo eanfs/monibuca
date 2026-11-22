@@ -350,8 +350,8 @@ In `test/recovery_integration_test.go`:
 - `startRecoveryServer` gains a `runPattern string` parameter and passes it to
   `startRecoveryChild`.
 - `startRecoveryChild` gains `runPattern string` and builds the command as
-  `exec.Command(bin, runPattern, "-test.v")` instead of the hardcoded
-  `-test.run=^TestRecoveryAfterKill$`.
+  `exec.Command(bin, "-test.run="+runPattern, "-test.v")` instead of the hardcoded
+  `-test.run=^TestRecoveryAfterKill$`; callers pass the bare pattern.
 - Update both existing calls to pass `"^TestRecoveryAfterKill$"`.
 
 Verify: `go test ./test -run '^$' -count=1`
