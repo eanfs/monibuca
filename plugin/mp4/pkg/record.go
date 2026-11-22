@@ -852,6 +852,35 @@ func (u *finalizeUploadTask) logUploadFailure(cause error) {
 		"streamPath", u.streamPath)
 }
 
+// errUploadBacklogFull marks a finalize handed to the durable pending-retry
+// queue because the in-memory upload backlog is full.
+var errUploadBacklogFull = errors.New("mp4: upload backlog full")
+
+// uploadBacklogFullFor reports a spill: object storage, a DB retry queue, and no
+// free queue slot. Only then is handing the file to the durable pending queue
+// safer than holding it in memory. Local storage already has the file in place,
+// and without a DB there is no retry queue (a spill would delete the only copy).
+func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
+	return storageKey != "local" && hasDB && backlogFull
+}
+
+// spillToPending abandons this upload and lets onFail register the pending
+// retry. It must not call Close: the upload never started, and Close would
+// trigger it and delete the temp file. Registration is a DB insert plus a
+// rename, so running it on the trailer queue is bounded work — unlike running
+// the upload itself.
+func (u *finalizeUploadTask) spillToPending(cause error) {
+	if u.onDone != nil {
+		defer u.onDone()
+	}
+	u.Warn("upload backlog full; deferring to pending retry",
+		"file", u.filePath, "size", u.size, "cause", cause)
+	u.file = nil
+	if u.onFail != nil {
+		u.onFail(cause)
+	}
+}
+
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
 // 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
 func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
@@ -865,7 +894,21 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 		indexPath:  t.indexPath,
 		size:       size,
 	}
-	t.file = nil // 所有权移交
+	t.file = nil // ownership transferred
+
+	// Only object-storage finalization reads the recording back from disk;
+	// a local Close is a rename and must not consume a backlog slot.
+	objectStorage := t.storageKey != "local"
+	acquired := objectStorage && storage.TryAcquireUploadQueue()
+	if acquired {
+		ft.onDone = storage.ReleaseUploadQueue
+	}
+	if uploadBacklogFullFor(t.storageKey, t.db != nil, objectStorage && !acquired) {
+		ft.spillToPending(errUploadBacklogFull)
+		return
+	}
+	// local, or object storage with no DB retry queue when full: keep the old
+	// path and let the in-memory queue absorb it (no slot to release).
 	if enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger) {
 		// Inline path: the wrapper logged the rejection and ran the finalize.
 		return

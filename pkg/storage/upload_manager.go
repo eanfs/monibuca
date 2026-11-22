@@ -39,6 +39,13 @@ var (
 	trailerSem            chan struct{}
 	activeTrailerWrites   int32
 	maxConcurrentTrailers int
+
+	// maxQueuedUploads bounds final-persistence tasks that are queued but not yet
+	// finished; 0 = unlimited. When full, the caller hands the file straight to
+	// the durable pending-retry queue (on disk, survives restart) instead of
+	// piling hundreds of in-memory tasks up during a finalize storm.
+	maxQueuedUploads int
+	queuedUploads    atomic.Int32
 )
 
 // ErrPendingDirFull 表示 pending 暂存目录已达水位上限,拒绝再接收文件。
@@ -54,6 +61,7 @@ type UploadConfig struct {
 	PendingMaxSizeMB           int    `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
 	PendingMaxFiles            int    `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
 	PendingDiskMinFreeMB       int    `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
+	MaxQueuedUploads           int    `desc:"maximum queued-but-unfinished final persistence tasks; overflow spills to the pending retry queue; 0 = unlimited" default:"8"`
 }
 
 // InitUploadManager 初始化上传管理器（并发控制 + 暂存目录）
@@ -107,11 +115,13 @@ func InitUploadManager(cfg UploadConfig) {
 	pendingMaxSizeBytes = int64(cfg.PendingMaxSizeMB) * 1024 * 1024
 	pendingMaxFiles = cfg.PendingMaxFiles
 	pendingDiskMinFree = int64(cfg.PendingDiskMinFreeMB) * 1024 * 1024
+	maxQueuedUploads = cfg.MaxQueuedUploads
+	queuedUploads.Store(0)
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
-	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, readRate=%dMB/s, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, cfg.UploadReadRateMBps, pendingDir)
+	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxQueued=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, readRate=%dMB/s, pendingDir=%s",
+		maxConcurrent, maxQueuedUploads, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, cfg.UploadReadRateMBps, pendingDir)
 }
 
 // pendingDirIsPersistent 判断暂存目录是否是绝对路径。
@@ -165,6 +175,35 @@ func GetActiveUploads() int32 {
 // GetMaxConcurrentUploads 获取最大并发上传数
 func GetMaxConcurrentUploads() int {
 	return maxConcurrent
+}
+
+// TryAcquireUploadQueue reserves one queued-upload slot; always succeeds when
+// the cap is <= 0.
+func TryAcquireUploadQueue() bool {
+	if maxQueuedUploads <= 0 {
+		queuedUploads.Add(1)
+		return true
+	}
+	for {
+		cur := queuedUploads.Load()
+		if int(cur) >= maxQueuedUploads {
+			return false
+		}
+		if queuedUploads.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// ReleaseUploadQueue returns one slot; every task must call it after success,
+// failure, or inline execution.
+func ReleaseUploadQueue() {
+	queuedUploads.Add(-1)
+}
+
+// QueuedUploads reports the number of reserved slots.
+func QueuedUploads() int32 {
+	return queuedUploads.Load()
 }
 
 // MoveLocalFile 把 srcPath 移动到 dstPath：
