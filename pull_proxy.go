@@ -68,6 +68,7 @@ type (
 		CheckInterval                  time.Duration `default:"10s"`
 		// ReadTimeout：RTSP 等媒体 TCP 读/拨号超时（BufReader.SetTimeout）；0 表示用默认 10s。
 		// Confirmed via 寸止: BUG-021 R1
+		// 优先级：代理显式值 > global.pullreadtimeout > 内置默认 10s（见 effectivePullReadTimeout）。
 		ReadTimeout time.Duration `default:"10s" gorm:"comment:拉流读超时"`
 		RTT         time.Duration
 	}
@@ -159,7 +160,30 @@ func (d *BasePullProxy) Dispose() {
 	d.pullStarted = false
 }
 
+// defaultPullProxyReadTimeout 是拉流代理读超时的内置兜底值，与 plugin/rtsp 的
+// DefaultReadTimeout 保持一致（核心包不能反向依赖协议插件，故各自定义）。
+const defaultPullProxyReadTimeout = time.Second * 10
+
+// effectivePullReadTimeout 解析拉流代理实际使用的读超时，优先级：
+// 代理显式配置 > global.pullreadtimeout > 内置默认 10s。
+//
+// 为什么需要全局默认：拉流代理的 ReadTimeout 存在 DB（历史数据多为 0），
+// 0 会让 RTSP 连接回落到内置 10s——10 秒级网络抖动即断开 -> unpublish ->
+// 录制终止。现场不便逐个改 DB/API 时，用一条 global.pullreadtimeout 统一放宽。
+func (s *Server) effectivePullReadTimeout(explicit time.Duration) time.Duration {
+	if explicit > 0 {
+		return explicit
+	}
+	if s != nil && s.PullReadTimeout > 0 {
+		return s.PullReadTimeout
+	}
+	return defaultPullProxyReadTimeout
+}
+
 func (d *PullProxyConfig) InitializeWithServer(s *Server) {
+	// 未显式配置读超时的代理（含 DB 历史数据 read_timeout=0）统一取全局默认。
+	// 放在 Type 推断之前：Type 推断失败会提前 return，不能因此漏掉超时填充。
+	d.ReadTimeout = s.effectivePullReadTimeout(d.ReadTimeout)
 	if d.Type == "" {
 		u, err := url.Parse(d.URL)
 		if err != nil {
@@ -512,9 +536,8 @@ func (s *Server) AddPullProxy(ctx context.Context, req *pb.PullProxyInfo) (res *
 	if req.ReadTimeout != nil {
 		pullProxyConfig.ReadTimeout = req.ReadTimeout.AsDuration()
 	}
-	if pullProxyConfig.ReadTimeout == 0 {
-		pullProxyConfig.ReadTimeout = time.Second * 10
-	}
+	// 未显式指定时取 global.pullreadtimeout，未配置再回落内置 10s
+	pullProxyConfig.ReadTimeout = s.effectivePullReadTimeout(pullProxyConfig.ReadTimeout)
 	if s.DB == nil {
 		err = pkg.ErrNoDB
 		return
@@ -644,9 +667,8 @@ func (s *Server) UpdatePullProxy(ctx context.Context, req *pb.UpdatePullProxyReq
 	if req.ReadTimeout != nil {
 		target.ReadTimeout = req.ReadTimeout.AsDuration()
 	}
-	if target.ReadTimeout == 0 {
-		target.ReadTimeout = time.Second * 10
-	}
+	// 未显式指定时取 global.pullreadtimeout，未配置再回落内置 10s
+	target.ReadTimeout = s.effectivePullReadTimeout(target.ReadTimeout)
 	if req.StopRetryOnAuthFail != nil {
 		if strings.EqualFold(target.Type, "rtsp") {
 			target.StopRetryOnAuthFail = *req.StopRetryOnAuthFail
