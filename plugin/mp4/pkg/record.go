@@ -875,7 +875,11 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 // means file ownership already moved but nobody will execute the task
 // (shutdown, or a full event-loop channel); not running it would silently drop
 // the recording. The inline path also keeps flush/upload/index/DB side effects
-// in one implementation — do not copy Go()'s body.
+// in one implementation — do not copy Go()'s body. It can block the trailer
+// queue for up to storage.UploadSlotWaitTimeout (30 minutes) plus the upload
+// attempts, which is acceptable because it only fires on shutdown or a
+// saturated event-loop channel, where keeping the recording outweighs
+// trailer-queue throughput.
 func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger *slog.Logger) (inline bool) {
 	if err := enqueueUploadTask(queue, ft, logger); err != nil {
 		ft.Warn("upload queue rejected task; running finalize inline",

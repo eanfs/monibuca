@@ -286,9 +286,9 @@ func enqueueUploadTask(queue task.IJob, u *finalizeUploadTask, logger *slog.Logg
 	child := queue.AddTask(u, logger)
 	if rejected, reason := m7s.AddTaskRejected(queue, child); rejected {
 		if reason != nil {
-			return fmt.Errorf("mp4: recovery upload task rejected by task system: %w", reason)
+			return fmt.Errorf("mp4: upload task rejected by task system: %w", reason)
 		}
-		return errors.New("mp4: recovery upload task rejected by task system")
+		return errors.New("mp4: upload task rejected by task system")
 	}
 	return nil
 }
