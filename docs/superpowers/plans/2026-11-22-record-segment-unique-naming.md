@@ -336,11 +336,14 @@ git commit -m "fix(record): give retry and fragment segments unique file names"
 **Files:**
 - Modify: `test/recovery_integration_test.go` (`startRecoveryServer`, `startRecoveryChild`)
 - Create: `test/record_segment_name_test.go`
+- Modify: `recoder_segment_test.go` (late-segment failure case)
+- Modify: `CLAUDE.md` (stale its-server note, precise counter-scope wording)
 
 **Interfaces:**
 - Consumes: the fix from Task 2; harness helpers `startRecoveryServer`,
   `startFFmpeg`, `waitFor`, `postJSON`, `repoFile`, `recoveryChildEnv`,
-  `recoveryConfigEnv` from `test/recovery_integration_test.go`.
+  `recoveryConfigEnv` from `test/recovery_integration_test.go`; the Task 2
+  helpers `newSegmentTestRecorder` and `fixedName` in `recoder_segment_test.go`.
 - Produces: `startRecoveryServer(t *testing.T, root, storageBase, recordDir, logName, runPattern string) *recoveryServer` (new `runPattern` parameter).
 
 - [ ] **Step 1: Parameterize the child test pattern**
@@ -357,7 +360,73 @@ In `test/recovery_integration_test.go`:
 Verify: `go test ./test -run '^$' -count=1`
 Expected: PASS (compiles; no tests run).
 
-- [ ] **Step 2: Write the failing regression test**
+- [ ] **Step 2: Pin late-segment failure and correct the counter-scope docs**
+
+Append to `recoder_segment_test.go`:
+
+```go
+func TestCreateStreamReusesNextNameAfterLaterSegmentFailure(t *testing.T) {
+	local, err := storage.NewLocalStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := newSegmentTestRecorder(t, "rec-1.mp4", local, StorageStatus{DesiredType: "local", ActiveType: "local"})
+	if err := rec.CreateStream(time.Now(), fixedName); err != nil {
+		t.Fatalf("first segment: %v", err)
+	}
+	// The second segment's storage resolution fails; it must not consume -001.
+	rec.RecordJob.Plugin.Server.activateStorage(storage.NewUnavailableStorage("s3"),
+		StorageStatus{DesiredType: "s3", ActiveType: "s3", Degraded: true})
+	if err := rec.CreateStream(time.Now(), fixedName); err == nil {
+		t.Fatal("expected a storage error on the second segment")
+	}
+	// Recovered: the next successful segment is still -001, not -002.
+	rec.RecordJob.Plugin.Server.activateStorage(local, StorageStatus{DesiredType: "local", ActiveType: "local"})
+	if err := rec.CreateStream(time.Now(), fixedName); err != nil {
+		t.Fatalf("third segment: %v", err)
+	}
+	if got := filepath.Base(rec.Event.FilePath); got != "rec-1-001.mp4" {
+		t.Fatalf("after failed second segment path=%q, want %q", got, "rec-1-001.mp4")
+	}
+}
+```
+
+Run:
+`go test . -run '^TestCreateStreamReusesNextNameAfterLaterSegmentFailure$' -count=1 -race`
+Expected: PASS.
+
+In `CLAUDE.md`, make two wording corrections.
+
+1. Under "Known Issues", replace
+
+```markdown
+- The segment counter advances only after the segment's storage is resolved, so a
+  failed first attempt does not consume the requested name.
+```
+
+with
+
+```markdown
+- The segment counter advances only after the segment's storage is resolved, so a
+  failure during that resolution does not consume the requested name. A failure
+  after `CreateStream` returns (for example in the plugin's `CreateFile`) does
+  advance the counter: the next attempt starts at `-001`.
+```
+
+2. In the its-server list, replace item 3
+
+```markdown
+3. 录单文件需补传 `"fragment":"0"`(否则默认 1 分钟分片,叠加上面 fileName 覆盖缺陷)。
+```
+
+with
+
+```markdown
+3. single-file recordings must still send `"fragment":"0"` (the API defaults to
+   1-minute fragments); the fileName overwrite bug above is fixed.
+```
+
+- [ ] **Step 3: Write the failing regression test**
 
 Create `test/record_segment_name_test.go`:
 
@@ -460,18 +529,18 @@ func nonEmptyFile(path string) error {
 }
 ```
 
-- [ ] **Step 3: Run it and verify it passes**
+- [ ] **Step 4: Run it and verify it passes**
 
 Run: `go test ./test -run '^TestRecordFixedFileNameFragmentSegmentsDoNotOverwrite$' -count=1 -v`
 Expected: PASS (both `fixed.mp4` and `fixed-001.mp4` exist and are non-empty).
 
-- [ ] **Step 4: Negative control**
+- [ ] **Step 5: Negative control**
 
 Comment out the `r.segmentSeq++` lines added in Task 2 Step 3, then run the
 same command. Expected: FAIL — timeout waiting for `fixed-001.mp4`.
 Restore the lines and rerun. Expected: PASS.
 
-- [ ] **Step 5: Full verification**
+- [ ] **Step 6: Full verification**
 
 Run, in order:
 
@@ -484,11 +553,11 @@ go test ./test -run '^(TestRecordFixedFileNameFragmentSegmentsDoNotOverwrite|Tes
 
 Expected: `gofmt -l` prints nothing; all commands PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add test/recovery_integration_test.go test/record_segment_name_test.go
-git commit -m "test(record): pin unique naming across fragment rotations"
+git add test/recovery_integration_test.go test/record_segment_name_test.go recoder_segment_test.go CLAUDE.md
+git commit -m "test(record): pin segment naming and counter scope"
 ```
 
 ---
