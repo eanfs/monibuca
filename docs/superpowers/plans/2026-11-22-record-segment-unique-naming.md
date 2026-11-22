@@ -780,8 +780,10 @@ git commit -m "fix(mp4): never drop a recording when the upload queue rejects th
   the request still carries `fileName`, `StopRecord` matches by `StreamPath` only
   (`plugin/mp4/api.go:893`), and `StartRecord` idempotency matches
   `RecConf.FilePath` + `RecConf.FileName` (`plugin/mp4/api.go:811`) — both fields
-  are left untouched by this change. The `-001` suffix also matches the caller's
-  `RECORDING_FILE_NAME_PATTERN` (`(-\d{3}){0,3}` suffix groups).
+  are left untouched by this change. `-001`..`-999` match the caller's
+  `RECORDING_FILE_NAME_PATTERN` (`(-\d{3}){0,3}` suffix groups); a counter
+  beyond 999 emits four digits (`-1000`) and falls outside those groups, as
+  pinned in Review Focus.
 - The canonical key now always holds segment 1 instead of the last writer. In the
   2026-11-22 incident that turns the 10.45 s object into the 58.8-minute one; the
   trailing ~70 s of retries live under `-001`..`-003`, visible in

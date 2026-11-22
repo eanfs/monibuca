@@ -866,8 +866,11 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 		size:       size,
 	}
 	t.file = nil // 所有权移交
+	if enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger) {
+		// Inline path: the wrapper logged the rejection and ran the finalize.
+		return
+	}
 	t.logUploadEnqueued(size)
-	enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger)
 }
 
 // enqueueFinalizeOrRunInline hands the finalize task to the upload queue and,

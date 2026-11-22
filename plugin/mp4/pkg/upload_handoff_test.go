@@ -88,18 +88,9 @@ func TestFinalizeUploadTaskSuccess(t *testing.T) {
 	}
 }
 
-type fakeFinalizeFile struct{ closed bool }
-
-func (f *fakeFinalizeFile) Write(p []byte) (int, error)                  { return len(p), nil }
-func (f *fakeFinalizeFile) WriteAt(p []byte, off int64) (int, error)     { return len(p), nil }
-func (f *fakeFinalizeFile) Read(p []byte) (int, error)                   { return 0, io.EOF }
-func (f *fakeFinalizeFile) ReadAt(p []byte, off int64) (int, error)      { return 0, io.EOF }
-func (f *fakeFinalizeFile) Seek(offset int64, whence int) (int64, error) { return 0, nil }
-func (f *fakeFinalizeFile) Sync() error                                  { return nil }
-func (f *fakeFinalizeFile) Close() error                                 { f.closed = true; return nil }
-func (f *fakeFinalizeFile) Stat() (os.FileInfo, error)                   { return nil, nil }
-func (f *fakeFinalizeFile) Name() string                                 { return "fake" }
-func (f *fakeFinalizeFile) SetMetadata(key, value string)                {}
+// fakeFinalizeFile is the finalize-path spelling of the file double defined
+// above; Close returns nil (closeErr is zero) for the success-path tests.
+type fakeFinalizeFile = fakeStorageFile
 
 func newInlineFinalizeTask(t *testing.T) (*finalizeUploadTask, *fakeFinalizeFile, <-chan struct{}) {
 	t.Helper()
