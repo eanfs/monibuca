@@ -854,6 +854,9 @@ func (p *MP4Plugin) StartRecord(ctx context.Context, req *mp4pb.ReqStartRecord) 
 		return
 	}
 	slotHeld = false
+	// 登记「断流自动续录」意图：仅 mp4.record.autoresume.enable 且指定了
+	// duration 的连续录制生效；duration=0 的无限录制不登记（避免无限续录）。
+	p.registerResumeIntent(req.StreamPath, recordConf, duration)
 	return
 }
 
@@ -863,6 +866,9 @@ func (p *MP4Plugin) StopRecord(ctx context.Context, req *mp4pb.ReqStopRecord) (r
 		err = classifyRecordAPIError(err)
 	}()
 	res = &mp4pb.ResponseStopRecord{}
+	// 用户显式停止：先取消自动续录意图，避免停录后又被看护任务拉起。
+	// 放在查找任务之前：即使任务已自然结束（not found 路径）也要清掉意图。
+	p.forgetResumeIntent(req.StreamPath)
 	var recordJob *m7s.RecordJob
 	recordJob, _ = p.Server.Records.Find(func(job *m7s.RecordJob) bool {
 		return job.StreamPath == req.StreamPath
