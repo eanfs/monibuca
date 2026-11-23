@@ -62,6 +62,85 @@ func TestRecoveryScanLogsEachError(t *testing.T) {
 	}
 }
 
+// issue #42：扫描目录快照（discoverSidecars）与上传成功后的正常清理
+// （pkg.removeIndexAfterUpload）之间存在竞态——快照里还有的 sidecar 到处理时
+// 已被删除。ENOENT 不是恢复故障：不得产生 Error 级 "index recovery error"，
+// 不计入 errors 总数，只累计到 skipped 并以 Debug 级记录。
+func TestRecoveryScanSkipsRemovedSidecar(t *testing.T) {
+	dir := t.TempDir()
+	// 刻意不创建该文件：模拟扫描取得快照后 sidecar 已被正常清理。
+	missing := filepath.Join(dir, "s3writer_gone.tmp"+mp4pkg.IndexExtension)
+
+	logs := &captureHandler{}
+	recovery := &IndexRecoveryTask{}
+	recovery.Logger = slog.New(logs)
+
+	outcome, _, err := recovery.recoverSidecar(missing, -1)
+	if err != nil {
+		t.Fatalf("ENOENT sidecar must not surface an error: %v", err)
+	}
+	if outcome != recoverySkipped {
+		t.Fatalf("outcome = %v, want skipped", outcome)
+	}
+
+	stats := RecoveryStats{Scanned: 1}
+	stats.recordOutcome(missing, outcome, err)
+	recovery.logRecoveryErrors(stats.Errors, stats.Skipped)
+
+	if stats.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", stats.Skipped)
+	}
+	if stats.Failed != 0 {
+		t.Fatalf("failed = %d, want 0: a removed sidecar is not a failure", stats.Failed)
+	}
+	if len(stats.Errors) != 0 {
+		t.Fatalf("errors = %v, want none", stats.Errors)
+	}
+	if n := countCaptured(logs, "index recovery error"); n != 0 {
+		t.Fatalf("logged %d error entries for a removed sidecar, want 0", n)
+	}
+	entry := logs.mustFind(t, "index recovery skipped: sidecar already removed", slog.LevelDebug)
+	if got := entry.Attrs["sidecar"]; got != missing {
+		t.Fatalf("skipped log sidecar = %v, want %s", got, missing)
+	}
+}
+
+// 真实错误必须继续以 Error 级输出，且与「已清理」的 ENOENT 分开计数：
+// 二者混在同一轮扫描时，failed/errors 只反映真实错误，skipped 只反映已清理。
+func TestRecoveryScanKeepsRealErrorsAndSkipsGoneSidecars(t *testing.T) {
+	dir := t.TempDir()
+	buildCorruptRecoverySidecar(t, dir, "s3writer_bad.tmp")
+	missing := filepath.Join(dir, "s3writer_gone.tmp"+mp4pkg.IndexExtension)
+
+	logs := &captureHandler{}
+	recovery := &IndexRecoveryTask{}
+	recovery.Logger = slog.New(logs)
+
+	stats, err := recovery.RunOnce([]string{dir})
+	if err == nil {
+		t.Fatal("real index corruption must still be reported as an error")
+	}
+
+	outcome, _, goneErr := recovery.recoverSidecar(missing, -1)
+	if goneErr != nil {
+		t.Fatalf("ENOENT sidecar must not surface an error: %v", goneErr)
+	}
+	stats.recordOutcome(missing, outcome, goneErr)
+
+	if len(stats.Errors) != 1 {
+		t.Fatalf("errors = %v, want exactly the real corruption error", stats.Errors)
+	}
+	if stats.Failed != 1 {
+		t.Fatalf("failed = %d, want 1 (the corrupt sidecar)", stats.Failed)
+	}
+	if stats.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the removed sidecar)", stats.Skipped)
+	}
+	if n := countCaptured(logs, "index recovery error"); n != 1 {
+		t.Fatalf("logged %d error entries, want 1 (only the real error)", n)
+	}
+}
+
 // 明细日志必须有上限：侧目录塞满坏 sidecar 时不能把启动日志刷爆。
 func TestRecoveryScanErrorLogCapped(t *testing.T) {
 	dir := t.TempDir()
@@ -84,5 +163,32 @@ func TestRecoveryScanErrorLogCapped(t *testing.T) {
 	truncated := logs.mustFind(t, "index recovery errors truncated", slog.LevelError)
 	if got := truncated.Attrs["total"]; got != int64(files) {
 		t.Fatalf("truncated total = %v, want %d", got, files)
+	}
+}
+
+// 截断只统计真实错误：已清理 sidecar 的 skipped 不占逐条日志配额，只以
+// skipped=<n> 附在截断行上，原有 total 语义不变。
+func TestRecoveryErrorTruncationCountsOnlyRealErrors(t *testing.T) {
+	logs := &captureHandler{}
+	recovery := &IndexRecoveryTask{}
+	recovery.Logger = slog.New(logs)
+
+	const realErrors = recoveryErrorLogLimit + 5
+	const skipped = 3
+	errs := make([]error, 0, realErrors)
+	for i := 0; i < realErrors; i++ {
+		errs = append(errs, fmt.Errorf("real recovery error %d", i))
+	}
+	recovery.logRecoveryErrors(errs, skipped)
+
+	if n := countCaptured(logs, "index recovery error"); n != recoveryErrorLogLimit {
+		t.Fatalf("logged %d per-error entries, want %d", n, recoveryErrorLogLimit)
+	}
+	truncated := logs.mustFind(t, "index recovery errors truncated", slog.LevelError)
+	if got := truncated.Attrs["total"]; got != int64(realErrors) {
+		t.Fatalf("truncated total = %v, want %d (skipped must not be counted)", got, realErrors)
+	}
+	if got := truncated.Attrs["skipped"]; got != int64(skipped) {
+		t.Fatalf("truncated skipped = %v, want %d", got, skipped)
 	}
 }

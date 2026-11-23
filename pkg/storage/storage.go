@@ -89,6 +89,16 @@ type File interface {
 	SetMetadata(key, value string)
 }
 
+// Discarder 是 storage.File 的可选能力：主动放弃尚未持久化的内容。
+//
+// 它只关闭本地句柄并删除本地数据（对象存储=本地暂存文件，本地存储=目标文件），
+// 绝不触发上传。用于录制片段因低于最小录制时长被整段丢弃时的清理——这类片段
+// 的文件句柄还开着，若调用 Close 会先把垃圾对象传上对象存储，正好与丢弃相反。
+type Discarder interface {
+	// Discard 关闭句柄并删除本地数据，不执行任何上传。可重复调用。
+	Discard() error
+}
+
 // FileInfo 文件信息
 type FileInfo struct {
 	Name         string    `json:"name"`

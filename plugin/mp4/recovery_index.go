@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -406,6 +407,14 @@ func (c *recoveryCollector) snapshot() RecoveryStats {
 
 func (s *RecoveryStats) recordOutcome(path string, outcome recoveryOutcome, err error) {
 	if err != nil {
+		// 已清理的 sidecar 不是恢复失败：扫描目录快照与上传成功后的正常清理
+		// （pkg.removeIndexAfterUpload）存在竞态，快照里的路径到处理时可能已
+		// 不存在（issue #42）。不计入 Errors/总数，只累计到 skipped。
+		// recoverSidecar 已就地归类；这里再兜一层，避免新调用点把 ENOENT 灌回。
+		if recoveryErrIsGone(err) {
+			s.Skipped++
+			return
+		}
 		s.Errors = append(s.Errors, fmt.Errorf("%s: %w", path, err))
 	}
 	switch outcome {
@@ -510,7 +519,7 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 
 	// 完成日志只记 errors=N，明细必须逐条可见：目录遍历失败、DB 补录失败
 	// 等错误没有其它出口，只给数字的话现场无法定位是哪个文件/目录出了问题。
-	t.logRecoveryErrors(stats.Errors)
+	t.logRecoveryErrors(stats.Errors, stats.Skipped)
 
 	// 周期重扫无残留时保持安静：每 reruninterval 一条 scanned=0 的 Info 只是
 	// 噪声。错误仍由上面的 Error 逐条输出，截断仍有独立 Warn，不会漏报。
@@ -531,12 +540,27 @@ func (t *IndexRecoveryTask) runRecovery(dirs []string, useTasks bool, minAge tim
 // 不能把启动日志刷爆，超出部分只输出总条数（日志检索仍能拿到 errors 计数）。
 const recoveryErrorLogLimit = 20
 
+// recoveryErrIsGone 报告恢复过程遇到的错误是否只是「文件已不存在」。
+//
+// 扫描目录快照（discoverSidecars）与上传成功后的正常清理
+// （pkg.removeIndexAfterUpload）之间存在竞态：快照里还有的 sidecar 到处理时
+// 可能已被删除。用 ENOENT 本身判定即可，不额外 stat——给每个 sidecar 多一轮
+// IO 会抵消扫描性能（issue #42）。
+func recoveryErrIsGone(err error) bool {
+	return err != nil && errors.Is(err, fs.ErrNotExist)
+}
+
 // logRecoveryErrors 逐条输出本轮扫描收集到的错误（Error 级）。
-func (t *IndexRecoveryTask) logRecoveryErrors(errs []error) {
+// skipped 只出现在截断行里，用于区分「真实错误」与「已清理的 sidecar」：
+// 截断只统计 Errors，skipped 不会挤占逐条错误日志的配额。
+func (t *IndexRecoveryTask) logRecoveryErrors(errs []error, skipped int) {
 	for i, err := range errs {
 		if i >= recoveryErrorLogLimit {
-			t.Error("index recovery errors truncated",
-				"logged", recoveryErrorLogLimit, "total", len(errs))
+			attrs := []any{"logged", recoveryErrorLogLimit, "total", len(errs)}
+			if skipped > 0 {
+				attrs = append(attrs, "skipped", skipped)
+			}
+			t.Error("index recovery errors truncated", attrs...)
 			return
 		}
 		t.Error("index recovery error", "error", err, "index", i+1, "total", len(errs))
@@ -842,17 +866,41 @@ func hasIndexSidecar(mediaPath string) bool {
 func (t *IndexRecoveryTask) recoverSidecar(sidecar string, minAge time.Duration) (recoveryOutcome, RecoveryItem, error) {
 	startedAt := time.Now()
 	outcome, item, err := t.recoverSidecarFile(sidecar, minAge)
+	if recoveryErrIsGone(err) {
+		// 快照与正常清理的竞态（issue #42）：sidecar 已在上传成功后被删除。
+		// 这不是恢复失败，不计入 errors，也不产生 Error 级日志。
+		t.logRecoveryGone(sidecar, item)
+		return recoverySkipped, item, nil
+	}
 	t.logRecoveryResult(sidecar, item, outcome, err, time.Since(startedAt))
 	return outcome, item, err
+}
+
+// recoveryResultFile 返回单文件结果日志中的 file 字段：优先恢复产物，
+// 尚未产出时退回由 sidecar 推导出的媒体路径。
+func recoveryResultFile(sidecar string, item RecoveryItem) string {
+	if item.OutputPath != "" {
+		return item.OutputPath
+	}
+	return mediaPathFromSidecar(sidecar)
+}
+
+// logRecoveryGone 记录「sidecar 已被正常清理」的跳过结果。
+// 用 Debug 级：压测中一轮扫描可能出现上百条这种竞态跳过，Info/Error 会淹没
+// 真正的恢复失败，掩盖告警。
+func (t *IndexRecoveryTask) logRecoveryGone(sidecar string, item RecoveryItem) {
+	file := recoveryResultFile(sidecar, item)
+	if t.observer != nil {
+		t.observer(t.currentRunID(), file, recoverySkipped.String(), nil, len(item.Records), item.Truncated)
+	}
+	t.Debug("index recovery skipped: sidecar already removed",
+		"file", file, "sidecar", sidecar)
 }
 
 // logRecoveryResult 输出「恢复扫描」中的单个文件结果。
 func (t *IndexRecoveryTask) logRecoveryResult(sidecar string, item RecoveryItem,
 	outcome recoveryOutcome, err error, elapsed time.Duration) {
-	file := item.OutputPath
-	if file == "" {
-		file = mediaPathFromSidecar(sidecar)
-	}
+	file := recoveryResultFile(sidecar, item)
 	elapsedMs := elapsed.Milliseconds()
 	if t.observer != nil {
 		t.observer(t.currentRunID(), file, outcome.String(), err, len(item.Records), item.Truncated)
@@ -907,6 +955,12 @@ func (t *IndexRecoveryTask) recoverSidecarFile(sidecar string, minAge time.Durat
 	}
 	index, err := mp4pkg.ReadIndex(sidecar)
 	if err != nil {
+		// 扫描后被正常清理（issue #42）：文件已不存在，不是「仍在写入」也
+		// 不是「稍后重试」。直接交回 recoverSidecar 归类为已清理，避免把
+		// 一次竞态当成待重试的读取失败写 Warn。
+		if recoveryErrIsGone(err) {
+			return recoveryFailed, RecoveryItem{}, fmt.Errorf("read index: %w", err)
+		}
 		// 活跃录制中的 sidecar 刚创建时可能短暂不可读。先看 mtime：
 		// 仍在写入的文件不判失败，留给下次 RunOnce。
 		if fresh, age := t.isFreshlyWritten(minAge, sidecar, mediaPathFromSidecar(sidecar)); fresh {
@@ -1323,17 +1377,11 @@ func mediaPathFromSidecar(sidecar string) string {
 // recoveryOutputPath 决定本地恢复产物路径：
 //   - 对象存储暂存 s3writer_*.tmp → 同目录同名 .mp4（供上传，唯一性由 tmp 名保证）
 //   - 本地 .mp4（崩溃残留）→ 原路径（临时文件写好后原子覆盖）
+//
+// 实现放在 pkg 里：正常录制收尾登记 in-flight 去重键时用的是同一个函数，
+// 分开实现会让恢复扫描与在途上传各算各的产物路径，重复上传重新出现。
 func recoveryOutputPath(mediaPath string) string {
-	if mediaPath == "" {
-		return ""
-	}
-	if strings.HasSuffix(mediaPath, ".tmp") {
-		return strings.TrimSuffix(mediaPath, ".tmp") + ".mp4"
-	}
-	if isMP4Path(mediaPath) {
-		return mediaPath
-	}
-	return mediaPath + ".mp4"
+	return mp4pkg.RecoveryOutputPath(mediaPath)
 }
 
 func isMP4Path(path string) bool {

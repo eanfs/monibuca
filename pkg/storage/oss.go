@@ -336,6 +336,17 @@ func (f *OSSFile) cleanup(deleteFile bool) {
 	}
 }
 
+// Discard 放弃本次上传：关闭本地暂存句柄并删除暂存文件，绝不调用上传。
+// 实现 storage.Discarder。可重复调用。
+func (f *OSSFile) Discard() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanup(true)
+	return nil
+}
+
+var _ Discarder = (*OSSFile)(nil)
+
 // createTempFile 创建临时文件
 func (f *OSSFile) createTempFile() error {
 	// 创建临时文件

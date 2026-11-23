@@ -272,7 +272,7 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 	if r.RecordJob.Event != nil {
 		eventSnap := r.Event // 值拷贝：捕获正确的 EndTime 和 RecordStream.ID，RecordEvent 指针稳定
 		return func(tailJob task.IJob) error {
-			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			dbCtx, cancel := context.WithTimeout(context.Background(), storage.RecordDBWriteTimeout())
 			defer cancel()
 			r.Info("db save RecordEvent (deferred) begin", "filePath", filePath)
 			if result := db.WithContext(dbCtx).Save(&eventSnap); result.Error != nil {
@@ -285,6 +285,7 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 			if result := db.WithContext(dbCtx).Save(&eventSnap.RecordStream); result.Error != nil {
 				streamErr = result.Error
 				r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
+				r.persistDeferredRecordRetry(db, eventSnap.RecordStream, eventSnap.RecordEvent, streamErr, filePath)
 			} else {
 				r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
 			}
@@ -296,13 +297,14 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 	}
 	streamSnap := r.Event.RecordStream // 值拷贝
 	return func(tailJob task.IJob) error {
-		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dbCtx, cancel := context.WithTimeout(context.Background(), storage.RecordDBWriteTimeout())
 		defer cancel()
 		r.Info("db save RecordStream (deferred) begin", "filePath", filePath)
 		var streamErr error
 		if result := db.WithContext(dbCtx).Save(&streamSnap); result.Error != nil {
 			streamErr = result.Error
 			r.Warn("db save RecordStream (deferred) failed", "filePath", filePath, "err", result.Error)
+			r.persistDeferredRecordRetry(db, streamSnap, nil, streamErr, filePath)
 		} else {
 			r.Info("db save RecordStream (deferred) ok", "filePath", filePath)
 		}
@@ -311,6 +313,22 @@ func (r *DefaultRecorder) WriteTailDeferred(end time.Time) func(tailJob task.IJo
 		}
 		return streamErr
 	}
+}
+
+// persistDeferredRecordRetry 在 record_streams 延迟写库失败后，把定稿数据
+// 持久化进 upload_tasks（kind=record-db），由补传调度器周期性补写。
+//
+// 这条路径必须可观测：写入重试队列失败时记 Error（调用方还会上报告警），
+// 绝不允许「写库失败 → 静默丢弃」。
+func (r *DefaultRecorder) persistDeferredRecordRetry(db *gorm.DB, stream RecordStream,
+	event *config.RecordEvent, cause error, filePath string) {
+	if err := saveRecordDBRetry(db, stream, event, cause); err != nil {
+		r.Error("deferred record db write failed and retry could not be persisted",
+			"filePath", filePath, "streamPath", stream.StreamPath, "cause", cause, "err", err)
+		return
+	}
+	r.Warn("deferred record db write queued for retry",
+		"filePath", filePath, "streamPath", stream.StreamPath, "cause", cause)
 }
 
 func (p *RecordJob) GetKey() string {

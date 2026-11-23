@@ -551,6 +551,19 @@ func (w *S3File) cleanup(deleteFile bool) {
 	}
 }
 
+// Discard 放弃本次上传：丢弃写入缓冲，关闭本地暂存句柄并删除暂存文件，
+// 绝不调用上传。实现 storage.Discarder。可重复调用。
+func (w *S3File) Discard() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// 缓冲里的字节属于即将被丢弃的内容，不能落盘。
+	w.bw = nil
+	w.cleanup(true)
+	return nil
+}
+
+var _ Discarder = (*S3File)(nil)
+
 // createTempFile 创建临时文件。
 // 配置了 tempdir 时为其创建目录；创建失败直接报错，绝不静默回退到系统临时目录。
 func (w *S3File) createTempFile() error {

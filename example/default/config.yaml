@@ -75,6 +75,11 @@ gb28181:
           channeldbid: "34020000001110000003_34020000001320000005" #通道DBID,格式为设备ID_通道ID
 mp4:
   enable: true
+  # record:
+  #   # 收尾时实际时长低于该值的碎片段整段丢弃（不上传对象存储、不写 record_streams、
+  #   # 删除本地文件与索引）。0 表示不限制（默认）。磁盘高 IO 下 ErrDiscard 原地
+  #   # 重录会产生大量 <1s 碎片段，建议按业务可接受的最短录像设置（如 1s–3s）。
+  #   minduration: 1s
   publish:
     delayclosetimeout: 3s
   # onpub:

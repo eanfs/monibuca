@@ -33,7 +33,9 @@ func (u *UploadRetryScheduler) GetTickInterval() time.Duration {
 
 // Tick 每个周期执行一次补传检查
 func (u *UploadRetryScheduler) Tick(any) {
-	if u.s == nil || u.s.DB == nil || u.s.GetStorage() == nil {
+	// 注意：storage 不可用不能整体跳过——「仅待写库」的 record_streams 定稿
+	// 重试任务不依赖任何 storage，必须在存储故障期间也能补上。
+	if u.s == nil || u.s.DB == nil {
 		return
 	}
 
@@ -85,6 +87,11 @@ func (u *UploadRetryScheduler) Tick(any) {
 
 	for i := range tasks {
 		ut := tasks[i]
+		// 「仅待写库」任务没有文件要上传，storage 缺失时也必须处理；
+		// 普通上传任务保持旧行为：storage 不可用则本轮跳过。
+		if !isRecordDBRetryTask(ut) && u.s.GetStorage() == nil {
+			continue
+		}
 		go u.retryUpload(ut)
 	}
 }
@@ -118,6 +125,11 @@ func (u *UploadRetryScheduler) clearPendingUsageScanFailure() {
 // retryUpload 执行单个上传重试
 func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 	if u.s == nil || u.s.DB == nil {
+		return
+	}
+	// record_streams 延迟入库的补写任务不涉及文件上传，单独走 DB 重试路径。
+	if isRecordDBRetryTask(ut) {
+		u.retryRecordDB(ut)
 		return
 	}
 	st := u.s.GetStorage()
@@ -211,4 +223,58 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		"size", ut.FileSize,
 		"retryCount", ut.RetryCount+1)
 	MarkUploadSuccess(u.s.DB, ut.ID, ut.LocalPath)
+}
+
+// retryRecordDB 只补写 record_streams（及可选的 RecordEvent），不触碰任何文件。
+// 这是延迟入库失败（磁盘高负载下 DB 写超时）的补偿路径：任务行已持久化，
+// 进程重启后仍会被调度。成功 → 该行标记 Success；失败 → 保留行并按指数
+// 退避重试，次数耗尽后告警（沿用 "record db save failed" 便于现场检索）。
+func (u *UploadRetryScheduler) retryRecordDB(ut UploadTask) {
+	payload, err := parseRecordDBRetry(ut)
+	if err != nil {
+		// payload 损坏已无法补写：按耗尽处理并告警，不能让这条录像永久
+		// 无声地缺失索引记录。
+		u.Error("record db retry payload invalid; marking permanently failed",
+			"id", ut.ID, "streamPath", ut.StreamPath,
+			"retryCount", ut.RetryCount, "error", err)
+		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.MaxRetries, err)
+		RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+			"record db save failed", ut.StreamPath, ut.StreamPath,
+			"record_streams 定稿重试数据损坏, 无法补写: "+err.Error())
+		return
+	}
+	// 与上传补传共用原子抢占，避免重复 tick / 多实例同时写同一条记录。
+	if !MarkUploading(u.s.DB, ut.ID) {
+		return
+	}
+	eventErr, streamErr := writeRecordDBRetry(u.s.DB, payload)
+	if eventErr != nil {
+		// 与 WriteTailDeferred 一致：事件字段写失败不阻塞 record_streams 定稿。
+		u.Warn("retry record event db save failed (non-fatal)",
+			"id", ut.ID, "streamPath", ut.StreamPath,
+			"file", payload.Stream.FilePath, "error", eventErr)
+	}
+	if streamErr != nil {
+		u.Error("retry record db save failed",
+			"id", ut.ID,
+			"streamPath", ut.StreamPath,
+			"file", payload.Stream.FilePath,
+			"retryCount", ut.RetryCount+1,
+			"nextRetryAt", NextUploadRetryAt(ut.RetryCount+1),
+			"error", streamErr)
+		MarkUploadRetryFailed(u.s.DB, ut.ID, ut.RetryCount, streamErr)
+		if ut.RetryCount+1 >= ut.MaxRetries {
+			RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+				"record db save failed", ut.StreamPath, payload.Stream.FilePath,
+				"record_streams 定稿补写次数已耗尽, 该录像将永久缺失索引记录: "+streamErr.Error())
+		}
+		return
+	}
+	u.Info("retry record db save succeeded",
+		"id", ut.ID,
+		"streamPath", ut.StreamPath,
+		"file", payload.Stream.FilePath,
+		"retryCount", ut.RetryCount+1)
+	// 没有本地文件：第三个参数为空，MarkUploadSuccess 只更新状态。
+	MarkUploadSuccess(u.s.DB, ut.ID, "")
 }

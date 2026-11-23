@@ -64,7 +64,32 @@ var ErrRecoveryStorageMismatch = errors.New("mp4: recovery upload storage type m
 
 // recoveryUploadsInFlight 记录已交给上传队列但尚未结束的产物，避免同一次恢复
 // 扫描/崩溃窗口重入时重复上传同一文件。键包含存储类型、对象键与本地产物路径。
+//
+// 正常录制收尾（record.go 的 handoffToUploadQueueWith）必须登记**同一个**键：
+// 上传任务在队列中等待/上传期间，临时文件仍留在扫描目录（如 s3writer_*.tmp），
+// 恢复扫描会把它当成崩溃残留再次入队 → 同一录像二次上传、record_streams 重复
+// 入库。只有恢复任务之间互相去重是不够的。
 var recoveryUploadsInFlight sync.Map
+
+// recoveryUploadInFlightKey 是在途去重的完整键。正常录制收尾与恢复扫描必须
+// 经同一个构造函数产生键，否则 LoadOrStore 互相看不到对方。
+func recoveryUploadInFlightKey(storageType, objectKey, outputPath string) string {
+	return storageType + "\x00" + objectKey + "\x00" + outputPath
+}
+
+// registerRecoveryUploadInFlight 登记在途产物并返回释放函数；键已被别的任务
+// 登记时返回 nil——调用方不得删除他人的登记。返回的释放函数可重复调用。
+func registerRecoveryUploadInFlight(storageType, objectKey, outputPath string) func() {
+	if storageType == "" || objectKey == "" || outputPath == "" {
+		return nil
+	}
+	key := recoveryUploadInFlightKey(storageType, objectKey, outputPath)
+	if _, loaded := recoveryUploadsInFlight.LoadOrStore(key, struct{}{}); loaded {
+		return nil
+	}
+	var once sync.Once
+	return func() { once.Do(func() { recoveryUploadsInFlight.Delete(key) }) }
+}
 
 // IndexRecoveringSuffix 是「已开始定稿」的 sidecar 后缀。plugin/mp4 的
 // recoveringSuffix 直接引用它，跨包只有这一处定义。
@@ -171,7 +196,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		return fmt.Errorf("mp4: recovery upload missing object path for %s", upload.OutputPath)
 	}
 
-	inflightKey := storageType + "\x00" + objectKey + "\x00" + upload.OutputPath
+	inflightKey := recoveryUploadInFlightKey(storageType, objectKey, upload.OutputPath)
 	if _, loaded := recoveryUploadsInFlight.LoadOrStore(inflightKey, struct{}{}); loaded {
 		logger.Info("recovery upload already in flight; skipping duplicate",
 			"objectKey", objectKey, "output", upload.OutputPath)
@@ -371,6 +396,25 @@ func recoveryResolveStorage(storageType string, resolver RecoveryStorageResolver
 			storageType, storage.ErrStorageNotAvailable)
 	}
 	return nil, fmt.Errorf("mp4: resolve recovery storage %q: %w", storageType, errors.Join(errs...))
+}
+
+// RecoveryOutputPath 决定恢复产物的本地路径：.tmp 变成 .mp4（对象存储暂存文件
+// 的恢复产物与源暂存文件同目录、不同后缀），已是 .mp4 则原样返回，其余追加
+// .mp4。
+//
+// 正常录制收尾（pkg 内）与恢复扫描（plugin/mp4）必须共用这个实现：in-flight
+// 去重键里的产物路径由它推导，两边算法不一致就会互相看不见，二次上传再次出现。
+func RecoveryOutputPath(mediaPath string) string {
+	if mediaPath == "" {
+		return ""
+	}
+	if strings.HasSuffix(mediaPath, ".tmp") {
+		return strings.TrimSuffix(mediaPath, ".tmp") + ".mp4"
+	}
+	if strings.EqualFold(filepath.Ext(mediaPath), ".mp4") {
+		return mediaPath
+	}
+	return mediaPath + ".mp4"
 }
 
 // recoveryObjectKey 返回传给 storage.CreateFile 的路径。

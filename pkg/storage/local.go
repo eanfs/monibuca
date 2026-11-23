@@ -660,6 +660,23 @@ type LocalFile struct {
 // SetMetadata 本地存储无需元数据，提供空实现以满足 File 接口。
 func (f *LocalFile) SetMetadata(key, value string) {}
 
+// Discard 关闭句柄并删除目标文件（本地存储没有上传阶段，Close 也只是关句柄）。
+// 实现 storage.Discarder，供低于最小时长的录像片段整段丢弃。可重复调用。
+func (f *LocalFile) Discard() error {
+	if f.File == nil {
+		return nil
+	}
+	name := f.File.Name()
+	err := f.File.Close()
+	f.File = nil
+	if rmErr := os.Remove(name); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
+		err = rmErr
+	}
+	return err
+}
+
+var _ Discarder = (*LocalFile)(nil)
+
 // LocalFd 返回 LocalFile 的底层文件句柄。
 // 实现 storage.RangeInserter，供 MP4 trailer 用 fallocate 原地插 moov。
 func (f *LocalFile) LocalFd() *os.File { return f.File }
