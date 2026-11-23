@@ -187,9 +187,7 @@ func (p *MP4Plugin) Start() (err error) {
 	if p.Server != nil {
 		storageType = p.Server.GetStorageStatus().ActiveType
 	}
-	for _, warning := range recordingIOWarnings(p.GetCommonConf().Publish.BufferTime, storageType) {
-		p.Warn("recording IO configuration", "warning", warning)
-	}
+	p.warnRecordingIOConfig(storageType)
 
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
