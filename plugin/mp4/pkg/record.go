@@ -571,11 +571,16 @@ func (t *writeTrailerTask) handleFailedUpload(mediaPath string, fileSize int64, 
 		t.Error("failed upload registration not confirmed; keeping media and index sidecar",
 			"error", err, "cause", cause, "mediaPath", mediaPath,
 			"registeredPath", registeredPath, "filePath", t.filePath)
+		// 登记未确认，媒体可能无法自动补传：DB 仍会按「媒体保留」定稿
+		// （退回原路径且恢复扫描覆盖时会自愈），但必须让运维看见这个窗口。
+		m7s.RaiseUploadAlarm(t.db, config.AlarmStorageException,
+			"upload registration unconfirmed", t.streamPath, t.filePath,
+			"上传失败登记未确认, 媒体已保留但可能无法自动补传: "+err.Error())
 		return true, false
 	}
 	if registeredPath == "" {
 		// 无 DB / local 存储：没有补传队列可登记，调用方按旧行为处理临时文件。
-		t.Warn("failed upload has no retry queue; local temp copy will be discarded",
+		t.Warn("failed upload has no retry queue; caller decides whether to delete the media",
 			"cause", cause, "mediaPath", mediaPath, "filePath", t.filePath)
 		return false, false
 	}
@@ -606,6 +611,11 @@ func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, ca
 // 永久为零，时间范围查询静默漏掉该录像。
 func (t *writeTrailerTask) saveDeferredRecord(logMsg, alarmText string) {
 	if t.dbWrite == nil {
+		if t.db != nil {
+			// 有 DB 却没有写库回调：此前是静默跳过，记录会永久缺少 end_time。
+			t.Error("dbWrite missing while DB is configured; record_streams not finalized",
+				"filePath", t.filePath, "streamPath", t.streamPath)
+		}
 		return
 	}
 	if dbErr := t.dbWrite(&uploadQueueTask); dbErr != nil {
@@ -691,12 +701,9 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 			t.file.Close()
 			t.file = nil
 			err = fmt.Errorf("insert-range write+rollback failed: %w", writeErr)
-			if _, keepMedia := t.recoverLocalFile(localPath, preLen, err); keepMedia {
-				// 媒体已交给补传队列/原地保留：录像本身是完整的，必须定稿 DB。
-				t.saveDeferredRecord(
-					"insert-range rollback failed but media kept, db record save failed",
-					"录像就地插入失败但媒体已保留, record_streams 入库失败: ")
-			}
+			// 媒体可能已损坏（回滚失败），保留它是为了尽量不丢数据；这里刻意
+			// 不写 record_streams：损坏文件不能被呈现为「已完成的录像」。
+			t.recoverLocalFile(localPath, preLen, err)
 			return true, err
 		}
 		t.shiftSampleOffsets(-insertLen)
@@ -753,10 +760,15 @@ type finalizeUploadTask struct {
 	streamPath string
 	db         *gorm.DB
 	dbWrite    func(tailJob task.IJob) error
+	// storageKey 用于区分 local 与对象存储：local 的 Close 只关闭句柄，此时
+	// FinalizeFromTemp 已把完整文件放到最终路径，Close 报错不等于媒体丢失。
+	storageKey string
 	// onFail 在最终持久化失败后登记补传。返回 true 表示媒体已被补传队列
 	// 接管或必须原地保留（pending/原地登记/登记失败后退回原路径），此时
 	// record_streams 必须定稿；返回 false 表示没有补传队列（无 DB 或 local
 	// 存储），媒体不保证可播，不得写库（否则会留下指向坏文件的记录）。
+	// local 存储的 Close 失败是例外：文件已在最终路径就位，failUpload 会
+	// 强制按「媒体保留」处理，不能因为返回 false 漏定稿。
 	onFail func(cause error) bool
 	// indexPath 是伴随索引路径；只有上传成功分支才删除它。
 	indexPath string
@@ -823,11 +835,17 @@ func (u *finalizeUploadTask) run() (err error) {
 	return
 }
 
-// saveDeferredRecord 执行延迟入库。媒体已经持久化——已上传（run）或已进入
-// 持久化补传队列（spillToPending）。两条路径互斥，都必须各自调用一次：否则
-// record_streams 的 end_time/duration 永久为零，时间范围查询会漏掉该录像。
+// saveDeferredRecord 执行延迟入库。媒体已经持久化——已上传（run）、已移交
+// 补传队列（spillToPending），或上传失败但媒体被保留（failUpload）。这些路径
+// 互斥，每条录制都恰好命中一次：否则 record_streams 的 end_time/duration
+// 永久为零，时间范围查询会漏掉该录像。
 func (u *finalizeUploadTask) saveDeferredRecord(logMsg, alarmText string) {
 	if u.dbWrite == nil {
+		if u.db != nil {
+			// 有 DB 却没有写库回调：此前是静默跳过，记录会永久缺少 end_time。
+			u.Error("dbWrite missing while DB is configured; record_streams not finalized",
+				"filePath", u.filePath, "streamPath", u.streamPath)
+		}
 		return
 	}
 	if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
@@ -898,26 +916,41 @@ func (t *writeTrailerTask) logRecordStop(size int64) {
 func (u *finalizeUploadTask) failUpload(cause error) {
 	u.logUploadFailure(cause)
 	u.file = nil
-	if u.onFail == nil {
+	keepMedia := false
+	if u.onFail != nil {
+		keepMedia = u.onFail(cause)
+	}
+	if !keepMedia && isLocalStorageType(u.storageKey) {
+		// local 存储没有上传阶段：FinalizeFromTemp 成功后文件已在最终路径，
+		// fMP4 更是从一开始就写在最终路径。这里的 Close 只是关闭句柄，
+		// EIO/NFS 等错误不能等同于「媒体丢失」——否则 record_streams 的
+		// end_time/duration 永久为零，时间范围查询会静默漏掉这条录像。
+		keepMedia = true
+		u.Warn("local record close failed after the file was persisted; finalizing the record",
+			"err", cause, "filePath", u.filePath, "streamPath", u.streamPath)
+		m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
+			"local record close failed", u.streamPath, u.filePath,
+			"本地录像 Close 失败但文件已就位, 已按完整录像入库: "+cause.Error())
+	}
+	if !keepMedia {
 		return
 	}
-	if u.onFail(cause) {
-		// 媒体已确认保留：上传失败不等于录像失败，record_streams 仍需定稿。
-		// pending 补传成功只更新 upload_tasks，不会再回写 record_streams，
-		// 漏写会让 end_time/duration 永久为零，时间范围查询静默漏掉该录像。
-		u.saveDeferredRecord(
-			"upload failed but media kept, db record save failed",
-			"录像上传失败但媒体已保留, record_streams 入库失败: ")
-	}
+	// 媒体已确认保留：上传失败不等于录像失败，record_streams 仍需定稿。
+	// pending 补传成功只更新 upload_tasks，不会再回写 record_streams，
+	// 漏写会让 end_time/duration 永久为零，时间范围查询静默漏掉该录像。
+	u.saveDeferredRecord(
+		"upload failed but media kept, db record save failed",
+		"录像上传失败但媒体已保留, record_streams 入库失败: ")
 }
 
 // logUploadFailure 输出「上传失败」事件。固定字段（file/size/retryCount/
 // errorClass/nextRetryAt）供现场按日志检索；nextRetryAt 为空表示没有补传
-// 队列可登记（无 DB 部署），该文件不会被自动重试。
+// 队列可登记（无 DB 部署或 local 存储），该文件不会被自动重试。
 func (u *finalizeUploadTask) logUploadFailure(cause error) {
 	var nextRetryAt time.Time
-	if u.db != nil {
-		// 队列内首次失败 → 下一次补传是第 1 次重试。
+	if u.db != nil && !isLocalStorageType(u.storageKey) {
+		// 队列内首次失败 → 下一次补传是第 1 次重试。local 没有补传队列，
+		// 它的 Close 失败由 failUpload 直接定稿，不应给出误导性的重试时间。
 		nextRetryAt = m7s.NextUploadRetryAt(0)
 	}
 	u.Error("upload failed",
@@ -961,8 +994,14 @@ func (u *finalizeUploadTask) spillToPending(cause error) {
 	u.Warn("upload backlog full; handing file to the pending upload path",
 		"file", u.filePath, "size", u.size, "streamPath", u.streamPath, "cause", cause)
 	u.file = nil
+	keepMedia := false
 	if u.onFail != nil {
-		u.onFail(cause)
+		keepMedia = u.onFail(cause)
+	}
+	if !keepMedia {
+		// 没有确认媒体被保留（例如 localPath 为空导致登记被拒绝）：不能写库，
+		// 否则会留下指向一个永远不会存在的对象的记录。
+		return
 	}
 	// 媒体所有权已交给持久化补传队列，run() 不会再执行；这里必须补上延迟入库，
 	// 否则 record_streams 的 end_time/duration 永久为零（时间范围查询会漏掉它）。
@@ -988,6 +1027,7 @@ func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64,
 		streamPath: t.streamPath,
 		db:         t.db,
 		dbWrite:    t.dbWrite,
+		storageKey: t.storageKey,
 		onFail:     onFail,
 		indexPath:  t.indexPath,
 		size:       size,

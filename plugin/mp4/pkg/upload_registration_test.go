@@ -58,6 +58,35 @@ func TestIndexKeptWhenPendingRegistrationFails(t *testing.T) {
 	logs.mustFind(t, "failed upload registration failed; media kept for retry", slog.LevelError)
 }
 
+// 登记未确认时必须留下告警：媒体虽然保留，但可能无法自动补传
+// （pending 里没有 upload_tasks 行，恢复扫描也未必覆盖原路径）。
+func TestHandleFailedUploadRaisesAlarmWhenRegistrationFails(t *testing.T) {
+	pendingDir := t.TempDir()
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	db := newPendingTestDB(t)
+	// 只删 upload_tasks，保留 alarm_info：登记失败路径必须可观测。
+	if err := db.Migrator().DropTable(&m7s.UploadTask{}); err != nil {
+		t.Fatalf("drop upload_tasks: %v", err)
+	}
+	task := newPendingTestTrailerTask(indexPath, db)
+
+	keepMedia, moved := task.handleFailedUpload(mediaPath, 5, nil, errors.New("upload failed"))
+	if !keepMedia || moved {
+		t.Fatalf("keepMedia=%v moved=%v, want true/false", keepMedia, moved)
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("media must be restored to its original path: %v", err)
+	}
+	var alarms []m7s.AlarmInfo
+	if err := db.Find(&alarms).Error; err != nil {
+		t.Fatalf("load alarms: %v", err)
+	}
+	if len(alarms) != 1 || alarms[0].AlarmName != "upload registration unconfirmed" {
+		t.Fatalf("unexpected alarms: %+v", alarms)
+	}
+}
+
 // 正常路径：媒体移入 pending，sidecar 作为孤儿被清理。
 func TestHandleFailedUploadMovesMediaToPending(t *testing.T) {
 	pendingDir := t.TempDir()
@@ -115,12 +144,17 @@ func TestRecoverTempAfterFinalizeFailureOwnership(t *testing.T) {
 		storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir, PendingMaxFiles: 1})
 		mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
 		task := newPendingTestTrailerTask(indexPath, newPendingTestDB(t))
+		writes := 0
+		task.dbWrite = func(gotask.IJob) error { writes++; return nil }
 
 		if deleteTemp := task.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("upload failed")); deleteTemp {
 			t.Fatal("media registered in place is the only copy: caller must not delete it")
 		}
 		if _, err := os.Stat(mediaPath); err != nil {
 			t.Fatalf("media must stay at its original path: %v", err)
+		}
+		if writes != 1 {
+			t.Fatalf("dbWrite ran %d times, want 1: in-place registration must still finalize the record", writes)
 		}
 	})
 
@@ -286,8 +320,11 @@ func TestEnqueueRecoveryUploadRegistrationCheckFailureKeepsSidecar(t *testing.T)
 // 已登记分支：record_streams 回写失败必须返回错误并保留 sidecar，
 // 否则这条录像的 DB 记录再无补偿机会（sidecar 是重试回写的唯一线索）。
 func TestEnqueueRecoveryUploadRegisteredBranchKeepsSidecarOnDBWriteFailure(t *testing.T) {
-	// newPendingTestDB 只迁移 upload_tasks/alarms：record_streams 查询必然失败。
 	db := newPendingTestDB(t)
+	// 制造 record_streams 写失败：删掉表，upload_tasks 判重仍可正常命中。
+	if err := db.Migrator().DropTable(&m7s.RecordStream{}); err != nil {
+		t.Fatalf("drop record_streams: %v", err)
+	}
 	fixture := newRecoveryUploadFixture(t, "s3")
 	if err := db.Create(&m7s.UploadTask{
 		LocalPath:   fixture.output,

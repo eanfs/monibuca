@@ -394,7 +394,7 @@ func newPendingTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("db handle: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1) // :memory: 每连接独立库，限单连接以共享同一库
-	if err := db.AutoMigrate(&m7s.UploadTask{}, &m7s.AlarmInfo{}); err != nil {
+	if err := db.AutoMigrate(&m7s.UploadTask{}, &m7s.AlarmInfo{}, &m7s.RecordStream{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { sqlDB.Close() })
