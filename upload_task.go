@@ -224,7 +224,11 @@ func UploadLocalFile(ctx context.Context, st storage.Storage, localPath, remoteP
 		return fmt.Errorf("create remote file %s: %w", remotePath, err)
 	}
 
-	if _, err = io.Copy(remote, local); err != nil {
+	// Read through the process-wide upload limiter: the upload slot is only
+	// acquired later inside uploadTempFile, so this copy would otherwise be
+	// ungoverned — spilled files would be read twice at full speed, up to 20 at
+	// once during a retry tick.
+	if _, err = io.Copy(remote, storage.NewUploadThrottledReadSeeker(ctx, local)); err != nil {
 		remote.Close()
 		return fmt.Errorf("copy to remote: %w", err)
 	}

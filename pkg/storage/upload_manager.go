@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -37,6 +40,13 @@ var (
 	trailerSem            chan struct{}
 	activeTrailerWrites   int32
 	maxConcurrentTrailers int
+
+	// maxQueuedUploads bounds final-persistence tasks that are queued but not yet
+	// finished; 0 = unlimited. When full, the caller hands the file straight to
+	// the durable pending-retry queue (on disk, survives restart) instead of
+	// piling hundreds of in-memory tasks up during a finalize storm.
+	maxQueuedUploads int
+	queuedUploads    atomic.Int32
 )
 
 // ErrPendingDirFull 表示 pending 暂存目录已达水位上限,拒绝再接收文件。
@@ -45,12 +55,14 @@ var ErrPendingDirFull = errors.New("pending dir full")
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
+	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent S3 upload-body reads and pending-retry copies so they cannot starve recording writes (OSS/COS SDK-internal reads are not covered); 0 = unlimited (default)" default:"0" yaml:"readratembps"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
 	PendingMaxSizeMB           int    `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
 	PendingMaxFiles            int    `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
 	PendingDiskMinFreeMB       int    `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
+	MaxQueuedUploads           int    `desc:"maximum queued-but-unfinished record finalization tasks; overflow spills to the pending retry queue (recovery uploads are not capped); 0 = unlimited" default:"8"`
 }
 
 // InitUploadManager 初始化上传管理器（并发控制 + 暂存目录）
@@ -73,6 +85,26 @@ func InitUploadManager(cfg UploadConfig) {
 		trailerWriteBytesPerSec.Store(0)
 	}
 
+	// Upload read throttling: the opposite direction of the trailer write limit.
+	// Unthrottled concurrent upload reads would sit in the disk queue ahead of
+	// recording writes (31 concurrent recordings on one box). The burst must be at
+	// least maxThrottleChunk so a chunk-sized WaitN always fits in the bucket.
+	if cfg.UploadReadRateMBps > 0 {
+		bytesPerSec := int64(cfg.UploadReadRateMBps) * 1024 * 1024
+		burst := bytesPerSec / 4 // 250 ms of headroom
+		if burst < maxThrottleChunk {
+			// Same constant the reader chunks by: a chunk larger than the burst
+			// makes WaitN fail outright, turning every upload into a hard error.
+			burst = maxThrottleChunk
+		}
+		if burst > 32<<20 {
+			burst = 32 << 20
+		}
+		uploadReadLimiter = rate.NewLimiter(rate.Limit(bytesPerSec), int(burst))
+	} else {
+		uploadReadLimiter = nil
+	}
+
 	if cfg.PendingDir == "" {
 		cfg.PendingDir = "pending_uploads"
 	}
@@ -86,11 +118,16 @@ func InitUploadManager(cfg UploadConfig) {
 	pendingMaxSizeBytes = int64(cfg.PendingMaxSizeMB) * 1024 * 1024
 	pendingMaxFiles = cfg.PendingMaxFiles
 	pendingDiskMinFree = int64(cfg.PendingDiskMinFreeMB) * 1024 * 1024
+	maxQueuedUploads = cfg.MaxQueuedUploads
+	queuedUploads.Store(0)
 	if err := os.MkdirAll(pendingDir, 0755); err != nil {
 		log.Printf("[storage] failed to create pending dir %s: %v", pendingDir, err)
 	}
-	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, pendingDir=%s",
-		maxConcurrent, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, pendingDir)
+	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxQueued=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, readRate=%dMB/s, pendingDir=%s",
+		maxConcurrent, maxQueuedUploads, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, cfg.UploadReadRateMBps, pendingDir)
+	for _, warning := range IOWarnings(cfg) {
+		log.Printf("[storage] WARNING: %s", warning)
+	}
 }
 
 // pendingDirIsPersistent 判断暂存目录是否是绝对路径。
@@ -146,6 +183,35 @@ func GetMaxConcurrentUploads() int {
 	return maxConcurrent
 }
 
+// TryAcquireUploadQueue reserves one queued-upload slot; always succeeds when
+// the cap is <= 0.
+func TryAcquireUploadQueue() bool {
+	if maxQueuedUploads <= 0 {
+		queuedUploads.Add(1)
+		return true
+	}
+	for {
+		cur := queuedUploads.Load()
+		if int(cur) >= maxQueuedUploads {
+			return false
+		}
+		if queuedUploads.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// ReleaseUploadQueue returns one slot; every task must call it after success,
+// failure, or inline execution.
+func ReleaseUploadQueue() {
+	queuedUploads.Add(-1)
+}
+
+// QueuedUploads reports the number of reserved slots.
+func QueuedUploads() int32 {
+	return queuedUploads.Load()
+}
+
 // MoveLocalFile 把 srcPath 移动到 dstPath：
 // 优先 rename（同文件系统，原子且快），跨设备时 fallback 到 copy + delete。
 //
@@ -160,8 +226,13 @@ func MoveLocalFile(srcPath, dstPath string) error {
 	}
 
 	// fallback: copy + delete。复用本包的 copyFileContents（它带 Sync，保证
-	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。
-	if err := copyFileContents(srcPath, dstPath); err != nil {
+	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。这条拷贝同样
+	// 读盘，必须走上传读限速：spill 登记同步跑在 trailer 队列上，无节流的
+	// 整文件拷贝会把事故里的读放大原样搬回来。
+	wrap := func(rs io.ReadSeeker) io.Reader {
+		return NewUploadThrottledReadSeeker(context.Background(), rs)
+	}
+	if err := copyFileContentsThrough(srcPath, dstPath, wrap); err != nil {
 		os.Remove(dstPath)
 		return err
 	}

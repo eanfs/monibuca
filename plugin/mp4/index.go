@@ -183,6 +183,12 @@ func (p *MP4Plugin) Start() (err error) {
 	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
 	p.applyRecordIndexConfig()
 
+	storageType := ""
+	if p.Server != nil {
+		storageType = p.Server.GetStorageStatus().ActiveType
+	}
+	p.warnRecordingIOConfig(storageType)
+
 	if p.DB != nil {
 		err = p.DB.AutoMigrate(&Exception{})
 		if err != nil {

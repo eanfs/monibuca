@@ -141,3 +141,38 @@ func TestMoveToPendingDir_NameCollisionUnique(t *testing.T) {
 		t.Fatalf("pending 目录应有 3 个文件,实际 %d", len(entries))
 	}
 }
+
+// TestUploadQueueCap verifies the queued-upload cap: acquisitions past the cap
+// are refused, and a released slot becomes reusable.
+func TestUploadQueueCap(t *testing.T) {
+	InitUploadManager(UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 2})
+
+	if !TryAcquireUploadQueue() || !TryAcquireUploadQueue() {
+		t.Fatal("first two acquisitions must succeed")
+	}
+	if TryAcquireUploadQueue() {
+		t.Fatal("third acquisition must fail at cap 2")
+	}
+	ReleaseUploadQueue()
+	if QueuedUploads() != 1 {
+		t.Fatalf("QueuedUploads = %d, want 1", QueuedUploads())
+	}
+	if !TryAcquireUploadQueue() {
+		t.Fatal("released slot must be reusable")
+	}
+	ReleaseUploadQueue()
+	ReleaseUploadQueue()
+}
+
+// TestUploadQueueUnlimitedWhenZero verifies that 0 means no limit.
+func TestUploadQueueUnlimitedWhenZero(t *testing.T) {
+	InitUploadManager(UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 0})
+	for i := 0; i < 100; i++ {
+		if !TryAcquireUploadQueue() {
+			t.Fatalf("acquisition %d failed; 0 must mean unlimited", i)
+		}
+	}
+	for i := 0; i < 100; i++ {
+		ReleaseUploadQueue()
+	}
+}

@@ -775,16 +775,25 @@ func (u *finalizeUploadTask) run() (err error) {
 		u.Warn("remove index sidecar after upload failed", "err", idxErr, "indexPath", u.indexPath)
 	}
 	// 文件已完整持久化,此时才将记录写入数据库(延迟入库,确保 DB 与可播放文件一致)。
-	if u.dbWrite != nil {
-		if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
-			u.Error("upload ok but db record save failed — orphan file",
-				"err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
-			m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
-				"record db save failed", u.streamPath, u.filePath,
-				"录像已上传成功但 record_streams 入库失败(孤儿文件): "+dbErr.Error())
-		}
-	}
+	u.saveDeferredRecord(
+		"upload ok but db record save failed — orphan file",
+		"录像已上传成功但 record_streams 入库失败(孤儿文件): ")
 	return
+}
+
+// saveDeferredRecord 执行延迟入库。媒体已经持久化——已上传（run）或已进入
+// 持久化补传队列（spillToPending）。两条路径互斥，都必须各自调用一次：否则
+// record_streams 的 end_time/duration 永久为零，时间范围查询会漏掉该录像。
+func (u *finalizeUploadTask) saveDeferredRecord(logMsg, alarmText string) {
+	if u.dbWrite == nil {
+		return
+	}
+	if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
+		u.Error(logMsg, "err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
+		m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
+			"record db save failed", u.streamPath, u.filePath,
+			alarmText+dbErr.Error())
+	}
 }
 
 // recordedSize 返回 trailer 改写前已写入的字节数；无法取值时返回 0。
@@ -872,9 +881,56 @@ func (u *finalizeUploadTask) logUploadFailure(cause error) {
 		"streamPath", u.streamPath)
 }
 
+// errUploadBacklogFull marks a finalize handed to the durable pending-retry
+// queue because the in-memory upload backlog is full.
+var errUploadBacklogFull = errors.New("mp4: upload backlog full")
+
+// uploadBacklogFullFor reports a spill: object storage, a DB retry queue, and no
+// free queue slot. Only then is handing the file to the durable pending queue
+// safer than holding it in memory. Local storage already has the file in place,
+// and without a DB there is no retry queue (a spill would delete the only copy).
+func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
+	return !isLocalStorageType(storageKey) && hasDB && backlogFull
+}
+
+// spillToPending abandons this upload and lets onFail register the pending
+// retry. It must not call Close: the upload never started, and Close would
+// trigger it and delete the temp file. The dropped storage.File is left to the
+// garbage collector — its descriptor is released when the object is collected,
+// which is the intended outcome here.
+//
+// Registration is a DB insert plus a rename, so running it on the trailer queue
+// is bounded work — unlike running the upload itself. That holds only while the
+// pending dir is on the same volume: a cross-volume MoveToPendingDir falls back
+// to copy+delete and can block the trailer queue at exactly the wrong time.
+// The delayed record_streams write also runs here, because run() never executes
+// for a spilled file.
+func (u *finalizeUploadTask) spillToPending(cause error) {
+	// 只有未抢到队列槽位时才会 spill（见 handoffToUploadQueueWith），因此这里
+	// 没有 onDone 可执行，也不应假装归还槽位。
+	u.Warn("upload backlog full; handing file to the pending upload path",
+		"file", u.filePath, "size", u.size, "streamPath", u.streamPath, "cause", cause)
+	u.file = nil
+	if u.onFail != nil {
+		u.onFail(cause)
+	}
+	// 媒体所有权已交给持久化补传队列，run() 不会再执行；这里必须补上延迟入库，
+	// 否则 record_streams 的 end_time/duration 永久为零（时间范围查询会漏掉它）。
+	u.saveDeferredRecord(
+		"upload spilled to pending but db record save failed",
+		"录像已移交补传但 record_streams 入库失败: ")
+}
+
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
 // 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
 func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
+	t.handoffToUploadQueueWith(&uploadQueueTask, size, onFail)
+}
+
+// handoffToUploadQueueWith is handoffToUploadQueue with an injectable queue, so
+// tests can drive the backlog decision through the real wiring (a stopped queue
+// forces the synchronous inline path, with no async gotask run).
+func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64, onFail func(cause error)) {
 	ft := &finalizeUploadTask{
 		file:       t.file,
 		filePath:   t.filePath,
@@ -885,8 +941,26 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 		indexPath:  t.indexPath,
 		size:       size,
 	}
-	t.file = nil // 所有权移交
-	if enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger) {
+	// The spill path logs before the task ever starts, when gotask has not yet
+	// installed a logger; without this the Warn would be silently dropped.
+	ft.Logger = t.Logger
+
+	t.file = nil // ownership transferred
+
+	// Only object-storage finalization reads the recording back from disk;
+	// a local Close is a rename and must not consume a backlog slot.
+	objectStorage := !isLocalStorageType(t.storageKey)
+	acquired := objectStorage && storage.TryAcquireUploadQueue()
+	if acquired {
+		ft.onDone = storage.ReleaseUploadQueue
+	}
+	if uploadBacklogFullFor(t.storageKey, t.db != nil, objectStorage && !acquired) {
+		ft.spillToPending(errUploadBacklogFull)
+		return
+	}
+	// local, or object storage with no DB retry queue when full: keep the old
+	// path and let the in-memory queue absorb it (no slot to release).
+	if enqueueFinalizeOrRunInline(queue, ft, t.Logger) {
 		// Inline path: the wrapper logged the rejection and ran the finalize.
 		return
 	}

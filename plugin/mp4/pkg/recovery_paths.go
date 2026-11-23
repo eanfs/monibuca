@@ -214,6 +214,13 @@ func isLocalRecoveryStorage(storageType string) bool {
 	return strings.EqualFold(strings.TrimSpace(storageType), string(storage.StorageTypeLocal))
 }
 
+// isLocalStorageType 与 isLocalRecoveryStorage 相同，但把空字符串（未解析出的
+// 存储类型）按 local 处理，与根包 normalizeRecordStorageType 的口径一致。
+// 空串若被当成对象存储，本地录像会白占 backlog 槽位并被移入 pending。
+func isLocalStorageType(storageType string) bool {
+	return strings.TrimSpace(storageType) == "" || isLocalRecoveryStorage(storageType)
+}
+
 // hasTraversalSegment 判断路径是否含 ".." 段（同时处理 / 与 \ 分隔符）。
 func hasTraversalSegment(key string) bool {
 	for _, segment := range strings.FieldsFunc(key, func(r rune) bool { return r == '/' || r == '\\' }) {
