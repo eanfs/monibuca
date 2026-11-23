@@ -75,7 +75,7 @@ func TestSpillToPendingWritesDeferredRecord(t *testing.T) {
 		file:     &fakeFinalizeFile{},
 		filePath: "live/ch1/fixed.mp4",
 		size:     1,
-		onFail:   func(error) bool { return false },
+		onFail:   func(error) bool { return true },
 		dbWrite:  func(task.IJob) error { dbWrites++; return nil },
 	}
 	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -84,6 +84,26 @@ func TestSpillToPendingWritesDeferredRecord(t *testing.T) {
 
 	if dbWrites != 1 {
 		t.Fatalf("dbWrite ran %d times, want 1 (spilled records must still get end_time/duration)", dbWrites)
+	}
+}
+
+// onFail 未能确认媒体被保留（例如 localPath 为空）时不得写库：否则会留下
+// 指向一个永远不会存在的对象的记录。
+func TestSpillToPendingSkipsDeferredRecordWhenMediaNotKept(t *testing.T) {
+	dbWrites := 0
+	ft := &finalizeUploadTask{
+		file:     &fakeFinalizeFile{},
+		filePath: "live/ch1/fixed.mp4",
+		size:     1,
+		onFail:   func(error) bool { return false },
+		dbWrite:  func(task.IJob) error { dbWrites++; return nil },
+	}
+	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ft.spillToPending(errUploadBacklogFull)
+
+	if dbWrites != 0 {
+		t.Fatalf("dbWrite ran %d times, want 0 when the media is not retained", dbWrites)
 	}
 }
 

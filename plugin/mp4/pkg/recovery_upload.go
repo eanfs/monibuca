@@ -234,6 +234,7 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		filePath:   objectKey,
 		streamPath: upload.Header.StreamPath,
 		db:         opts.DB,
+		storageKey: storageType,
 		// 上传成功后才回写 record_streams，与正常录制路径语义一致：
 		// 文件可播放/已持久化前不留下“已完成”的 DB 记录。
 		dbWrite: func(task.IJob) error {

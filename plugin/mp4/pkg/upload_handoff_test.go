@@ -63,11 +63,13 @@ func TestFinalizeUploadTaskCloseFail(t *testing.T) {
 	}
 }
 
-// 没有补传队列（onFail 返回 false，媒体将被丢弃）：不得写库，否则会留下
-// 指向已删除文件的记录。
+// 对象存储且没有补传队列（onFail 返回 false，媒体将被丢弃）：不得写库，
+// 否则会留下指向已删除文件的记录。local 存储是例外（Close 失败时文件已在
+// 最终路径），见 TestFinalizeLocalCloseFailureWritesDBRecord。
 func TestFinalizeUploadTaskCloseFailNoRetryQueueSkipsDBWrite(t *testing.T) {
 	f := &fakeStorageFile{closeErr: errors.New("upload failed")}
 	u := newTestFinalizeTask(f)
+	u.storageKey = "s3"
 	u.onFail = func(error) bool { return false }
 	var dbWriteCalled bool
 	u.dbWrite = func(task.IJob) error { dbWriteCalled = true; return nil }
@@ -77,6 +79,24 @@ func TestFinalizeUploadTaskCloseFailNoRetryQueueSkipsDBWrite(t *testing.T) {
 	}
 	if dbWriteCalled {
 		t.Fatal("dbWrite must NOT run without a retry queue: the media is discarded")
+	}
+}
+
+// local 存储的 Close 只是关闭句柄：文件已在最终路径，Close 报错不能让
+// record_streams 永久缺少 end_time/duration。
+func TestFinalizeLocalCloseFailureWritesDBRecord(t *testing.T) {
+	f := &fakeStorageFile{closeErr: errors.New("close EIO")}
+	u := newTestFinalizeTask(f)
+	u.storageKey = "local"
+	u.onFail = func(error) bool { return false }
+	var dbWriteCalled bool
+	u.dbWrite = func(task.IJob) error { dbWriteCalled = true; return nil }
+
+	if err := u.Go(); err == nil {
+		t.Fatal("expected error from Go()")
+	}
+	if !dbWriteCalled {
+		t.Fatal("dbWrite must run for a local close failure: the file is already at its final path")
 	}
 }
 

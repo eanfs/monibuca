@@ -264,6 +264,7 @@ func newCapturedFinalizeTask(t *testing.T, h *captureHandler, f *fakeStorageFile
 		file:       f,
 		filePath:   "live/cam1/rec.mp4",
 		streamPath: "live/cam1",
+		storageKey: "s3",
 		size:       12345,
 	}
 	u.Logger = slog.New(h)

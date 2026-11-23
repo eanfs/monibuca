@@ -360,6 +360,15 @@ func TestEnqueueRecoveryUploadFailureRegistersPendingThenRemovesSidecar(t *testi
 		ut.LocalPath != filepath.Join(pendingDir, entries[0].Name()) {
 		t.Fatalf("unexpected upload task: %+v", ut)
 	}
+	// 恢复上传失败但产物已登记 pending：record_streams 必须定稿，补传成功后
+	// 不会再有回写机会。
+	var rows []m7s.RecordStream
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatalf("load record_streams: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FilePath != fixture.header.FilePath {
+		t.Fatalf("record_streams rows = %+v, want one row for %s", rows, fixture.header.FilePath)
+	}
 	if _, err := os.Stat(fixture.sidecar); !os.IsNotExist(err) {
 		t.Fatalf("sidecar should be removed after pending registration: %v", err)
 	}
