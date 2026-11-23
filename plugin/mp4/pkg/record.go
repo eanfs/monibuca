@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	task "github.com/eanfs/gotask"
@@ -722,6 +723,11 @@ type finalizeUploadTask struct {
 	prepare func() error
 	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
 	onDone func()
+	// runOnce 保证 finalize 只执行一次。排队路径与 enqueueFinalizeOrRunInline
+	// 的内联兜底都可能调用 Go()：AddTask 的拒绝复检与事件循环取任务存在窄窗口，
+	// 两次执行会对同一个文件句柄重复 Close/上传/入库。
+	runOnce sync.Once
+	runErr  error
 	// size 是待持久化文件的字节数，仅用于结构化日志。
 	//
 	// 队列内的首次尝试没有「已重试次数」这一状态可存：它恒为 0，重试由补传
@@ -729,7 +735,21 @@ type finalizeUploadTask struct {
 	size int64
 }
 
-func (u *finalizeUploadTask) Go() (err error) {
+func (u *finalizeUploadTask) Go() error {
+	u.runOnce.Do(func() { u.runErr = u.run() })
+	return u.runErr
+}
+
+// run 是 finalize 的本体。内联兜底会在 trailer 队列的 goroutine 上直接调用它，
+// 那里没有 gotask 的任务级 recover：panic 会沿 eventLoop 冒泡并停掉整个 trailer
+// 队列，连带丢掉其它待收尾录像。这里统一 recover，使两条调用路径同等安全。
+func (u *finalizeUploadTask) run() (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			u.Error("finalize upload panicked", "file", u.filePath, "panic", rec)
+			err = fmt.Errorf("finalize upload panic: %v", rec)
+		}
+	}()
 	if u.onDone != nil {
 		defer u.onDone()
 	}
@@ -755,16 +775,25 @@ func (u *finalizeUploadTask) Go() (err error) {
 		u.Warn("remove index sidecar after upload failed", "err", idxErr, "indexPath", u.indexPath)
 	}
 	// 文件已完整持久化,此时才将记录写入数据库(延迟入库,确保 DB 与可播放文件一致)。
-	if u.dbWrite != nil {
-		if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
-			u.Error("upload ok but db record save failed — orphan file",
-				"err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
-			m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
-				"record db save failed", u.streamPath, u.filePath,
-				"录像已上传成功但 record_streams 入库失败(孤儿文件): "+dbErr.Error())
-		}
-	}
+	u.saveDeferredRecord(
+		"upload ok but db record save failed — orphan file",
+		"录像已上传成功但 record_streams 入库失败(孤儿文件): ")
 	return
+}
+
+// saveDeferredRecord 执行延迟入库。媒体已经持久化——已上传（run）或已进入
+// 持久化补传队列（spillToPending）。两条路径互斥，都必须各自调用一次：否则
+// record_streams 的 end_time/duration 永久为零，时间范围查询会漏掉该录像。
+func (u *finalizeUploadTask) saveDeferredRecord(logMsg, alarmText string) {
+	if u.dbWrite == nil {
+		return
+	}
+	if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
+		u.Error(logMsg, "err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
+		m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
+			"record db save failed", u.streamPath, u.filePath,
+			alarmText+dbErr.Error())
+	}
 }
 
 // recordedSize 返回 trailer 改写前已写入的字节数；无法取值时返回 0。
@@ -861,7 +890,7 @@ var errUploadBacklogFull = errors.New("mp4: upload backlog full")
 // safer than holding it in memory. Local storage already has the file in place,
 // and without a DB there is no retry queue (a spill would delete the only copy).
 func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
-	return storageKey != "local" && hasDB && backlogFull
+	return !isLocalStorageType(storageKey) && hasDB && backlogFull
 }
 
 // spillToPending abandons this upload and lets onFail register the pending
@@ -874,16 +903,22 @@ func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
 // is bounded work — unlike running the upload itself. That holds only while the
 // pending dir is on the same volume: a cross-volume MoveToPendingDir falls back
 // to copy+delete and can block the trailer queue at exactly the wrong time.
+// The delayed record_streams write also runs here, because run() never executes
+// for a spilled file.
 func (u *finalizeUploadTask) spillToPending(cause error) {
-	if u.onDone != nil {
-		defer u.onDone()
-	}
+	// 只有未抢到队列槽位时才会 spill（见 handoffToUploadQueueWith），因此这里
+	// 没有 onDone 可执行，也不应假装归还槽位。
 	u.Warn("upload backlog full; handing file to the pending upload path",
 		"file", u.filePath, "size", u.size, "streamPath", u.streamPath, "cause", cause)
 	u.file = nil
 	if u.onFail != nil {
 		u.onFail(cause)
 	}
+	// 媒体所有权已交给持久化补传队列，run() 不会再执行；这里必须补上延迟入库，
+	// 否则 record_streams 的 end_time/duration 永久为零（时间范围查询会漏掉它）。
+	u.saveDeferredRecord(
+		"upload spilled to pending but db record save failed",
+		"录像已移交补传但 record_streams 入库失败: ")
 }
 
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
@@ -914,7 +949,7 @@ func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64,
 
 	// Only object-storage finalization reads the recording back from disk;
 	// a local Close is a rename and must not consume a backlog slot.
-	objectStorage := t.storageKey != "local"
+	objectStorage := !isLocalStorageType(t.storageKey)
 	acquired := objectStorage && storage.TryAcquireUploadQueue()
 	if acquired {
 		ft.onDone = storage.ReleaseUploadQueue
@@ -947,9 +982,9 @@ func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger 
 		ft.Warn("upload queue rejected task; running finalize inline",
 			"file", ft.filePath, "size", ft.size, "error", err)
 		inline = true
-		if goErr := ft.Go(); goErr != nil {
-			ft.Error("inline finalize failed", "file", ft.filePath, "err", goErr)
-		}
+		// 失败由 finalize 本体记录（failUpload/logUploadFailure，panic 由 run
+		// 的 recover 记录）；这里再打一条会同一失败双计，且键名不是全仓约定的 error。
+		_ = ft.Go()
 	}
 	return
 }

@@ -8,7 +8,7 @@ import "fmt"
 func IOWarnings(cfg UploadConfig) []string {
 	var out []string
 	if cfg.UploadReadRateMBps <= 0 {
-		out = append(out, fmt.Sprintf("upload.readratembps=%d is not a positive rate (unlimited): concurrent uploads can saturate disk reads and starve recording writes", cfg.UploadReadRateMBps))
+		out = append(out, fmt.Sprintf("upload.readratembps=%d is not a positive rate (unlimited): concurrent uploads can saturate disk reads and starve recording writes (note: this limit covers S3 upload bodies and pending retry copies; OSS/COS SDK-internal reads are not throttled)", cfg.UploadReadRateMBps))
 	}
 	if cfg.TrailerWriteRateMBps <= 0 {
 		out = append(out, fmt.Sprintf("upload.trailerwriteratembps=%d is not a positive rate (unlimited): trailer rewrites can burst the disk", cfg.TrailerWriteRateMBps))

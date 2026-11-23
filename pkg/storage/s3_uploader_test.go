@@ -3,6 +3,8 @@
 package storage
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -46,6 +48,42 @@ func TestNewS3UploaderAppliesConfig(t *testing.T) {
 	u = newS3Uploader(sess, &S3StorageConfig{Concurrency: -3})
 	if u.Concurrency != 1 {
 		t.Fatalf("clamped Concurrency = %d, want 1", u.Concurrency)
+	}
+}
+
+// TestNewS3StorageWiresUploaderConcurrency pins the production wiring:
+// NewS3Storage must build its uploader through newS3Uploader. Reverting it to an
+// inline s3manager.NewUploader would leave TestNewS3UploaderAppliesConfig green
+// while the configured 2-way concurrency silently stops being applied.
+func TestNewS3StorageWiresUploaderConcurrency(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead { // HeadBucket from testS3Connection
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
+	st, err := NewS3Storage(&S3StorageConfig{
+		Endpoint:        srv.URL,
+		Region:          "us-east-1",
+		AccessKeyID:     "test",
+		SecretAccessKey: "test",
+		Bucket:          "test",
+		ForcePathStyle:  true,
+		UseSSL:          false,
+		TempDir:         t.TempDir(),
+		Concurrency:     2,
+	})
+	if err != nil {
+		t.Fatalf("NewS3Storage: %v", err)
+	}
+	if st.uploader == nil {
+		t.Fatal("uploader is nil")
+	}
+	if st.uploader.Concurrency != 2 {
+		t.Fatalf("uploader Concurrency = %d, want 2: NewS3Storage is not using newS3Uploader", st.uploader.Concurrency)
 	}
 }
 

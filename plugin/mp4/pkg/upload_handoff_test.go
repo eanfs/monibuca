@@ -102,6 +102,49 @@ func newInlineFinalizeTask(t *testing.T) (*finalizeUploadTask, *fakeFinalizeFile
 	return ft, file, done
 }
 
+// Go() 必须幂等：排队路径与内联兜底可能都调用它（AddTask 拒绝复检与事件循环
+// 取任务之间存在窄窗口），第二次调用不能重复 Close/入库/归还槽位。
+func TestFinalizeUploadTaskGoRunsOnce(t *testing.T) {
+	u := newTestFinalizeTask(&fakeStorageFile{})
+	var dbWrites, dones int
+	u.dbWrite = func(task.IJob) error { dbWrites++; return nil }
+	u.onDone = func() { dones++ }
+
+	if err := u.Go(); err != nil {
+		t.Fatalf("first Go() = %v", err)
+	}
+	if err := u.Go(); err != nil {
+		t.Fatalf("second Go() = %v", err)
+	}
+	if dbWrites != 1 {
+		t.Fatalf("dbWrite ran %d times, want 1", dbWrites)
+	}
+	if dones != 1 {
+		t.Fatalf("onDone ran %d times, want 1", dones)
+	}
+}
+
+// panickingFile 在 Close 时 panic，模拟内联路径上任何会让 goroutine 崩溃的实现缺陷。
+type panickingFile struct{ fakeStorageFile }
+
+func (f *panickingFile) Close() error { panic("boom") }
+
+// 内联 finalize 跑在 trailer 队列上，那里没有 gotask 的任务级 recover；panic
+// 必须被就地吸收，否则整个 trailer 队列会停止，其它待收尾录像全部丢失。
+func TestFinalizeUploadTaskRecoversPanic(t *testing.T) {
+	u := &finalizeUploadTask{file: &panickingFile{}, filePath: "live/ch1/panic.mp4"}
+	u.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("panic escaped Go(): %v", rec)
+		}
+	}()
+	if err := u.Go(); err == nil {
+		t.Fatal("panicking finalize must return an error")
+	}
+}
+
 func TestFinalizeRunsInlineWhenUploadQueueRejected(t *testing.T) {
 	queue := newStoppedUploadQueue(t)
 	ft, file, done := newInlineFinalizeTask(t)

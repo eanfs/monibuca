@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
+	task "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	"m7s.live/v5/pkg/storage"
 )
@@ -22,6 +23,7 @@ func TestUploadBacklogGateSkipsLocalAndDBLess(t *testing.T) {
 		want       bool
 	}{
 		{"local never spills", "local", true, true, false},
+		{"empty storage type is local", "", true, true, false},
 		{"no db never spills", "s3", false, true, false},
 		{"object storage with db spills when full", "s3", true, true, true},
 		{"object storage with db and room does not spill", "s3", true, false, false},
@@ -60,6 +62,28 @@ func TestSpillToPendingDoesNotCloseFile(t *testing.T) {
 	}
 	if file.closed {
 		t.Fatal("spill must not Close: Close triggers upload and deletes the temp file")
+	}
+}
+
+// TestSpillToPendingWritesDeferredRecord pins that a spilled finalize still
+// writes the delayed record_streams update. Without it, every spilled recording
+// keeps end_time=0/duration=0 forever (the pending retry path never writes the
+// record), so time-range queries silently drop it.
+func TestSpillToPendingWritesDeferredRecord(t *testing.T) {
+	dbWrites := 0
+	ft := &finalizeUploadTask{
+		file:     &fakeFinalizeFile{},
+		filePath: "live/ch1/fixed.mp4",
+		size:     1,
+		onFail:   func(error) {},
+		dbWrite:  func(task.IJob) error { dbWrites++; return nil },
+	}
+	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ft.spillToPending(errUploadBacklogFull)
+
+	if dbWrites != 1 {
+		t.Fatalf("dbWrite ran %d times, want 1 (spilled records must still get end_time/duration)", dbWrites)
 	}
 }
 

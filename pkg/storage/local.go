@@ -711,6 +711,12 @@ func (f *LocalFile) FinalizeFromTemp(srcPath string) error {
 
 // copyFileContents 把 src 内容完整复制到 dst（含 fsync），用于跨设备 finalize。
 func copyFileContents(src, dst string) error {
+	return copyFileContentsThrough(src, dst, nil)
+}
+
+// copyFileContentsThrough 是 copyFileContents 的可注入读包装版本。wrap 非 nil
+// 时源文件的读经过它（跨设备 spill 拷贝借此受上传读限速约束）。
+func copyFileContentsThrough(src, dst string, wrap func(io.ReadSeeker) io.Reader) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -721,7 +727,11 @@ func copyFileContents(src, dst string) error {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	var r io.Reader = in
+	if wrap != nil {
+		r = wrap(in)
+	}
+	if _, err := io.Copy(out, r); err != nil {
 		return err
 	}
 	return out.Sync()

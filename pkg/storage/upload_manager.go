@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ var ErrPendingDirFull = errors.New("pending dir full")
 // UploadConfig 上传管理配置
 type UploadConfig struct {
 	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent upload disk reads so they cannot starve recording writes; 0 = unlimited (default)" default:"0" yaml:"readratembps"`
+	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent S3 upload-body reads and pending-retry copies so they cannot starve recording writes (OSS/COS SDK-internal reads are not covered); 0 = unlimited (default)" default:"0" yaml:"readratembps"`
 	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
 	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
 	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
@@ -91,8 +92,10 @@ func InitUploadManager(cfg UploadConfig) {
 	if cfg.UploadReadRateMBps > 0 {
 		bytesPerSec := int64(cfg.UploadReadRateMBps) * 1024 * 1024
 		burst := bytesPerSec / 4 // 250 ms of headroom
-		if burst < 1<<20 {
-			burst = 1 << 20
+		if burst < maxThrottleChunk {
+			// Same constant the reader chunks by: a chunk larger than the burst
+			// makes WaitN fail outright, turning every upload into a hard error.
+			burst = maxThrottleChunk
 		}
 		if burst > 32<<20 {
 			burst = 32 << 20
@@ -223,8 +226,13 @@ func MoveLocalFile(srcPath, dstPath string) error {
 	}
 
 	// fallback: copy + delete。复用本包的 copyFileContents（它带 Sync，保证
-	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。
-	if err := copyFileContents(srcPath, dstPath); err != nil {
+	// 跨设备「移动成功」的持久化语义与其它本地存储路径一致）。这条拷贝同样
+	// 读盘，必须走上传读限速：spill 登记同步跑在 trailer 队列上，无节流的
+	// 整文件拷贝会把事故里的读放大原样搬回来。
+	wrap := func(rs io.ReadSeeker) io.Reader {
+		return NewUploadThrottledReadSeeker(context.Background(), rs)
+	}
+	if err := copyFileContentsThrough(srcPath, dstPath, wrap); err != nil {
 		os.Remove(dstPath)
 		return err
 	}
