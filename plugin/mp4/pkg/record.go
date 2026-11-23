@@ -878,7 +878,7 @@ func (u *finalizeUploadTask) spillToPending(cause error) {
 	if u.onDone != nil {
 		defer u.onDone()
 	}
-	u.Warn("upload backlog full; deferring to pending retry",
+	u.Warn("upload backlog full; handing file to the pending upload path",
 		"file", u.filePath, "size", u.size, "streamPath", u.streamPath, "cause", cause)
 	u.file = nil
 	if u.onFail != nil {

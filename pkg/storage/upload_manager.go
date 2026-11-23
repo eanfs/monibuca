@@ -61,7 +61,7 @@ type UploadConfig struct {
 	PendingMaxSizeMB           int    `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
 	PendingMaxFiles            int    `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
 	PendingDiskMinFreeMB       int    `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
-	MaxQueuedUploads           int    `desc:"maximum queued-but-unfinished final persistence tasks; overflow spills to the pending retry queue; 0 = unlimited" default:"8"`
+	MaxQueuedUploads           int    `desc:"maximum queued-but-unfinished record finalization tasks; overflow spills to the pending retry queue (recovery uploads are not capped); 0 = unlimited" default:"8"`
 }
 
 // InitUploadManager 初始化上传管理器（并发控制 + 暂存目录）
