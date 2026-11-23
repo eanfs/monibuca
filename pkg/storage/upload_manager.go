@@ -122,6 +122,9 @@ func InitUploadManager(cfg UploadConfig) {
 	}
 	log.Printf("[storage] upload manager initialized: maxConcurrent=%d, maxQueued=%d, maxTrailer=%d, trailerWriteRate=%dMB/s, readRate=%dMB/s, pendingDir=%s",
 		maxConcurrent, maxQueuedUploads, maxConcurrentTrailers, trailerWriteBytesPerSec.Load()/1024/1024, cfg.UploadReadRateMBps, pendingDir)
+	for _, warning := range IOWarnings(cfg) {
+		log.Printf("[storage] WARNING: %s", warning)
+	}
 }
 
 // pendingDirIsPersistent 判断暂存目录是否是绝对路径。
