@@ -249,3 +249,36 @@ func TestHandoffNoDBNeverSpills(t *testing.T) {
 		t.Fatalf("QueuedUploads = %d, want 1 (no-DB path holds no slot)", got)
 	}
 }
+
+// slotSamplingFile samples the queued-upload counter from inside Close, i.e.
+// while the inline finalize still holds whatever slot the handoff reserved.
+type slotSamplingFile struct {
+	fakeFinalizeFile
+	onClose func()
+}
+
+func (f *slotSamplingFile) Close() error {
+	if f.onClose != nil {
+		f.onClose()
+	}
+	f.closed = true
+	return nil
+}
+
+// TestHandoffLocalDoesNotAcquireSlot pins that local finalization never takes a
+// backlog slot: if it did, local recordings could push object+DB recordings
+// into spill. Go() runs inline and defers the onDone release, so sampling
+// QueuedUploads() inside Close sees the slot exactly while it would be held.
+func TestHandoffLocalDoesNotAcquireSlot(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 1})
+	var during int32
+	file := &slotSamplingFile{onClose: func() { during = storage.QueuedUploads() }}
+	tt := &writeTrailerTask{file: file, filePath: "live/ch1/fixed.mp4", streamPath: "live/ch1", storageKey: "local", db: &gorm.DB{}}
+	tt.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	tt.handoffToUploadQueueWith(newStoppedUploadQueue(t), 1, func(error) { t.Error("local handoff must not spill") })
+
+	if during != 0 {
+		t.Fatalf("local finalize held %d queue slots at Close; it must not acquire one", during)
+	}
+}
