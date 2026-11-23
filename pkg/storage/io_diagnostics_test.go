@@ -40,6 +40,16 @@ func TestIOWarnings(t *testing.T) {
 			cfg:  UploadConfig{MaxConcurrentUploads: 6, UploadReadRateMBps: 128, TrailerWriteRateMBps: 64, MaxQueuedUploads: 8},
 			want: []string{"maxconcurrentuploads"},
 		},
+		{
+			name: "five upload slots warns",
+			cfg:  UploadConfig{MaxConcurrentUploads: 5, UploadReadRateMBps: 128, TrailerWriteRateMBps: 64, MaxQueuedUploads: 8},
+			want: []string{"maxconcurrentuploads=5"},
+		},
+		{
+			name: "negative read rate reports the value",
+			cfg:  UploadConfig{MaxConcurrentUploads: 4, UploadReadRateMBps: -1, TrailerWriteRateMBps: 64, MaxQueuedUploads: 8},
+			want: []string{"readratembps=-1"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,9 +91,9 @@ func TestUploadConfigIOWarningsAreLogged(t *testing.T) {
 
 	logged := buf.String()
 	for _, want := range []string{
-		"WARNING: upload.readratembps is 0",
-		"WARNING: upload.trailerwriteratembps is 0",
-		"WARNING: upload.maxqueueduploads is 0",
+		"WARNING: upload.readratembps=0",
+		"WARNING: upload.trailerwriteratembps=0",
+		"WARNING: upload.maxqueueduploads=0",
 	} {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("InitUploadManager log missing %q; got:\n%s", want, logged)

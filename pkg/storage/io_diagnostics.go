@@ -8,13 +8,13 @@ import "fmt"
 func IOWarnings(cfg UploadConfig) []string {
 	var out []string
 	if cfg.UploadReadRateMBps <= 0 {
-		out = append(out, "upload.readratembps is 0 (unlimited): concurrent uploads can saturate disk reads and starve recording writes")
+		out = append(out, fmt.Sprintf("upload.readratembps=%d is not a positive rate (unlimited): concurrent uploads can saturate disk reads and starve recording writes", cfg.UploadReadRateMBps))
 	}
 	if cfg.TrailerWriteRateMBps <= 0 {
-		out = append(out, "upload.trailerwriteratembps is 0 (unlimited): trailer rewrites can burst the disk")
+		out = append(out, fmt.Sprintf("upload.trailerwriteratembps=%d is not a positive rate (unlimited): trailer rewrites can burst the disk", cfg.TrailerWriteRateMBps))
 	}
 	if cfg.MaxQueuedUploads <= 0 {
-		out = append(out, "upload.maxqueueduploads is 0 (unbounded): a finalize storm can pile up hundreds of in-memory tasks")
+		out = append(out, fmt.Sprintf("upload.maxqueueduploads=%d is not a positive limit (unbounded): a finalize storm can pile up hundreds of in-memory tasks", cfg.MaxQueuedUploads))
 	}
 	if cfg.MaxConcurrentUploads > 4 {
 		out = append(out, fmt.Sprintf("upload.maxconcurrentuploads=%d exceeds the recommended maximum 4", cfg.MaxConcurrentUploads))
