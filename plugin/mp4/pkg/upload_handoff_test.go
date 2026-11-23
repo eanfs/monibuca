@@ -38,12 +38,13 @@ func newTestFinalizeTask(f *fakeStorageFile) *finalizeUploadTask {
 	return u
 }
 
-// 上传(Close)失败:必须触发 onFail 兜底,返回错误。
+// 上传(Close)失败:必须触发 onFail 兜底,返回错误；onFail 确认媒体被保留
+// （pending/原地登记）后必须补写延迟入库——补传成功不会再回写 record_streams。
 func TestFinalizeUploadTaskCloseFail(t *testing.T) {
 	f := &fakeStorageFile{closeErr: errors.New("upload failed")}
 	u := newTestFinalizeTask(f)
 	var gotCause error
-	u.onFail = func(cause error) { gotCause = cause }
+	u.onFail = func(cause error) bool { gotCause = cause; return true }
 	var dbWriteCalled bool
 	u.dbWrite = func(task.IJob) error { dbWriteCalled = true; return nil }
 
@@ -57,8 +58,25 @@ func TestFinalizeUploadTaskCloseFail(t *testing.T) {
 	if gotCause == nil {
 		t.Fatal("onFail should be called with cause")
 	}
+	if !dbWriteCalled {
+		t.Fatal("dbWrite must run when onFail confirms the media was kept: pending retry never writes record_streams")
+	}
+}
+
+// 没有补传队列（onFail 返回 false，媒体将被丢弃）：不得写库，否则会留下
+// 指向已删除文件的记录。
+func TestFinalizeUploadTaskCloseFailNoRetryQueueSkipsDBWrite(t *testing.T) {
+	f := &fakeStorageFile{closeErr: errors.New("upload failed")}
+	u := newTestFinalizeTask(f)
+	u.onFail = func(error) bool { return false }
+	var dbWriteCalled bool
+	u.dbWrite = func(task.IJob) error { dbWriteCalled = true; return nil }
+
+	if err := u.Go(); err == nil {
+		t.Fatal("expected error from Go()")
+	}
 	if dbWriteCalled {
-		t.Fatal("dbWrite must NOT run when upload failed (延迟入库语义)")
+		t.Fatal("dbWrite must NOT run without a retry queue: the media is discarded")
 	}
 }
 
@@ -67,7 +85,7 @@ func TestFinalizeUploadTaskSuccess(t *testing.T) {
 	f := &fakeStorageFile{}
 	u := newTestFinalizeTask(f)
 	var onFailCalled bool
-	u.onFail = func(error) { onFailCalled = true }
+	u.onFail = func(error) bool { onFailCalled = true; return false }
 	var dbWriteCalled bool
 	u.dbWrite = func(tailJob task.IJob) error {
 		if tailJob == nil {
