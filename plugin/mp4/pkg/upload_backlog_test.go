@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"gorm.io/gorm"
 	"m7s.live/v5/pkg/storage"
 )
 
@@ -136,5 +137,115 @@ func TestFinalizeReleasesUploadQueue(t *testing.T) {
 	}
 	if got := storage.QueuedUploads(); got != 0 {
 		t.Fatalf("QueuedUploads = %d, want 0 after completion", got)
+	}
+}
+
+// newHandoffTrailerTask builds the trailer task the handoff tests drive. The
+// per-test logger is required because the spill path logs before the task ever
+// starts; a nil logger would drop the Warn.
+func newHandoffTrailerTask(storageKey string, db *gorm.DB) (*writeTrailerTask, *fakeFinalizeFile) {
+	file := &fakeFinalizeFile{}
+	tt := &writeTrailerTask{
+		file:       file,
+		filePath:   "live/ch1/fixed.mp4",
+		streamPath: "live/ch1",
+		storageKey: storageKey,
+		db:         db,
+	}
+	tt.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	return tt, file
+}
+
+// TestHandoffSpillsWhenBacklogFull pins the call-site wiring of the spill
+// branch: object storage + DB + no free slot must hand the file to onFail with
+// errUploadBacklogFull, without closing it and without touching the prefill.
+func TestHandoffSpillsWhenBacklogFull(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 1})
+	if !storage.TryAcquireUploadQueue() {
+		t.Fatal("prefill failed")
+	}
+	tt, file := newHandoffTrailerTask("s3", &gorm.DB{})
+	called := 0
+	var cause error
+
+	tt.handoffToUploadQueue(1, func(err error) { called++; cause = err })
+
+	if called != 1 || !errors.Is(cause, errUploadBacklogFull) {
+		t.Fatalf("onFail called=%d cause=%v, want 1 and errUploadBacklogFull", called, cause)
+	}
+	if file.closed {
+		t.Fatal("spill must not close the file: Close triggers the upload and deletes the temp file")
+	}
+	if got := storage.QueuedUploads(); got != 1 {
+		t.Fatalf("QueuedUploads = %d, want 1 (prefill untouched)", got)
+	}
+}
+
+// TestHandoffReleasesSlotOnInlineFinalize pins that a slot taken by the handoff
+// is handed to onDone, so the forced inline finalize returns it.
+func TestHandoffReleasesSlotOnInlineFinalize(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 1})
+	queue := newStoppedUploadQueue(t) // stopped → enqueue rejects → inline path, no async run
+	tt, file := newHandoffTrailerTask("s3", &gorm.DB{})
+	failed := false
+
+	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+
+	if !file.closed {
+		t.Fatal("inline finalize must close (flush + upload) the file")
+	}
+	if failed {
+		t.Fatal("onFail must not run when the inline finalize succeeds")
+	}
+	if got := storage.QueuedUploads(); got != 0 {
+		t.Fatalf("QueuedUploads = %d, want 0 after inline completion (slot leaked)", got)
+	}
+}
+
+// TestHandoffLocalNeverSpillsWithFullBacklog pins that a local Close is a
+// rename: it must neither spill nor consume/release a slot.
+func TestHandoffLocalNeverSpillsWithFullBacklog(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 1})
+	if !storage.TryAcquireUploadQueue() {
+		t.Fatal("prefill failed")
+	}
+	queue := newStoppedUploadQueue(t)
+	tt, file := newHandoffTrailerTask("local", &gorm.DB{})
+	failed := false
+
+	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+
+	if failed {
+		t.Fatal("local storage must never spill to the pending retry queue")
+	}
+	if !file.closed {
+		t.Fatal("local inline finalize must close the file")
+	}
+	if got := storage.QueuedUploads(); got != 1 {
+		t.Fatalf("QueuedUploads = %d, want 1 (local must not touch the prefill)", got)
+	}
+}
+
+// TestHandoffNoDBNeverSpills pins that without a DB retry queue a full backlog
+// still enqueues: a spill would delete the only copy of the recording.
+func TestHandoffNoDBNeverSpills(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir(), MaxConcurrentUploads: 1, MaxQueuedUploads: 1})
+	if !storage.TryAcquireUploadQueue() {
+		t.Fatal("prefill failed")
+	}
+	queue := newStoppedUploadQueue(t)
+	tt, file := newHandoffTrailerTask("s3", nil)
+	failed := false
+
+	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+
+	if failed {
+		t.Fatal("without a DB there is no retry queue; spilling would delete the only copy")
+	}
+	if !file.closed {
+		t.Fatal("inline finalize must close the file")
+	}
+	if got := storage.QueuedUploads(); got != 1 {
+		t.Fatalf("QueuedUploads = %d, want 1 (no-DB path holds no slot)", got)
 	}
 }

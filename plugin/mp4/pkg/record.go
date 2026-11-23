@@ -866,15 +866,20 @@ func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
 
 // spillToPending abandons this upload and lets onFail register the pending
 // retry. It must not call Close: the upload never started, and Close would
-// trigger it and delete the temp file. Registration is a DB insert plus a
-// rename, so running it on the trailer queue is bounded work — unlike running
-// the upload itself.
+// trigger it and delete the temp file. The dropped storage.File is left to the
+// garbage collector — its descriptor is released when the object is collected,
+// which is the intended outcome here.
+//
+// Registration is a DB insert plus a rename, so running it on the trailer queue
+// is bounded work — unlike running the upload itself. That holds only while the
+// pending dir is on the same volume: a cross-volume MoveToPendingDir falls back
+// to copy+delete and can block the trailer queue at exactly the wrong time.
 func (u *finalizeUploadTask) spillToPending(cause error) {
 	if u.onDone != nil {
 		defer u.onDone()
 	}
 	u.Warn("upload backlog full; deferring to pending retry",
-		"file", u.filePath, "size", u.size, "cause", cause)
+		"file", u.filePath, "size", u.size, "streamPath", u.streamPath, "cause", cause)
 	u.file = nil
 	if u.onFail != nil {
 		u.onFail(cause)
@@ -884,6 +889,13 @@ func (u *finalizeUploadTask) spillToPending(cause error) {
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
 // 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
 func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
+	t.handoffToUploadQueueWith(&uploadQueueTask, size, onFail)
+}
+
+// handoffToUploadQueueWith is handoffToUploadQueue with an injectable queue, so
+// tests can drive the backlog decision through the real wiring (a stopped queue
+// forces the synchronous inline path, with no async gotask run).
+func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64, onFail func(cause error)) {
 	ft := &finalizeUploadTask{
 		file:       t.file,
 		filePath:   t.filePath,
@@ -894,6 +906,10 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 		indexPath:  t.indexPath,
 		size:       size,
 	}
+	// The spill path logs before the task ever starts, when gotask has not yet
+	// installed a logger; without this the Warn would be silently dropped.
+	ft.Logger = t.Logger
+
 	t.file = nil // ownership transferred
 
 	// Only object-storage finalization reads the recording back from disk;
@@ -909,7 +925,7 @@ func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause er
 	}
 	// local, or object storage with no DB retry queue when full: keep the old
 	// path and let the in-memory queue absorb it (no slot to release).
-	if enqueueFinalizeOrRunInline(&uploadQueueTask, ft, t.Logger) {
+	if enqueueFinalizeOrRunInline(queue, ft, t.Logger) {
 		// Inline path: the wrapper logged the rejection and ran the finalize.
 		return
 	}
