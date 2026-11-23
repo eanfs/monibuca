@@ -40,7 +40,7 @@ func TestUploadLocalFileCopyIsThrottled(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// The first MiB comes from the burst; the second must wait ~1 s at 1 MB/s.
-	// An untrottled io.Copy finishes in milliseconds, so the lower bound is the
+	// An unthrottled io.Copy finishes in milliseconds, so the lower bound is the
 	// assertion that matters (no upper bound: a loaded machine may add slop).
 	if elapsed < 900*time.Millisecond {
 		t.Fatalf("copy finished in %v; the second MiB must wait ~1s at 1 MB/s (copy is not throttled)", elapsed)

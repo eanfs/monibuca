@@ -1097,6 +1097,18 @@ still hits the documented upstream gotask `EventLoop` data race under `-race`
   `upload.pendingdiskminfreemb: 2048`, `upload.pendingmaxsizemb`,
   `upload.pendingmaxfiles`. `handleFailedUpload` keeps the file in place when
   the pending directory is over budget.
+- Size `readratembps` against `storage.s3.timeout` (15m per attempt): a rate so
+  low that `file size / rate` approaches the timeout makes every attempt expire,
+  causing retries and eventually a spill. At 128-256 MB/s the 15m budget covers
+  files well beyond any single recording segment.
+- The retry path reads every spilled file twice (copy into a new upload temp
+  file, then the upload itself reads it back); both reads share the same
+  process-wide limiter, so the effective per-file object throughput on retries
+  is about half the configured rate. That is deliberate: both are disk reads.
+- The record-side guardrail warning is evaluated once at MP4 plugin start. A
+  node that boots with the object store unreachable (local fallback) and
+  reconnects later does not emit it for that lifecycle; check the startup log
+  for the `[storage] WARNING:` lines on every restart, not only the first.
 - Watch `[storage] uploading ... active=N/4`, `upload backlog full` warnings,
   `reader too slow` counts, and the pending directory watermark after the first
   synchronized stop window.
