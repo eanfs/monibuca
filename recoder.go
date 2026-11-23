@@ -57,6 +57,8 @@ type (
 		task.Task
 		RecordJob RecordJob
 		Event     EventRecordStream
+		// segmentSeq counts segments already opened by this recorder task (first = 0).
+		segmentSeq int
 	}
 	RecordStream struct {
 		ID           uint      `gorm:"primarykey"`
@@ -116,6 +118,9 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 
 	// 生成文件路径
 	filePath := customFileName(recordJob)
+	if recordJob.RecConf.FileName != "" {
+		filePath = segmentRecordPath(filePath, r.segmentSeq)
+	}
 	fileName := filepath.Base(filePath)
 
 	recordJob.storage, err = recordJob.Plugin.Server.recordingStorage()
@@ -188,6 +193,9 @@ func (r *DefaultRecorder) CreateStream(start time.Time, customFileName func(*Rec
 	recordJob.SetDescription("streamPath", recordJob.StreamPath)
 	recordJob.SetDescription("fileName", filePath)
 	recordJob.SetDescription("startTime", start.Format("2006-01-02 15:04:05"))
+	if recordJob.RecConf.FileName != "" {
+		r.segmentSeq++
+	}
 	return
 }
 

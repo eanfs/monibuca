@@ -477,7 +477,10 @@ Automatic migration is handled for core models including users, proxies, and str
 - **集群 APIRoute 下 `/mp4/api/start` 的等待分两层**：路由层 `global.apiRoute.waitstreamtimeout`（默认 10s，仅对插件用 `RegisterAPIRouteWaitStream` 注册的方法生效，当前只有 `/mp4.api/StartRecord`）先等流出现在本机或 peer——本机出现→本地执行，peer 出现→转发，窗口用尽→404；进入 handler 后本地仍有 `mp4.record.waitforpublisher`（默认 10s）。等待类方法的转发超时 = `forwardtimeout + waitstreamtimeout`（默认 20s，避免目标节点自身的等待未结束就先超时），单请求阻塞上限 = `waitstreamtimeout + forwardtimeout + waitstreamtimeout`（默认 30s）。该上限成立的前提是目标节点插件等待窗口（`mp4.record.waitforpublisher`）不大于 `waitstreamtimeout`；若调大插件窗口，需同步调大 `forwardtimeout`。`waitstreamtimeout: 0`、APIRoute 未启用或方法未注册时行为与旧版一致，其它 API 方法不等待。`/mp4.api/StopRecord` 不在等待类方法内：流寻址失败时走 stream-not-found 广播（注册一次本地 handler + 逐 peer 转发，任一成功即成功），保证断流/迁移场景下显式 stop 仍能清掉各节点的自动续录意图
 - mp4 start API 请求体所有字段都是 proto **string**——`duration`/`fragment` 必须传 JSON 字符串(`"900s"`/`"0"`),传数字会被 grpc-gateway 拒绝 **400** `invalid value for string type`。老版本(无该字段)因 `DiscardUnknown` 静默忽略数字字段,升级后才暴露(2026-07-15 196 演示环境 its-server 事故根因,报告见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`)
 - mp4 start 不传 `fragment` 时**默认 1 分钟分片**(`StartRecord` handler 里 `fragment = time.Minute`);要录单文件必须显式 `"fragment":"0"`
-- **指定 `fileName` + fragment>0 = 静默丢数据**:`CustomFileName` 对每个分片返回同一路径,分片轮转反复覆盖同一 S3 对象键/本地文件,最终只剩最后一个分片(见 Known Issues)
+- **指定 fileName + fragment>0 no longer overwrites**: the server names the first
+  segment exactly as requested and appends `-001`, `-002`, ... for later segments
+  (retry or fragment rotation). `"fragment":"0"` is still required for a
+  single-file recording.
 - `duration` 到点后 monibuca 自行停录,之后外部再调 `/mp4/api/stop` 会得 not found(本修复起为 **HTTP 404**,v5.3.9 及更早为 500)——调用方应把 not-found 当幂等成功
 - Cross-node record on a non-owner node: trigger auto-relay first via a **subscribe**, then record the now-local stream. Whether a subscribe relays or 302-redirects depends on the per-plugin `proxyOnRedirect` flag (`default:"false"` = 302 redirect; set `true` = local pull proxy instead). With `proxyOnRedirect: false` FLV 302-redirects and won't relay — use RTSP/RTMP; with `proxyOnRedirect: true` (the 3-node e2e configs set this on rtsp+flv) FLV/RTSP relay and return 200
 
@@ -485,18 +488,33 @@ Automatic migration is handled for core models including users, proxies, and str
 
 记录 cluster v1 工作中发现、但本环境无法或不应当处修的事项。
 
-### mp4 分片录制 + 指定 fileName 时反复覆盖同一文件(数据丢失)
+### ~~mp4 分片录制 + 指定 fileName 时反复覆盖同一文件(数据丢失)~~ (fixed 2026-11-22)
 
-- **位置**: `plugin/mp4/pkg/record.go` `CustomFileName`——`RecConf.FileName` 非空时每个分片都返回 `filePath/fileName.mp4` 同一路径;仅 fileName 为空才用时间戳命名。
-- **后果**: fragment>0(含 API 不传 fragment 的默认 1 分钟)且指定 fileName 时,每次分片轮转覆盖同一 S3 对象键/本地文件,**只保留最后一个分片**,且全程无告警(2026-07-15 三节点 FINAL2 批次 30 路 15min 录制每路只剩最后 1 分钟,全批作废)。
-- **修复方向**: fileName 指定且 fragment>0 时给分片追加时间戳/序号(如 `fileName_2006-01-02-15-04-05.mp4`),或在 `StartRecord` 校验该组合直接拒绝;修复前调用方必须显式 `"fragment":"0"`。
+- **Status**: fixed in `m7s.DefaultRecorder.CreateStream`.
+- The first segment keeps the requested `fileName`; every later segment opened by
+  the same recorder task (in-process retry after `ErrDiscard`, or `fragment>0`
+  rotation) gets `-001`, `-002`, ... appended before the extension, e.g.
+  `rec-1.mp4` -> `rec-1-001.mp4`. This applies to mp4, flv and hls recorders.
+- The segment counter advances only after the segment's storage is resolved, so a
+  failure during that resolution does not consume the requested name. A failure
+  after `CreateStream` returns (for example in the plugin's `CreateFile`) does
+  advance the counter: the next attempt starts at `-001`.
+- `fragment` still defaults to 1 minute on the API; callers that want a single
+  file must still send `"fragment":"0"`.
+- **Caller restart contract**: a new recording that reuses a fixed `fileName` must
+  not pick a name that already carries a server-generated `-NNN` suffix. A caller
+  that restarts `<base>` as `<base>-001` (its own convention) after an in-process
+  retry already produced `<base>-001.mp4` would collide with that object key.
+  Restart with a fresh base name (or a new recording id). Segments past 999 get
+  four digits and fall outside the its-server `(-\d{3}){0,3}` pattern.
 
 ### its-server(xde-media-spring-boot-starter)对接 v5.3.1 的 3 处待改
 
 2026-07-15 196 演示环境事故(录制 400、视频未上传 MinIO)结论,详见 `example/cluster-e2e/cluster-e2e-reports/report-2026-07-15-196-its-record-400.md`:
 1. `Mp4StartRequest.duration` 需 `Integer`→`String`(发 `"900"` 或 `"900s"`);
 2. stop 收到 not-found(本修复起为 404;v5.3.9 及更早为 500)应视为幂等成功(duration 到点 monibuca 已自停);
-3. 录单文件需补传 `"fragment":"0"`(否则默认 1 分钟分片,叠加上面 fileName 覆盖缺陷)。
+3. single-file recordings must still send `"fragment":"0"` (the API defaults to
+   1-minute fragments); the fileName overwrite bug above is fixed.
 
 ### gotask 库 `-race` 下 EventLoop 数据竞争
 
