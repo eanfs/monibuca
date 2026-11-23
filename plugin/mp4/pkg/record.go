@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	task "github.com/eanfs/gotask"
@@ -722,6 +723,11 @@ type finalizeUploadTask struct {
 	prepare func() error
 	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
 	onDone func()
+	// runOnce 保证 finalize 只执行一次。排队路径与 enqueueFinalizeOrRunInline
+	// 的内联兜底都可能调用 Go()：AddTask 的拒绝复检与事件循环取任务存在窄窗口，
+	// 两次执行会对同一个文件句柄重复 Close/上传/入库。
+	runOnce sync.Once
+	runErr  error
 	// size 是待持久化文件的字节数，仅用于结构化日志。
 	//
 	// 队列内的首次尝试没有「已重试次数」这一状态可存：它恒为 0，重试由补传
@@ -729,7 +735,21 @@ type finalizeUploadTask struct {
 	size int64
 }
 
-func (u *finalizeUploadTask) Go() (err error) {
+func (u *finalizeUploadTask) Go() error {
+	u.runOnce.Do(func() { u.runErr = u.run() })
+	return u.runErr
+}
+
+// run 是 finalize 的本体。内联兜底会在 trailer 队列的 goroutine 上直接调用它，
+// 那里没有 gotask 的任务级 recover：panic 会沿 eventLoop 冒泡并停掉整个 trailer
+// 队列，连带丢掉其它待收尾录像。这里统一 recover，使两条调用路径同等安全。
+func (u *finalizeUploadTask) run() (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			u.Error("finalize upload panicked", "file", u.filePath, "panic", rec)
+			err = fmt.Errorf("finalize upload panic: %v", rec)
+		}
+	}()
 	if u.onDone != nil {
 		defer u.onDone()
 	}
@@ -888,9 +908,9 @@ func enqueueFinalizeOrRunInline(queue task.IJob, ft *finalizeUploadTask, logger 
 		ft.Warn("upload queue rejected task; running finalize inline",
 			"file", ft.filePath, "size", ft.size, "error", err)
 		inline = true
-		if goErr := ft.Go(); goErr != nil {
-			ft.Error("inline finalize failed", "file", ft.filePath, "err", goErr)
-		}
+		// 失败由 finalize 本体记录（failUpload/logUploadFailure，panic 由 run
+		// 的 recover 记录）；这里再打一条会同一失败双计，且键名不是全仓约定的 error。
+		_ = ft.Go()
 	}
 	return
 }

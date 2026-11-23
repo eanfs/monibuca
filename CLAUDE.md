@@ -501,6 +501,12 @@ Automatic migration is handled for core models including users, proxies, and str
   advance the counter: the next attempt starts at `-001`.
 - `fragment` still defaults to 1 minute on the API; callers that want a single
   file must still send `"fragment":"0"`.
+- **Caller restart contract**: a new recording that reuses a fixed `fileName` must
+  not pick a name that already carries a server-generated `-NNN` suffix. A caller
+  that restarts `<base>` as `<base>-001` (its own convention) after an in-process
+  retry already produced `<base>-001.mp4` would collide with that object key.
+  Restart with a fresh base name (or a new recording id). Segments past 999 get
+  four digits and fall outside the its-server `(-\d{3}){0,3}` pattern.
 
 ### its-server(xde-media-spring-boot-starter)对接 v5.3.1 的 3 处待改
 
