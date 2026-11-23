@@ -48,7 +48,7 @@ func TestSpillToPendingDoesNotCloseFile(t *testing.T) {
 		file:     file,
 		filePath: "live/ch1/fixed.mp4",
 		size:     1,
-		onFail:   func(err error) { called++; cause = err },
+		onFail:   func(err error) bool { called++; cause = err; return false },
 	}
 	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -75,7 +75,7 @@ func TestSpillToPendingWritesDeferredRecord(t *testing.T) {
 		file:     &fakeFinalizeFile{},
 		filePath: "live/ch1/fixed.mp4",
 		size:     1,
-		onFail:   func(error) {},
+		onFail:   func(error) bool { return false },
 		dbWrite:  func(task.IJob) error { dbWrites++; return nil },
 	}
 	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -107,7 +107,7 @@ func TestFinalizeReleasesUploadQueueOnFailure(t *testing.T) {
 		file:     &closeErrorFile{},
 		filePath: "live/ch1/fixed.mp4",
 		size:     1,
-		onFail:   func(error) { failed++ },
+		onFail:   func(error) bool { failed++; return false },
 	}
 	ft.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	ft.onDone = storage.ReleaseUploadQueue
@@ -192,7 +192,7 @@ func TestHandoffSpillsWhenBacklogFull(t *testing.T) {
 	called := 0
 	var cause error
 
-	tt.handoffToUploadQueue(1, func(err error) { called++; cause = err })
+	tt.handoffToUploadQueue(1, func(err error) bool { called++; cause = err; return false })
 
 	if called != 1 || !errors.Is(cause, errUploadBacklogFull) {
 		t.Fatalf("onFail called=%d cause=%v, want 1 and errUploadBacklogFull", called, cause)
@@ -213,7 +213,7 @@ func TestHandoffReleasesSlotOnInlineFinalize(t *testing.T) {
 	tt, file := newHandoffTrailerTask("s3", &gorm.DB{})
 	failed := false
 
-	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+	tt.handoffToUploadQueueWith(queue, 1, func(error) bool { failed = true; return false })
 
 	if !file.closed {
 		t.Fatal("inline finalize must close (flush + upload) the file")
@@ -237,7 +237,7 @@ func TestHandoffLocalNeverSpillsWithFullBacklog(t *testing.T) {
 	tt, file := newHandoffTrailerTask("local", &gorm.DB{})
 	failed := false
 
-	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+	tt.handoffToUploadQueueWith(queue, 1, func(error) bool { failed = true; return false })
 
 	if failed {
 		t.Fatal("local storage must never spill to the pending retry queue")
@@ -261,7 +261,7 @@ func TestHandoffNoDBNeverSpills(t *testing.T) {
 	tt, file := newHandoffTrailerTask("s3", nil)
 	failed := false
 
-	tt.handoffToUploadQueueWith(queue, 1, func(error) { failed = true })
+	tt.handoffToUploadQueueWith(queue, 1, func(error) bool { failed = true; return false })
 
 	if failed {
 		t.Fatal("without a DB there is no retry queue; spilling would delete the only copy")
@@ -300,7 +300,7 @@ func TestHandoffLocalDoesNotAcquireSlot(t *testing.T) {
 	tt := &writeTrailerTask{file: file, filePath: "live/ch1/fixed.mp4", streamPath: "live/ch1", storageKey: "local", db: &gorm.DB{}}
 	tt.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	tt.handoffToUploadQueueWith(newStoppedUploadQueue(t), 1, func(error) { t.Error("local handoff must not spill") })
+	tt.handoffToUploadQueueWith(newStoppedUploadQueue(t), 1, func(error) bool { t.Error("local handoff must not spill"); return false })
 
 	if during != 0 {
 		t.Fatalf("local finalize held %d queue slots at Close; it must not acquire one", during)

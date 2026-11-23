@@ -245,8 +245,12 @@ func EnqueueRecoveryUploadWithOptions(upload RecoveryUpload, opts RecoveryUpload
 		indexPath: upload.SidecarPath,
 		size:      info.Size(),
 		onDone:    release,
-		onFail: func(cause error) {
+		onFail: func(cause error) bool {
+			// registerRecoveryPending 无论登记成功与否都保留产物（pending、
+			// 原地登记或退回原路径 + sidecar），因此这里返回 true：录像本身
+			// 完整，record_streams 必须定稿，补传成功后不会再回写。
 			registerRecoveryPending(logger, opts.DB, upload, objectKey, storageType, info.Size(), metadata, cause)
+			return true
 		},
 	}
 

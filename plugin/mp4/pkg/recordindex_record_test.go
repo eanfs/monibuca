@@ -295,7 +295,7 @@ func TestIndexRemovedOnlyAfterUploadSuccess(t *testing.T) {
 		p := newIndex(t)
 		u := &finalizeUploadTask{file: &fakeStorageFile{closeErr: errors.New("upload failed")}, indexPath: p}
 		u.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-		u.onFail = func(error) {}
+		u.onFail = func(error) bool { return false }
 		if err := u.Go(); err == nil {
 			t.Fatal("Go() should return upload error")
 		}
@@ -444,8 +444,8 @@ func TestIndexRemovedAfterPendingRegistration(t *testing.T) {
 		db := newPendingTestDB(t)
 		task := newPendingTestTrailerTask(indexPath, db)
 
-		if registered := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); !registered {
-			t.Fatal("recoverLocalFile should report successful pending registration")
+		if registered, keepMedia := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); !registered || !keepMedia {
+			t.Fatalf("recoverLocalFile should report successful pending registration and kept media, got registered=%v keepMedia=%v", registered, keepMedia)
 		}
 		if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
 			t.Fatalf("sidecar must be removed after pending registration: %v", err)
@@ -473,8 +473,8 @@ func TestIndexRemovedAfterPendingRegistration(t *testing.T) {
 		mediaPath, indexPath := newPendingTestSidecar(t, mediaDir)
 		task := newPendingTestTrailerTask(indexPath, newPendingTestDB(t))
 
-		if registered := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); registered {
-			t.Fatal("recoverLocalFile must not report registration when pending dir is full")
+		if registered, keepMedia := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); registered || !keepMedia {
+			t.Fatalf("recoverLocalFile must report in-place registration with kept media, got registered=%v keepMedia=%v", registered, keepMedia)
 		}
 		if _, err := os.Stat(indexPath); err != nil {
 			t.Fatalf("sidecar must be kept when pending registration fails: %v", err)

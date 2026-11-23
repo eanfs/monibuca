@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	gotask "github.com/eanfs/gotask"
 	"gorm.io/gorm"
 	m7s "m7s.live/v5"
 	"m7s.live/v5/pkg/storage"
@@ -38,7 +39,7 @@ func TestIndexKeptWhenPendingRegistrationFails(t *testing.T) {
 	logs := &captureHandler{}
 	task.Logger = slog.New(logs)
 
-	if moved := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); moved {
+	if moved, _ := task.recoverLocalFile(mediaPath, 5, errors.New("upload failed")); moved {
 		t.Fatal("recoverLocalFile must not report a pending move when the upload_tasks write fails")
 	}
 	if _, err := os.Stat(indexPath); err != nil {
@@ -95,9 +96,14 @@ func TestRecoverTempAfterFinalizeFailureOwnership(t *testing.T) {
 		storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir()})
 		mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
 		task := newPendingTestTrailerTask(indexPath, nil)
+		writes := 0
+		task.dbWrite = func(gotask.IJob) error { writes++; return nil }
 
 		if deleteTemp := task.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("upload failed")); !deleteTemp {
 			t.Fatal("without a database there is no retry queue: caller may discard the temp copy")
+		}
+		if writes != 0 {
+			t.Fatalf("dbWrite ran %d times, want 0: the media is discarded, a DB row would point at a deleted file", writes)
 		}
 	})
 
@@ -131,6 +137,24 @@ func TestRecoverTempAfterFinalizeFailureOwnership(t *testing.T) {
 			t.Fatalf("media must be restored to its original path: %v", err)
 		}
 	})
+}
+
+// FinalizeFromTemp 失败但媒体被保留（pending/原地登记）时同样必须补写延迟
+// 入库：pending 补传成功只更新 upload_tasks，不会回写 record_streams。
+func TestRecoverTempAfterFinalizeFailureWritesDeferredRecord(t *testing.T) {
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: t.TempDir()})
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	db := newPendingTestDB(t)
+	trailer := newPendingTestTrailerTask(indexPath, db)
+	writes := 0
+	trailer.dbWrite = func(gotask.IJob) error { writes++; return nil }
+
+	if deleteTemp := trailer.recoverTempAfterFinalizeFailure(mediaPath, 5, nil, errors.New("finalize failed")); deleteTemp {
+		t.Fatal("registered media must be kept: caller must not delete the only copy")
+	}
+	if writes != 1 {
+		t.Fatalf("dbWrite ran %d times, want 1", writes)
+	}
 }
 
 // Critical 回归：pending 目录满（MoveToPendingDir 失败）时必须改为原地登记，
@@ -297,4 +321,41 @@ func TestEnqueueRecoveryUploadRegisteredBranchKeepsSidecarOnDBWriteFailure(t *te
 func pathExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// 上传失败并登记 pending 后必须补写延迟入库：补传调度成功后只更新
+// upload_tasks，不会回写 record_streams。漏写会让该录像的 end_time/duration
+// 永久为零，时间范围查询静默漏掉它（2026-11-23 T7 现场实证：4 次上传失败后
+// 媒体进入 pending_uploads，record_streams 仍为 end_time=NULL、duration=0）。
+func TestUploadFailureRegistersPendingAndWritesDeferredRecord(t *testing.T) {
+	pendingDir := t.TempDir()
+	storage.InitUploadManager(storage.UploadConfig{PendingDir: pendingDir})
+
+	mediaPath, indexPath := newPendingTestSidecar(t, t.TempDir())
+	db := newPendingTestDB(t)
+	trailer := newPendingTestTrailerTask(indexPath, db)
+	dbWrites := 0
+	trailer.dbWrite = func(gotask.IJob) error { dbWrites++; return nil }
+
+	ft := newTestFinalizeTask(&fakeStorageFile{closeErr: errors.New("upload failed")})
+	ft.db = db
+	ft.dbWrite = trailer.dbWrite
+	ft.onFail = func(cause error) bool {
+		keepMedia, _ := trailer.handleFailedUpload(mediaPath, 5, nil, cause)
+		return keepMedia
+	}
+
+	if err := ft.Go(); err == nil {
+		t.Fatal("expected the upload error to propagate")
+	}
+	var tasks []m7s.UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 || filepath.Dir(tasks[0].LocalPath) != pendingDir {
+		t.Fatalf("media must be registered in the pending dir, got %+v", tasks)
+	}
+	if dbWrites != 1 {
+		t.Fatalf("dbWrite ran %d times, want 1: the pending retry path never writes record_streams", dbWrites)
+	}
 }

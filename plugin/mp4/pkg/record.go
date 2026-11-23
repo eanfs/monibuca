@@ -195,8 +195,9 @@ func (t *writeTrailerTask) Run() (err error) {
 			t.file.SetMetadata(metadataVideoDurationMs, fmt.Sprintf("%d", t.durationMs))
 		}
 		localPath := localMediaPath(t.file)
-		t.handoffToUploadQueue(size, func(cause error) {
-			t.recoverLocalFile(localPath, size, cause)
+		t.handoffToUploadQueue(size, func(cause error) bool {
+			_, keepMedia := t.recoverLocalFile(localPath, size, cause)
+			return keepMedia
 		})
 		return
 	}
@@ -352,12 +353,14 @@ func (t *writeTrailerTask) Run() (err error) {
 	// 唯一允许删除临时文件的场景是「明确无法补传」：无 DB 部署，没有补传队列
 	// 可登记。其余失败（pending 满 / DB 写失败 / 回查失败）一律保留媒体与
 	// sidecar——tempPath 是这份录像的唯一副本。
-	t.handoffToUploadQueue(expectedSize, func(cause error) {
-		if keepMedia, _ := t.handleFailedUpload(tempPath, expectedSize, metadata, cause); keepMedia {
-			return
+	t.handoffToUploadQueue(expectedSize, func(cause error) bool {
+		keepMedia, _ := t.handleFailedUpload(tempPath, expectedSize, metadata, cause)
+		if keepMedia {
+			return true
 		}
 		// 明确没有补传队列：按旧行为清理临时文件，避免堆积（已 Warn）。
 		os.Remove(tempPath)
+		return false
 	})
 	return
 }
@@ -528,6 +531,14 @@ func (t *writeTrailerTask) writeMoovHead(fd *os.File, ftypBox, moov box.IBox, in
 // "keeping media"，数据静默丢失。
 func (t *writeTrailerTask) recoverTempAfterFinalizeFailure(tempPath string, fileSize int64, metadata map[string]string, cause error) (deleteTemp bool) {
 	keepMedia, _ := t.handleFailedUpload(tempPath, fileSize, metadata, cause)
+	if keepMedia {
+		// 媒体已确认保留（pending 或原地登记）：上传失败不等于录像失败，
+		// record_streams 必须定稿，否则 end_time/duration 永久为零，
+		// 时间范围查询会漏掉这条录像（补传成功后也不会再回写）。
+		t.saveDeferredRecord(
+			"finalize failed but media kept, db record save failed",
+			"录像收尾失败但媒体已保留, record_streams 入库失败: ")
+	}
 	return !keepMedia
 }
 
@@ -577,11 +588,32 @@ func (t *writeTrailerTask) handleFailedUpload(mediaPath string, fileSize int64, 
 // recoverLocalFile 最终持久化失败后,把仍在本地路径的录像文件登记进补传队列。
 // 用于 insert-range 快路径与 fragment(fMP4)finalize 的失败兜底。
 //
-// 返回媒体是否被移入 pending 目录（此时原路径已无媒体，sidecar 已一并清理）；
-// 原地登记或登记失败时返回 false，媒体与 sidecar 都保留。
-func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (movedToPending bool) {
-	_, movedToPending = t.handleFailedUpload(localPath, fileSize, nil, cause)
-	return movedToPending
+// 返回 movedToPending 表示媒体是否被移入 pending 目录（此时原路径已无媒体，
+// sidecar 已一并清理）；keepMedia 表示媒体仍被保留（pending 或原地登记），
+// 调用方据此决定是否执行延迟入库。原地登记或登记失败时 movedToPending=false、
+// keepMedia=true，媒体与 sidecar 都保留。
+func (t *writeTrailerTask) recoverLocalFile(localPath string, fileSize int64, cause error) (movedToPending, keepMedia bool) {
+	keepMedia, movedToPending = t.handleFailedUpload(localPath, fileSize, nil, cause)
+	return movedToPending, keepMedia
+}
+
+// saveDeferredRecord 执行延迟入库。媒体已经持久化——上传成功
+// （finalizeUploadTask.run）或失败后仍被保留（handleFailedUpload 返回
+// keepMedia，包括 pending 登记、原地登记与登记失败保留媒体）。
+//
+// 每条录制的成功/失败路径必须恰好命中一次：pending 补传成功只更新
+// upload_tasks，不会再回写 record_streams，漏写会让 end_time/duration
+// 永久为零，时间范围查询静默漏掉该录像。
+func (t *writeTrailerTask) saveDeferredRecord(logMsg, alarmText string) {
+	if t.dbWrite == nil {
+		return
+	}
+	if dbErr := t.dbWrite(&uploadQueueTask); dbErr != nil {
+		t.Error(logMsg, "err", dbErr, "filePath", t.filePath, "streamPath", t.streamPath)
+		m7s.RaiseUploadAlarm(t.db, config.AlarmStorageException,
+			"record db save failed", t.streamPath, t.filePath,
+			alarmText+dbErr.Error())
+	}
 }
 
 // runInsertRangeFastPath 用 fallocate(INSERT_RANGE) 在文件头就地为 moov 撑开空间，
@@ -659,7 +691,12 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 			t.file.Close()
 			t.file = nil
 			err = fmt.Errorf("insert-range write+rollback failed: %w", writeErr)
-			t.recoverLocalFile(localPath, preLen, err)
+			if _, keepMedia := t.recoverLocalFile(localPath, preLen, err); keepMedia {
+				// 媒体已交给补传队列/原地保留：录像本身是完整的，必须定稿 DB。
+				t.saveDeferredRecord(
+					"insert-range rollback failed but media kept, db record save failed",
+					"录像就地插入失败但媒体已保留, record_streams 入库失败: ")
+			}
 			return true, err
 		}
 		t.shiftSampleOffsets(-insertLen)
@@ -692,8 +729,9 @@ func (t *writeTrailerTask) runInsertRangeFastPath() (handled bool, err error) {
 	}
 
 	// 持久化（对象存储=上传）移交独立上传队列,不阻塞 trailer 队列。
-	t.handoffToUploadQueue(uploadSize, func(cause error) {
-		t.recoverLocalFile(localPath, uploadSize, cause)
+	t.handoffToUploadQueue(uploadSize, func(cause error) bool {
+		_, keepMedia := t.recoverLocalFile(localPath, uploadSize, cause)
+		return keepMedia
 	})
 	t.Info("insert-range fast path done, upload handed off",
 		"filePath", t.filePath, "moovBytes", moovSize, "insertedBytes", insertLen)
@@ -715,7 +753,11 @@ type finalizeUploadTask struct {
 	streamPath string
 	db         *gorm.DB
 	dbWrite    func(tailJob task.IJob) error
-	onFail     func(cause error)
+	// onFail 在最终持久化失败后登记补传。返回 true 表示媒体已被补传队列
+	// 接管或必须原地保留（pending/原地登记/登记失败后退回原路径），此时
+	// record_streams 必须定稿；返回 false 表示没有补传队列（无 DB 或 local
+	// 存储），媒体不保证可播，不得写库（否则会留下指向坏文件的记录）。
+	onFail func(cause error) bool
 	// indexPath 是伴随索引路径；只有上传成功分支才删除它。
 	indexPath string
 	// prepare 在上传前执行。恢复上传用它把已恢复的产物移交给 storage.File；
@@ -856,8 +898,16 @@ func (t *writeTrailerTask) logRecordStop(size int64) {
 func (u *finalizeUploadTask) failUpload(cause error) {
 	u.logUploadFailure(cause)
 	u.file = nil
-	if u.onFail != nil {
-		u.onFail(cause)
+	if u.onFail == nil {
+		return
+	}
+	if u.onFail(cause) {
+		// 媒体已确认保留：上传失败不等于录像失败，record_streams 仍需定稿。
+		// pending 补传成功只更新 upload_tasks，不会再回写 record_streams，
+		// 漏写会让 end_time/duration 永久为零，时间范围查询静默漏掉该录像。
+		u.saveDeferredRecord(
+			"upload failed but media kept, db record save failed",
+			"录像上传失败但媒体已保留, record_streams 入库失败: ")
 	}
 }
 
@@ -922,15 +972,16 @@ func (u *finalizeUploadTask) spillToPending(cause error) {
 }
 
 // handoffToUploadQueue 把 t.file 的最终持久化移交独立上传队列,trailer 队列
-// 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记。
-func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error)) {
+// 立即空出处理下一个录像的磁盘工作。onFail 用于上传失败后的补传登记，并
+// 返回媒体是否仍被保留（决定是否补写延迟入库）。
+func (t *writeTrailerTask) handoffToUploadQueue(size int64, onFail func(cause error) bool) {
 	t.handoffToUploadQueueWith(&uploadQueueTask, size, onFail)
 }
 
 // handoffToUploadQueueWith is handoffToUploadQueue with an injectable queue, so
 // tests can drive the backlog decision through the real wiring (a stopped queue
 // forces the synchronous inline path, with no async gotask run).
-func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64, onFail func(cause error)) {
+func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64, onFail func(cause error) bool) {
 	ft := &finalizeUploadTask{
 		file:       t.file,
 		filePath:   t.filePath,
