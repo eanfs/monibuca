@@ -944,7 +944,7 @@ Add a Common Pitfalls bullet (English) that records:
   `maxqueueduploads` (8), `global.storage.s3.concurrency` (2), and
   `global.publish.buffertime` (3–5 s) for record-heavy nodes.
 - That `maxqueueduploads` spills overflow to `pending_uploads` and relies on the
-  iretries scheduler (5-minute tick), so a spill is durable but deliberately
+  `UploadRetryScheduler` (5-minute tick), so a spill is durable but deliberately
   delayed.
 - That values must be validated on the target hardware; the plan only makes the
   knobs exist and safe.
