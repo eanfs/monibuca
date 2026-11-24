@@ -164,7 +164,7 @@ func TestUploadRetrySchedulerFinalizesPersistedRecordDBRetry(t *testing.T) {
 	s := &Server{}
 	s.DB = db
 	scheduler := &UploadRetryScheduler{s: s}
-	scheduler.retryUpload(ut)
+	scheduler.retryUpload(ut, true)
 
 	var got RecordStream
 	if err := db.First(&got, "id = ?", stream.ID).Error; err != nil {
@@ -197,7 +197,7 @@ func TestUploadRetrySchedulerAlarmsWhenRecordDBRetryExhausted(t *testing.T) {
 	s := &Server{}
 	s.DB = db
 	scheduler := &UploadRetryScheduler{s: s}
-	scheduler.retryUpload(ut)
+	scheduler.retryUpload(ut, true)
 
 	var alarms []AlarmInfo
 	if err := db.Find(&alarms).Error; err != nil {
@@ -218,5 +218,52 @@ func TestUploadRetrySchedulerAlarmsWhenRecordDBRetryExhausted(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("exhausted retry row still pending: %+v", pending)
+	}
+}
+
+// 复审 I1：事件录像的延迟入库分支必须把 RecordEvent 快照一并落进重试行。
+// 删掉 WriteTailDeferred 里的 event 分支持久化，本用例必须红。
+func TestDeferredRecordWriteFailurePersistsEventPayload(t *testing.T) {
+	db := newDeferredRetryDB(t, false) // 无 record_streams 表 → Save 必失败
+	rec := newDeferredRetryRecorder(db)
+	event := &config.RecordEvent{EventId: "e1", EventName: "motion", EventDesc: "cross line"}
+	rec.RecordJob.Event = event
+	end := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	rec.Event.RecordEvent = event
+	rec.Event.RecordStream = RecordStream{
+		ID:         77,
+		Duration:   60000,
+		FilePath:   "live/test/evt.mp4",
+		StreamPath: "live/test",
+	}
+
+	write := rec.WriteTailDeferred(end)
+	if write == nil {
+		t.Fatal("WriteTailDeferred must return a closure for event recordings")
+	}
+	if err := write(nil); err == nil {
+		t.Fatal("expected the event/record_streams save to fail without its table")
+	}
+
+	var tasks []UploadTask
+	if err := db.Find(&tasks).Error; err != nil {
+		t.Fatalf("load upload tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("deferred write failure must persist exactly one retry row, got %d", len(tasks))
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(tasks[0].MetadataJSON), &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta["record-event"] == "" {
+		t.Fatalf("event recording retry row is missing the record-event snapshot: %s", tasks[0].MetadataJSON)
+	}
+	payload, err := parseRecordDBRetry(tasks[0])
+	if err != nil {
+		t.Fatalf("parse retry payload: %v", err)
+	}
+	if payload.Event == nil || payload.Event.EventName != "motion" {
+		t.Fatalf("record-event snapshot not round-tripped: %+v", payload.Event)
 	}
 }

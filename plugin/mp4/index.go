@@ -178,10 +178,13 @@ func (p *MP4Plugin) applyRecordIndexConfig() {
 
 // applyRecordMinDurationConfig 把 record.minduration 注入 pkg 层录制器。
 // 与索引配置同样的原因：录制器在 pkg 包内，无法直接读取插件配置。
+//
+// 只覆盖本插件负责的字段，其余保持 pkg 层现值：整体 New 一份结构会在将来
+// 新增字段时把它们静默清零（该结构是跨包共享的全局状态）。
 func (p *MP4Plugin) applyRecordMinDurationConfig() {
-	mp4pkg.SetRecordConfig(mp4pkg.RecordConfig{
-		MinDuration: p.RecordConfig.MinDuration,
-	})
+	cfg := mp4pkg.GetRecordConfig()
+	cfg.MinDuration = p.RecordConfig.MinDuration
+	mp4pkg.SetRecordConfig(cfg)
 }
 
 func (p *MP4Plugin) Start() (err error) {

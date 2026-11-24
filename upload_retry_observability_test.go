@@ -99,7 +99,7 @@ func TestRetryUploadExhaustedLogFields(t *testing.T) {
 	scheduler := &UploadRetryScheduler{s: server}
 	scheduler.Logger = slog.New(h)
 
-	scheduler.retryUpload(upload)
+	scheduler.retryUpload(upload, false)
 
 	// 重试进行中也要带 streamPath，便于把三个阶段串成同一条录像。
 	inProgress, ok := h.find("retrying upload")

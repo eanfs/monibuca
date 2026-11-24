@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -667,12 +668,15 @@ func (f *LocalFile) Discard() error {
 		return nil
 	}
 	name := f.File.Name()
-	err := f.File.Close()
+	closeErr := f.File.Close()
 	f.File = nil
-	if rmErr := os.Remove(name); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
-		err = rmErr
+	var rmErr error
+	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+		rmErr = err
 	}
-	return err
+	// 两者都要保留：Close 失败时 Remove 在 Windows 上也必然失败，只留一个
+	// 会把另一个的真实原因藏起来。
+	return errors.Join(closeErr, rmErr)
 }
 
 var _ Discarder = (*LocalFile)(nil)

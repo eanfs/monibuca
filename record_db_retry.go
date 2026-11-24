@@ -13,17 +13,20 @@ import (
 
 // Issue #39：延迟入库失败后的持久化重试。
 //
-// 录像文件已经上传成功，但 record_streams 的延迟写库可能因磁盘高负载下
-// SQLite fsync 变慢而超过 context 期限。此时仅告警会留下孤儿文件：end_time
-// 为 NULL、duration 为 0，列表与时间范围查询永远查不到它。
+// 媒体已经持久化（上传成功，或上传失败后已保留、移交补传队列），但
+// record_streams 的延迟写库可能因磁盘高负载下 SQLite fsync 变慢而超过 context
+// 期限。此时仅告警会留下孤儿文件：end_time 为 NULL、duration 为 0，列表与
+// 时间范围查询永远查不到它。
 //
 // 这里复用已有的 upload_tasks 表承载「仅待写库」的任务，避免新表迁移：
 //   - MetadataJSON.kind = "record-db" 明确标记该行不涉及上传；
 //   - MetadataJSON["record-stream"] 是 RecordStream 的 JSON 快照；
 //   - MetadataJSON["record-event"]（可选）是关联 RecordEvent 的快照。
 //
-// UploadRetryScheduler 的 5 分钟 tick 会命中它（status=Failed 且未耗尽），
-// 只执行 DB 写入并重试。行已落库，进程重启后仍能补上。
+// UploadRetryScheduler 的 5 分钟 tick 会命中它：status=Failed、next_retry_at
+// 到期、且未耗尽重试次数（新建行的 next_retry_at = now+1min，首个 tick 可能
+// 略过；与普通上传任务共用每次 LIMIT 20 的配额）。命中后只执行 DB 写入并重试。
+// 行已落库，进程重启后仍能补上。
 
 const (
 	// uploadTaskKindKey/uploadTaskKindRecordDB 是 upload_tasks.metadata 的
@@ -37,6 +40,14 @@ const (
 
 	// recordDBRetryMaxRetries 与 SaveFailedUpload 的默认值保持一致。
 	recordDBRetryMaxRetries = 10
+
+	// recordDBRetryPersistTimeout 是「把重试任务写进 upload_tasks」这一步的超时。
+	//
+	// 这里刻意不用 30s 的定稿超时：本函数正是在延迟入库已超时/DB 已卡住时被
+	// 调用的，而 spillToPending 路径跑在单线程的 trailer 队列上——无界或过长的
+	// 等待会拖住所有录像的收尾。单行 INSERT 正常 <1ms，5s 足够；超时说明 DB
+	// 确实不可用，再等也不会更好，调用方会照常记 Error 并告警。
+	recordDBRetryPersistTimeout = 5 * time.Second
 )
 
 // recordDBRetryPayload 是一条「仅待写库」任务恢复出的定稿数据。
@@ -78,9 +89,10 @@ func saveRecordDBRetry(db *gorm.DB, stream RecordStream, event *config.RecordEve
 			errMsg = errMsg[:1024]
 		}
 	}
-	// LocalPath/ObjectKey 刻意留空：该行没有文件要上传，也不能被
-	// ConfirmPendingRegistration / recoveryUploadRegistered 当成同路径产物
-	// 命中（两者都以空 local_path 提前返回）。
+	// LocalPath/ObjectKey 刻意留空：该行没有文件要上传。两个「同路径产物」查询
+	// （ConfirmPendingRegistration / recoveryUploadRegistered）都以**调用方传入的**
+	// localPath 是否为空提前返回，且查询条件要求与行内的 local_path/object_key
+	// 相等——空值不可能等于任何非空路径，因此 record-db 行不会被误命中。
 	task := UploadTask{
 		Status:       UploadStatusFailed,
 		MaxRetries:   recordDBRetryMaxRetries,
@@ -89,7 +101,9 @@ func saveRecordDBRetry(db *gorm.DB, stream RecordStream, event *config.RecordEve
 		MetadataJSON: string(metadataJSON),
 		NextRetryAt:  time.Now().Add(nextRetryDelay(0)),
 	}
-	if err := db.Create(&task).Error; err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), recordDBRetryPersistTimeout)
+	defer cancel()
+	if err := db.WithContext(ctx).Create(&task).Error; err != nil {
 		return fmt.Errorf("persist record_streams retry for %s: %w", stream.FilePath, err)
 	}
 	return nil

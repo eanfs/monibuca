@@ -3,6 +3,7 @@ package m7s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -85,14 +86,30 @@ func (u *UploadRetryScheduler) Tick(any) {
 	}
 	u.Info("found pending uploads", "count", len(tasks))
 
+	// storage 是否可用在一轮内是常量：每 tick 只取一次，避免逐任务重复查询。
+	activeStorage := u.s.GetStorage()
 	for i := range tasks {
 		ut := tasks[i]
 		// 「仅待写库」任务没有文件要上传，storage 缺失时也必须处理；
 		// 普通上传任务保持旧行为：storage 不可用则本轮跳过。
-		if !isRecordDBRetryTask(ut) && u.s.GetStorage() == nil {
+		isRecordDB := isRecordDBRetryTask(ut)
+		if !isRecordDB && activeStorage == nil {
+			// 跳过时必须推后，否则它一直满足 next_retry_at <= now，
+			// 每轮都占据 LIMIT 20 的头部，把 record-db 补写任务饿死
+			// （存储故障期间正是最需要补写的时候）。
+			u.deferSkippedUpload(ut, "storage unavailable")
 			continue
 		}
-		go u.retryUpload(ut)
+		go u.retryUpload(ut, isRecordDB)
+	}
+}
+
+// deferSkippedUpload 仅推进 next_retry_at，不消耗重试次数：本轮跳过不是
+// 任务的失败，但要让它排到队尾，避免长期霸占 QueryPendingUploads 的头部配额。
+func (u *UploadRetryScheduler) deferSkippedUpload(ut UploadTask, reason string) {
+	if err := DeferUploadRetry(u.s.DB, ut.ID, u.GetTickInterval()); err != nil {
+		u.Error("defer skipped upload failed",
+			"err", err, "id", ut.ID, "reason", reason)
 	}
 }
 
@@ -122,13 +139,14 @@ func (u *UploadRetryScheduler) clearPendingUsageScanFailure() {
 		"effect", "watermark alarm re-enabled")
 }
 
-// retryUpload 执行单个上传重试
-func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
+// retryUpload 执行单个上传重试。isRecordDB 由调用方预先判定，避免在同一
+// 任务上重复解析 metadata（Tick 已解一次，这里再解一次纯属浪费）。
+func (u *UploadRetryScheduler) retryUpload(ut UploadTask, isRecordDB bool) {
 	if u.s == nil || u.s.DB == nil {
 		return
 	}
 	// record_streams 延迟入库的补写任务不涉及文件上传，单独走 DB 重试路径。
-	if isRecordDBRetryTask(ut) {
+	if isRecordDB {
 		u.retryRecordDB(ut)
 		return
 	}
@@ -137,14 +155,30 @@ func (u *UploadRetryScheduler) retryUpload(ut UploadTask) {
 		u.Warn("retry upload skipped: storage unavailable",
 			"id", ut.ID,
 			"taskStorageType", ut.StorageType)
+		u.deferSkippedUpload(ut, "storage unavailable")
 		return
 	}
 	activeStorageType := st.GetKey()
 	if activeStorageType != ut.StorageType {
+		// 既没有文件路径也没有存储类型的行，既不是有效上传任务，也不是可解析
+		// 的 record-db 行（metadata 损坏）。它永远不会被处理，留着只会每轮
+		// 刷一条 mismatch 警告 —— 按耗尽处理并告警，让缺失的索引记录可见。
+		if ut.StorageType == "" && ut.LocalPath == "" {
+			err := errors.New("upload task has neither local path nor storage type")
+			u.Error("upload task unprocessable; marking permanently failed",
+				"id", ut.ID, "streamPath", ut.StreamPath,
+				"retryCount", ut.RetryCount, "metadata", ut.MetadataJSON)
+			MarkUploadRetryFailed(u.s.DB, ut.ID, ut.MaxRetries, err)
+			RaiseUploadAlarm(u.s.DB, config.AlarmStorageException,
+				"record db save failed", ut.StreamPath, ut.StreamPath,
+				"补写任务数据无法解析且无文件路径, 该录像将永久缺失索引记录")
+			return
+		}
 		u.Warn("retry upload skipped: storage type mismatch",
 			"id", ut.ID,
 			"taskStorageType", ut.StorageType,
 			"activeStorageType", activeStorageType)
+		u.deferSkippedUpload(ut, "storage type mismatch")
 		return
 	}
 

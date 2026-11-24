@@ -25,8 +25,9 @@ type RecordRecoveryTask struct {
 //
 // Scanned 是本次扫描到的待恢复文件数（含最终失败/跳过的）；Recovered/Failed/
 // Skipped 是逐文件结果；Errors 按文件包装路径，便于 API 展示与排障。
-// Skipped 也包含「扫描后被正常清理」的 sidecar（ENOENT 竞态）：它们既不算
-// 失败也不进 Errors，只作为跳过计数，见 IndexRecoveryTask.recoverSidecar。
+// Skipped 也包含「扫描后被正常清理」的 sidecar（sidecar 自身 open/rename
+// 返回 ENOENT 的竞态）：它们既不算失败也不进 Errors，只作为跳过计数，见
+// IndexRecoveryTask.recoverSidecar。媒体/产物的 ENOENT 不算此列，仍计失败。
 // BareTmp 是没有伴随索引的 s3writer_*.tmp 数量——Task 7 才处理这类文件，
 // 当前只统计并记日志。
 type RecoveryStats struct {

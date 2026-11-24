@@ -63,7 +63,7 @@ type UploadConfig struct {
 	PendingMaxFiles            int           `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
 	PendingDiskMinFreeMB       int           `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
 	MaxQueuedUploads           int           `desc:"maximum queued-but-unfinished record finalization tasks; overflow spills to the pending retry queue (recovery uploads are not capped); 0 = unlimited" default:"8"`
-	RecordDBWriteTimeout       time.Duration `desc:"延迟入库(record_streams 定稿)的 DB 写超时; 磁盘高负载时过短会让已上传成功的录像永久缺失索引记录" default:"30s"`
+	RecordDBWriteTimeout       time.Duration `desc:"延迟入库(record_streams 定稿)的 DB 写超时; 过短会触发补写重试，重试耗尽后才会永久缺失索引记录（HLS 的 WriteTail 已同用本配置）" default:"30s"`
 }
 
 // DefaultRecordDBWriteTimeout 是延迟入库（record_streams 定稿）DB 写的默认

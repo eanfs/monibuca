@@ -31,7 +31,7 @@ func TestS3CreateTempFileCreatesConfiguredDir(t *testing.T) {
 	if err := w.createTempFile(); err != nil {
 		t.Fatalf("createTempFile() error = %v", err)
 	}
-	defer w.cleanup(true)
+	defer func() { _ = w.cleanup(true) }()
 
 	if got := filepath.Dir(w.filePath); got != dir {
 		t.Fatalf("temp file dir = %s, want %s", got, dir)
@@ -61,7 +61,7 @@ func TestS3CreateTempFileNoSilentFallback(t *testing.T) {
 	w := &S3File{storage: &S3Storage{config: &S3StorageConfig{TempDir: filepath.Join(blocker, "sub")}}}
 
 	if err := w.createTempFile(); err == nil {
-		w.cleanup(true)
+		_ = w.cleanup(true)
 		t.Fatal("createTempFile() succeeded, want error for unreachable temp dir")
 	}
 

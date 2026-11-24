@@ -66,15 +66,36 @@ var ErrRecoveryStorageMismatch = errors.New("mp4: recovery upload storage type m
 // 扫描/崩溃窗口重入时重复上传同一文件。键包含存储类型、对象键与本地产物路径。
 //
 // 正常录制收尾（record.go 的 handoffToUploadQueueWith）必须登记**同一个**键：
-// 上传任务在队列中等待/上传期间，临时文件仍留在扫描目录（如 s3writer_*.tmp），
-// 恢复扫描会把它当成崩溃残留再次入队 → 同一录像二次上传、record_streams 重复
-// 入库。只有恢复任务之间互相去重是不够的。
+// 上传任务在队列中等待/上传期间，sidecar 与暂存媒体仍留在扫描目录（insert-range
+// 路径下媒体就是 s3writer_*.tmp），恢复扫描会按 sidecar 再恢复一次并上传 →
+// 同一录像二次上传、record_streams 重复入库。只有恢复任务之间互相去重是不够的。
+// （无 sidecar 的裸 s3writer_*.tmp 目前只计入 BareTmp，不会被恢复；fMP4 没有
+// sidecar，该登记对它实际不起作用，只是无害。）
 var recoveryUploadsInFlight sync.Map
 
 // recoveryUploadInFlightKey 是在途去重的完整键。正常录制收尾与恢复扫描必须
 // 经同一个构造函数产生键，否则 LoadOrStore 互相看不到对方。
+//
+// 产物路径在这里统一做父目录符号链接解析（canonicalRecoveryPath）：正常收尾
+// 侧拿到的是 filepath.Abs+Clean 的路径，恢复扫描侧拿到的是 guard.allowOutput
+// 返回的「父目录 EvalSymlinks + 原文件名」。tempdir/录像目录含符号链接时
+// （容器挂载点、macOS /var→/private/var 都常见）两者字符串不同，键永不相等，
+// 去重静默失效 → 同一录像二次上传、record_streams 重复入库。
 func recoveryUploadInFlightKey(storageType, objectKey, outputPath string) string {
-	return storageType + "\x00" + objectKey + "\x00" + outputPath
+	return storageType + "\x00" + objectKey + "\x00" + canonicalRecoveryPath(outputPath)
+}
+
+// canonicalRecoveryPath 解析父目录的符号链接，文件名原样保留。
+// 目录解析失败时回退原路径（如目录尚未创建），不改变调用方语义。
+func canonicalRecoveryPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return path
+	}
+	return filepath.Join(dir, filepath.Base(path))
 }
 
 // registerRecoveryUploadInFlight 登记在途产物并返回释放函数；键已被别的任务
@@ -404,6 +425,7 @@ func recoveryResolveStorage(storageType string, resolver RecoveryStorageResolver
 //
 // 正常录制收尾（pkg 内）与恢复扫描（plugin/mp4）必须共用这个实现：in-flight
 // 去重键里的产物路径由它推导，两边算法不一致就会互相看不见，二次上传再次出现。
+// 键里的符号链接归一化由 recoveryUploadInFlightKey 统一负责。
 func RecoveryOutputPath(mediaPath string) string {
 	if mediaPath == "" {
 		return ""
@@ -417,8 +439,6 @@ func RecoveryOutputPath(mediaPath string) string {
 	return mediaPath + ".mp4"
 }
 
-// recoveryObjectKey 返回传给 storage.CreateFile 的路径。
-//
 // commitRecoveredUpload 是「不需要上传的恢复产物」的提交式收尾：回写
 // record_streams，成功后才删除 sidecar。
 //
@@ -434,6 +454,8 @@ func commitRecoveredUpload(db *gorm.DB, logger *slog.Logger, upload RecoveryUplo
 	return nil
 }
 
+// recoveryObjectKey 返回传给 storage.CreateFile 的路径。
+//
 // 优先 FilePath：它是录制时传给 CreateFile 的原始路径，后端会自行追加 prefix。
 // StorageKey 是 File.Name()，S3 场景已含 prefix，再传一次会重复前缀。
 //

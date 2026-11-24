@@ -1,7 +1,9 @@
 package plugin_mp4
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -9,6 +11,29 @@ import (
 
 	mp4pkg "m7s.live/v5/plugin/mp4/pkg"
 )
+
+// issue #42 复审：只有 sidecar 自身消失才降级为 skipped。媒体或恢复产物的
+// ENOENT 是真实数据丢失信号（媒体被误删、挂载点掉线），必须仍算失败并保留
+// sidecar，不能被一刀切的 fs.ErrNotExist 判据吞掉。
+func TestRecoveryErrIsGoneOnlyCoversSidecar(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		gone bool
+	}{
+		{name: "media stat ENOENT", err: fmt.Errorf("stat media: %w", fs.ErrNotExist), gone: false},
+		{name: "output stat ENOENT", err: fmt.Errorf("stat output: %w", fs.ErrNotExist), gone: false},
+		{name: "bare sentinel", err: errRecoverySidecarGone, gone: true},
+		{name: "wrapped sentinel", err: fmt.Errorf("read index: %w", errors.Join(fs.ErrNotExist, errRecoverySidecarGone)), gone: true},
+		{name: "other error", err: errors.New("permission denied"), gone: false},
+		{name: "nil", err: nil, gone: false},
+	}
+	for _, tc := range cases {
+		if got := recoveryErrIsGone(tc.err); got != tc.gone {
+			t.Errorf("%s: recoveryErrIsGone = %v, want %v", tc.name, got, tc.gone)
+		}
+	}
+}
 
 // buildCorruptRecoverySidecar 造一个确定性损坏的 sidecar：读取即判定损坏，
 // 恢复流程会 markFailed 并计入 stats.Errors。
@@ -99,7 +124,7 @@ func TestRecoveryScanSkipsRemovedSidecar(t *testing.T) {
 	if n := countCaptured(logs, "index recovery error"); n != 0 {
 		t.Fatalf("logged %d error entries for a removed sidecar, want 0", n)
 	}
-	entry := logs.mustFind(t, "index recovery skipped: sidecar already removed", slog.LevelDebug)
+	entry := logs.mustFind(t, "index recovery skipped: sidecar removed after scan", slog.LevelDebug)
 	if got := entry.Attrs["sidecar"]; got != missing {
 		t.Fatalf("skipped log sidecar = %v, want %s", got, missing)
 	}
@@ -190,5 +215,21 @@ func TestRecoveryErrorTruncationCountsOnlyRealErrors(t *testing.T) {
 	}
 	if got := truncated.Attrs["skipped"]; got != int64(skipped) {
 		t.Fatalf("truncated skipped = %v, want %d", got, skipped)
+	}
+}
+
+// 复审 S1：recordOutcome 的记账兜底只识别 sidecar-gone 哨兵；普通 ENOENT
+// （媒体/产物丢失）必须计入失败与错误列表，不能被吞成 skipped。
+func TestRecordOutcomeClassifiesSidecarGoneOnly(t *testing.T) {
+	gone := RecoveryStats{Scanned: 1}
+	gone.recordOutcome("sidecar", recoveryFailed, fmt.Errorf("read index: %w", errRecoverySidecarGone))
+	if gone.Skipped != 1 || gone.Failed != 0 || len(gone.Errors) != 0 {
+		t.Fatalf("sidecar-gone must count as skipped only: %+v", gone)
+	}
+
+	mediaGone := RecoveryStats{Scanned: 1}
+	mediaGone.recordOutcome("media", recoveryFailed, fmt.Errorf("stat media: %w", fs.ErrNotExist))
+	if mediaGone.Failed != 1 || len(mediaGone.Errors) != 1 || mediaGone.Skipped != 0 {
+		t.Fatalf("media ENOENT must stay a failure: %+v", mediaGone)
 	}
 }

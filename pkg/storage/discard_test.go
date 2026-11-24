@@ -7,7 +7,8 @@ import (
 )
 
 // 回归（issue #41）：片段被整段丢弃时，本地存储必须关闭句柄并删除目标文件，
-// 且可重复调用（丢弃路径不保证只走一次）。残留文件会被恢复扫描当成崩溃残留。
+// 且可重复调用（丢弃路径不保证只走一次）。残留的对象存储暂存文件会随 sidecar
+// 被恢复扫描重新捡起并上传；本地文件则至少会白占磁盘。
 func TestLocalFileDiscardRemovesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rec.mp4")
 	f, err := os.Create(path)

@@ -300,3 +300,78 @@ func TestSegmentAtMinDurationKeepsExistingFinalizePath(t *testing.T) {
 		t.Fatal("kept segment must still reach the upload/finalize path")
 	}
 }
+
+// 装配线回归（复审 C1）：record.minduration / recordID / hasEventRecord 由
+// writeTailer 经 applyDiscardPolicy 注入。这三个字段漏赋值不会编译失败，
+// 只会让「配置不生效」或「丢弃后残留幽灵行」静默发生——删掉任一赋值
+// 本用例必须红。
+func TestApplyDiscardPolicyWiresConfigAndRowIDs(t *testing.T) {
+	t.Cleanup(func() { SetRecordConfig(RecordConfig{}) })
+	SetRecordConfig(RecordConfig{MinDuration: 3 * time.Second})
+
+	var task writeTrailerTask
+	task.applyDiscardPolicy(GetRecordConfig(), 42, true)
+
+	if task.minDuration != 3*time.Second {
+		t.Fatalf("minDuration = %v, want 3s (record.minduration must reach the trailer task)", task.minDuration)
+	}
+	if task.recordID != 42 {
+		t.Fatalf("recordID = %d, want 42 (discard must be able to remove the initial row)", task.recordID)
+	}
+	if !task.hasEventRecord {
+		t.Fatal("hasEventRecord = false, want true (event row must be cleaned up too)")
+	}
+
+	// 装配后的字段必须真正驱动丢弃决策：1s 的段在 3s 阈值下丢弃，5s 的保留。
+	task.durationMs = 1000
+	if !task.shouldDiscardBelowMinDuration() {
+		t.Fatal("1s segment must be discarded when minDuration is 3s")
+	}
+	task.durationMs = 5000
+	if task.shouldDiscardBelowMinDuration() {
+		t.Fatal("5s segment must be kept when minDuration is 3s")
+	}
+}
+
+// plainProbeFile 实现 RangeInserter（能暴露本地暂存路径）但不实现 Discarder，
+// 模拟第三方存储后端。
+type plainProbeFile struct {
+	fakeStorageFile
+	fd *os.File
+}
+
+func (f *plainProbeFile) LocalFd() *os.File { return f.fd }
+
+var _ storage.RangeInserter = (*plainProbeFile)(nil)
+
+// 复审 I5：未实现 Discarder 的后端走 os.Remove 兜底。绝不能退化成 Close——
+// 对象存储的 Close 会把即将丢弃的内容上传，正好与丢弃相反。
+func TestDiscardStorageFileFallsBackToRemoveWithoutClose(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s3writer_plain.tmp")
+	if err := os.WriteFile(path, []byte("media"), 0o644); err != nil {
+		t.Fatalf("write media: %v", err)
+	}
+	fd, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open media: %v", err)
+	}
+	defer fd.Close()
+
+	file := &plainProbeFile{fd: fd}
+	trailer := &writeTrailerTask{
+		file:       file,
+		filePath:   "live/test/rec.mp4",
+		streamPath: "live/test",
+	}
+	trailer.Logger = slog.New(&captureHandler{})
+
+	trailer.discardStorageFile()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("fallback must remove the local temp file, stat err = %v", err)
+	}
+	if file.closed {
+		t.Fatal("fallback must never call Close: on object storage Close uploads the file")
+	}
+}

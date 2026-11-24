@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -319,34 +320,43 @@ func (f *COSFile) Close() error {
 			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
 			// f.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
 			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
-			f.cleanup(false)
+			_ = f.cleanup(false)
 			return err
 		}
 	}
 	err := f.uploadTempFile()
 	// 上传失败时保留临时文件（供补传，由调用方经 m7s.RecoverFailedUpload 登记），成功时删除
-	f.cleanup(err == nil)
+	_ = f.cleanup(err == nil)
 	return err
 }
 
-func (f *COSFile) cleanup(deleteFile bool) {
+// cleanup 清理临时文件。deleteFile=true 时删除磁盘文件，否则仅关闭句柄保留文件。
+// 返回的错误由 Discard 透传给调用方（丢弃策略失败必须可见）。
+func (f *COSFile) cleanup(deleteFile bool) error {
+	var errs []error
 	if f.tempFile != nil {
-		f.tempFile.Close()
+		if err := f.tempFile.Close(); err != nil {
+			errs = append(errs, err)
+		}
 		f.tempFile = nil
 	}
 	if deleteFile && f.filePath != "" {
-		os.Remove(f.filePath)
+		if err := os.Remove(f.filePath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
 		f.filePath = ""
 	}
+	return errors.Join(errs...)
 }
 
 // Discard 放弃本次上传：关闭本地暂存句柄并删除暂存文件，绝不调用上传。
 // 实现 storage.Discarder。可重复调用。
+//
+// 删除/关闭失败必须返回给调用方——吞掉会让被丢弃片段的临时文件静默残留。
 func (f *COSFile) Discard() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.cleanup(true)
-	return nil
+	return f.cleanup(true)
 }
 
 var _ Discarder = (*COSFile)(nil)
