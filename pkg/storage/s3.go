@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -512,7 +513,7 @@ func (w *S3File) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.readOnly {
-		defer w.cleanup(true)
+		defer func() { _ = w.cleanup(true) }()
 		if w.tempFile != nil {
 			return w.tempFile.Sync()
 		}
@@ -520,7 +521,7 @@ func (w *S3File) Close() error {
 	}
 	if err := w.flushBuf(); err != nil {
 		// flush 失败=数据不完整,与 Sync 失败同语义:保留文件供补传。
-		defer w.cleanup(false)
+		defer func() { _ = w.cleanup(false) }()
 		return err
 	}
 	if w.tempFile != nil {
@@ -528,28 +529,51 @@ func (w *S3File) Close() error {
 			// Sync 失败时保留文件而非删除：经 FinalizeFromTemp 接管后
 			// w.filePath 即调用方的临时文件，删除它会导致上层补传逻辑
 			// (MoveToPendingDir) 找不到文件而丢数据。与上传失败分支一致。
-			defer w.cleanup(false)
+			defer func() { _ = w.cleanup(false) }()
 			return err
 		}
 	}
 	err := w.uploadTempFile()
 	// 上传失败时保留临时文件（供补传，由调用方经 m7s.RecoverFailedUpload 登记），成功时删除
-	w.cleanup(err == nil)
+	_ = w.cleanup(err == nil)
 	return err
 }
 
 // cleanup 清理临时文件。deleteFile=true 时删除磁盘文件，否则仅关闭句柄保留文件。
-func (w *S3File) cleanup(deleteFile bool) {
+//
+// 返回 Close/Remove 的错误，供 Discard 透传：上传路径可以忽略清理失败
+// （文件残留在临时目录不影响已上传的对象），但丢弃低于最小时长的片段时，
+// 删不掉就等于丢弃策略没生效，调用方必须能看见。
+func (w *S3File) cleanup(deleteFile bool) error {
 	w.bw = nil
+	var errs []error
 	if w.tempFile != nil {
-		w.tempFile.Close()
+		if err := w.tempFile.Close(); err != nil {
+			errs = append(errs, err)
+		}
 		w.tempFile = nil
 	}
 	if deleteFile && w.filePath != "" {
-		os.Remove(w.filePath)
+		if err := os.Remove(w.filePath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
 		w.filePath = ""
 	}
+	return errors.Join(errs...)
 }
+
+// Discard 放弃本次上传：丢弃写入缓冲，关闭本地暂存句柄并删除暂存文件，
+// 绝不调用上传。实现 storage.Discarder。可重复调用。
+//
+// 删除/关闭失败必须返回给调用方——吞掉会让被丢弃片段的临时文件静默残留。
+func (w *S3File) Discard() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// 缓冲里的字节属于即将被丢弃的内容，不能落盘（cleanup 也会清 bw）。
+	return w.cleanup(true)
+}
+
+var _ Discarder = (*S3File)(nil)
 
 // createTempFile 创建临时文件。
 // 配置了 tempdir 时为其创建目录；创建失败直接报错，绝不静默回退到系统临时目录。

@@ -53,7 +53,7 @@ func TestRetryUploadSkipsMismatchedActiveStorage(t *testing.T) {
 	scheduler := &UploadRetryScheduler{s: server}
 	scheduler.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	scheduler.retryUpload(upload)
+	scheduler.retryUpload(upload, false)
 
 	if active.createCalls != 0 {
 		t.Errorf("mismatched backend must not create an upload target, calls=%d", active.createCalls)

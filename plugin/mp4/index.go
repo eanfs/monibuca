@@ -35,7 +35,12 @@ type MP4Plugin struct {
 		// 拉流刚发起或设备刚重连时 publisher 往往滞后数秒；旧行为立即返回
 		// not found（HTTP 500），调用方（如 its-server）不重试就会整段丢录像。
 		WaitForPublisher time.Duration `default:"10s" desc:"录制启动时等待流上线的最长时间，0 表示不等待；仅对本地流生效；集群 APIRoute 下路由层另有 global.apiRoute.waitstreamtimeout 窗口（默认 10s），二者独立生效"`
-		Index            struct {
+		// MinDuration：收尾时实际时长低于该值的片段整段丢弃（不上传对象存储、
+		// 不写 record_streams/RecordEvent、删除本地文件与 sidecar）。用于抑制
+		// 磁盘高 IO 下 ErrDiscard 原地重录产生的大量 <1s 碎片段。
+		// 默认 0（关闭）保持既有行为。
+		MinDuration time.Duration `default:"0" desc:"最小录像时长：收尾时实际时长低于该值的片段整段丢弃（不上传、不写库、删除本地文件与索引），0 表示不限制"`
+		Index       struct {
 			Enable        bool          `default:"true" desc:"是否写伴随索引（崩溃恢复的前提）"`
 			FlushInterval time.Duration `default:"1s" desc:"伴随索引自动落盘间隔"`
 		} `desc:"录像伴随索引配置"`
@@ -171,6 +176,17 @@ func (p *MP4Plugin) applyRecordIndexConfig() {
 	}
 }
 
+// applyRecordMinDurationConfig 把 record.minduration 注入 pkg 层录制器。
+// 与索引配置同样的原因：录制器在 pkg 包内，无法直接读取插件配置。
+//
+// 只覆盖本插件负责的字段，其余保持 pkg 层现值：整体 New 一份结构会在将来
+// 新增字段时把它们静默清零（该结构是跨包共享的全局状态）。
+func (p *MP4Plugin) applyRecordMinDurationConfig() {
+	cfg := mp4pkg.GetRecordConfig()
+	cfg.MinDuration = p.RecordConfig.MinDuration
+	mp4pkg.SetRecordConfig(cfg)
+}
+
 func (p *MP4Plugin) Start() (err error) {
 	// 录制并发软保护：0 表示不限制，保持既有行为（无队列、无拒绝）。
 	p.recordLimiter.Store(NewRecordLimiter(p.Limits.MaxConcurrentRecordings))
@@ -182,6 +198,7 @@ func (p *MP4Plugin) Start() (err error) {
 
 	// 录制器在 pkg 包内，无法直接读取插件配置；在录制开始前注入。
 	p.applyRecordIndexConfig()
+	p.applyRecordMinDurationConfig()
 
 	storageType := ""
 	if p.Server != nil {

@@ -2,6 +2,7 @@ package plugin_mp4
 
 import (
 	"testing"
+	"time"
 
 	"m7s.live/v5/pkg/config"
 )
@@ -36,6 +37,12 @@ func TestRecoveryConfigKeysBindToFields(t *testing.T) {
 			conf: map[string]any{"record": map[string]any{"recovery": map[string]any{"onstart": false}}},
 			get:  func(p *MP4Plugin) any { return p.RecordConfig.Recovery.OnStart },
 			want: false,
+		},
+		{
+			name: "minduration binds to MinDuration",
+			conf: map[string]any{"record": map[string]any{"minduration": "2s"}},
+			get:  func(p *MP4Plugin) any { return p.RecordConfig.MinDuration },
+			want: 2 * time.Second,
 		},
 	}
 	for _, c := range cases {

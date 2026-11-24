@@ -131,13 +131,28 @@ func QueryPendingUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
 
 // QueryExhaustedUploads 查询补传次数已耗尽(retry_count >= max_retries)的失败任务,
 // 供运维查看与人工介入。这类任务已不会被 QueryPendingUploads 命中。
+//
+// 只返回真正有文件要补传的行：record-db 行（延迟入库补写，local_path/object_key
+// 为空）耗尽后语义是「缺失索引记录」，与「文件待人工补传」完全不同，混进这个
+// 列表会让运维以为有文件要处理。它们由告警通道暴露。
 func QueryExhaustedUploads(db *gorm.DB, limit int) ([]UploadTask, error) {
 	var tasks []UploadTask
-	err := db.Where("status = ? AND retry_count >= max_retries", UploadStatusFailed).
+	err := db.Where("status = ? AND retry_count >= max_retries AND local_path IS NOT NULL AND local_path <> ''",
+		UploadStatusFailed).
 		Order("updated_at DESC").
 		Limit(limit).
 		Find(&tasks).Error
 	return tasks, err
+}
+
+// DeferUploadRetry 只推进 next_retry_at，不改变状态与重试次数。
+// 调度器本轮无法处理某任务（存储不可用/类型不匹配）时用它把任务排到队尾，
+// 否则该任务一直满足 next_retry_at <= now，每轮都占据查询结果的头部配额，
+// 把排在后面的 record-db 补写任务饿死。
+func DeferUploadRetry(db *gorm.DB, taskID uint, delay time.Duration) error {
+	return db.Model(&UploadTask{}).
+		Where("id = ? AND status = ?", taskID, UploadStatusFailed).
+		Update("next_retry_at", time.Now().Add(delay)).Error
 }
 
 // ResetUploadForRetry 重置一个任务的重试状态,使其重新进入补传循环。

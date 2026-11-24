@@ -73,6 +73,17 @@ type writeTrailerTask struct {
 	// indexMediaPath 是 sidecar 头的媒体路径，与 indexPath 一起构成活跃登记
 	// 的键。活跃登记保留到本任务结束（见 releaseActiveIndex）。
 	indexMediaPath string
+	// minDuration 是收尾时读取的 record.minduration 值（配置在 Start 之后不再
+	// 变化，等价于片段级快照）：本段实际时长低于该值时整段丢弃。0 表示不限制。
+	// 只有正常录制收尾（writeTailer）会填入，恢复上传等其它 finalize 入口保持
+	// 0，因此不会因时长被误丢。
+	minDuration time.Duration
+	// recordID 是录制启动时 CreateStream 已写入的 record_streams 行 ID。
+	// 片段被丢弃时必须清理它，否则会留下 end_time=NULL/duration=0 的幽灵行。
+	recordID uint
+	// hasEventRecord 表示本段同时写入了 event_record_streams 初始行（与
+	// record_streams 共用同一主键 ID）。
+	hasEventRecord bool
 }
 
 // releaseActiveIndex 注销本段录像的活跃登记。必须在 Run 结束时（成功或失败）
@@ -97,6 +108,12 @@ func (task *writeTrailerTask) Start() (err error) {
 		}
 	}()
 	task.Info("write trailer start")
+	// 会被丢弃的碎片段不值得再走一次 moov 重写（progressive 要分配整张
+	// sample 表并全量写 moov，fMP4 要刷尾帧写 mfra）。判定只依赖构造时已
+	// 就绪的 durationMs/minDuration，Run() 的丢弃分支照常完成清理。
+	if task.shouldDiscardBelowMinDuration() {
+		return nil
+	}
 	if err = task.muxer.WriteTrailer(task.file); err != nil {
 		task.Error("write trailer", "err", err)
 		// 关闭文件，忽略关闭错误以保留原始错误
@@ -164,6 +181,14 @@ func (t *writeTrailerTask) Run() (err error) {
 	// 活跃登记从 commitIndex 一直保留到这里：trailer 重写窗口内文件仍在被
 	// 改写，恢复扫描必须跳过。无论成功、失败还是提前返回都注销（defer）。
 	defer t.releaseActiveIndex()
+	// 低于最小时长的碎片段整段丢弃。必须在任何日志/落库/上传之前判断：
+	// record stopped 与 upload enqueued 是现场日志检索契约的一部分，被丢弃
+	// 的段不应出现在其中。fragment、insert-range 与本地存储路径都从这里进入，
+	// 因此三者的收尾共用同一判定。
+	if t.shouldDiscardBelowMinDuration() {
+		t.discardBelowMinDuration()
+		return nil
+	}
 	t.Info("write trailer")
 	// 「录制结束」事件：在 trailer 改写前记录本段录像的最终统计。
 	// size 取改写前的文件长度（已写入的媒体总量），断流/失败路径同样能报出。
@@ -777,6 +802,10 @@ type finalizeUploadTask struct {
 	prepare func() error
 	// onDone 在任务结束时（成功或失败）执行，用于清理在途去重标记。
 	onDone func()
+	// inFlightRelease 释放正常上传在 handoff 时登记的恢复扫描 in-flight 键。
+	// 必须在任务终止的所有路径执行（run 的成功/失败/内联，以及 spillToPending）；
+	// 泄漏会让恢复扫描在进程存活期间永久跳过该文件。
+	inFlightRelease func()
 	// runOnce 保证 finalize 只执行一次。排队路径与 enqueueFinalizeOrRunInline
 	// 的内联兜底都可能调用 Go()：AddTask 的拒绝复检与事件循环取任务存在窄窗口，
 	// 两次执行会对同一个文件句柄重复 Close/上传/入库。
@@ -794,6 +823,60 @@ func (u *finalizeUploadTask) Go() error {
 	return u.runErr
 }
 
+// releaseInFlight 释放在 handoff 时登记的恢复扫描 in-flight 键。可重复调用
+// （登记函数返回的释放闭包本身幂等）。
+func (u *finalizeUploadTask) releaseInFlight() {
+	if u.inFlightRelease != nil {
+		u.inFlightRelease()
+	}
+}
+
+// normalUploadInFlightRelease 为一次正常录制收尾登记恢复扫描使用的 in-flight
+// 键，返回释放函数（local 存储/无法取得暂存路径时返回 nil）。
+//
+// 键的三段必须与 recovery_upload.go 完全一致：
+//   - storageType：录制时的存储类型 key；
+//   - objectKey：逻辑录像路径（sidecar header.FilePath），为空时退回
+//     storage.File.Name()（与 indexHeader 写 StorageKey 的来源相同）；
+//   - 产物路径：本地暂存文件按 RecoveryOutputPath 推导（s3writer_x.tmp →
+//     s3writer_x.mp4），即恢复扫描最终会用到的 OutputPath。
+//
+// 跳过登记时记日志：去重保护失效不会报错，只会让同一录像在恢复扫描里
+// 二次上传、record_streams 重复入库，日志是唯一能发现它没生效的线索。
+func normalUploadInFlightRelease(storageType, objectKey string, file storage.File, logger *slog.Logger) func() {
+	if isLocalStorageType(storageType) || file == nil {
+		return nil
+	}
+	mediaPath := absoluteMediaPath(localMediaPath(file))
+	if mediaPath == "" {
+		// 后端没有暴露本地暂存句柄（无法推导产物路径）：无法与恢复扫描对齐。
+		// 内置 local/s3/oss/cos 都实现了 RangeInserter，走到这里说明是自定义后端。
+		if logger != nil {
+			logger.Warn("recovery in-flight dedup disabled: storage file exposes no local path",
+				"storageType", storageType, "objectKey", objectKey)
+		}
+		return nil
+	}
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		objectKey = strings.TrimSpace(file.Name())
+	}
+	if objectKey == "" {
+		if logger != nil {
+			logger.Warn("recovery in-flight dedup disabled: empty object key",
+				"storageType", storageType, "mediaPath", mediaPath)
+		}
+		return nil
+	}
+	release := registerRecoveryUploadInFlight(storageType, objectKey, RecoveryOutputPath(mediaPath))
+	if release == nil && logger != nil {
+		// 键已被别的任务登记（同名产物正在上传）：本次不持有所有权，无需释放。
+		logger.Debug("recovery in-flight key already registered by another task",
+			"storageType", storageType, "objectKey", objectKey)
+	}
+	return release
+}
+
 // run 是 finalize 的本体。内联兜底会在 trailer 队列的 goroutine 上直接调用它，
 // 那里没有 gotask 的任务级 recover：panic 会沿 eventLoop 冒泡并停掉整个 trailer
 // 队列，连带丢掉其它待收尾录像。这里统一 recover，使两条调用路径同等安全。
@@ -807,6 +890,11 @@ func (u *finalizeUploadTask) run() (err error) {
 	if u.onDone != nil {
 		defer u.onDone()
 	}
+	// 上传成功、失败与内联执行都会经过这里；in-flight 键必须在函数体
+	// （sidecar 清理/入库）全部完成后才释放，否则恢复扫描会在这个窗口里
+	// 把仍在收尾的文件当成崩溃残留。注意它先于 onDone 执行（defer 是
+	// LIFO）：归还上传槽位不影响去重语义。
+	defer u.releaseInFlight()
 	if u.prepare != nil {
 		if err = u.prepare(); err != nil {
 			u.failUpload(err)
@@ -837,8 +925,12 @@ func (u *finalizeUploadTask) run() (err error) {
 
 // saveDeferredRecord 执行延迟入库。媒体已经持久化——已上传（run）、已移交
 // 补传队列（spillToPending），或上传失败但媒体被保留（failUpload）。这些路径
-// 互斥，每条录制都恰好命中一次：否则 record_streams 的 end_time/duration
-// 永久为零，时间范围查询会漏掉该录像。
+// 互斥，媒体被保留的每条录制命中一次（run 的 panic 兜底除外：panic 后不会再
+// 走这里），否则 record_streams 的 end_time/duration 永久为零，时间范围查询
+// 会漏掉该录像。
+//
+// 写库失败但已成功登记补写重试时只记 Warn：这种情况能自愈，再发「孤儿文件」
+// 告警会与「已安排重试」的日志自相矛盾，长期只会造成告警疲劳。
 func (u *finalizeUploadTask) saveDeferredRecord(logMsg, alarmText string) {
 	if u.dbWrite == nil {
 		if u.db != nil {
@@ -849,6 +941,11 @@ func (u *finalizeUploadTask) saveDeferredRecord(logMsg, alarmText string) {
 		return
 	}
 	if dbErr := u.dbWrite(&uploadQueueTask); dbErr != nil {
+		if errors.Is(dbErr, m7s.ErrRecordDBRetryQueued) {
+			u.Warn("deferred record db write failed but a retry is queued",
+				"err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
+			return
+		}
 		u.Error(logMsg, "err", dbErr, "filePath", u.filePath, "streamPath", u.streamPath)
 		m7s.RaiseUploadAlarm(u.db, config.AlarmStorageException,
 			"record db save failed", u.streamPath, u.filePath,
@@ -906,6 +1003,141 @@ func (t *writeTrailerTask) logRecordStop(size int64) {
 		"samplesSource", samplesSource,
 		"tracks", tracks,
 		"elapsedMs", elapsedMs)
+}
+
+// applyDiscardPolicy 装配低时长丢弃所需的字段。
+//
+// 单独抽出便于测试直接钉住装配关系：minDuration 决定碎片是否被丢弃
+// （record.minduration 不生效 = #41 主症状），recordID 决定丢弃后能否清掉
+// CreateStream 写下的初始行（漏了会留 end_time=NULL 的幽灵行），
+// hasEventRecord 决定事件行是否一并清理。
+func (t *writeTrailerTask) applyDiscardPolicy(cfg RecordConfig, recordID uint, hasEventRecord bool) {
+	t.minDuration = cfg.MinDuration
+	t.recordID = recordID
+	t.hasEventRecord = hasEventRecord
+}
+
+// shouldDiscardBelowMinDuration 判断本段是否因实际时长低于 record.minduration
+// 而应整段丢弃。minDuration <= 0 表示不限制（默认，保持既有行为）；
+// 时长恰好等于阈值时保留（只丢弃严格小于阈值的段）。
+func (t *writeTrailerTask) shouldDiscardBelowMinDuration() bool {
+	if t.minDuration <= 0 {
+		return false
+	}
+	return time.Duration(t.durationMs)*time.Millisecond < t.minDuration
+}
+
+// discardBelowMinDuration 丢弃一段低于最小时长的录像：不上传、不写库，
+// 删除本地媒体、sidecar 以及录制启动时写入的初始数据库行。
+//
+// 该分支在 handoffToUploadQueue 之前执行，因此不会产生 finalizeUploadTask，
+// 也就没有需要释放的恢复扫描 in-flight 键（in-flight 只在 handoff 时登记）。
+// 若将来把丢弃判断下移到上传任务内部，必须在丢弃处调用 releaseInFlight，
+// 否则恢复扫描会在进程存活期间永久跳过该文件。
+//
+// 日志刻意只输出一条结构化的 record discarded：record stopped / upload
+// enqueued 是现场日志检索契约的事件，被丢弃的段不应出现在其中。
+func (t *writeTrailerTask) discardBelowMinDuration() {
+	size := t.recordedSize()
+	mediaPath := localMediaPath(t.file)
+	// 顺序刻意是「先删 sidecar，再删媒体」：反过来会在崩溃窗口留下
+	// 「sidecar 在、媒体已没了」的孤儿，恢复扫描每轮都走 media file not found
+	// 失败且永远清不掉。先删 sidecar 的崩溃窗口退化为无 sidecar 的裸 tmp，
+	// 只计入 BareTmp，不产生反复错误。
+	if t.indexPath != "" {
+		if err := RemoveIndexArtifacts(t.indexPath); err != nil {
+			t.Error("discard: remove index sidecar failed",
+				"err", err, "indexPath", t.indexPath, "filePath", t.filePath)
+			// sidecar 残留 + 媒体已删 → 恢复扫描会反复重试失败，必须可见。
+			t.raiseDiscardAlarm("discard: index sidecar left behind", err)
+		}
+	}
+	t.discardStorageFile()
+	t.file = nil
+	t.deleteRecordRows()
+	t.Info("record discarded: below minimum duration",
+		"streamPath", t.streamPath,
+		"filePath", t.filePath,
+		"mediaPath", mediaPath,
+		"durationMs", t.durationMs,
+		"minDuration", t.minDuration,
+		"size", size)
+}
+
+// raiseDiscardAlarm 上报「丢弃策略未生效」。媒体或索引残留在扫描目录里会被
+// 恢复扫描重新捡起并上传，等于该丢的段没丢；只记日志不足以让人发现，
+// 走与上传失败同一套告警通道去重。
+func (t *writeTrailerTask) raiseDiscardAlarm(name string, cause error) {
+	if t.db == nil || cause == nil {
+		return
+	}
+	m7s.RaiseUploadAlarm(t.db, config.AlarmStorageException, name,
+		t.streamPath, t.filePath, cause.Error())
+}
+
+// discardStorageFile 关闭并删除本段的本地媒体数据，绝不触发上传。
+//
+// 对象存储的 File.Close() 会先把文件上传再清理，正好与丢弃相反，因此优先走
+// storage.Discarder；未实现该能力的自定义后端只删除它暴露的本地暂存文件，
+// 句柄留给 GC（绝不以 Close 代替）。删除必须彻底：暂存文件若残留，恢复扫描
+// 会把它当崩溃残留重新捡起并上传，丢弃就失效了。
+func (t *writeTrailerTask) discardStorageFile() {
+	f := t.file
+	if f == nil {
+		return
+	}
+	mediaPath := localMediaPath(f)
+	var discardErr error
+	if discarder, ok := f.(storage.Discarder); ok {
+		discardErr = discarder.Discard()
+	} else if mediaPath == "" {
+		t.Error("discard: storage file exposes no local path; media may remain on disk",
+			"filePath", t.filePath, "storageKey", t.storageKey)
+		t.raiseDiscardAlarm("discard: media may remain on disk", errors.New("storage file exposes no local path"))
+		return
+	} else if err := os.Remove(mediaPath); err != nil && !os.IsNotExist(err) {
+		discardErr = err
+	}
+	if discardErr != nil {
+		t.Error("discard: remove local media failed",
+			"err", discardErr, "filePath", t.filePath, "mediaPath", mediaPath)
+		t.raiseDiscardAlarm("discard: remove local media failed", discardErr)
+	}
+}
+
+// deleteRecordRows 清理录制启动时写入的初始行。片段被丢弃后没有任何已持久化
+// 的媒体与之对应，保留会污染录像列表（end_time=NULL/duration=0 的幽灵行）。
+//
+// 这里刻意用 Unscoped 硬删除：这些行从未定稿，没有任何审计价值；软删除还有
+// 被 cascade 远端前缀恢复（plugin/cascade markRecordsAsDeleted(false)）放回的
+// 风险，本地行虽不在其匹配范围内，但硬删语义更明确。EventRecordStream 与
+// RecordStream 共用同一主键 ID。
+//
+// 本函数跑在单线程的 trailer 队列上；DB 抖动时不能让它长期占住队列，因此
+// 用一个短超时（2s，与 CreateStream 初始入库同理）而不是定稿用的 30s。
+// 两条删除放进同一事务：SQLite 非 WAL 下每条自动提交各要一次 fsync，
+// 合并成一次提交既减少停顿，也避免「主行删了、事件行没删」的半清理。
+func (t *writeTrailerTask) deleteRecordRows() {
+	if t.db == nil || t.recordID == 0 {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := t.db.WithContext(dbCtx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Delete(&m7s.RecordStream{}, t.recordID).Error; err != nil {
+			return err
+		}
+		if !t.hasEventRecord {
+			return nil
+		}
+		return tx.Unscoped().Delete(&m7s.EventRecordStream{}, t.recordID).Error
+	})
+	if err != nil {
+		t.Error("discard: delete record rows failed",
+			"err", err, "recordID", t.recordID, "filePath", t.filePath, "streamPath", t.streamPath)
+		// 行删不掉 = 幽灵行永久污染录像列表，且媒体已删无法补，必须告警。
+		t.raiseDiscardAlarm("discard: record rows left behind", err)
+	}
 }
 
 // failUpload 是一次上传失败的统一收尾：记录日志、放弃文件所有权、交给 onFail
@@ -989,6 +1221,9 @@ func uploadBacklogFullFor(storageKey string, hasDB, backlogFull bool) bool {
 // The delayed record_streams write also runs here, because run() never executes
 // for a spilled file.
 func (u *finalizeUploadTask) spillToPending(cause error) {
+	// run() 不会执行，in-flight 键必须在这里释放（后面由补传队列的 upload_tasks
+	// 行负责判重）。
+	defer u.releaseInFlight()
 	// 只有未抢到队列槽位时才会 spill（见 handoffToUploadQueueWith），因此这里
 	// 没有 onDone 可执行，也不应假装归还槽位。
 	u.Warn("upload backlog full; handing file to the pending upload path",
@@ -1035,6 +1270,11 @@ func (t *writeTrailerTask) handoffToUploadQueueWith(queue task.IJob, size int64,
 	// The spill path logs before the task ever starts, when gotask has not yet
 	// installed a logger; without this the Warn would be silently dropped.
 	ft.Logger = t.Logger
+
+	// 从移交上传队列的这一刻起登记恢复扫描的 in-flight 键：临时文件还在扫描
+	// 目录里，恢复扫描不能把它当崩溃残留再传一次。必须在 t.file 置 nil 之前
+	// 读取本地暂存路径。
+	ft.inFlightRelease = normalUploadInFlightRelease(t.storageKey, t.filePath, t.file, t.Logger)
 
 	t.file = nil // ownership transferred
 
@@ -1202,6 +1442,9 @@ func (r *Recorder) writeTailer(end time.Time) {
 		indexMediaPath: indexMediaPath,
 		startedAt:      r.recordStartedAt,
 	}
+	// 录制收尾策略装配单独成方法：这三个字段决定「碎片是否被丢弃」与
+	// 「丢弃后能否清掉初始行/事件行」，漏赋值不会编译失败、只会静默失效。
+	trailer.applyDiscardPolicy(GetRecordConfig(), r.Event.RecordStream.ID, r.Event.RecordEvent != nil)
 	// OnDispose 必须在 AddTask 之前注册：与 OnStart 相同的 append-only 语义，
 	// 任务启动后再注册的监听器永远不会被消费。正常路径的注销由 Run 的 defer
 	// 完成（覆盖所有提前返回），这里只是任务确实进入 Dispose 时的兜底；

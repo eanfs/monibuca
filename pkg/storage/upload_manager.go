@@ -54,15 +54,34 @@ var ErrPendingDirFull = errors.New("pending dir full")
 
 // UploadConfig 上传管理配置
 type UploadConfig struct {
-	MaxConcurrentUploads       int    `desc:"最大并发上传数" default:"4"`
-	UploadReadRateMBps         int    `desc:"upload read rate limit in MB/s; caps concurrent S3 upload-body reads and pending-retry copies so they cannot starve recording writes (OSS/COS SDK-internal reads are not covered); 0 = unlimited (default)" default:"0" yaml:"readratembps"`
-	MaxConcurrentTrailerWrites int    `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
-	TrailerWriteRateMBps       int    `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
-	PendingDir                 string `desc:"上传失败文件暂存目录" default:"pending_uploads"`
-	PendingMaxSizeMB           int    `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
-	PendingMaxFiles            int    `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
-	PendingDiskMinFreeMB       int    `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
-	MaxQueuedUploads           int    `desc:"maximum queued-but-unfinished record finalization tasks; overflow spills to the pending retry queue (recovery uploads are not capped); 0 = unlimited" default:"8"`
+	MaxConcurrentUploads       int           `desc:"最大并发上传数" default:"4"`
+	UploadReadRateMBps         int           `desc:"upload read rate limit in MB/s; caps concurrent S3 upload-body reads and pending-retry copies so they cannot starve recording writes (OSS/COS SDK-internal reads are not covered); 0 = unlimited (default)" default:"0" yaml:"readratembps"`
+	MaxConcurrentTrailerWrites int           `desc:"[预留] 最大并发 trailer 写盘槽位数. 当前 trailer queue 是 single-threaded, 此项不影响行为; 留作未来 worker-pool 实现的接口" default:"8"`
+	TrailerWriteRateMBps       int           `desc:"trailer 重写写盘限速 (MB/s), 控制 record stop 时磁盘 burst; 0=不限速 (默认)" default:"0"`
+	PendingDir                 string        `desc:"上传失败文件暂存目录" default:"pending_uploads"`
+	PendingMaxSizeMB           int           `desc:"pending 目录总大小上限(MB), 超过则拒绝新文件暂存(可能丢录像); 0=不限" default:"0"`
+	PendingMaxFiles            int           `desc:"pending 目录文件数上限, 超过则拒绝; 0=不限" default:"0"`
+	PendingDiskMinFreeMB       int           `desc:"pending 所在磁盘最低剩余空间(MB), 低于则拒绝; 0=不检查" default:"0"`
+	MaxQueuedUploads           int           `desc:"maximum queued-but-unfinished record finalization tasks; overflow spills to the pending retry queue (recovery uploads are not capped); 0 = unlimited" default:"8"`
+	RecordDBWriteTimeout       time.Duration `desc:"延迟入库(record_streams 定稿)的 DB 写超时; 过短会触发补写重试，重试耗尽后才会永久缺失索引记录（HLS 的 WriteTail 已同用本配置）" default:"30s"`
+}
+
+// DefaultRecordDBWriteTimeout 是延迟入库（record_streams 定稿）DB 写的默认
+// 超时。旧实现固定 10s：磁盘被随机写打满时 SQLite fsync 变慢，同批 INSERT
+// 实测 3.3–14.0s，超过期限即失败；此时文件已上传成功，但 record_streams
+// 永远停在 end_time=NULL/duration=0（孤儿文件）。默认放宽到 30s，避免常规
+// 高 IO 就触发失败。
+const DefaultRecordDBWriteTimeout = 30 * time.Second
+
+// recordDBWriteTimeout 由 InitUploadManager 从配置注入；未初始化时用默认值。
+var recordDBWriteTimeout = DefaultRecordDBWriteTimeout
+
+// RecordDBWriteTimeout 返回延迟入库的 DB 写超时（已兜底为默认值）。
+func RecordDBWriteTimeout() time.Duration {
+	if recordDBWriteTimeout <= 0 {
+		return DefaultRecordDBWriteTimeout
+	}
+	return recordDBWriteTimeout
 }
 
 // InitUploadManager 初始化上传管理器（并发控制 + 暂存目录）
@@ -78,6 +97,12 @@ func InitUploadManager(cfg UploadConfig) {
 	}
 	maxConcurrentTrailers = cfg.MaxConcurrentTrailerWrites
 	trailerSem = make(chan struct{}, cfg.MaxConcurrentTrailerWrites)
+
+	if cfg.RecordDBWriteTimeout > 0 {
+		recordDBWriteTimeout = cfg.RecordDBWriteTimeout
+	} else {
+		recordDBWriteTimeout = DefaultRecordDBWriteTimeout
+	}
 
 	if cfg.TrailerWriteRateMBps > 0 {
 		trailerWriteBytesPerSec.Store(int64(cfg.TrailerWriteRateMBps) * 1024 * 1024)
